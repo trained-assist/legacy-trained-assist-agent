@@ -138,7 +138,7 @@ describe('MCP surface: playbook_run', () => {
     expect(res.task.goal).toBe('Готовить P2');
     expect(res.task.playbook_id).toBe('development');
     expect(res.task.playbook_version).toBe(1);
-    expect(res.playbook).toMatchObject({ id: 'development', version: 1, scope: 'system', source: 'system' });
+    expect(res.playbook).toMatchObject({ id: 'development', version: 1, scope: 'system', source: 'sibling' });
     expect(res.summary).toEqual({ stages: 5, items: 16 });
     expect(res.items).toHaveLength(16);
 

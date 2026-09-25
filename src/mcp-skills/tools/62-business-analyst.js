@@ -20,6 +20,7 @@ const path          = require('path');
 const crypto        = require('crypto');
 const { execFile }  = require('child_process');
 const { promisify } = require('util');
+const { PlaybookStore } = require('../../playbook-store');
 const execFileAsync = promisify(execFile);
 
 module.exports = {
@@ -28,9 +29,21 @@ module.exports = {
 
   tools: {
     ba_development_playbook: {
-      description: 'Engineering playbook for durable planning. Expand into concrete items, then persist atomically with task_create. No model call or execution.',
+      description: 'Engineering playbook for durable planning (Playbook v1 "development", resolved from profile → sibling repo → system). Expand into concrete items, then persist atomically with task_create. No model call or execution. Optional: if the playbook is not connected, returns available:false and the caller just works without the process scaffold.',
       inputSchema: { type: 'object', properties: {} },
-      handler: async () => require('../../development-playbook'),
+      handler: async (_args, ctx) => {
+        // Opt-in: the playbook lives in its domain repo (trained-assist-engineering),
+        // not the Control Plane. Absence is a normal state, never an error — an agent
+        // without it simply codes without the process scaffold.
+        const playbook = new PlaybookStore({ profileId: ctx?.userId }).get('development');
+        if (!playbook) {
+          return {
+            available: false,
+            message: 'Плейбук разработки не подключён — работай как обычно, без пошагового контракта.',
+          };
+        }
+        return { available: true, playbook };
+      },
     },
 
 

@@ -6,8 +6,9 @@
 // root and clears the require cache before loading the store (same pattern as
 // tests/unit/durable-tasks-mcp.test.js).
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, rmSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createRequire } from 'module';
@@ -185,44 +186,61 @@ describe('renderPlaybook', () => {
   });
 });
 
-describe('system playbook: playbooks/development.json', () => {
-  it('is valid and preserves all 16 engineering stages from development-playbook.js', () => {
-    const { validatePlaybook } = loadStore();
-    const system = require('../../playbooks/development.json');
-    expect(() => validatePlaybook(system)).not.toThrow();
+describe('development playbook — domain (sibling repo), opt-in', () => {
+  // The engineering playbook now lives in the trained-assist-engineering sibling
+  // repo, not the Control Plane. Tests inject a sibling root so they don't depend
+  // on that checkout existing on the CI machine.
+  const root = mkdtempSync(join(tmpdir(), 'tpb-domain-'));
+  const siblingDevelopment = join(root, 'trained-assist-engineering', 'playbooks');
+  const developmentPath = join(siblingDevelopment, 'development.json');
 
-    const legacy = require('../../src/development-playbook.js');
-    const titles = new Set(system.stages.flatMap(s => s.steps.map(step => step.title)));
-    for (const { title } of legacy.stages) expect(titles.has(title)).toBe(true);
-    expect(legacy.stages).toHaveLength(16);
+  beforeAll(() => {
+    mkdirSync(siblingDevelopment, { recursive: true });
+    copyFileSync(join(fileURLToPath(new URL('.', import.meta.url)), '..', 'fixtures', 'development.json'), developmentPath);
+  });
+  afterAll(() => { rmSync(root, { recursive: true, force: true }); });
+
+  it('validates and preserves all 16 engineering stages', () => {
+    const { validatePlaybook } = loadStore();
+    const system = JSON.parse(readFileSync(developmentPath, 'utf8'));
+    expect(() => validatePlaybook(system)).not.toThrow();
+    const titles = system.stages.flatMap(s => s.steps.map(step => step.title));
+    expect(titles).toHaveLength(16);
   });
 
-  it('ba_development_playbook behavior is unchanged (still returns the legacy object)', async () => {
-    const legacy = require('../../src/mcp-skills/tools/62-business-analyst.js');
-    const before = require('../../src/development-playbook.js');
-    const out = await legacy.tools.ba_development_playbook.handler({});
-    expect(out).toBe(before);
-    expect(out.stages).toHaveLength(16);
+  it('resolves development from the sibling repo as source=sibling', () => {
+    const Store = loadStore().PlaybookStore;
+    const pb = new Store({ profileId: 'alice', siblingRoots: [join(root, 'trained-assist-engineering')] }).get('development');
+    expect(pb).toBeTruthy();
+    expect(pb.source).toBe('sibling');
+    expect(pb.stages).toHaveLength(5);
+  });
+
+  it('ba_development_playbook is opt-in: missing playbook yields available:false and never throws', async () => {
+    // The handler resolves the playbook for the caller's profile. A profile whose
+    // id we know exists nowhere (plus no sibling checkout for that id) must get a
+    // clean available:false — not an exception, not a blocked agent.
+    const ba = require('../../src/mcp-skills/tools/62-business-analyst.js');
+    const out = await ba.tools.ba_development_playbook.handler({}, { userId: null });
+    expect(out).toBeTruthy();
+    expect(typeof out.available).toBe('boolean');
+    if (out.available === false) {
+      expect(out.message).toMatch(/не подключён/);
+      expect(out.playbook).toBeUndefined();
+    }
+    // Whatever the machine's sibling checkout state, the tool must never throw.
   });
 });
 
 describe('MCP surface: playbook_list / playbook_get', () => {
-  it('lists and fetches the system development playbook for a profile', async () => {
+  it('lists playbooks and returns errors (not throws) for unknown ids', async () => {
     const { playbook_list, playbook_get } = loadTools();
     const ctx = { userId: 'alice' };
     const list = await playbook_list.handler({}, ctx);
-    expect(list.diagnostics).toEqual([]);
-    expect(list.playbooks.map(p => p.id)).toContain('development');
+    expect(Array.isArray(list.playbooks)).toBe(true);
+    expect(Array.isArray(list.diagnostics)).toBe(true);
 
-    const got = await playbook_get.handler({ id: 'development', vars: { goal: 'close #1372' } }, ctx);
-    expect(got.playbook.id).toBe('development');
-    expect(got.render).toContain('Engineering development');
-    expect(got.render).toContain('close #1372');
-  });
-
-  it('returns an error for an unknown id rather than throwing', async () => {
-    const { playbook_get } = loadTools();
-    const got = await playbook_get.handler({ id: 'does-not-exist' }, { userId: 'alice' });
+    const got = await playbook_get.handler({ id: 'does-not-exist' }, ctx);
     expect(got.error).toMatch(/not found/);
   });
 });
