@@ -104,7 +104,7 @@ else
     permissions:
       contents: write
       pull-requests: write
-    uses: trained-assist/pr-autofix/.github/workflows/autofix-callable.yml@v1.2.1
+    uses: trained-assist/pr-autofix/.github/workflows/autofix-callable.yml@v1.3.0
     with:
       pr_number: \${{ github.event.pull_request.number }}
       original_branch: \${{ github.head_ref }}
