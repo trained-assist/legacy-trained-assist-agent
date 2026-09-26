@@ -46,6 +46,28 @@ Existing call sites to copy from:
 `2.5-flash-lite` are the live replacements (confirmed working on CID/Cyrillic
 PDF OCR, see `agent-notes.md`).
 
+## Free-tier ladder for PR-review/auto-fix (bench-validated 2026-09-26)
+
+Bench: 500 rows, 10 diffs × 5 runs × 10 `:free` models (see
+`bench-cicd/bench-ext-summary.json`). Old chain (`deepseek-v3-0324`,
+`gemma-3-12b-it`, `llama-3.1-8b-instruct`, `mistral-7b-instruct`) and
+`deepseek/deepseek-v4-flash-0731:free` are gone from the live OpenRouter
+catalog. Survivors, ordered by availability × recall:
+
+1. `nvidia/nemotron-3-super-120b-a12b:free` — 84% avail, recall 0.79, 4.6s
+2. `inclusionai/ling-3.0-flash-fin:free` — 72% avail, recall 0.92, 0 FP, 2.5s
+3. `inclusionai/ling-3.0-flash-sante:free` — 58% avail, recall 0.72
+4. `nvidia/nemotron-3-ultra-550b-a55b:free` — 52% avail, recall 1.0, 0 FP
+5. `cohere/north-mini-code:free` — 50% avail, recall 0.88, 0 FP
+6. `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` — 46% avail, recall 0.74
+7. `poolside/laguna-xs-2.1:free` — 46% avail, recall 1.0 (rate-limited)
+8. `dots-studio/dots-3-note-preview:free` — 18% avail, recall 1.0
+
+Dead: `nemotron-3.5-lightning:free`, `nemotron-3.5-content-safety:free`.
+Coded into `pr-autofix` as `FREE_MODEL_LADDER` with per-stage failover (a
+single 429/404 no longer kills the pipeline) and a tolerant JSON guard
+(`response_format` dropped on 400, `parseJSON` extracts `{…}` from fences).
+
 ## Budget/fallback rule
 
 Every pipeline step must:
