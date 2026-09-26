@@ -1162,6 +1162,18 @@ ${recent || '(пока нет)'}
     // than trusting a fire-and-forget completion callback — means a dropped
     // packet can't trap the buffer; the next poll self-heals.
     if (req.method === 'GET' && url.pathname === '/tasks/running') {
+      // chatId-scoped check (epic #1527 PR1): what the gateway's IntakeBuffer
+      // alarm poll uses to self-heal a lost run-finished push. acceptedByChat
+      // is true from the synchronous runTask entry (before 202) until the run
+      // settles — no admission-wait window where a poll would see "idle" and
+      // wrongly release the chat's busy hold.
+      const chatIdParam = url.searchParams.get('chatId');
+      if (chatIdParam != null && chatIdParam !== '') {
+        const chatId = Number(chatIdParam);
+        if (!Number.isSafeInteger(chatId)) return json(res, 400, { error: 'invalid chatId' });
+        const { isChatTaskRunning } = require('./runner');
+        return json(res, 200, { running: isChatTaskRunning(chatId), scope: 'chat', chatId });
+      }
       const username = url.searchParams.get('username');
       if (!username || !/^[a-zA-Z0-9_-]+$/.test(username))
         return json(res, 400, { error: 'invalid username' });

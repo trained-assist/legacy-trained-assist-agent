@@ -81,6 +81,24 @@ Core уже владеет эталоном — `scripts/staging/run.mjs` + `scr
 перенимает **тот же** паттерн (Phase 1 — вендорит harness, Phase 2 — общий
 пакет, см. §6):
 
+**Гейт соответствия (как проверить, что доменный репо следует правилам).**
+Одна команда — из доменного репо, через devDependency test-kit:
+
+```bash
+npx mcp-skill-conformance .        # или: node node_modules/@trained-assist/mcp-skill-testkit/bin/mcp-skill-conformance.js .
+```
+
+Она проверяет обязательные артефакты §5, conformance манифеста против
+`contracts/mcp-skill-sources.schema.json`, непустой mandatory-набор
+`staging/suites.json` и L3-гейты (quick-action-тулы не спавнят Claude; у
+`fetch` есть таймаут; секреты не логируются; пути через резолвер). Из core тот
+же чек доступен как `node scripts/check-domain-skill-repo.mjs <repo>`.
+
+**Чек в PR-шаблоне.** Каждый доменный репо несёт `.github/PULL_REQUEST_TEMPLATE.md`
+с conformance-чеклистом (канон —
+`packages/mcp-skill-testkit/assets/PULL_REQUEST_TEMPLATE.md`, его же кладёт
+`create-domain-skill`). PR не готов, пока чеклист не пройден и CI не зелёный.
+
 - **Изоляция всех data-root'ов** в temp: `HOME`, `TMPDIR`, `USERS_DIR`,
   `AGENT_DATA_DIR`, `AGENT_TOKENS_ROOT`. Guard преload'ится в каждый процесс
   через `NODE_OPTIONS=--require` (наследуется форками и детьми).

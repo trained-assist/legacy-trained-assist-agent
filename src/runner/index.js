@@ -31,10 +31,12 @@ const persona = require('../persona');
 const profiles = require('../profiles');
 const { TOKENS_ROOT } = require('../data-paths');
 const answerRouter = require('../answer-router');
+const promptDomains = require('../prompt-domains');
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
 // tg-stream.js (issue #942 P1.4). The module owns the format/send/edit
 // primitives; runner.js keeps orchestration (queueing, retries around them).
 const { TG_API, tgSend, tgEdit } = require('./tg-stream');
+const { notifyRunFinished } = require('../gateway-callback');
 const {
   getQuickAnswer,
   verifyQuickAnswerIntent,
@@ -80,6 +82,13 @@ const STOP_BUTTON_AFTER_SECS = 5;
 const MAX_MSG_LEN = 3500;
 
 // Telegram cards report token usage only; monetary estimates are not displayed.
+//
+// The model reads the WHOLE prompt every step (fresh input + cache read + cache
+// write), so reporting only input_tokens made a ~57K-step look like "вход 6K"
+// and misled the owner into doubting the system-prompt size (#149 follow-up,
+// owner decision 27.09.2026 "давай да поправим"). When any cache part is
+// present we show the honest total with a breakdown; with no cache at all the
+// footer is unchanged (total === input anyway).
 function formatCostFooter(usage) {
   if (!usage) return '';
   const inp = usage.input_tokens || 0;
@@ -87,11 +96,19 @@ function formatCostFooter(usage) {
   const cr  = usage.cache_read_input_tokens || 0;
   const cw  = usage.cache_creation_input_tokens || 0;
   const fmt = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-  const fmtK = n => n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
-  const parts = [`вход ${fmt(inp)}`, `выход ${fmt(out)}`];
-  if (cw > 0) parts.push(`кэш +${fmtK(cw)}`);
-  if (cr > 0) parts.push(`кэш ${fmtK(cr)}`);
+  const fmtK = n => n >= 1e6 ? `${Math.round(n / 1e4) / 100}M`
+    : n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
+  const parts = [inputPart(inp, cr, cw, fmt, fmtK), `выход ${fmt(out)}`];
   return `\n\nИспользование: ${parts.join(' · ')}`;
+}
+
+// "вход N" when no cache; "вход всего T (новых N, из кэша R, в кэш +W)" otherwise.
+function inputPart(inp, cr, cw, fmt, fmtK) {
+  if (cr <= 0 && cw <= 0) return `вход ${fmt(inp)}`;
+  const bits = [`новых ${fmtK(inp)}`];
+  if (cr > 0) bits.push(`из кэша ${fmtK(cr)}`);
+  if (cw > 0) bits.push(`в кэш +${fmtK(cw)}`);
+  return `вход всего ${fmtK(inp + cr + cw)} (${bits.join(', ')})`;
 }
 
 // breakdown: [{ agent, model, input, output, cacheRead, cacheWrite, cost }]
@@ -100,16 +117,18 @@ function formatCostFooter(usage) {
 function formatOcFooter(usage, breakdown) {
   if (!usage) return '';
   const fmt = n => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '\u202f');
-  const fmtK = n => n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
+  const fmtK = n => n >= 1e6 ? `${Math.round(n / 1e4) / 100}M`
+    : n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
   let model = '';
   if (breakdown) {
     for (const s of breakdown) {
       if (s.model) { model = s.model.split('/').pop().replace(/:free$/, ''); break; }
     }
   }
-  const parts = [`вход ${fmt(usage.input)}`, `выход ${fmt(usage.output)}`];
-  if (usage.cacheWrite > 0) parts.push(`кэш +${fmtK(usage.cacheWrite)}`);
-  if (usage.cacheRead > 0) parts.push(`кэш ${fmtK(usage.cacheRead)}`);
+  const inp = usage.input || 0;
+  const cr  = usage.cacheRead || 0;
+  const cw  = usage.cacheWrite || 0;
+  const parts = [inputPart(inp, cr, cw, fmt, fmtK), `выход ${fmt(usage.output)}`];
   const m = model ? ` ${model}` : '';
   return `\n\nИспользование${m}: ${parts.join(' · ')}`;
 }
@@ -413,6 +432,49 @@ const queuedSessions = new Set(); // Set<sessionId(string)>
 const queuedByOwner = new Map(); // key -> count of accepted-not-finished runs
 const pendingSessionStops = new Set(); // keys with a Stop waiting for the process
 const ownerKey = (username, sessionId) => `${username}\0${sessionId}`;
+// Chat-scoped accepted-not-finished counter (epic #1527 PR1). Incremented
+// SYNCHRONOUSLY at runTask entry — before any await — so it is already >0 when
+// the gateway receives the 202 ack, and decremented in the same finally that
+// emits run-finished. This is what GET /tasks/running?chatId= reads: it stays
+// true through admission waits (before activeTimers has an entry) and drops to
+// false exactly when the run settles or the process dies (in-memory reset).
+const acceptedByChat = new Map(); // chatId(number|string) -> count
+function _bumpAcceptedByChat(chatId) {
+  if (chatId == null) return;
+  acceptedByChat.set(chatId, (acceptedByChat.get(chatId) || 0) + 1);
+}
+function _releaseAcceptedByChat(chatId) {
+  if (chatId == null) return;
+  const n = (acceptedByChat.get(chatId) || 1) - 1;
+  if (n > 0) acceptedByChat.set(chatId, n);
+  else acceptedByChat.delete(chatId);
+}
+// True while any run accepted for this chat has not yet settled — regardless
+// of phase (queued, admission wait, spawned).
+function isChatTaskRunning(chatId) {
+  if (chatId == null) return false;
+  if ((acceptedByChat.get(chatId) || 0) > 0) return true;
+  for (const s of activeTimers.values()) {
+    if (String(s.user?.id ?? s.chatId ?? '') === String(chatId)) return true;
+  }
+  return false;
+}
+
+// Release the chat counter and push run-finished to the gateway. Called exactly
+// once per runTask invocation from the runTask wrapper below — every code path
+// (quick answer, stop, admission, error) funnels through there.
+function _finishAcceptedChatRun(chatId, opts, outcome) {
+  try { _releaseAcceptedByChat(chatId); } catch (e) { console.warn('[runner] release acceptedByChat:', e.message); }
+  if (!opts) return;
+  notifyRunFinished({
+    chatId,
+    threadId: Number.isInteger(opts.threadId) && opts.threadId > 0 ? opts.threadId : null,
+    requestId: opts.requestId || null,
+    taskId: opts.taskId || null,
+    outcome,
+    secret: opts.secrets?.AGENT_SECRET || process.env.AGENT_SECRET,
+  }).catch(e => console.warn('[runner] notifyRunFinished:', e.message));
+}
 function consumePendingStop(username, sessionId) {
   return !!(username && sessionId) && pendingSessionStops.delete(ownerKey(username, sessionId));
 }
@@ -497,7 +559,36 @@ function killTaskByUsername(username, audience = null) {
  * @param {string|null} opts.sessionId  - existing session to append to
  * @param {object} opts.secrets - { BOT_TOKEN, ANTHROPIC_API_KEY, ... }
  */
+// Epic #1527 PR1: thin wrapper around the real runTask. Bumps the chat's
+// accepted-not-finished counter SYNCHRONOUSLY (before any await — so it is
+// already >0 when the caller receives its 202) and, when the returned promise
+// settles on ANY path (success, error, stop, quick answer), releases the
+// counter and pushes run-finished to the gateway. The gateway holds the chat's
+// IntakeBuffer `busy` for exactly this window.
 function runTask(opts) {
+  const delivery = taskDelivery(opts);
+  // Telegram group/supergroup ids are NEGATIVE — only 0 is the internal/web
+  // sentinel (no real chat). Restricting this to >0 silently dropped every
+  // group run from the counter and the run-finished push, so a group chat's
+  // IntakeBuffer stayed `busy` for BUSY_MAX_MS (45 min) after each run
+  // (#1534 regression: «▶️ Запустить» dead in every group).
+  const rawChatId = Number(delivery.user?.id);
+  const acceptedChatId = Number.isSafeInteger(rawChatId) && rawChatId !== 0 ? rawChatId : null;
+  _bumpAcceptedByChat(acceptedChatId);
+  let ret;
+  try {
+    ret = _runTaskInner(delivery);
+  } catch (e) {
+    ret = Promise.reject(e);
+  }
+  Promise.resolve(ret).then(
+    () => { _finishAcceptedChatRun(acceptedChatId, delivery, 'done'); },
+    () => { _finishAcceptedChatRun(acceptedChatId, delivery, 'error'); },
+  ).catch(e => console.warn(`[${opts.taskId}] run-finished side chain: ${e.message}`));
+  return ret;
+}
+
+function _runTaskInner(opts) {
   opts = taskDelivery(opts);
   // Forum topic identity for every outbound on this run (#255). Null for private
   // chats and non-forum groups — nothing thread-related is then emitted.
@@ -1940,6 +2031,18 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     }
   } catch (e) { console.warn('[runner] project profile merge:', e.message); }
 
+  // Domain skill rules (src/prompt-domains): only for skills this user actually has —
+  // gated by the same isReady() as the tools in .mcp.json (system-prompt diet).
+  try {
+    const domainBlock = promptDomains.buildDomainBlock(mcpConfig);
+    if (domainBlock) {
+      const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
+      const out = path.join(user.workDir, '.system-prompt.txt');
+      fs.writeFileSync(out, baseTxt + '\n\n' + domainBlock, { mode: 0o600 });
+      systemPromptFile = out;
+    }
+  } catch (e) { console.warn('[runner] prompt domains:', e.message); }
+
   // Answer router: вставить блок режима в системный промпт для этого хода.
   //  • clarify (транзиентно, этот ход) → блок вопросов, приоритетнее deep.
   //  • deep (sticky, из durable-сайдкара) → снять cap «2-3 предложения».
@@ -2882,7 +2985,7 @@ module.exports = {
   interruptForRestart, MAX_RESUME_ATTEMPTS, isProviderFault,
   runTask, getQuickAnswer, runQuickAnswer, shouldAttemptQuickAnswer, generateConnectLink, getPendingTasks, clearPendingTask, ensureSkillDir,
   resolveRunSession,
-  isTaskRunning, isSessionRunning, isSessionQueuedFor, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,
+  isTaskRunning, isChatTaskRunning, isSessionRunning, isSessionQueuedFor, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,
   reconcileSoftContinuations,
   // Exported for intent-coverage tests only
   _intents: { HH_MY_VACANCIES_INTENT, HH_FUNNEL_INTENT, HH_RESPONSES_INTENT, HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT, ENGINE_SWITCH_INTENT },

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "{{domain}}",
+      "providerId": "{{domain}}",
+      "mcpServerId": "{{domain}}-skills",
+      "repository": "{{repository}}",
+      "revision": "{{revision}}",
+      "manifestVersion": 1,
+      "artifactDir": "src/mcp-skills",
+      "entrypoint": "src/mcp-skills/index.js",
+      "manifest": "mcp.manifest.json",
+      "artifactDigest": "{{artifactDigest}}",
+      "approvedManifest": {
+        "version": 1,
+        "providerId": "{{domain}}",
+        "actions": [
+          { "name": "example_status", "inputSchema": { "type": "object", "properties": {} } }
+        ]
+      },
+      "enabled": false,
+      "profiles": []
+    }
+  ]
+}
