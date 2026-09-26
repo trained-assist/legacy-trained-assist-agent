@@ -829,6 +829,23 @@ function _relativeTime(ts) {
   return `через ${Math.round(mins / 60)} ч`;
 }
 
+// Time-of-day context, injected into every run's prompt. All user-facing times are
+// Moscow (МСК, UTC+3) — the pinned context card and session-store.buildContext both
+// format in Europe/Moscow — but the engine shell inherited the VM's clock (UTC on GCP)
+// with no explicit "now" anywhere in the prompt. The agent then glued a МСК target to a
+// UTC `date` and scheduled a wall-clock wait ~3h late (incident 2026-09-27: «задание
+// ждёт 21:53» ran `date -u` and waited until 00:55 МСК). One authoritative line, in the
+// same zone the UI uses, plus the TZ=Europe/Moscow engine env (claude-runner.js), removes
+// the guesswork. `now` is injectable for tests.
+function currentTimeSection(now = new Date()) {
+  const msk = now.toLocaleString('ru-RU', {
+    timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+  const utc = `${now.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+  return `[Сейчас: ${msk} МСК (UTC+3) | ${utc}. Все времена в интерфейсе и дедлайны — московские; шелл работает в TZ=Europe/Moscow, поэтому обычный \`date\` уже даёт МСК. Не ставь московскую цель под \`date -u\` (UTC) — это разница +3ч. Ждать дольше ~2 минут — не через sleep/poll: заверши ход и вернись по планировщику (GTD/cron_create).]`;
+}
+
 // Search-results files are named by date (search-results-2026-09-22.json), not by
 // vacancy_id — each file's own content carries the vacancy_id it was searched for
 // (see hh-proactive-search.js runProactiveSearch). With one tracked vacancy that
@@ -1852,7 +1869,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   //  project + cross-profile collector; no in-session GitHub issue creation. See intent-engine
   //  BUG_OR_FEATURE_INTENT and src/bugs-collector.js.)
 
-  let baseContext = [timeoutSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, artifactsSection].filter(Boolean).join('\n\n');
+  let baseContext = [currentTimeSection(), timeoutSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, artifactsSection].filter(Boolean).join('\n\n');
   if (sessionContext) baseContext = baseContext ? `${baseContext}\n\n${sessionContext}` : sessionContext;
   const currentTask = sessionContext ? `Пользователь: ${task}` : task;
   let prompt = baseContext ? `${baseContext}\n\n${currentTask}` : currentTask;
@@ -2871,6 +2888,8 @@ module.exports = {
   _intents: { HH_MY_VACANCIES_INTENT, HH_FUNNEL_INTENT, HH_RESPONSES_INTENT, HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT, ENGINE_SWITCH_INTENT },
   // Exported for pin-state tests only
   _pin: { updateContextPin, readPinStore, buildContextCard },
+  // Exported for time-context tests only
+  _time: { currentTimeSection },
   // Exported for final-text-selection tests only
   _final: { pickFinalText, isScratchpadFallback },
   // Exported for oc-footer tests only
