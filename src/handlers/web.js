@@ -272,6 +272,29 @@ async function handleWeb(req, url, res, ctx) {
     }
   }
 
+  // ── POST /web/session-trace — full working log (reasoning/tools) for UIs ──
+  // Bearer twin of GET /web/session/:id/trace for external frontends (the
+  // Cloudflare worker can't hold a WEB_JWT cookie). Same delegation pattern as
+  // /web/session-get. Returns {ok:true, ...trace} or {ok:false, error, engine}.
+  if (req.method === 'POST' && url.pathname === '/web/session-trace') {
+    const verifySecret = secrets.WEB_VERIFY_SECRET || secrets.AGENT_SECRET;
+    const auth = req.headers['authorization'] || '';
+    if (!verifySecret || auth !== `Bearer ${verifySecret}`) return json(res, 401, { error: 'unauthorized' });
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const { username, id } = body || {};
+    if (!username || !/^[a-zA-Z0-9_-]{1,64}$/.test(username)) return json(res, 400, { error: 'invalid username' });
+    try {
+      const { getTraceFor } = require('../web-routes');
+      const trace = getTraceFor(username, id);
+      return json(res, 200, trace.ok
+        ? { ok: true, engine: trace.engine, sessionId: trace.sessionId, events: trace.events, byMessage: trace.byMessage, ttlMs: trace.ttlMs }
+        : { ok: false, error: trace.error, engine: trace.engine || null });
+    } catch (e) {
+      return json(res, 500, { error: 'session trace failed' });
+    }
+  }
+
   // ── POST /web/intake-file-bearer — store one web attachment durably ──────
   // The Cloudflare worker owns browser uploads first. Before a real run/reply it
   // copies each file here so the agent can materialize it into media/intake and

@@ -561,6 +561,7 @@ async function main() {
         url.pathname !== '/web/verify' && url.pathname !== '/web/projects' &&
         url.pathname !== '/web/project-create' &&
         url.pathname !== '/web/sessions-list' && url.pathname !== '/web/session-get' &&
+        url.pathname !== '/web/session-trace' &&
         url.pathname !== '/web/intake-file-bearer' &&
         url.pathname !== '/web/run-bearer' && url.pathname !== '/web/reply-bearer' &&
         url.pathname !== '/web/reproject-preview' && url.pathname !== '/web/reproject-adjust' &&
