@@ -4,6 +4,7 @@ const { webAuth } = require('./web-auth');
 const { listSessions, getSession, getCurrentSessionId } = require('./session-store');
 const { isTaskRunning, isSessionRunning, isSessionQueuedFor, runTask, stopSessionTask } = require('./runner');
 const { userWorkDir, SYSTEM_ROOT } = require('./data-paths');
+const { readTrace } = require('./session-trace');
 const { newWebSessionId, webCanaryEnabled } = require('./core/web-conversation');
 
 // Per-task SSE emitters: taskId → EventEmitter
@@ -156,6 +157,20 @@ function getSessionFor(username, sessionId) {
   };
 }
 
+// Read the full working trace for one session (reasoning/tool/steps from the
+// engine's own store — see session-trace.js). Returns { ok:false, error } when
+// the session has no engine trace (claude-only, missing db, etc.).
+function getTraceFor(username, sessionId) {
+  if (!sessionId || !SESSION_ID_RE.test(sessionId)) return { ok: false, error: 'invalid session id' };
+  const workDir = userWorkDir(username);
+  const session = getSession(workDir, sessionId);
+  if (!session) return { ok: false, error: 'session not found' };
+  const res = readTrace(workDir, session);
+  // Clamp: never expose engine internals the owner didn't ask for.
+  if (!res.ok) return { ok: false, error: res.error, engine: res.engine || null };
+  return res;
+}
+
 // Stop the running task for one session, scoped to the chat it's attached to
 // (see stopUserTask's comment — a profile's workDir/activeTimers is shared
 // across chats, so an unscoped kill would also hit a different chat's task).
@@ -208,6 +223,23 @@ async function handleWebRoute(req, url, res, secrets) {
     const out = getSessionFor(username, sessionId);
     if (!out) return json(res, 404, { error: 'session not found' }), true;
     return json(res, 200, out), true;
+  }
+
+  // ── GET /web/session/:id/trace — full working log (reasoning/tools) ───────
+  if (req.method === 'GET' && p.match(/^\/web\/session\/[^/]+\/trace$/)) {
+    const username = webAuth(req, secrets.WEB_JWT_SECRET);
+    if (!username) return json(res, 401, { error: 'unauthorized' }), true;
+
+    const sessionId = p.split('/')[3];
+    if (!sessionId || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) return json(res, 400, { error: 'invalid session id' }), true;
+
+    const trace = getTraceFor(username, sessionId);
+    if (!trace.ok) {
+      // Not an error the UI must scream about — the trace simply may not exist
+      // (claude engine, pre-migration session). Signal it distinctly.
+      return json(res, 200, { ok: false, error: trace.error, engine: trace.engine || null }), true;
+    }
+    return json(res, 200, { ok: true, engine: trace.engine, sessionId: trace.sessionId, events: trace.events, byMessage: trace.byMessage, ttlMs: trace.ttlMs }), true;
   }
 
   // ── GET /web/files/tree — directory tree inside profile workDir ──────────
@@ -469,6 +501,6 @@ async function streamWebTask({ req, res, secrets, username, task, sessionId, new
 }
 
 module.exports = {
-  handleWebRoute, listSessionsFor, getSessionFor, prepareWebTaskFiles,
+  handleWebRoute, listSessionsFor, getSessionFor, getTraceFor, prepareWebTaskFiles,
   claimWebMutation, completeWebMutation, streamWebTask, stopSessionFor,
 };
