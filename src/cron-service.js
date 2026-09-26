@@ -183,6 +183,40 @@ function createCronService({ executions, registry, transport, invoker = null, no
     return { id, deleted: true };
   }
 
+  // Named jobs (#1514): a provider's compatibility wrapper addresses its job by a
+  // stable name (e.g. one per vacancy) instead of remembering generated ids.
+  // (scope, action, name) is unique by construction here: upsert updates the
+  // existing job, so a repeated enable never creates a second schedule.
+  function findByName(s, action, name) {
+    return db.prepare(`SELECT * FROM cron_jobs WHERE ${SCOPE_SQL} AND action = ? AND name = ? ORDER BY created_at`)
+      .all(s.profileId, s.projectId, action, String(name || '').trim()).map(row);
+  }
+
+  function upsertJob({ profileId, projectId = null, name, schedule, timezone = 'UTC', action, arguments: args = {}, enabled = true }) {
+    const s = scope(profileId, projectId);
+    if (typeof name !== 'string' || !name.trim()) throw serviceError('INVALID_ARGUMENTS', 'name required');
+    const [existing, ...dupes] = findByName(s, action, name);
+    for (const d of dupes) deleteJob({ ...s, id: d.id });
+    if (!existing) {
+      const created = createJob({ ...s, name, schedule, timezone, action, arguments: args });
+      return enabled ? created : updateJob({ ...s, id: created.id, enabled: false });
+    }
+    // Only changed fields are patched: re-sending the same schedule must not push
+    // next_run_at forward (a repeated enable would otherwise postpone the run forever).
+    const patch = {};
+    const norm = String(schedule || '').trim().split(/\s+/).join(' ');
+    if (norm !== existing.schedule) patch.schedule = schedule;
+    if (timezone !== existing.timezone) patch.timezone = timezone;
+    if (JSON.stringify(args) !== JSON.stringify(existing.arguments)) patch.arguments = args;
+    if (!!enabled !== existing.enabled) patch.enabled = !!enabled;
+    return Object.keys(patch).length ? updateJob({ ...s, id: existing.id, ...patch }) : existing;
+  }
+
+  function deleteJobsByName({ profileId, projectId = null, action, name }) {
+    const s = scope(profileId, projectId);
+    return findByName(s, action, name).map(j => deleteJob({ ...s, id: j.id }));
+  }
+
   // Most recent occurrence <= t, walking forward from the stored next_run_at.
   function coalesce(job, t) {
     let scheduledAt = job.next_run_at;
@@ -321,7 +355,7 @@ function createCronService({ executions, registry, transport, invoker = null, no
     };
   }
 
-  return { createJob, getJob, listJobs, updateJob, deleteJob, tick, status };
+  return { createJob, getJob, listJobs, updateJob, deleteJob, upsertJob, deleteJobsByName, tick, status };
 }
 
 module.exports = { createCronService, nextOccurrence, parseSchedule, minGapMinutes };
