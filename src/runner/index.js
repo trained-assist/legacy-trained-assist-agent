@@ -31,6 +31,7 @@ const persona = require('../persona');
 const profiles = require('../profiles');
 const { TOKENS_ROOT } = require('../data-paths');
 const answerRouter = require('../answer-router');
+const promptDomains = require('../prompt-domains');
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
 // tg-stream.js (issue #942 P1.4). The module owns the format/send/edit
 // primitives; runner.js keeps orchestration (queueing, retries around them).
@@ -1939,6 +1940,18 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       systemPromptFile = out;
     }
   } catch (e) { console.warn('[runner] project profile merge:', e.message); }
+
+  // Domain skill rules (src/prompt-domains): only for skills this user actually has —
+  // gated by the same isReady() as the tools in .mcp.json (system-prompt diet).
+  try {
+    const domainBlock = promptDomains.buildDomainBlock(mcpConfig);
+    if (domainBlock) {
+      const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
+      const out = path.join(user.workDir, '.system-prompt.txt');
+      fs.writeFileSync(out, baseTxt + '\n\n' + domainBlock, { mode: 0o600 });
+      systemPromptFile = out;
+    }
+  } catch (e) { console.warn('[runner] prompt domains:', e.message); }
 
   // Answer router: вставить блок режима в системный промпт для этого хода.
   //  • clarify (транзиентно, этот ход) → блок вопросов, приоритетнее deep.
