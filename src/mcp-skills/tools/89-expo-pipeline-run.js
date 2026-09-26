@@ -198,12 +198,20 @@ For hands-free completion without user interaction, create a cron:
         const offerCron   = batchesLeft > 5;
 
         let cronResult = null;
+        let cronError = null;
         if (auto_cron && offerCron) {
           try {
             const cronTool = require('./04-cron.js').tools.cron_create;
             const cronPrompt = `expo_pipeline_run для ${expo_url} с event_key=${event_key} и expo_title="${expo_title}" пока next_action != "done". Продолжай обогащение батчами.`;
-            cronResult = await cronTool.handler({ schedule: 'every 10 minutes', prompt: cronPrompt }, ctx);
-            stepLog(`🕐 Крон создан: ${cronResult?.id || 'ok'}`);
+            const res = await cronTool.handler({ schedule: '*/10 * * * *', task: cronPrompt, label: `expo-${event_key}` }, ctx);
+            // Only a real ok:true counts — an {error} object used to be reported as «✅ Крон создан» (#1489).
+            if (res && res.ok === true) {
+              cronResult = res;
+              stepLog(`🕐 Крон создан: ${res.id}`);
+            } else {
+              cronError = res?.error || 'unknown error';
+              stepLog(`⚠️ Крон не создан: ${cronError}`);
+            }
           } catch (e) {
             stepLog(`⚠️ Не удалось создать крон: ${e.message}`);
           }
@@ -216,8 +224,10 @@ For hands-free completion without user interaction, create a cron:
           '',
           cronResult
             ? `✅ Крон-задача создана — пайплайн продолжится автоматически каждые 10 минут.`
+            : cronError
+              ? `⚠️ Автопродолжение по расписанию не включено: ${cronError}\n▶️ Напиши "продолжить" — обработаю следующий батч.`
             : offerCron
-              ? '💡 Хочешь автодобивание без участия? Напиши "активируй крон для этой выставки" — запущу задачу каждые 10 минут.'
+              ? '▶️ Напиши "продолжить" — обработаю следующий батч. (Автодобивание по расписанию временно недоступно, #1489.)'
               : '▶️ Напиши "продолжить" — обработаю следующий батч.',
         ].filter(Boolean).join('\n');
 
