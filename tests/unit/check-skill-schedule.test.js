@@ -10,10 +10,8 @@ const { checkSkillSchedule } = require('../../scripts/check-skill-schedule');
 
 function repo(manifest) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-sched-'));
-  fs.mkdirSync(path.join(dir, 'src'));
   if (manifest !== undefined) {
-    fs.writeFileSync(path.join(dir, 'src', 'action-manifest.js'),
-      typeof manifest === 'string' ? manifest : `module.exports = { buildManifest: () => (${JSON.stringify(manifest)}) };`);
+    fs.writeFileSync(path.join(dir, 'action-provider-manifest.json'), typeof manifest === 'string' ? manifest : JSON.stringify(manifest));
   }
   return dir;
 }
@@ -31,10 +29,8 @@ describe('check-skill-schedule', () => {
     expect(r.ok).toBe(false);
     expect(r.errors[0]).toMatch(/minIntervalMinutes/);
   });
-  it('passes (with a warning) when there is no manifest or it cannot load in the probe', () => {
+  it('passes a sibling without a manifest (not schedulable yet) and blocks a broken one', () => {
     expect(checkSkillSchedule(repo())).toMatchObject({ ok: true });
-    const r = checkSkillSchedule(repo("require('missing-dep-for-probe'); module.exports = {};"));
-    expect(r.ok).toBe(true);
-    expect(r.warnings[0]).toMatch(/not loadable/);
+    expect(checkSkillSchedule(repo('{ not json')).ok).toBe(false);
   });
 });
