@@ -459,6 +459,8 @@ async function main() {
   const server = http.createServer(async (req, res) => {
     try {
     const url = new URL(req.url, `http://localhost:${PORT}`);
+    // ── LLM gateway /v1/* (issue #1526) — own bearer token, before every other gate ──
+    if (await require('./llm-gateway').route(req, res, url)) return;
     // ── /connect/* OAuth + token-collection + /hh-callback — dispatched to src/handlers/connect.js (#942 P3.3) ──
     if (await handleConnect(req, url, res, { ...connectCtx, secrets }) !== false) return;
 
