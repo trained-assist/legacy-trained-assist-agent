@@ -183,6 +183,17 @@ if [ -f "$NOTIFY_SRC" ]; then
   fi
 fi
 
+# Generic cron engine external alarm (#1489 P2.1) — only on the host that owns the cron DB.
+if [ "$DEPLOY_ENV" = "gcp" ]; then
+  for UNIT in assist-cron-tick.service assist-cron-tick.timer; do
+    if [ -f "$RELEASE_DIR/systemd/$UNIT" ] && ! diff -q "$RELEASE_DIR/systemd/$UNIT" "/etc/systemd/system/$UNIT" >/dev/null 2>&1; then
+      $SUDO cp "$RELEASE_DIR/systemd/$UNIT" "/etc/systemd/system/$UNIT"
+      CHANGED=1
+      echo "  $UNIT updated"
+    fi
+  done
+fi
+
 # The drain-aware restart coordinator (timer + service) is gone: restarts are instant now.
 if [ -f /etc/systemd/system/assist-agent-restart.timer ] || [ -f /etc/systemd/system/assist-agent-restart.service ]; then
   echo "==> Removing retired restart coordinator timer..."
@@ -256,6 +267,9 @@ for i in $(seq 1 60); do
   sleep 1
 done
 $SUDO systemctl status "$SERVICE" --no-pager --lines=10 || true
+if [ "$DEPLOY_ENV" = "gcp" ] && [ -f /etc/systemd/system/assist-cron-tick.timer ]; then
+  $SUDO systemctl enable --now assist-cron-tick.timer || echo "  WARN: assist-cron-tick.timer not enabled"
+fi
 echo "==> Service journal (last 20 lines)..."
 $SUDO journalctl -u "$SERVICE" --no-pager -n 20 || true
 
