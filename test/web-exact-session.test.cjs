@@ -38,9 +38,10 @@ test('minted Web session ids are unique and pass the route validator', () => {
   for (const id of ids) assert.match(id, SESSION_ID_RE);
 });
 
-test('canary flag: unset=repo default (test profile only), empty=off, * = all, list = exact usernames', () => {
-  assert.equal(webCanaryEnabled('alice', {}), false, 'live profiles are not in the default canary');
-  assert.equal(webCanaryEnabled('web-canary', {}), true, 'test profile is on by default — survives deploys');
+test('canary flag: unset=repo default (all profiles, #1524), empty=off, * = all, list = exact usernames', () => {
+  assert.equal(webCanaryEnabled('alice', {}), true, 'live profiles get exact Web sessions by default (#1524)');
+  assert.equal(webCanaryEnabled('web-canary', {}), true, 'test profile stays on by default — survives deploys');
+  assert.equal(webCanaryEnabled('alice', { WEB_CONVREF_CANARY: '' }), false, 'empty env = kill switch for live profiles too');
   assert.equal(webCanaryEnabled('web-canary', { WEB_CONVREF_CANARY: '' }), false, 'empty env = kill switch');
   assert.equal(webCanaryEnabled('alice', { WEB_CONVREF_CANARY: ' ' }), false);
   assert.equal(webCanaryEnabled('alice', { WEB_CONVREF_CANARY: '*' }), true);
@@ -228,5 +229,29 @@ test('streamWebTask (canary off / other profile): legacy call shape unchanged', 
     assert.equal('webExactSession' in calls[0], false);
     assert.equal('forceNew' in calls[0], false);
     assert.equal(a.events().some(e => e.type === 'session'), false);
+  } finally { restore(); }
+});
+
+// #1524: owner's report — a second, unrelated question asked via «Новая сессия»
+// in the same project landed as a reply in the previous session. With the
+// repo default (no env override) a live profile's new Web tasks must each get
+// their own fresh session and never inherit the chat-0 "current session".
+test('#1524 default env: two new Web tasks of a live profile in one project → two fresh sessions', async () => {
+  const calls = [];
+  const { mod, restore } = loadWebRoutesWithStub(calls, null);
+  try {
+    const a = fakeReqRes();
+    mod.streamWebTask({ req: a.req, res: a.res, secrets: {}, username: 'trained-assist-product-owner', task: 'эпик GTD v2', sessionId: null, projectId: 'generic-x' });
+    await a.ended$;
+    const b = fakeReqRes();
+    mod.streamWebTask({ req: b.req, res: b.res, secrets: {}, username: 'trained-assist-product-owner', task: 'в веб-сессии GTD включается?', sessionId: null, projectId: 'generic-x' });
+    await b.ended$;
+    assert.equal(calls.length, 2);
+    for (const c of calls) {
+      assert.equal(c.webExactSession, true, 'live profile is on the exact-session path by default');
+      assert.equal(c.forceNew, true, 'a new Web task never resumes the current-session pointer');
+      assert.equal(c.projectId, 'generic-x', 'same project = same folder, still separate sessions');
+    }
+    assert.notEqual(calls[0].sessionId, calls[1].sessionId, 'second question starts its own session');
   } finally { restore(); }
 });
