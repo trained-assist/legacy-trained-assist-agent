@@ -337,40 +337,6 @@ async function fetchDiscardedNegotiations(vacancyId, accessToken) {
     return require('./hh-autoscan').proactiveUrlFor(username, vacancyId);
   }
 
-  // Periodic proactive HH search scheduler.
-  // Checks every 30 min which users have enabled auto-search; for each user whose
-  // interval has elapsed, runs runProactiveSearch and persists results for the results page.
-  // Enable per user via the hh_proactive_schedule MCP tool (action=enable).
-  function scheduleProactiveSearchRuns(secretsArg) {
-    const CHECK_INTERVAL_MS = 30 * 60 * 1000;
-
-    async function run() {
-      const hhTokensBase = process.env.AGENT_TOKENS_DIR || path.join(os.homedir(), 'agent-tokens');
-      if (!fs.existsSync(hhTokensBase)) return;
-      const secrets = secretsArg || {};
-
-      for (const username of fs.readdirSync(hhTokensBase)) {
-        const workDir = path.join(BASE_USERS_DIR, username);
-        if (!fs.existsSync(workDir)) continue;
-
-        console.log(`[proactive-scheduler] starting run for user=${username}`);
-        try {
-          await require('./hh-cold-search-schedule').runDueSearches(username, workDir, vacancyId => runProactiveSearch(username, workDir, {
-            vacancyId,
-            refreshAccessToken: (u) => refreshHhToken(u, secrets),
-
-          }));
-          console.log(`[proactive-scheduler] done for user=${username}`);
-        } catch (e) {
-          console.error(`[proactive-scheduler] error for user=${username}:`, e.message);
-        }
-      }
-    }
-
-    setTimeout(() => run().catch(() => {}), 10 * 60 * 1000); // first check 10 min after start
-    setInterval(() => run().catch(() => {}), CHECK_INTERVAL_MS);
-  }
-
   function scheduleHhBackgroundScoring() {
     async function run() {
       const hhTokensBase = process.env.AGENT_TOKENS_DIR || path.join(os.homedir(), 'agent-tokens');
@@ -393,7 +359,6 @@ async function fetchDiscardedNegotiations(vacancyId, accessToken) {
     syncHhMessagesToHistory,
     runHhScoringForUser,
     buildProactiveUrlForScheduler,
-    scheduleProactiveSearchRuns,
     scheduleHhBackgroundScoring,
   };
 }

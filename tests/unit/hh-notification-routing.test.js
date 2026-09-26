@@ -16,7 +16,9 @@ it('routes standalone stop without credentials or vacancy, and delegates complai
  for(const text of ['/hh_notify_on','включи уведомления о новых кандидатах']){
  api.saveSchedule('alice',{enabled:false,notifications_enabled:false});assert.match(await runQuickAnswer(text,'alice',root),/функция удалена/);assert.equal(api.loadSchedule('alice').enabled,false);assert.equal(api.loadSchedule('alice').notifications_enabled,false);
  }
- api.saveSchedule('alice',{enabled:true});await runQuickAnswer('выключи автопоиск','alice',root);assert.equal(api.loadSchedule('alice').enabled,false);
+ // Stopping the schedule goes through the provider (cron jobs, #1489 S7.1) — asserted in
+ // tests/hh-cold-search-cron-core.test.js; here only that the quick path owns the command.
+ assert.match(await runQuickAnswer('выключи автопоиск','alice',root),/Автопоиск выключен|Не удалось остановить автопоиск/);
  console.log('PASS');}finally{fs.rmSync(root,{recursive:true,force:true});}})().catch(e=>{console.error(e);process.exitCode=1;});
  `],{encoding:'utf8',timeout:20000});expect(out).toContain('PASS');
 });

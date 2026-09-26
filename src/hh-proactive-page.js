@@ -351,7 +351,7 @@ ${activeVacancies.length > 1 ? `<div class="vacancy-tabs">${activeVacancies.map(
   ${vacancyId ? `<div data-testid="vacancy-monitoring">
     <span role="status">Мониторинг: ${monitoring.archived ? 'вакансия в архиве' : monitoring.enabled ? 'включён' : 'выключен'}.
     Попытка: ${escHtml(monitoring.last_attempt || '—')}. Успешно: ${escHtml(monitoring.last_success || '—')}.
-    Результат: ${escHtml(({ partial: 'поиск выполнен, AI-оценка не завершена', success: 'есть новые', zero_new: 'новых нет', failed: 'ошибка', running: 'выполняется' })[monitoring.status] || 'ещё не запускался')}.</span>
+    Результат: ${escHtml(({ partial: 'поиск выполнен, AI-оценка не завершена', success: 'есть новые', zero_new: 'новых нет', succeeded: 'поиск выполнен', failed: 'ошибка', running: 'выполняется', unknown: 'исход неизвестен (запуск прерван)', rejected: 'не запущен политикой' })[monitoring.status] || 'ещё не запускался')}.${monitoring.enabled && monitoring.next_run ? ` Следующий: ${escHtml(monitoring.next_run)}.` : ''}</span>
     ${monitoring.error ? `<span role="alert">${escHtml(monitoring.error)}</span>` : ''}
     <button data-testid="monitor-toggle" onclick="vacancyAction('${monitoring.enabled ? 'disable' : 'enable'}',this)">${monitoring.enabled ? 'Отключить мониторинг' : 'Включить мониторинг'}</button>
     <button data-testid="vacancy-star" onclick="vacancyAction('${monitoring.starred ? 'unstar' : 'star'}',this)">${monitoring.starred ? '★ Убрать звезду вакансии' : '☆ Отметить вакансию'}</button>
