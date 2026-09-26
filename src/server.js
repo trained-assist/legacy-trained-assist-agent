@@ -1397,8 +1397,13 @@ ${recent || '(пока нет)'}
               try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
               const dirFd = fs.openSync(uploadsDir, 'r');
               try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
-              const fileNote = await buildFileNote(filePath, ref.mime);
-              effectiveTask = effectiveTask ? `${fileNote}\n\n${effectiveTask}` : fileNote;
+              // Compressor (gateway marks it): a transcribed voice/audio ref is pure noise
+              // for the model (no audio input), so skip the "[Файл сохранён: ...]" note.
+              // The file is still copied and its pin released — only the model doesn't see it.
+              if (ref.note !== false) {
+                const fileNote = await buildFileNote(filePath, ref.mime);
+                effectiveTask = effectiveTask ? `${fileNote}\n\n${effectiveTask}` : fileNote;
+              }
             } catch (e) {
               console.error('[/run] fileRef copy error:', e.message);
               return json(res, 503, { error: 'attachment not persisted; retry with the same requestId' });

@@ -157,6 +157,12 @@ function appendUserMessage(workDir, id, content) {
     if (!fs.existsSync(fp)) return;
     const full = JSON.parse(fs.readFileSync(fp, 'utf8'));
     const now = Date.now();
+    // Compressor: skip a user message identical to the previous one. Restart storms
+    // (resumePendingTasks) re-append the same "[ПРОДОЛЖЕНИЕ]" prompt once per restart,
+    // stacking 3-10 identical lines into the session (observed: 3 in a row) and bloating
+    // the context window for every later turn. Same content adds no information.
+    const last = full.messages[full.messages.length - 1];
+    if (last && last.role === 'user' && last.content === content) return;
     full.messages.push({ role: 'user', content, at: now });
     full.lastAt = now;
     full.messageCount = full.messages.length;
