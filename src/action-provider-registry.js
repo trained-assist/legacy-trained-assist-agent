@@ -48,6 +48,7 @@ class ActionProviderRegistry {
           (action.effect !== 'read' && action.retrySafety === 'read_only')) {
         throw error('INVALID_ARGUMENTS', `Unsafe action policy: ${action.name}`);
       }
+      const validateSettings = action.schedule ? compileSchedule(action) : null;
       let validate;
       try {
         // Per-action compiler prevents one provider's $id replacing another's.
@@ -58,7 +59,7 @@ class ActionProviderRegistry {
       } catch {
         throw error('INVALID_ARGUMENTS', `Invalid input schema: ${action.name}`);
       }
-      pending.set(action.name, { providerId: snapshot.providerId, action, validate });
+      pending.set(action.name, { providerId: snapshot.providerId, action, validate, validateSettings });
     }
     // Registration is atomic: a bad final action cannot leak earlier entries.
     for (const [name, entry] of pending) this.#actions.set(name, entry);
@@ -153,6 +154,46 @@ class ActionProviderRegistry {
       throw error('INVALID_ARGUMENTS', 'Action arguments do not match the input schema');
     }
     return descriptor;
+  }
+
+  // Job arguments against the action's declared schedule settings (S3.1).
+  // No declared settingsSchema → the input schema alone governs.
+  validateSettings(name, args) {
+    const entry = this.#actions.get(name);
+    if (!entry) throw error('ACTION_NOT_FOUND', 'Action is not registered');
+    return entry.validateSettings ? entry.validateSettings(args) : true;
+  }
+}
+
+// Schedule declaration policy (#1489 S3.2). A provider may only declare a
+// default schedule for an action it lets cron run, never for one that needs a
+// per-call approval (no silent default for external messages/destructive), and
+// the default must respect its own minimum interval. Returns the compiled
+// settings validator (or null).
+function compileSchedule(action) {
+  const sch = action.schedule;
+  if (!action.allowedTriggers.includes('cron')) {
+    throw error('INVALID_ARGUMENTS', `Schedule declared but cron trigger not allowed: ${action.name}`);
+  }
+  if (sch.defaultCron !== undefined) {
+    if (action.requiresApproval) {
+      throw error('INVALID_ARGUMENTS', `Approval-gated action cannot declare a default schedule: ${action.name}`);
+    }
+    let gap;
+    try { gap = require('./cron-service').minGapMinutes(sch.defaultCron); }
+    catch { throw error('INVALID_ARGUMENTS', `Invalid defaultCron: ${action.name}`); }
+    if (gap < sch.minIntervalMinutes) {
+      throw error('INVALID_ARGUMENTS', `defaultCron runs more often than minIntervalMinutes: ${action.name}`);
+    }
+  }
+  if (!sch.settingsSchema) return null;
+  try {
+    const ajv = new Ajv({ strict: false, strictSchema: true, allErrors: true });
+    const validate = ajv.compile(sch.settingsSchema);
+    if (validate.$async) throw new Error('Async schemas are unsupported');
+    return validate;
+  } catch {
+    throw error('INVALID_ARGUMENTS', `Invalid settings schema: ${action.name}`);
   }
 }
 

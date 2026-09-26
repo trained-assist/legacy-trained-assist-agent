@@ -59,6 +59,16 @@ function nextOccurrence(schedule, timezone, afterMs) {
   return next ? next.getTime() : null;
 }
 
+// Smallest gap (minutes) between consecutive occurrences over a sample window.
+// 400 runs cover a full year for daily-or-faster patterns, so an irregular
+// pattern like "0,5 * * * *" is judged by its tightest pair, not its average.
+function minGapMinutes(schedule, timezone = 'UTC', fromMs = Date.UTC(2026, 0, 1)) {
+  const runs = parseSchedule(schedule, timezone).nextRuns(400, new Date(fromMs)).map(d => d.getTime());
+  let min = Infinity;
+  for (let i = 1; i < runs.length; i++) min = Math.min(min, (runs[i] - runs[i - 1]) / 60000);
+  return min;
+}
+
 function createCronService({ executions, registry, transport, invoker = null, now = () => Date.now(),
   owner = `${require('os').hostname()}:${process.pid}`, leaseMs = DEFAULT_LEASE_MS,
   maxPerTick = DEFAULT_MAX_PER_TICK, concurrency = DEFAULT_CONCURRENCY, log = () => {} } = {}) {
@@ -92,7 +102,20 @@ function createCronService({ executions, registry, transport, invoker = null, no
     if (descriptor.requiresApproval) {
       throw serviceError('APPROVAL_REQUIRED', 'Action requires an explicit grant to run on a schedule');
     }
+    // The provider's declared settings (S3.1) narrow what a job may carry; the
+    // provider itself never reads cron tables, it only receives these arguments.
+    if (!registry.validateSettings(action, args)) {
+      throw serviceError('INVALID_ARGUMENTS', 'Job arguments do not match the action settings schema');
+    }
     return descriptor;
+  }
+
+  // A provider may declare how often its action is allowed to run (S3.2).
+  function checkInterval(action, schedule, timezone) {
+    const min = registry.get(action).schedule?.minIntervalMinutes;
+    if (min && minGapMinutes(schedule, timezone) < min) {
+      throw serviceError('INVALID_ARGUMENTS', `Schedule runs more often than the action allows (every ${min} min)`);
+    }
   }
 
   function createJob({ profileId, projectId = null, name, schedule, timezone = 'UTC', action, arguments: args = {} }) {
@@ -100,6 +123,7 @@ function createCronService({ executions, registry, transport, invoker = null, no
     if (typeof name !== 'string' || !name.trim()) throw serviceError('INVALID_ARGUMENTS', 'name required');
     if (!args || typeof args !== 'object' || Array.isArray(args)) throw serviceError('INVALID_ARGUMENTS', 'arguments must be an object');
     checkAction(action, args);
+    checkInterval(action, schedule, timezone);
     const t = now();
     const next = nextOccurrence(schedule, timezone, t);
     if (next == null) throw serviceError('INVALID_ARGUMENTS', 'schedule never fires');
@@ -139,6 +163,7 @@ function createCronService({ executions, registry, transport, invoker = null, no
     const reschedule = patch.schedule !== undefined || patch.timezone !== undefined ||
       (patch.enabled === true && !job.enabled);
     let nextRunAt = job.nextRunAt;
+    if (patch.schedule !== undefined || patch.timezone !== undefined) checkInterval(job.action, next.schedule, next.timezone);
     if (reschedule) {
       nextRunAt = nextOccurrence(next.schedule, next.timezone, t);
       if (nextRunAt == null) throw serviceError('INVALID_ARGUMENTS', 'schedule never fires');
@@ -299,4 +324,4 @@ function createCronService({ executions, registry, transport, invoker = null, no
   return { createJob, getJob, listJobs, updateJob, deleteJob, tick, status };
 }
 
-module.exports = { createCronService, nextOccurrence, parseSchedule };
+module.exports = { createCronService, nextOccurrence, parseSchedule, minGapMinutes };
