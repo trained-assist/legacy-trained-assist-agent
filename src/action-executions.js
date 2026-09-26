@@ -143,6 +143,27 @@ class ActionExecutions {
     return info.changes === 0 ? null : this.get(id);
   }
 
+  // cron-service claims an occurrence (status 'claimed', lease) inside its claim
+  // transaction; invokeAction later moves it to 'running'. Only the lease holder
+  // can start it, and only once.
+  claimExecution({ id, profileId, projectId = null, action, arguments: args = {}, idempotencyKey,
+    cronId, scheduledAt, leaseOwner, leaseUntil, now = Date.now() }) {
+    this._prep(`INSERT INTO action_executions
+      (id, profile_id, project_id, action, arguments_json, trigger, origin, idempotency_key,
+       cron_id, scheduled_at, status, lease_owner, lease_until, attempt, created_at)
+      VALUES (?, ?, ?, ?, ?, 'cron', 'cron-service', ?, ?, ?, 'claimed', ?, ?, 0, ?)`)
+      .run(id, profileId, projectId, action, JSON.stringify(args), idempotencyKey,
+        cronId, scheduledAt, leaseOwner, leaseUntil, now);
+    return this.get(id);
+  }
+
+  startClaimed(id, { leaseOwner, now = Date.now() }) {
+    const info = this._prep(`UPDATE action_executions
+      SET status = 'running', attempt = attempt + 1, started_at = ?
+      WHERE id = ? AND status = 'claimed' AND lease_owner = ?`).run(now, id, leaseOwner);
+    return info.changes === 0 ? null : this.get(id);
+  }
+
   get(id) {
     return this._row(this._prep('SELECT * FROM action_executions WHERE id = ?').get(id));
   }

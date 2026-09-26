@@ -981,6 +981,22 @@ ${recent || '(пока нет)'}
       });
     }
 
+    // POST /internal/cron/tick — external alarm for the generic cron engine (#1489; systemd
+    // timer in P2.1). Answers after claiming; the claimed runs finish in the background.
+    // GET /internal/cron-status — engine heartbeat + due/running counts.
+    if (url.pathname === '/internal/cron/tick' || url.pathname === '/internal/cron-status') {
+      const cronRuntime = require('./cron-runtime');
+      const role = cronRuntime.schedulerRole();
+      if (req.method === 'GET' && url.pathname === '/internal/cron-status') {
+        return json(res, 200, { role, ...cronRuntime.getCronService().status() });
+      }
+      if (req.method === 'POST' && url.pathname === '/internal/cron/tick') {
+        if (role !== 'primary') return json(res, 409, { ok: false, role, error: 'scheduler is not primary on this host' });
+        const { claimed, recovered } = cronRuntime.getCronService().tick();
+        return json(res, 200, { ok: true, role, claimed, recovered });
+      }
+    }
+
     // GET /internal/auth-status — engine auth + health. Derived view of current state (spec §12):
     // `engine_health` is the operational truth (healthy|degraded|unavailable, self-healed on the
     // next successful call); `claude_auth_ok`/`reason`/… and `engines` are kept for back-compat
@@ -1974,6 +1990,8 @@ ${recent || '(пока нет)'}
   scheduleHhBackgroundScoring();
 scheduleProactiveSearchRuns(secrets);
   if (process.env.TEST_MODE !== '1') scheduleGtdController(secrets);
+  // Generic cron engine (#1489): ticks only on CRON_SCHEDULER_ROLE=primary, never on staging.
+  if (process.env.TEST_MODE !== '1') require('./cron-runtime').startScheduler();
 
 
   // Restart is instant: no drain, no waiting for active work. Running tasks stay in the
