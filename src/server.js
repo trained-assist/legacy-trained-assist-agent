@@ -984,6 +984,16 @@ ${recent || '(пока нет)'}
     // POST /internal/cron/tick — external alarm for the generic cron engine (#1489; systemd
     // timer in P2.1). Answers after claiming; the claimed runs finish in the background.
     // GET /internal/cron-status — engine heartbeat + due/running counts.
+    // POST /internal/cron/jobs — skill providers manage their named jobs (#1514, cron-jobs-api.js).
+    if (req.method === 'POST' && url.pathname === '/internal/cron/jobs') {
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { ok: false, error: 'bad json' }); }
+      const cronRuntime = require('./cron-runtime');
+      const out = require('./cron-jobs-api').handleCronJobs(body, {
+        service: cronRuntime.getCronService(), role: cronRuntime.schedulerRole(),
+      });
+      return json(res, out.status, out.body);
+    }
     if (url.pathname === '/internal/cron/tick' || url.pathname === '/internal/cron-status') {
       const cronRuntime = require('./cron-runtime');
       const role = cronRuntime.schedulerRole();

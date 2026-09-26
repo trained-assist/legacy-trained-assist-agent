@@ -159,6 +159,15 @@ claims but does not kill an already running effect. Retry bounds/timeouts and
 backpressure are core policy, explicit in execution records and operational docs.
 Cloud Scheduler may wake core but holds no canonical action/job state.
 
+Provider jobs API (#1514): a skill's compatibility wrapper (e.g. `hh_proactive_schedule`)
+manages its own jobs through `POST /internal/cron/jobs` (`op: upsert|list|delete`,
+Bearer AGENT_SECRET) and never reads cron tables. Jobs are addressed by
+(profile, project, action, name); upsert is idempotent and patches only changed
+fields, so a repeated enable never postpones next_run_at. Creation policy is the
+engine's (cron trigger, settingsSchema, minIntervalMinutes, approval gate). Every
+answer carries `scheduler_role`; a wrapper must not report a job as running on a
+host whose role is not `primary`.
+
 ## Delivery sequence and acceptance gates
 
 1. This PR: contracts, export snapshots, inventory and executable schema/SQL tests.

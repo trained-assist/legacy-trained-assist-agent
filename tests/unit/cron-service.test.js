@@ -247,3 +247,41 @@ describe('provider schedule declaration (#1489 S3.1–3.2)', () => {
     expect(svc.updateJob({ profileId: 'alice', id: j.id, schedule: '0 */2 * * *' }).schedule).toBe('0 */2 * * *');
   });
 });
+
+describe('named jobs + provider jobs API (#1514)', () => {
+  const { handleCronJobs } = require('../../src/cron-jobs-api');
+  it('upsert is idempotent per (scope, action, name) and never postpones an unchanged job', () => {
+    const { svc, clock } = setup();
+    const a = svc.upsertJob(job({ name: 'v:1' }));
+    clock.t += 3 * MIN;
+    const b = svc.upsertJob(job({ name: 'v:1' }));
+    expect(b.id).toBe(a.id);
+    expect(b.nextRunAt).toBe(a.nextRunAt);
+    const c = svc.upsertJob(job({ name: 'v:1', schedule: '0 * * * *' }));
+    expect(c.id).toBe(a.id);
+    expect(c.schedule).toBe('0 * * * *');
+    expect(svc.listJobs({ profileId: 'alice' })).toHaveLength(1);
+  });
+  it('upsert can create/disable; deleteJobsByName removes only that name', () => {
+    const { svc } = setup();
+    expect(svc.upsertJob(job({ name: 'v:1', enabled: false })).enabled).toBe(false);
+    svc.upsertJob(job({ name: 'v:2' }));
+    expect(svc.deleteJobsByName({ profileId: 'alice', action: 'read_items', name: 'v:1' })).toHaveLength(1);
+    expect(svc.listJobs({ profileId: 'alice' }).map(j => j.name)).toEqual(['v:2']);
+  });
+  it('API: upsert/list/delete with role, policy errors mapped to status codes', () => {
+    const { svc } = setup();
+    const ctx = { service: svc, role: 'primary' };
+    const up = handleCronJobs({ op: 'upsert', profileId: 'alice', name: 'v:1', schedule: '*/5 * * * *', action: 'read_items', arguments: { limit: 1 } }, ctx);
+    expect(up.status).toBe(200);
+    expect(up.body).toMatchObject({ ok: true, scheduler_role: 'primary', job: { name: 'v:1', enabled: true } });
+    expect(up.body.job.next_run_at).toBe(new Date(T0 + 5 * MIN).toISOString());
+    expect(handleCronJobs({ op: 'list', profileId: 'alice', action: 'read_items' }, ctx).body.jobs).toHaveLength(1);
+    expect(handleCronJobs({ op: 'list', profileId: 'bob' }, ctx).body.jobs).toHaveLength(0);
+    expect(handleCronJobs({ op: 'upsert', profileId: 'alice', name: 'x', schedule: '*/5 * * * *', action: 'send_msg' }, ctx))
+      .toMatchObject({ status: 403, body: { ok: false, code: 'APPROVAL_REQUIRED' } });
+    expect(handleCronJobs({ op: 'upsert', profileId: '../etc', name: 'x', schedule: '* * * * *', action: 'read_items' }, ctx).status).toBe(400);
+    expect(handleCronJobs({ op: 'nope', profileId: 'alice' }, ctx).status).toBe(400);
+    expect(handleCronJobs({ op: 'delete', profileId: 'alice', action: 'read_items', name: 'v:1' }, ctx).body.deleted).toBe(1);
+  });
+});
