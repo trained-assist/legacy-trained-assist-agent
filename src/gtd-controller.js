@@ -674,7 +674,10 @@ function listGtd(workDir) {
 // Каждый пункт несёт `line` (0-based номер строки в файле) — writeChecklistDone
 // правит чекбоксы ровно по этим строкам; иначе отметка активной секции
 // наложилась бы на первые N чекбоксов более старой секции.
-function readChecklist(projectDir) {
+// goals (#1517): цели, которые отслеживает запись GTD. Их пункты объединяются с
+// последней секцией — агент, дописавший новую секцию («Goal: инцидент», вся в [x]),
+// не должен этим «закрыть» ещё открытые пункты отслеживаемой цели.
+function readChecklist(projectDir, { goals = null } = {}) {
   if (!projectDir) return null;
   let raw;
   try { raw = fs.readFileSync(path.join(projectDir, CHECKLIST_FILE), 'utf8'); } catch { return null; }
@@ -689,11 +692,32 @@ function readChecklist(projectDir) {
     if (item) cur.items.push({ text: item[2].trim(), done: item[1].toLowerCase() === 'x', line: i });
   }
   for (let s = sections.length - 1; s >= 0; s--) {
-    if (sections[s].items.length) return { goal: sections[s].goal, items: sections[s].items };
+    if (!sections[s].items.length) continue;
+    const last = sections[s];
+    const tracked = new Set((goals || []).map(g => String(g).trim()).filter(Boolean));
+    if (!tracked.size) return { goal: last.goal, items: last.items };
+    const items = sections.filter(x => x === last || (x.goal && tracked.has(x.goal)))
+      .flatMap(x => x.items).sort((a, b) => a.line - b.line);
+    return { goal: last.goal, items };
   }
   // Ни одного чекбокса — отдаём последний объявленный goal (fallback для
   // originalTask) с пустыми items.
   return { goal: sections[sections.length - 1].goal, items: [] };
+}
+
+// Чек-лист записи GTD (#1517): запоминаем цель текущей последней секции в
+// rec.goals (мутирует rec — вызывающий сохраняет через writeGtd) и читаем
+// объединение всех отслеживаемых секций. Старые записи без goals засеиваются
+// originalTask (для checklist-записей это goal на момент открытия).
+const MAX_TRACKED_GOALS = 20;
+function trackedChecklist(rec) {
+  if (!rec || !rec.projectDir) return null;
+  const last = readChecklist(rec.projectDir);
+  if (!last) return null;
+  const goals = Array.isArray(rec.goals) ? rec.goals.slice() : (rec.originalTask ? [rec.originalTask] : []);
+  if (last.goal && !goals.includes(last.goal)) goals.push(last.goal);
+  rec.goals = goals.slice(-MAX_TRACKED_GOALS);
+  return readChecklist(rec.projectDir, { goals: rec.goals });
 }
 
 // Незакрытые пункты + цель, для инъекции в reopen-промпт вместо усечённого task.
@@ -797,6 +821,7 @@ async function maybeSchedule({ workDir, sessionId, chatId, username, task, apiKe
     maxIterations,
     status: 'open',
     originalTask: String(task || '').slice(0, 300),
+    goals: checklist && checklist.goal ? [checklist.goal] : [],
     projectDir: projectDir || null,
     lastFiredAt: null,
     closedReason: null,
@@ -847,6 +872,7 @@ async function scheduleFromChecklist({ workDir, sessionId, chatId, username, pro
     maxIterations,
     status: 'open',
     originalTask: checklist.goal || '(см. checklist.md)',
+    goals: checklist.goal ? [checklist.goal] : [],
     projectDir,
     lastFiredAt: null,
     closedReason: null,
@@ -956,12 +982,18 @@ async function _tgNotify(botToken, chatId, text, threadId = null) {
   const body = { chat_id: chatId, text };
   if (Number.isInteger(threadId) && threadId > 0) body.message_thread_id = threadId;
   try {
-    await fetch(`${base}/bot${botToken}/sendMessage`, {
+    const res = await fetch(`${base}/bot${botToken}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10000),
     });
+    // Отказ Telegram (не тот бот, чат недоступен) не должен пропадать молча (#1517).
+    if (res && !res.ok) {
+      let desc = '';
+      try { desc = (await res.json()).description || ''; } catch { /* not JSON */ }
+      console.warn(`[gtd] tgNotify chat=${chatId} failed: HTTP ${res.status} ${desc}`.trim());
+    }
   } catch (e) { console.warn('[gtd] tgNotify:', e.message); }
 }
 
@@ -970,7 +1002,7 @@ const REOPEN_INTRO = '[GTD — авто-доведение задачи до к�
 function buildReopenMessage(rec) {
   // Перечитываем checklist.md заново каждую итерацию — так видим пункты,
   // отмеченные [x] предыдущей попыткой, вместо статичного усечённого task.
-  const checklist = rec.projectDir ? readChecklist(rec.projectDir) : null;
+  const checklist = trackedChecklist({ ...rec });
   const summary = checklistSummary(checklist);
   // Предупреждение об усложнении появляется начиная со 2-й попытки — первая
   // попытка имеет право попробовать; если не получилось дважды, скорее всего
@@ -1135,7 +1167,7 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
       // факты (CI зелёный / замержено) берём напрямую из GitHub API. Если чек-лист
       // закрылся целиком уже на этом шаге — не расходуем ни итерацию, ни Claude-сессию.
       if (rec.projectDir) {
-        const checklist = readChecklist(rec.projectDir);
+        const checklist = trackedChecklist(rec);
         if (checklist && checklist.items.length) {
           let pre = { changed: false, items: checklist.items };
           try { pre = await checklistCheapPrecheck(checklist, { username }); }
@@ -1198,7 +1230,7 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
       ).catch(() => {});
 
       // Snapshot done-count before run, for progress-check after.
-      const checklistBefore = rec.projectDir ? readChecklist(rec.projectDir) : null;
+      const checklistBefore = trackedChecklist(rec);
       const doneCountBefore = checklistBefore ? checklistBefore.items.filter(i => i.done).length : -1;
 
       // Fire without awaiting — loop continues to next session immediately.
@@ -1254,7 +1286,7 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
         } else {
           // Progress-check: if checklist exists and no new items were checked off, track stall.
           if (_recSnap.projectDir && doneCountBefore >= 0) {
-            const checklistAfter = readChecklist(_recSnap.projectDir);
+            const checklistAfter = trackedChecklist(fresh);
             mirrorGtdChecklist({ username, sessionId: _recSnap.sessionId, checklist: checklistAfter, rec: fresh }).catch(() => {});
             const doneCountAfter = checklistAfter ? checklistAfter.items.filter(i => i.done).length : doneCountBefore;
             if (doneCountAfter > doneCountBefore) {
@@ -1291,7 +1323,7 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
 module.exports = {
   detectIntent, maybeSchedule, scheduleFromChecklist, runDue, buildReopenMessage,
   readGtd, writeGtd, clearGtd, clearAllGtd, clearGtdForChat, listGtd, settleResumedGtd,
-  readChecklist, checklistSummary, computeMaxIterations,
+  readChecklist, trackedChecklist, checklistSummary, computeMaxIterations,
   checklistCheapPrecheck, writeChecklistDone, mirrorGtdChecklist, CHECKLIST_API_BASE, checklistAutologinUrl,
   _ghToken, _ghFetch,
   durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
