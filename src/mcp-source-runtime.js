@@ -33,6 +33,15 @@ function hasEnabledSources(config) {
   return Array.isArray(config?.sources) && config.sources.some(s => s && s.enabled !== false);
 }
 
+// loadConfig() decorates the parsed config with `_path`/`_error` for
+// diagnostics. The compiler/registry accept exactly {version, sources}, so the
+// metadata must be stripped before compiling — otherwise a valid on-disk admin
+// config is rejected as "Invalid MCP source config" (the cutover path only ever
+// hits this, tests that pass an inline `config` object never did).
+function sourceConfig(config) {
+  return { version: config?.version ?? 1, sources: Array.isArray(config?.sources) ? config.sources : [] };
+}
+
 // Merge managed adapter server descriptors into an engine MCP config object.
 // Core/reserved names are never shadowed: an existing name is left untouched.
 function mergeAdapterServers(mcpServers, adapterServers) {
@@ -64,7 +73,7 @@ function createSourceRuntime(options = {}) {
   }
 
   const generation = options.generation
-    || compileSourceGeneration(config, coreCatalog, { root, runtimeRoot });
+    || compileSourceGeneration(sourceConfig(config), coreCatalog, { root, runtimeRoot });
   const envPolicy = options.envPolicy ?? loadProviderEnvPolicy();
   const hostEnv = options.hostEnv ?? process.env;
   const executions = options.executions || new ActionExecutions();

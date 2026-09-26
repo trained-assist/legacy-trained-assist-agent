@@ -40,7 +40,7 @@
       "schedulable": "yes",
       "scheduleNote": "hh_proactive_search declares allowedTriggers [user, cron, durable_task] (#1489 §1.3); today it runs on a dedicated 30-min timer in server.js — engine migration to cron-service is #1489 S7.1",
       "canaryProfile": "trained-assist-product-owner",
-      "evidence": "scripts/staging/canaries/hh.json (pinned revision 2d194cd4a65f9ff3888aacdeea87afc33b0971b4, live canary #1463/#1466)",
+      "evidence": "live canary green on trained-assist-product-owner at 2d194cd4a65f9ff3888aacdeea87afc33b0971b4 (artifactDigest 72948f19a059a0dbf036110e6ae040918fc7b3e73828fa032b8c008fcd64b80d): tools/list=37 + hh_list_vacancies via runtime->adapter->broker; rollback to the sibling fallback proven (P0.1c)",
       "ownerIssue": "#1470"
     },
     {

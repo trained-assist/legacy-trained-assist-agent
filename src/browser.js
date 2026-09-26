@@ -78,9 +78,12 @@ function buildStorageState(tokensDir) {
  * `extraServers` (optional): adapter server descriptors materialized by the host MCP
  * source runtime (src/mcp-source-runtime.js, PR2b) for this one run — e.g. an engineering
  * skill source. Merged in via mergeAdapterServers(), which never lets an extra server
- * shadow a core name (playwright, trained-skills, hh-skills, freelance-skills).
+ * shadow a core name (playwright, trained-skills).
+ *
+ * `siblingPaths` (optional, test seam): overrides for the sibling checkout entrypoints
+ * below; production always uses the computed repo-relative paths.
  */
-function writeMcpConfig(workDir, userId, { userName, userHandle, extraServers } = {}) {
+function writeMcpConfig(workDir, userId, { userName, userHandle, extraServers, siblingPaths } = {}) {
   // Note: --user-data-dir creates a persistent context, which is incompatible
   // with --storage-state (Playwright limitation). We rely on --storage-state
   // for both cookie injection and session persistence. Per-user isolation is
@@ -167,42 +170,27 @@ function writeMcpConfig(workDir, userId, { userName, userHandle, extraServers } 
     },
   };
 
-  // HH skill was extracted into its own repo (issue #942) — its MCP server lives
-  // in a sibling checkout. Register it only when that checkout is present, so
-  // environments without the hh-skill repo cloned keep working unchanged.
-  const hhSkillIndex = path.join(__dirname, '..', '..', 'trained-assist-hh-skill', 'src', 'mcp-skills', 'index.js');
-  if (fs.existsSync(hhSkillIndex)) {
-    config.mcpServers['hh-skills'] = {
-      command: 'node',
-      args: [hhSkillIndex],
-      env: mcpToolEnv,
-    };
-  }
-
-  // Freelance skill lives in a sibling checkout (trained-assist-freelance-skill),
-  // same pattern as hh-skills. Projects are stored per profile at
-  // USERS_ROOT/<USER_ID>/Фриланс проекты (the skill resolves USER_ID + USERS_DIR
-  // from this env), so a profile's freelance work stays in that profile's root.
-  const freelanceSkillIndex = path.join(__dirname, '..', '..', 'trained-assist-freelance-skill', 'src', 'mcp-skills', 'index.js');
-  if (fs.existsSync(freelanceSkillIndex)) {
-    config.mcpServers['freelance-skills'] = {
-      command: 'node',
-      args: [freelanceSkillIndex],
-      env: mcpToolEnv,
-    };
-  }
-
-  // Engineering skill lives in the sibling trained-assist-engineering checkout
-  // (issue #1418), same existence-gated pattern as hh-skills/freelance-skills.
-  // Its tools read host-derived `principal` from USER_ID (already in mcpToolEnv),
-  // never from the tool-call arguments.
-  const engineeringSkillIndex = path.join(__dirname, '..', '..', 'trained-assist-engineering', 'src', 'mcp-skills', 'index.js');
-  if (fs.existsSync(engineeringSkillIndex)) {
-    config.mcpServers['engineering-skills'] = {
-      command: 'node',
-      args: [engineeringSkillIndex],
-      env: mcpToolEnv,
-    };
+  // Domain skill siblings (hh, freelance, engineering) live in their own repos
+  // checked out next to this one (hh was extracted in issue #942). A sibling is a
+  // *fallback*: when this run materializes a sealed/approved source for the same
+  // MCP server id (extraServers, from src/mcp-source-runtime.js), that sealed
+  // source wins and the sibling is not registered — otherwise the sibling name
+  // would shadow the adapter in mergeAdapterServers() below. With no sealed source
+  // for the profile (admin config empty, profile ineligible, or artifact
+  // unavailable) the sibling is registered, so rolling the admin config back
+  // restores the core path without a redeploy (issue #1470 P0.1c / #1511).
+  const siblingIndexes = {
+    'hh-skills': path.join(__dirname, '..', '..', 'trained-assist-hh-skill', 'src', 'mcp-skills', 'index.js'),
+    'freelance-skills': path.join(__dirname, '..', '..', 'trained-assist-freelance-skill', 'src', 'mcp-skills', 'index.js'),
+    'engineering-skills': path.join(__dirname, '..', '..', 'trained-assist-engineering', 'src', 'mcp-skills', 'index.js'),
+    ...(siblingPaths || {}),
+  };
+  const sealedServerIds = new Set(Object.keys(extraServers || {}));
+  for (const [serverId, indexPath] of Object.entries(siblingIndexes)) {
+    if (sealedServerIds.has(serverId)) continue;
+    if (fs.existsSync(indexPath)) {
+      config.mcpServers[serverId] = { command: 'node', args: [indexPath], env: mcpToolEnv };
+    }
   }
 
   if (extraServers && Object.keys(extraServers).length > 0) {

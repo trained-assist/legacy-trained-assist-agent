@@ -134,4 +134,26 @@ describe('source runtime host wiring', () => {
     expect(skipped).toEqual(['playwright']);
     expect(merged['fake-skills'].command).toBe('z');
   });
+
+  it('compiles an on-disk approved config, stripping loadConfig diagnostic metadata (#1470 P0.1c)', () => {
+    // The cutover path reads the admin config from disk; loadConfig() decorates it
+    // with `_path`. The compiler/registry accept exactly {version, sources}, so a
+    // leak used to make every real cutover throw "Invalid MCP source config".
+    const root = tmpDir();
+    const configPath = path.join(root, 'config', 'mcp-skill-sources.json');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    const source = {
+      id: 'fake', providerId: 'fake', mcpServerId: 'fake-skills', repository: 'trained-assist/fake',
+      revision: 'a'.repeat(40), manifestVersion: 1, artifactDir: 'releases/fake',
+      entrypoint: 'repo/index.js', manifest: 'repo/provider-manifest.json', artifactDigest: 'b'.repeat(64),
+      approvedManifest: { version: 1, providerId: 'fake',
+        actions: [{ name: 'marker_read', inputSchema: { type: 'object' } }] },
+      enabled: true, profiles: ['alice'],
+    };
+    fs.writeFileSync(configPath, JSON.stringify({ version: 1, sources: [source] }));
+    const runtime = createSourceRuntime({ configPath, root, runtimeRoot: root });
+    cleanups.push(() => runtime.close());
+    expect(runtime.enabled).toBe(true);
+    expect(runtime.generation).toBeTruthy();
+  });
 });

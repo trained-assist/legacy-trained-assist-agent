@@ -102,3 +102,37 @@ children's leases. No downloads, package
 installs, credential checks or paid requests occur in discovery. Approval changes
 require an admin/deploy operation. Real production onboarding and HH/Freelance
 cutover are explicitly later slices and must pass CI/staging at their exact SHA.
+
+## Sibling fallback and the core <-> domain switch (#1470 P0.1c, #1511)
+
+Before a source is activated, a domain skill is mounted the legacy way: the core
+repo registers the sibling checkout's MCP server in the engine's `.mcp.json`
+visible only when that checkout exists (`src/browser.js`). Once a source is
+activated for a profile, the host source runtime materializes the sealed adapter
+server for the run and `writeMcpConfig()` **prefers it over the sibling** — a
+sibling is registered only when the run has no sealed server for that MCP server
+id. This makes `serving` a pure admin-config switch:
+
+- **core -> domain (cutover):** `prepare` the source, then `activate` a config
+  that enables it for the profile allowlist (`profiles`). The profile now gets
+  37 hh tools from the sealed adapter; profiles outside the allowlist keep the
+  sibling fallback, so `hh_connect` still works for new recruiters.
+- **domain -> core (rollback):** re-`activate` the retained previous config
+  (`<configPath>.<sha256>.previous`), or publish `{version:1,sources:[]}`. The
+  runtime becomes disabled and the sibling fallback serves the profile again —
+  **no code change and no redeploy** (covered by
+  `tests/hh-sealed-source-toggle.test.js`).
+
+The runtime reads the admin config from `MCP_SKILL_SOURCES_CONFIG` (default
+`config/mcp-skill-sources.json`); the artifact lives under `MCP_SKILLS_ROOT`
+(see `systemd/assist-agent.service` for the production paths). The checked-in
+`config/mcp-skill-sources.json` stays empty, so a deploy without a prepared
+artifact simply falls back to the sibling.
+
+Proven live on the sandbox profile `trained-assist-product-owner` at hh revision
+`2d194cd4a65f9ff3888aacdeea87afc33b0971b4` (artifactDigest
+`72948f19a059a0dbf036110e6ae040918fc7b3e73828fa032b8c008fcd64b80d`): the
+`hh_list_vacancies` read-only call returned `output.total = 1` through
+runtime -> adapter -> broker -> provider, and rolling back to the `.previous`
+config resolved `hh-skills` to the sibling `node
+.../trained-assist-hh-skill/src/mcp-skills/index.js`.
