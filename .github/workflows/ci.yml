@@ -51,6 +51,8 @@ jobs:
       - run: npm ci
       - name: Syntax check
         run: npm run check
+      - name: Testkit syntax check
+        run: npm run check:testkit
       - name: Undefined-variable gate (eslint no-undef)
         run: npm run lint
       - name: Install Chromium for review page regression

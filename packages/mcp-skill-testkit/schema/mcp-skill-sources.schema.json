@@ -1,0 +1,33 @@
+{
+  "$id": "urn:trained-assist:mcp-skill-sources:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "sources"],
+  "properties": {
+    "version": { "const": 1 },
+    "sources": { "type": "array", "items": { "$ref": "#/$defs/source" } }
+  },
+  "$defs": {
+    "relativePath": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "providerId", "mcpServerId", "repository", "revision", "manifestVersion", "artifactDir", "entrypoint", "manifest", "artifactDigest", "approvedManifest", "enabled", "profiles"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "providerId": { "type": "string", "minLength": 1 },
+        "mcpServerId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "revision": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "manifestVersion": { "enum": [1, 2] },
+        "artifactDir": { "$ref": "#/$defs/relativePath" },
+        "entrypoint": { "$ref": "#/$defs/relativePath" },
+        "manifest": { "$ref": "#/$defs/relativePath" },
+        "artifactDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "approvedManifest": { "type": "object" },
+        "enabled": { "type": "boolean" },
+        "profiles": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" } }
+      }
+    }
+  }
+}

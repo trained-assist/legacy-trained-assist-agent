@@ -1,0 +1,47 @@
+{
+  "name": "@trained-assist/mcp-skill-testkit",
+  "version": "0.1.0",
+  "description": "Reusable test harness for trained-assist domain-skill MCP servers (contract, behavior, replay, isolation).",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "commonjs",
+  "main": "./index.js",
+  "exports": {
+    ".": {
+      "import": "./index.mjs",
+      "require": "./index.js"
+    },
+    "./isolation-guard": "./isolation-guard.cjs",
+    "./fake-provider": "./fake-provider-mcp.js",
+    "./schema/*": "./schema/*",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "mcp-skill-conformance": "./bin/mcp-skill-conformance.js"
+  },
+  "files": [
+    "index.js",
+    "index.mjs",
+    "isolation-guard.cjs",
+    "fake-provider-mcp.js",
+    "lib/",
+    "schema/",
+    "bin/",
+    "assets/",
+    "README.md"
+  ],
+  "scripts": {
+    "conformance": "node bin/mcp-skill-conformance.js"
+  },
+  "peerDependencies": {
+    "ajv": "^8.0.0",
+    "nock": "^14.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ajv": { "optional": false },
+    "nock": { "optional": true }
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

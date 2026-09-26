@@ -1,0 +1,5 @@
+node_modules/
+staging-results/
+*.log
+.env
+.DS_Store
