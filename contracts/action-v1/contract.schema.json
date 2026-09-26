@@ -226,6 +226,9 @@
             "idempotent",
             "unsafe"
           ]
+        },
+        "schedule": {
+          "$ref": "#/$defs/actionSchedule"
         }
       },
       "required": [
@@ -549,6 +552,59 @@
       "required": [
         "id",
         "patch"
+      ]
+    },
+    "actionSchedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaultCron": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "minIntervalMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10080
+        },
+        "settingsSchema": {
+          "type": "object",
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "object"
+            }
+          }
+        },
+        "delivery": {
+          "enum": [
+            "silent",
+            "on_change",
+            "on_error",
+            "always"
+          ]
+        },
+        "costClass": {
+          "enum": [
+            "free",
+            "cheap_llm",
+            "llm",
+            "paid_api"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      },
+      "required": [
+        "minIntervalMinutes",
+        "delivery",
+        "costClass",
+        "label"
       ]
     }
   }

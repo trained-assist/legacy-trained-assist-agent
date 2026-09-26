@@ -108,6 +108,18 @@ unrestricted USER_ID switch or a scheduler. Credential capability only exposes
 the requested service for the bound profile. Existing filesystem/env coupling is
 migration debt; PR 1 does not pretend it has disappeared.
 
+### Schedule declaration (#1489 S3.1–3.3)
+
+An action may carry an optional `schedule` block: `label`, `minIntervalMinutes`,
+`delivery` (`silent|on_change|on_error|always`), `costClass`
+(`free|cheap_llm|llm|paid_api`), optional `defaultCron` and `settingsSchema`.
+Registration rejects it unless `'cron'` is in allowedTriggers; a `defaultCron`
+must parse and be no tighter than `minIntervalMinutes`, and approval-gated
+actions get no default (a grant is always explicit). Job creation/update
+validates arguments against `settingsSchema` and refuses a schedule tighter than
+`minIntervalMinutes`. deploy.sh runs `scripts/check-skill-schedule.js` on a
+sibling's new revision and keeps the old one if the core registry rejects it.
+
 ## Generic cron API / canonical storage
 
 The six input schemas define cron_create/list/get/update/delete/run_now. Scope

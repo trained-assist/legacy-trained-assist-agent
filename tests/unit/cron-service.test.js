@@ -198,3 +198,37 @@ describe('runtime role + registry', () => {
     expect(r.list().map(a => a.name)).toEqual(['read_items']);
   });
 });
+
+describe('provider schedule declaration (#1489 S3.1–3.2)', () => {
+  const sched = { defaultCron: '0 */6 * * *', minIntervalMinutes: 60, delivery: 'silent', costClass: 'cheap_llm', label: 'Items',
+    settingsSchema: { type: 'object', properties: { limit: { type: 'integer', maximum: 10 } }, required: ['limit'] } };
+  const scheduled = { ...read, name: 'sched_items', schedule: sched };
+  const reg = (actions) => new ActionProviderRegistry().register({ version: 1, providerId: 'p', actions });
+
+  it('accepts a valid declaration and keeps it in the descriptor', () => {
+    expect(reg([scheduled])[0].schedule).toEqual(sched);
+  });
+  it.each([
+    ['cron trigger missing', { ...scheduled, allowedTriggers: ['user'] }],
+    ['default for an approval-gated action', { ...send, schedule: sched }],
+    ['default faster than its own minimum', { ...scheduled, schedule: { ...sched, defaultCron: '*/5 * * * *' } }],
+    ['unparseable default', { ...scheduled, schedule: { ...sched, defaultCron: 'every day' } }],
+    ['bad settings schema', { ...scheduled, schedule: { ...sched, settingsSchema: { type: 'object', properties: { x: { type: 'nope' } } } } }],
+    ['unknown delivery', { ...scheduled, schedule: { ...sched, delivery: 'loud' } }],
+    ['unknown field', { ...scheduled, schedule: { ...sched, extra: 1 } }],
+  ])('rejects a provider whose schedule is invalid: %s', (_, action) => {
+    checkThrow(() => reg([action]), 'INVALID_ARGUMENTS');
+  });
+  it('job creation enforces settingsSchema and minIntervalMinutes (create and update)', () => {
+    const registry = new ActionProviderRegistry();
+    registry.register({ version: 1, providerId: 'p', actions: [scheduled] });
+    const svc = createCronService({ executions: new ActionExecutions(':memory:'), registry, now: () => T0, transport: async () => ({}) });
+    const base = job({ action: 'sched_items', schedule: '0 * * * *', arguments: { limit: 5 } });
+    checkThrow(() => svc.createJob({ ...base, arguments: { limit: 50 } }), 'INVALID_ARGUMENTS');
+    checkThrow(() => svc.createJob({ ...base, schedule: '*/30 * * * *' }), 'INVALID_ARGUMENTS');
+    const j = svc.createJob(base);
+    checkThrow(() => svc.updateJob({ profileId: 'alice', id: j.id, schedule: '0,15 * * * *' }), 'INVALID_ARGUMENTS');
+    checkThrow(() => svc.updateJob({ profileId: 'alice', id: j.id, arguments: {} }), 'INVALID_ARGUMENTS');
+    expect(svc.updateJob({ profileId: 'alice', id: j.id, schedule: '0 */2 * * *' }).schedule).toBe('0 */2 * * *');
+  });
+});

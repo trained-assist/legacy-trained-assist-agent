@@ -106,12 +106,18 @@ sync_sibling_checked() {
   fi
   probe="$(mktemp -d)"
   if git -C "$dir" archive origin/main src | tar -x -C "$probe" &&
-     node "$RELEASE_DIR/scripts/check-mcp-conformance.js" "$probe"; then
+     node "$RELEASE_DIR/scripts/check-mcp-conformance.js" "$probe" &&
+     NODE_PATH="$dir/node_modules" timeout 60 node "$RELEASE_DIR/scripts/check-skill-schedule.js" "$probe"; then
     git -C "$dir" reset --quiet --hard origin/main 2>/dev/null ||
       echo "  ⚠️  update failed — keeping existing checkout"
   else
-    echo "  ⚠️  $(basename "$dir") origin/main violates the MCP contract — keeping $(git -C "$dir" rev-parse --short HEAD)"
+    echo "  ⚠️  $(basename "$dir") origin/main violates the MCP/schedule contract — keeping $(git -C "$dir" rev-parse --short HEAD)"
   fi
+  # Live code must be versioned: reset --hard keeps untracked files, and sessions load
+  # them by path (a hand-copied src/ file ran in prod unreviewed, #1502).
+  local stray
+  stray="$(git -C "$dir" ls-files --others --exclude-standard -- src 2>/dev/null)"
+  if [ -n "$stray" ]; then echo "  ⚠️  $(basename "$dir") has untracked live files: $(echo $stray)"; fi
   rm -rf "$probe"
 }
 
