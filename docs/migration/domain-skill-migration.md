@@ -6,6 +6,8 @@ this file is derived from it and states, per domain, whether the skill is
 `planned` / `core-only` / `dual` / `domain-only` / `retired`.
 Tracked by epic [#1511](https://github.com/trained-assist/trained-assist-agent/issues/1511);
 execution inventory in [#1470](https://github.com/trained-assist/trained-assist-agent/issues/1470).
+The schedule axis is coordinated with the schedules umbrella
+[#1489](https://github.com/trained-assist/trained-assist-agent/issues/1489).
 
 > **Field naming:** `domainName` is the human domain label; `domain`
 > (`yes` / `unverified` / `no`) is the tri-state "mounted through the sealed
@@ -22,6 +24,8 @@ Two orthogonal capability axes plus one switch:
 | `core` | `yes` / `no` | implemented and mounted in this repo |
 | `domain` | `yes` / `unverified` / `no` | mounted via `MCP_SKILL_SOURCES_CONFIG` **and** live canary green |
 | `serving` | `core` / `domain` | **the switch**: which path actually serves users |
+| `schedulable` | `yes` / `no` / `planned` | **schedule axis** (#1489): does the domain declare a schedulable action? |
+| `scheduleNote` | string | evidence for `schedulable`; required when `schedulable=yes` |
 
 Derived human state:
 
@@ -46,17 +50,27 @@ not a bug — the `serving` switch captures it.
 `canaryProfile` records which profile a source is mounted to. Add a second
 profile only if a genuinely clean sandbox is ever needed.
 
+**Schedule axis.** `schedulable` is a third, orthogonal axis coordinated with
+[#1489](https://github.com/trained-assist/trained-assist-agent/issues/1489): a
+domain action declares schedulability via `allowedTriggers: [..., cron]` and an
+optional `schedule` block in its action descriptor (#1489 §1.3, S3.1–S3.3).
+`yes` = an action already declares it / is schedulable today, `planned` =
+schedulability is part of that domain's #1489 rollout, `no` = not a scheduled use
+case. `scheduleNote` carries the evidence and is mandatory when `schedulable=yes`
+(enforced by CI). Migration of the existing timers themselves is #1489's job, not
+this epic's — the matrix only records where each domain stands.
+
 ## Current matrix
 
-| Skill | Domain | Repo | core | domain | serving | State |
-|-------|--------|------|:----:|:------:|:-------:|-------|
-| `hh` | recruiting | `trained-assist/trained-assist-hh-skill` | yes | yes | core | **dual** |
-| `expo` | sales-crm | `trained-assist/trained-assist-sales-skill` | yes | no | core | core-only |
-| `outsource` | freelance | `trained-assist/trained-assist-freelance-skill` | yes | unverified | core | core-only |
-| `engineering` | engineering | `trained-assist/trained-assist-engineering` | yes | unverified | core | core-only |
-| `getcourse` | edu | `trained-assist/trained-assist-edu-skill` | yes | no | core | core-only |
-| `nalog` | finance | `trained-assist/trained-assist-finance-skill` | yes | no | core | core-only |
-| `marketing` | marketing | `trained-assist/trained-assist-marketing-skill` | yes | no | core | core-only |
+| Skill | Domain | Repo | core | domain | serving | schedulable | State |
+|-------|--------|------|:----:|:------:|:-------:|:-----------:|-------|
+| `hh` | recruiting | `trained-assist/trained-assist-hh-skill` | yes | yes | core | yes | **dual** |
+| `expo` | sales-crm | `trained-assist/trained-assist-sales-skill` | yes | no | core | yes | core-only |
+| `outsource` | freelance | `trained-assist/trained-assist-freelance-skill` | yes | unverified | core | planned | core-only |
+| `engineering` | engineering | `trained-assist/trained-assist-engineering` | yes | unverified | core | planned | core-only |
+| `getcourse` | edu | `trained-assist/trained-assist-edu-skill` | yes | no | core | no | core-only |
+| `nalog` | finance | `trained-assist/trained-assist-finance-skill` | yes | no | core | no | core-only |
+| `marketing` | marketing | `trained-assist/trained-assist-marketing-skill` | yes | no | core | no | core-only |
 
 ## Per-domain checklist
 
@@ -65,6 +79,8 @@ profile only if a genuinely clean sandbox is ever needed.
 - [x] core implementation mounted (`93-calltips`, `96-recruiter-tools`, `99-interview-analysis`, `97b-candidate-client-report`, `41-applylink`, `98-demo`)
 - [x] sealed domain source mounted on `trained-assist-product-owner` (`scripts/staging/canaries/hh.json`, pinned `2d194cd4a65f9ff3888aacdeea87afc33b0971b4`)
 - [x] live canary green (#1463/#1466)
+- [x] **schedulable: yes** — `hh_proactive_search` declares `[user, cron, durable_task]` (#1489 §1.3)
+- [ ] move the dedicated HH timer onto cron-service (#1489 S7.1)
 - [ ] cutover `serving: core -> domain` for real profiles (P0.1/#1470)
 - [ ] remove duplicated `src/hh-*.js` once core consumers go shim (#1470 P1.3)
 
@@ -73,6 +89,8 @@ State: **dual** (domain canary-mounted to sandbox, core serves everyone).
 ### sales-crm — `expo`
 
 - [x] core implementation mounted (`30-weeek`, `85-expo`…`89-expo-pipeline-run`, `92-flexi-sales`, `40-company`, `70-inn-enrichment`, `71-dadata`, `72-checko`)
+- [x] **schedulable: yes** — `expo auto_cron` runs the pipeline today (#1489 §1.2)
+- [ ] turn the expo publish pipeline into a cron-service action (#1489 S8.3)
 - [ ] characterisation L2 tests in core first (#1470 P2.1)
 - [ ] `trained-assist-sales-skill` repo + manifest + canary spec
 - [ ] cutover `serving -> domain`
@@ -83,6 +101,7 @@ State: **core-only**.
 
 - [x] core implementation mounted (`94-outsource-project`)
 - [x] `trained-assist-freelance-skill` repo exists (sibling mount)
+- [ ] **schedulable: planned** — declare a schedule on a freelance action to prove post-scheduling (#1489 S8.4)
 - [ ] sealed source + canary spec (`scripts/staging/canaries/outsource.json`)
 - [ ] cutover `serving -> domain`
 
@@ -92,6 +111,7 @@ State: **core-only** (`domain: unverified` — repo mounted by sibling checkout,
 
 - [x] core implementation mounted (`60-github`, `61-dev`, `62-business-analyst`, `63-ci-cd`)
 - [x] `trained-assist-engineering` repo exists (#1418, sibling mount)
+- [ ] **schedulable: planned** — declare a schedule on an engineering action to prove post-scheduling (#1489 S8.4)
 - [ ] sealed source + canary spec (`scripts/staging/canaries/engineering.json`)
 - [ ] cutover `serving -> domain`
 
@@ -100,6 +120,7 @@ State: **core-only** (`domain: unverified`).
 ### edu — `getcourse` (optional)
 
 - [x] core implementation mounted (`80-getcourse`, `81-gc-discovery`)
+- [x] **schedulable: no** — no scheduled use case in #1489
 - [ ] repo + canary when there is demand (#1470 P4)
 
 State: **core-only** (planned, low priority).
@@ -107,6 +128,7 @@ State: **core-only** (planned, low priority).
 ### finance — `nalog` (optional)
 
 - [x] core implementation mounted (`10-nalog`)
+- [x] **schedulable: no** — no scheduled use case in #1489
 - [ ] repo + canary when there is demand (#1470 P4)
 
 State: **core-only** (planned, low priority).
@@ -114,6 +136,7 @@ State: **core-only** (planned, low priority).
 ### marketing — `tilda` / `illustrate` / `label` (optional)
 
 - [x] core implementation mounted (`20-tilda`, `95-illustrate`, `96-label`)
+- [x] **schedulable: no** — no scheduled use case in #1489
 - [ ] repo + canary when there is demand (#1470 P4)
 
 State: **core-only** (planned, low priority).
@@ -166,6 +189,8 @@ dependency-free and offline. It fails on drift:
 - `domain: yes` → `scripts/staging/canaries/<skill>.json` exists;
 - `serving: domain` → `config/mcp-skill-sources.json` has the source with
   `enabled: true` and a non-empty `profiles` allowlist containing `canaryProfile`;
+- `schedulable` → one of `yes` / `no` / `planned`, and `schedulable: yes` requires
+  a non-empty `scheduleNote`;
 - basic invariants: valid enums, no duplicate skills, `serving: core` needs
   `core: yes`, explicit non-`*` `canaryProfile`.
 

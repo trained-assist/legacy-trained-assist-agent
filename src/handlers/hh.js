@@ -19,6 +19,25 @@ const { hhFetch, hhPut, hhPostForm, readHhToken, refreshHhToken, readActiveVacan
 const { bullshitGuard } = require('../hh-bullshit-guard');
 const { buildAvailabilityBlock, buildRecruiterIdentity, buildMessageSystemPrompt, buildRejectionSystemPrompt, loadBaseOverride, DEFAULT_MESSAGE_BASE, BASE_PROMPT_FILENAME } = require('../hh-message-prompts');
 const { hhInterviewConfigAllowsTime } = require('../hh-negotiations');
+
+// Cold-search schedule lives in the generic cron (#1489 S7.1); core reaches it only
+// through the provider's hh_proactive_schedule tool, never through cron tables.
+async function coldSearchSchedule(username, workDir, params) {
+  try {
+    const text = await require('../mcp-action').runMcpTool({ tool: 'hh_proactive_schedule', params, username, workDir, timeoutMs: 20000 });
+    return JSON.parse(text || '{}');
+  } catch (e) { return { error: e.message }; }
+}
+async function coldSearchMonitoring(username, workDir, vacancyId) {
+  const legacy = require('../hh-cold-search-schedule').getSchedules(username, workDir)[vacancyId] || {};
+  const flags = { starred: !!legacy.starred, archived: !!legacy.archived };
+  if (!vacancyId) return flags;
+  const st = await coldSearchSchedule(username, workDir, { action: 'status', vacancy_id: String(vacancyId) });
+  if (st.error) return { ...flags, enabled: false, error: `Статус расписания недоступен: ${st.error}` };
+  return { ...flags, enabled: !!st.enabled, last_attempt: st.last_run || null,
+    last_success: st.last_status === 'succeeded' ? st.last_run : null,
+    status: st.last_status || null, next_run: st.next_run || null };
+}
 const { generateProactivePageHtml } = require('../hh-proactive-page');
 const { runProactiveSearch, scoreUnscoredProactiveCandidates } = require('../hh-proactive-search');
 const { hhStylePageHtml } = require('../hh-style-html');
@@ -1066,8 +1085,9 @@ if (req.method === 'GET' && url.pathname === '/hh/proactive') {
     unified.sort((a, b) => new Date(b.status_changed_at || 0) - new Date(a.status_changed_at || 0));
   }
   results.candidates = unified;
+  const monitoring = await coldSearchMonitoring(username, workDir, vacancyId);
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  return res.end(generateProactivePageHtml(results, username, callbackBase, given, pageComments, { activeVacancies, vacancyId, listView, stateCounts, monitoring: require('../hh-cold-search-schedule').getSchedules(username, workDir)[vacancyId] || {} }));
+  return res.end(generateProactivePageHtml(results, username, callbackBase, given, pageComments, { activeVacancies, vacancyId, listView, stateCounts, monitoring }));
 }
 
 if (req.method === 'GET' && url.pathname === '/api/hh/proactive/candidates') {
@@ -1195,13 +1215,20 @@ if (req.method === 'POST' && url.pathname === '/api/hh/proactive/vacancy-state')
   if (process.env.AGENT_SECRET && token !== proactiveHmac(username)) return json(res, 403, { error: 'invalid token' });
   const workDir = path.join(BASE_USERS_DIR, username);
   if (!readActiveVacancies(workDir).some(v => String(v.id) === String(vacancy_id))) return json(res, 404, { error: 'vacancy not tracked' });
-  const patches = { enable: { enabled: true, archived: false }, disable: { enabled: false },
-    star: { starred: true }, unstar: { starred: false }, archive: { archived: true, enabled: false }, restore: { archived: false } };
+  // Page flags (starred/archived) stay in the legacy per-vacancy file; the schedule
+  // itself is a cron job owned by hh_proactive_schedule (#1489 S7.1).
+  const patches = { enable: { archived: false }, disable: {},
+    star: { starred: true }, unstar: { starred: false }, archive: { archived: true }, restore: { archived: false } };
+  const cronOp = { enable: 'enable', disable: 'disable', archive: 'disable' }[action];
   if (!patches[action]) return json(res, 400, { error: 'invalid action' });
   try {
     if (action === 'enable') require('../hh-cold-search-context').resolveSearchContext(workDir, vacancy_id);
+    if (cronOp) {
+      const out = await coldSearchSchedule(username, workDir, { action: cronOp, vacancy_id: String(vacancy_id) });
+      if (out.error) return json(res, 502, { error: out.error });
+    }
     const state = require('../hh-cold-search-schedule').updateSchedule(username, workDir, vacancy_id, patches[action]);
-    return json(res, 200, { ok: true, state });
+    return json(res, 200, { ok: true, state: { ...state, ...(await coldSearchMonitoring(username, workDir, vacancy_id)) } });
   } catch (e) { return json(res, 400, { error: e.message }); }
 }
 

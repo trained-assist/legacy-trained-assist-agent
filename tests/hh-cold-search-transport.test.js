@@ -144,31 +144,12 @@ describe('full cold-search execution', () => {
 });
 
 describe('monitoring lifecycle and run exclusion', () => {
-  it('runs A and B independently, preserves a disable during work, and never resurrects an empty list', async () => {
+  it('a profile never runs two cold searches at once; a dead holder lock is reclaimed', async () => {
     const fs = require('node:fs'); const path = require('node:path'); const os = require('node:os');
-    const { updateSchedule, getSchedules, runDueSearches } = require('../src/hh-cold-search-schedule');
     const { acquireSearchLock } = require('../src/hh-cold-search-lock');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hh-schedule-')); const old = process.env.AGENT_DATA_DIR;
     process.env.AGENT_DATA_DIR = path.join(root, 'data');
-    const ctx = path.join(root, 'contexts', 'hh'); fs.mkdirSync(ctx, { recursive: true });
-    const put = (key, value) => fs.writeFileSync(path.join(ctx, key + '.json'), JSON.stringify({ value }));
-    put('active_vacancy', { id: 'A' }); put('active_vacancies', [{ id: 'A' }, { id: 'B' }]);
     try {
-      updateSchedule('u', root, 'A', { enabled: true, interval_hours: 24 });
-      updateSchedule('u', root, 'B', { enabled: true, interval_hours: 24 });
-      const run = vi.fn(async id => {
-        if (id === 'A') throw new Error('HH resumes 403');
-        updateSchedule('u', root, 'B', { enabled: false });
-        return { new_count: 2 };
-      });
-      const outcomes = await runDueSearches('u', root, run);
-      expect(outcomes.map(x => x.ok)).toEqual([false, true]);
-      expect(getSchedules('u', root).A.status).toBe('failed');
-      expect(getSchedules('u', root).B).toMatchObject({ status: 'success', enabled: false });
-      expect(getSchedules('u', root).B.last_success).toBeTruthy();
-      run.mockClear(); put('active_vacancies', []);
-      await runDueSearches('u', root, run, Date.now() + 86400000);
-      expect(run).not.toHaveBeenCalled();
       const release = acquireSearchLock('u');
       expect(() => acquireSearchLock('u')).toThrow(/уже выполняется/);
       release(); acquireSearchLock('u')();

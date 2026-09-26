@@ -8,6 +8,7 @@
 //   domain: yes    -> scripts/staging/canaries/<skill>.json exists
 //   serving:domain -> config/mcp-skill-sources.json has the source, enabled:true
 //                     and a non-empty profiles allowlist containing canaryProfile
+//   schedulable     -> valid enum yes/no/planned; schedulable:yes needs a scheduleNote
 //
 // Dependency-free and offline: fs + path only, JSON in, exit code out.
 // Run: node scripts/check-migration-matrix.mjs
@@ -29,9 +30,11 @@ const PLANS = new Set(['planned', 'in-progress', 'done', 'dropped']);
 const CORE_FLAGS = new Set(['yes', 'no']);
 const DOMAIN_FLAGS = new Set(['yes', 'unverified', 'no']);
 const SERVING_FLAGS = new Set(['core', 'domain']);
+const SCHEDULABLE_FLAGS = new Set(['yes', 'no', 'planned']);
 export const REQUIRED = [
   'skill', 'domainName', 'repo', 'mcpServerId', 'actions', 'coreTools',
-  'plan', 'core', 'domain', 'serving', 'canaryProfile', 'evidence', 'ownerIssue',
+  'plan', 'core', 'domain', 'serving', 'schedulable', 'scheduleNote',
+  'canaryProfile', 'evidence', 'ownerIssue',
 ];
 
 function readJson(file) {
@@ -74,6 +77,12 @@ export function check(opts = {}) {
     if (e && !CORE_FLAGS.has(e.core)) fail(`${id}: invalid core "${e.core}"`);
     if (e && !DOMAIN_FLAGS.has(e.domain)) fail(`${id}: invalid domain "${e.domain}"`);
     if (e && !SERVING_FLAGS.has(e.serving)) fail(`${id}: invalid serving "${e.serving}"`);
+    if (e && !SCHEDULABLE_FLAGS.has(e.schedulable)) {
+      fail(`${id}: invalid schedulable "${e.schedulable}"`);
+    }
+    if (e && e.schedulable === 'yes' && (typeof e.scheduleNote !== 'string' || e.scheduleNote.trim() === '')) {
+      fail(`${id}: schedulable=yes requires a non-empty scheduleNote`);
+    }
     if (e && (!e.canaryProfile || e.canaryProfile === '*')) {
       fail(`${id}: canaryProfile must be explicit and not "*"`);
     }
