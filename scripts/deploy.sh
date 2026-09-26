@@ -105,9 +105,12 @@ sync_sibling_checked() {
     echo "  ⚠️  update failed — keeping existing checkout"; return 0
   fi
   probe="$(mktemp -d)"
+  # The schedule manifest is optional (not every sibling is schedulable yet).
+  git -C "$dir" show origin/main:action-provider-manifest.json > "$probe/action-provider-manifest.json" 2>/dev/null ||
+    rm -f "$probe/action-provider-manifest.json"
   if git -C "$dir" archive origin/main src | tar -x -C "$probe" &&
      node "$RELEASE_DIR/scripts/check-mcp-conformance.js" "$probe" &&
-     NODE_PATH="$dir/node_modules" timeout 60 node "$RELEASE_DIR/scripts/check-skill-schedule.js" "$probe"; then
+     node "$RELEASE_DIR/scripts/check-skill-schedule.js" "$probe"; then
     git -C "$dir" reset --quiet --hard origin/main 2>/dev/null ||
       echo "  ⚠️  update failed — keeping existing checkout"
   else

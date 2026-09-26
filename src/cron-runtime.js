@@ -20,7 +20,11 @@ const { createMcpTransport } = require('./action-transport');
 const { createCronService } = require('./cron-service');
 
 const TICK_INTERVAL_MS = 60 * 1000;
-const HH_MANIFEST = path.join(__dirname, '..', '..', 'trained-assist-hh-skill', 'src', 'action-manifest.js');
+// The provider's committed, core-valid manifest (built by its scripts/build-manifest.cjs
+// and checked in CI). Static JSON: no provider code runs in core to learn its policy.
+// Previously this read src/action-manifest.js, which existed only as an untracked
+// file on the prod host (#1502) — a clean host would silently lose HH from cron.
+const HH_MANIFEST = path.join(__dirname, '..', '..', 'trained-assist-hh-skill', 'action-provider-manifest.json');
 
 function schedulerRole(env = process.env) {
   if (env.STAGING_ROOT) return 'staging';
@@ -29,7 +33,7 @@ function schedulerRole(env = process.env) {
 
 function buildRegistry({ manifests = null, log = () => {} } = {}) {
   const registry = new ActionProviderRegistry();
-  const list = manifests || (fs.existsSync(HH_MANIFEST) ? [require(HH_MANIFEST).buildManifest()] : []);
+  const list = manifests || (fs.existsSync(HH_MANIFEST) ? [JSON.parse(fs.readFileSync(HH_MANIFEST, 'utf8'))] : []);
   for (const manifest of list) {
     // One bad provider must not take the scheduler down for the others.
     try { registry.register(manifest); }
