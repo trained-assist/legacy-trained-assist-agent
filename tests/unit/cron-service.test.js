@@ -197,6 +197,21 @@ describe('runtime role + registry', () => {
     const r = buildRegistry({ manifests: [{ version: 1, providerId: 'bad', actions: [] }, { version: 1, providerId: 'ok', actions: [read] }] });
     expect(r.list().map(a => a.name)).toEqual(['read_items']);
   });
+  it('registers every present sibling that ships a committed action manifest (S3.4)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'siblings-'));
+    const sibling = (repo, manifest) => {
+      fs.mkdirSync(path.join(root, repo, 'src', 'mcp-skills'), { recursive: true });
+      fs.writeFileSync(path.join(root, repo, 'src', 'mcp-skills', 'index.js'), '');
+      if (manifest !== undefined) fs.writeFileSync(path.join(root, repo, 'action-provider-manifest.json'), manifest);
+    };
+    sibling('trained-assist-hh-skill', JSON.stringify({ version: 1, providerId: 'hh', actions: [read] }));
+    sibling('trained-assist-freelance-skill', JSON.stringify({ version: 1, providerId: 'freelance', actions: [{ ...read, name: 'fl_items' }] }));
+    sibling('trained-assist-engineering', '{not json');   // unreadable → logged, others still load
+    const logs = [];
+    const r = buildRegistry({ root, log: m => logs.push(m) });
+    expect(r.list().map(a => a.name).sort()).toEqual(['fl_items', 'read_items']);
+    expect(logs.some(l => l.includes('engineering'))).toBe(true);
+  });
 });
 
 describe('provider schedule declaration (#1489 S3.1–3.2)', () => {

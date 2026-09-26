@@ -20,35 +20,37 @@ const path = require('path');
 const { spawn } = require('child_process');
 const registry = require('./mcp-skills/registry');
 const { mergeToolCatalogs } = require('./action-provider-registry');
+const { presentSiblings } = require('./skill-siblings');
 
 const INDEX_PATH = path.join(__dirname, 'mcp-skills', 'index.js');
 const DEFAULT_TIMEOUT_MS = 45_000;
 
-// HH metadata is discovered from the existing external provider. Duplicate names
-// are configuration errors, never implicit local-first overrides (contract v1).
-const HH_SKILL_INDEX_PATH = path.join(__dirname, '..', '..', 'trained-assist-hh-skill', 'src', 'mcp-skills', 'index.js');
-const hhRegistry = fs.existsSync(HH_SKILL_INDEX_PATH)
-  ? require(path.join(__dirname, '..', '..', 'trained-assist-hh-skill', 'src', 'mcp-skills', 'registry'))
-  : null;
+// Sibling skill providers (hh, freelance, engineering — src/skill-siblings.js) are
+// discovered from their checkouts. Duplicate names across any two sources are
+// configuration errors, never implicit local-first overrides (contract v1).
+const siblings = presentSiblings().map(s => ({ ...s, registry: require(s.registryPath) }));
 
 // Safe in-process: listTools() is static tool metadata, not user-scoped execution.
 function listActionTools() {
-  return mergeToolCatalogs(registry.listTools(), hhRegistry ? hhRegistry.listTools() : []);
+  return mergeToolCatalogs(registry.listTools(), ...siblings.map(s => s.registry.listTools()));
 }
 
-function resolveToolSource(tool, localNames, hhNames) {
-  if (localNames.has(tool) && hhNames?.has(tool)) {
-    throw Object.assign(new Error(`Duplicate action: ${tool}`), { code: 'CONFLICT' });
+// siblingNames: { [siblingId]: Set<toolName> } for the siblings present on this host.
+function resolveToolSource(tool, localNames, siblingNames = {}) {
+  const owners = localNames.has(tool) ? ['local'] : [];
+  for (const [id, names] of Object.entries(siblingNames)) if (names?.has(tool)) owners.push(id);
+  if (owners.length > 1) {
+    throw Object.assign(new Error(`Duplicate action: ${tool} (${owners.join(', ')})`), { code: 'CONFLICT' });
   }
-  if (localNames.has(tool)) return 'local';
-  if (hhNames?.has(tool)) return 'hh';
+  if (owners.length === 1) return owners[0];
   throw Object.assign(new Error('Action is not registered'), { code: 'ACTION_NOT_FOUND' });
 }
 
 function resolveIndexPath(tool) {
   const localNames = new Set(registry.listTools().map(t => t.name));
-  const hhNames = hhRegistry ? new Set(hhRegistry.listTools().map(t => t.name)) : null;
-  return resolveToolSource(tool, localNames, hhNames) === 'hh' ? HH_SKILL_INDEX_PATH : INDEX_PATH;
+  const siblingNames = Object.fromEntries(siblings.map(s => [s.id, new Set(s.registry.listTools().map(t => t.name))]));
+  const source = resolveToolSource(tool, localNames, siblingNames);
+  return source === 'local' ? INDEX_PATH : siblings.find(s => s.id === source).indexPath;
 }
 
 function runMcpTool({ tool, params, username, workDir, timeoutMs = DEFAULT_TIMEOUT_MS }) {
@@ -58,19 +60,29 @@ function runMcpTool({ tool, params, username, workDir, timeoutMs = DEFAULT_TIMEO
   return spawnToolCall({ indexPath: resolveIndexPath(tool), tool, params, username, workDir, timeoutMs, hostAction: false });
 }
 
-// Host-only HH actions (epic #1470 P1.3): deterministic quick answers the runner
-// used to compute in-process from the core hh-quick copy. The provider hides them
-// from the model's tools/list and refuses them unless spawned with
+// Host-only actions (epic #1470 P1.3, HH first): deterministic quick answers the
+// runner used to compute in-process from the core hh-quick copy. A provider hides
+// them from the model's tools/list and refuses them unless spawned with
 // MCP_HOST_ACTION=1 — set only here, for user-typed commands handled by core.
+function hostActionOwners() {
+  return siblings
+    .filter(s => typeof s.registry.listHostActions === 'function')
+    .flatMap(s => s.registry.listHostActions().map(t => ({ tool: t, sibling: s })));
+}
+
 function listHostActions() {
-  return hhRegistry && typeof hhRegistry.listHostActions === 'function' ? hhRegistry.listHostActions() : [];
+  return hostActionOwners().map(o => o.tool);
 }
 
 function runHostAction({ tool, params, username, workDir, timeoutMs = DEFAULT_TIMEOUT_MS }) {
-  if (!listHostActions().some(t => t.name === tool)) {
+  const owners = hostActionOwners().filter(o => o.tool.name === tool);
+  if (owners.length === 0) {
     return Promise.reject(Object.assign(new Error(`Host action is not registered: ${tool}`), { code: 'ACTION_NOT_FOUND' }));
   }
-  return spawnToolCall({ indexPath: HH_SKILL_INDEX_PATH, tool, params, username, workDir, timeoutMs, hostAction: true });
+  if (owners.length > 1) {
+    return Promise.reject(Object.assign(new Error(`Duplicate host action: ${tool}`), { code: 'CONFLICT' }));
+  }
+  return spawnToolCall({ indexPath: owners[0].sibling.indexPath, tool, params, username, workDir, timeoutMs, hostAction: true });
 }
 
 function spawnToolCall({ indexPath, tool, params, username, workDir, timeoutMs, hostAction }) {
