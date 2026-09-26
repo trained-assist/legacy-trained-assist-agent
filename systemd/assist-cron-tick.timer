@@ -1,0 +1,10 @@
+[Unit]
+Description=Tick the generic cron engine every minute (#1489 P2.1)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
