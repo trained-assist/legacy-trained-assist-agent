@@ -31,30 +31,6 @@ function disableSearches(username, workDir, vacancyId) {
 function setNotifications() { return { notifications_enabled: false, retired: true }; }
 function deliveryEnabled() { return false; }
 function notificationsEnabled() { return false; }
-async function runDueSearches(username, workDir, runSearch, now = Date.now()) {
-  const tracked = new Set(readActiveVacancies(workDir).map(v => String(v.id)));
-  const outcomes = [];
-  for (const [id, state] of Object.entries(getSchedules(username, workDir))) {
-    if (!state.enabled || state.archived || !tracked.has(id)) continue;
-    const interval = Math.max(0.5, Number(state.interval_hours) || 24) * 3600000;
-    const last = Date.parse(state.last_attempt || state.last_run) || 0;
-    const delay = state.status === 'failed' ? Math.min(interval, 1800000) : interval;
-    if (state.status !== 'running' && now - last < delay) continue;
-    // Re-read before starting so disabling a vacancy during the previous run wins.
-    if (!getSchedules(username, workDir)[id]?.enabled) continue;
-    const at = new Date(now).toISOString();
-    updateSchedule(username, workDir, id, { last_attempt: at, status: 'running', error: null });
-    try {
-      const result = await runSearch(id);
-      updateSchedule(username, workDir, id, { last_success: new Date().toISOString(), last_run: at,
-        status: result.ai_pending_count ? 'partial' : result.new_count ? 'success' : 'zero_new',
-        ai_pending_count: result.ai_pending_count || 0, error: null });
-      outcomes.push({ vacancy_id: id, ok: true });
-    } catch (error) {
-      updateSchedule(username, workDir, id, { status: 'failed', error: error.message });
-      outcomes.push({ vacancy_id: id, ok: false, error: error.message });
-    }
-  }
-  return outcomes;
-}
-module.exports = { setNotifications, deliveryEnabled, getSchedules, updateSchedule, disableSearches, notificationsEnabled, runDueSearches };
+// The run loop moved to the generic cron (#1489 S7.1). This legacy file keeps only
+// per-vacancy page state (starred/archived) and the pre-migration schedule for display.
+module.exports = { setNotifications, deliveryEnabled, getSchedules, updateSchedule, disableSearches, notificationsEnabled };
