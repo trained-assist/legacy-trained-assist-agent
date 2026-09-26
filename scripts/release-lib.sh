@@ -69,23 +69,27 @@ release_set_link() {
 
 # release_gc <releases-dir> [keep]
 # Keeps the newest <keep> releases (default 3) so rollback and the current
-# version always survive; removes older ones. Staging dirs and the shared
-# trained-assist-hh-skill / trained-assist-engineering sibling symlinks are
-# never removed.
+# version always survive; removes older ones. Allowlist, not denylist: only real
+# release directories (named by a commit sha, 7–40 hex chars, not symlinks) are ever
+# candidates. Sibling-skill symlinks (hh, freelance, engineering, any future one)
+# and staging dirs are never touched — a denylist missed the freelance symlink
+# and `rm -rf link/` wiped the real checkout behind it (#1509).
 release_gc() {
   local releases="$1" keep="${2:-3}"
-  local d
+  local d name
   for d in "$releases"/.staging-*; do
     [ -e "$d" ] || continue
+    [ -L "$d" ] && continue
     echo "==> GC stale staging dir $d" >&2
     $SUDO rm -rf "$d"
   done
-  # shellcheck disable=SC2012
-  ls -1dt "$releases"/*/ 2>/dev/null \
-    | grep -v '/\.staging-' \
-    | grep -v '/trained-assist-hh-skill/$' \
-    | grep -v '/trained-assist-engineering/$' \
-    | tail -n +"$((keep + 1))" \
+  for d in "$releases"/*; do
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    name="$(basename "$d")"
+    [ "${#name}" -ge 7 ] && [ "${#name}" -le 40 ] || continue
+    case "$name" in *[!0-9a-f]*) continue ;; esac
+    printf '%s\t%s\n' "$(stat -c %Y "$d" 2>/dev/null || stat -f %m "$d")" "$d"
+  done | sort -rn | cut -f2- | tail -n +"$((keep + 1))" \
     | while read -r d; do
         echo "==> GC old release $d" >&2
         $SUDO rm -rf "$d"

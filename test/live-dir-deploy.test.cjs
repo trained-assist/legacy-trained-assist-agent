@@ -108,12 +108,13 @@ test('release_set_link repoints the symlink atomically', (t) => {
   assert.equal(fs.realpathSync(f.link), fs.realpathSync(path.join(f.releases, f.c2)));
 });
 
-test('release_gc keeps the newest releases and preserves the hh-skill and engineering sibling symlinks', (t) => {
+test('release_gc keeps the newest sha releases and preserves every sibling symlink (#1509)', (t) => {
   const f = fixture(t);
   fs.mkdirSync(f.releases, { recursive: true });
+  const rel = (i) => String(i).repeat(40);   // release dirs are named by commit sha
   for (let i = 1; i <= 4; i++) {
-    fs.mkdirSync(path.join(f.releases, `r${i}`));
-    fs.utimesSync(path.join(f.releases, `r${i}`), new Date(2026, 0, i), new Date(2026, 0, i));
+    fs.mkdirSync(path.join(f.releases, rel(i)));
+    fs.utimesSync(path.join(f.releases, rel(i)), new Date(2026, 0, i), new Date(2026, 0, i));
   }
   const hhSibling = path.join(f.releases, 'trained-assist-hh-skill');
   fs.mkdirSync(path.join(f.dir, 'hh-src'));
@@ -121,12 +122,18 @@ test('release_gc keeps the newest releases and preserves the hh-skill and engine
   const engSibling = path.join(f.releases, 'trained-assist-engineering');
   fs.mkdirSync(path.join(f.dir, 'eng-src'));
   fs.symlinkSync(path.join(f.dir, 'eng-src'), engSibling);
+  const flSibling = path.join(f.releases, 'trained-assist-freelance-skill');
+  fs.mkdirSync(path.join(f.dir, 'fl-src'));
+  fs.writeFileSync(path.join(f.dir, 'fl-src', 'index.js'), 'x');
+  fs.symlinkSync(path.join(f.dir, 'fl-src'), flSibling);
   const r = f.gc(2);
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(fs.existsSync(path.join(f.releases, 'r3')));
-  assert.ok(fs.existsSync(path.join(f.releases, 'r4')));
-  assert.ok(!fs.existsSync(path.join(f.releases, 'r1')));
-  assert.ok(!fs.existsSync(path.join(f.releases, 'r2')));
+  assert.ok(fs.existsSync(path.join(f.releases, rel(3))));
+  assert.ok(fs.existsSync(path.join(f.releases, rel(4))));
+  assert.ok(!fs.existsSync(path.join(f.releases, rel(1))));
+  assert.ok(!fs.existsSync(path.join(f.releases, rel(2))));
+  assert.ok(fs.lstatSync(flSibling).isSymbolicLink(), 'must not GC the freelance sibling symlink');
+  assert.ok(fs.existsSync(path.join(f.dir, 'fl-src', 'index.js')), 'must never wipe a sibling checkout through its symlink');
   assert.ok(fs.lstatSync(hhSibling).isSymbolicLink(), 'must not GC the hh-skill sibling symlink');
   assert.ok(fs.lstatSync(engSibling).isSymbolicLink(), 'must not GC the engineering sibling symlink');
 });
