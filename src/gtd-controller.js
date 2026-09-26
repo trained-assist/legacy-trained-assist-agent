@@ -26,6 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { readTokenValue } = require('./token-value');
 const { DurableTaskStore } = require('./durable-task-store');
 const { criterionIdForItem } = require('./durable-task-plan');
@@ -355,7 +356,8 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
 
     fired += 1;
     console.log(`[gtd-durable] fire item=${item.id.slice(0, 8)} task=${task.id.slice(0, 8)} tier=${item.current_tier}`);
-    const executionId = `exec-${item.id.slice(0, 8)}-${now}`;
+    // Random suffix: an item can re-fire within the same ms (recovery retries) → PK collision.
+    const executionId = `exec-${item.id.slice(0, 8)}-${now}-${crypto.randomBytes(3).toString('hex')}`;
     store.startExecution({ id: executionId, task_id: task.id, task_item_id: item.id, session_id: sessionRow?.session_id || null, tier: item.current_tier });
 
     // P4: stage entry — fire stage.on_enter (carried by the stage's first item).
