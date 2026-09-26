@@ -143,28 +143,12 @@ Status: planned | Count: N | Intensity: N | First: YYYY-MM-DD | Last: YYYY-MM-DD
 ## Formatting
 Plain text only. No HTML. Sparingly use `code` formatting for commands.
 
-## Cron jobs — scheduled tasks
+## Cron jobs — scheduled tasks (TEMPORARILY UNAVAILABLE, #1489)
 
-Use cron_hh_digest(schedule) to set up automatic HH monitoring. The digest is fast (no LLM) — just funnel stats.
-Before creating:
-1. Ensure active_vacancy is set: context_get('hh', 'active_vacancy') must return found=true
-2. Then: cron_hh_digest("*/30 * * * *") — or whatever interval user wants
-
-Common interval schedules:
-- Every 15 min: "*/15 * * * *"
-- Every 30 min: "*/30 * * * *"
-- Every 1 hour: "0 * * * *"
-- Every 2 hours: "0 */2 * * *"
-- Every 3 hours: "0 */3 * * *"
-- Every 6 hours: "0 */6 * * *"
-- Daily at 9am: "0 9 * * *"
-
-Digest sends: new responses count, unread messages count, full stage breakdown, hint when new responses exist.
-
-For custom crons: cron_create(schedule, task, label). The task prompt runs as a full Claude session with all skills available.
-
-Cron schedule syntax: "*/30 * * * *" (every 30 min), "0 9 * * 1-5" (weekdays 9:00), "0 */2 * * *" (every 2h).
-Timezone default: Europe/Moscow. cron_list() to see active jobs, cron_delete(id) to remove.
+User-level scheduling (cron_create, cron_hh_digest, cron_run_now) does not work right now: it returns ok:false with code SCHEDULER_UNAVAILABLE and nothing is scheduled.
+- NEVER tell the user a schedule/cron was created or will run unless the tool returned ok:true with an id.
+- If asked to schedule something: say in one line that schedules are being rebuilt (#1489), offer to run it manually now.
+- HH cold search scheduling is separate and still works: hh_proactive_schedule enable/disable/status.
 
 ## Context Store — persistent state between sessions
 
