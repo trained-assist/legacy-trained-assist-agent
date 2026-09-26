@@ -161,7 +161,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: trained-assist/pr-autofix/.github/workflows/autofix-callable.yml@v1.3.1
+    uses: trained-assist/pr-autofix/.github/workflows/autofix-callable.yml@v1.4.0
     with:
       pr_number: ${{ github.event.pull_request.number }}
       original_branch: ${{ github.head_ref }}
@@ -169,6 +169,7 @@ jobs:
       run_id: ${{ (needs.merge.result == 'failure' && needs.ci.result == 'success' && needs.staging-gate.result == 'success') && '0' || github.run_id }}
     secrets:
       openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+      opencode_go_api_key: ${{ secrets.OPENCODE_GO_API_KEY }}
       gh_token: ${{ secrets.AUTOFIX_PAT || github.token }}
 
   merge:
