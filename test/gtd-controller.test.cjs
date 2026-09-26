@@ -490,6 +490,43 @@ function ok(c, m) { c ? (pass++) : (fail++, console.log('FAIL:', m)); }
   });
   ok(legacyRoutedAudience === 'recruiter', `legacy record (no audience field) falls back to session.audience, got ${legacyRoutedAudience}`);
 
+  // #1517: an appended, fully-closed section must not hide open items of the tracked goal.
+  const pdG = fs.mkdtempSync(path.join(os.tmpdir(), 'gtd-goals-'));
+  const clG = [
+    'Goal: S3.4 transport',
+    '- [x] Merged to main',
+    '- [ ] Next: S7.1 cold search on cron',
+    '',
+    'Goal: #1509 incident',
+    '- [x] Prod restored',
+    '- [x] Deployed + verified live',
+  ].join('\n');
+  fs.writeFileSync(path.join(pdG, 'checklist.md'), clG);
+  ok(G.readChecklist(pdG).items.every(i => i.done), 'legacy view: last section alone looks done (the bug)');
+  const mergedG = G.readChecklist(pdG, { goals: ['S3.4 transport'] });
+  ok(mergedG.goal === '#1509 incident' && mergedG.items.length === 4 && mergedG.items.filter(i => !i.done).length === 1,
+    'readChecklist(goals) unions tracked section with the last one');
+  const recG = { projectDir: pdG, originalTask: 'S3.4 transport' }; // legacy record: no goals field
+  const trG = G.trackedChecklist(recG);
+  ok(trG.items.some(i => !i.done) && recG.goals.join('|') === 'S3.4 transport|#1509 incident',
+    'trackedChecklist seeds goals from originalTask and remembers the new last goal');
+
+  const wdG = fs.mkdtempSync(path.join(os.tmpdir(), 'gtd17-'));
+  const udG = path.join(wdG, 'u17'); fs.mkdirSync(udG, { recursive: true });
+  G.writeGtd(udG, { sessionId: 's-17', chatId: '17', username: 'u17', createdAt: 1, dueAt: 100, etaMinutes: 20,
+    iterations: 0, maxIterations: 3, status: 'open', originalTask: 'S3.4 transport', goals: ['S3.4 transport'],
+    projectDir: pdG, lastFiredAt: null, closedReason: null });
+  let firedG = false;
+  const realFetchG = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => ({ ok: true }) });
+  await G.runDue({ secrets: {}, baseUsersDir: wdG, now: 200, isTaskRunning: () => false,
+    getSession: () => ({ ownerChatId: '17', summary: {} }),
+    runTask: async () => { firedG = true; return 'GTD: continue'; } });
+  global.fetch = realFetchG;
+  const recGG = G.readGtd(udG, 's-17');
+  ok(recGG.closedReason !== 'done-precheck' && firedG, `open tracked item keeps GTD alive and fires the session (got ${recGG.closedReason})`);
+  ok(recGG.goals.includes('#1509 incident'), 'goal seen as last section is persisted on the record');
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
