@@ -90,3 +90,25 @@ test('duplicate skill entries and bad enum values are rejected', () => {
   entry(bad, 'hh').serving = 'both';
   assert.ok(check({ matrix: bad }).errors.some(e => /invalid serving "both"/.test(e)));
 });
+
+test('schedulable enum is validated', () => {
+  const m = clone();
+  entry(m, 'hh').schedulable = 'sometimes';
+  assert.ok(check({ matrix: m }).errors.some(e => /hh: invalid schedulable "sometimes"/.test(e)));
+});
+
+test('schedulable=yes requires a non-empty scheduleNote', () => {
+  const empty = clone();
+  entry(empty, 'hh').scheduleNote = '';
+  assert.ok(check({ matrix: empty }).errors.some(e => /hh: schedulable=yes requires a non-empty scheduleNote/.test(e)));
+
+  const missing = clone();
+  delete entry(missing, 'expo').scheduleNote;
+  assert.ok(check({ matrix: missing }).errors.some(e => /expo: schedulable=yes requires a non-empty scheduleNote/.test(e)));
+
+  // planned/no may omit the note without tripping the rule
+  const planned = clone();
+  entry(planned, 'outsource').schedulable = 'planned';
+  entry(planned, 'outsource').scheduleNote = '';
+  assert.deepEqual(check({ matrix: planned }).errors, []);
+});
