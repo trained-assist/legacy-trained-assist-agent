@@ -20,11 +20,10 @@ describe('engineering plan persistence', () => {
     const env = { ...process.env, AGENT_DATA_DIR: dir, USERS_DIR: join(dir, 'users') };
     const script = `
       const tools = require('./src/mcp-skills/tools/101-durable-tasks').tools;
-      const ba = require('./src/mcp-skills/tools/62-business-analyst').tools;
+      const playbook = { id: 'development', version: 1 };
+      const titles = ['Record restart user value', 'Record restart and isolation acceptance', 'Define subprocess validator', 'Inspect SQLite transactions', 'Reproduce partial plan writes', 'Design atomic createPlan', 'Check migration rollback', 'Separate schema and MCP slices', 'Implement plan persistence', 'Run persistence regression', 'Open implementation PR', 'Check CI and staging SHA', 'Deploy checked commit', 'Read plan after process restart', 'Check profile isolation', 'Collect acceptance evidence'];
       (async () => {
-        const playbook = await ba.ba_development_playbook.handler({});
-        const titles = ['Record restart user value', 'Record restart and isolation acceptance', 'Define subprocess validator', 'Inspect SQLite transactions', 'Reproduce partial plan writes', 'Design atomic createPlan', 'Check migration rollback', 'Separate schema and MCP slices', 'Implement plan persistence', 'Run persistence regression', 'Open implementation PR', 'Check CI and staging SHA', 'Deploy checked commit', 'Read plan after process restart', 'Check profile isolation', 'Collect acceptance evidence'];
-        const items = titles.map((title, i) => ({ title, stage: String(i), instructions: 'For SQLite plan persistence: ' + playbook.stages[i].title,
+        const items = titles.map((title, i) => ({ title, stage: String(i), instructions: 'Plan persistence item ' + i,
           execution_kind: i === 11 ? 'programmatic' : 'agent', executor_role: i === 11 ? null : 'developer',
           minimum_model_level: i === 11 ? null : 'master', context_budget: i === 11 ? null : 'small',
           validation: { validator: i === 11 ? 'ci' : 'artifact', criterion_id: 'persist', expected: 'pass' } }));

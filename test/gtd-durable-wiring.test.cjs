@@ -500,7 +500,10 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
   {
     const G18 = freshStore('18');
     const store = G18.durableStore();
-    const playbook = require('../playbooks/development.json');
+    // The development playbook now lives in the trained-assist-engineering
+    // domain repo, not the Control Plane. This test only needs the artifact's
+    // shape, so it reads the checked-in fixture (same content).
+    const playbook = require('../tests/fixtures/development.json');
     const { compilePlaybook } = require('../src/playbook-compiler');
     const prUrl = 'https://github.com/acme/widgets/pull/777';
     const compiled = compilePlaybook(playbook, { goal: `finish #1449 — PR ${prUrl}` });

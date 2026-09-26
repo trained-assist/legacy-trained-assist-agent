@@ -30,7 +30,7 @@ const SYSTEM_PLAYBOOKS_DIR = path.join(REPO_ROOT, 'playbooks');
 // Known domain-skill sibling checkouts (see server.js HH_SKILL_SIBLING /
 // FREELANCE_SKILL_SIBLING). They are consulted only if present AND they carry a
 // playbooks/ dir, so an absent sibling is simply skipped.
-const DEFAULT_SIBLING_REPOS = ['trained-assist-freelance-skill', 'trained-assist-hh-skill'];
+const DEFAULT_SIBLING_REPOS = ['trained-assist-engineering', 'trained-assist-freelance-skill', 'trained-assist-hh-skill'];
 
 const PLAYBOOK_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -44,6 +44,13 @@ function playbookError(code, message) {
 }
 
 function defaultSiblingRoots() {
+  // Explicit override (test/build environments that don't have the domain
+  // checkouts on disk next to this repo). Delimiter-separated, e.g.
+  // PLAYBOOK_SIBLING_ROOTS=/fixtures/trained-assist-engineering:/fixtures/other.
+  const override = process.env.PLAYBOOK_SIBLING_ROOTS;
+  if (override) {
+    return override.split(path.delimiter).filter(Boolean);
+  }
   return DEFAULT_SIBLING_REPOS
     .map(repo => path.join(REPO_PARENT, repo))
     .filter(dir => fs.existsSync(path.join(dir, 'playbooks')));

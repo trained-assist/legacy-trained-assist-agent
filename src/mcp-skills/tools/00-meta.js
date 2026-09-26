@@ -63,7 +63,7 @@ const SKILLS = [
       'ba_clarify_requirements классифицирует задачу по размеру (trivial/small/feature) и задаёт только те вопросы, ' +
       'которые реально неясны для этого уровня. Для feature-уровня — ba_write_spec: durable EARS-спека (requirements, ' +
       'acceptance criteria, out of scope, tasks) файлом в репозитории, ДО правок кода, чтобы намерение не терялось между сессиями. ' +
-      'Для больших инженерных задач — ba_development_playbook → конкретные items → один task_create: SQLite draft-план переживает рестарт (автовыполнение пока не включено). ' +
+      'Для больших инженерных задач — ba_development_playbook (если плейбук разработки подключён) → конкретные items → один task_create: SQLite draft-план переживает рестарт (автовыполнение пока не включено). ' +
       'Для trivial/small — без вопросов и без спеки, это чистые накладные расходы.',
     requires: 'Ничего — работает сразу, для любой задачи.',
   },
