@@ -27,6 +27,7 @@
     "lib/",
     "schema/",
     "bin/",
+    "assets/",
     "README.md"
   ],
   "scripts": {
