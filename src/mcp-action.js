@@ -30,9 +30,17 @@ const DEFAULT_TIMEOUT_MS = 45_000;
 // configuration errors, never implicit local-first overrides (contract v1).
 const siblings = presentSiblings().map(s => ({ ...s, registry: require(s.registryPath) }));
 
-// Safe in-process: listTools() is static tool metadata, not user-scoped execution.
+// Static, user-independent catalog. listTools() is filtered by each module's
+// isReady(), which keys on USER_ID — empty in this shared server process — so it
+// would hide every ready-gated tool (hh_proactive_search → "Unknown tool" on cron,
+// #1530). Readiness is enforced by the per-user child, not by this name gate.
+function staticCatalog(reg) {
+  return typeof reg.listAllTools === 'function' ? reg.listAllTools() : reg.listTools();
+}
+
+// Safe in-process: tool metadata only, no user-scoped execution.
 function listActionTools() {
-  return mergeToolCatalogs(registry.listTools(), ...siblings.map(s => s.registry.listTools()));
+  return mergeToolCatalogs(staticCatalog(registry), ...siblings.map(s => staticCatalog(s.registry)));
 }
 
 // siblingNames: { [siblingId]: Set<toolName> } for the siblings present on this host.
@@ -47,8 +55,8 @@ function resolveToolSource(tool, localNames, siblingNames = {}) {
 }
 
 function resolveIndexPath(tool) {
-  const localNames = new Set(registry.listTools().map(t => t.name));
-  const siblingNames = Object.fromEntries(siblings.map(s => [s.id, new Set(s.registry.listTools().map(t => t.name))]));
+  const localNames = new Set(staticCatalog(registry).map(t => t.name));
+  const siblingNames = Object.fromEntries(siblings.map(s => [s.id, new Set(staticCatalog(s.registry).map(t => t.name))]));
   const source = resolveToolSource(tool, localNames, siblingNames);
   return source === 'local' ? INDEX_PATH : siblings.find(s => s.id === source).indexPath;
 }
