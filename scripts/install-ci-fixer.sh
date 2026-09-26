@@ -104,13 +104,14 @@ else
     permissions:
       contents: write
       pull-requests: write
-    uses: trained-assist/pr-autofix/.github/workflows/autofix-callable.yml@v1.3.1
+    uses: trained-assist/pr-autofix/.github/workflows/autofix-callable.yml@v1.4.0
     with:
       pr_number: \${{ github.event.pull_request.number }}
       original_branch: \${{ github.head_ref }}
       run_id: \${{ github.run_id }}
     secrets:
       openrouter_api_key: \${{ secrets.OPENROUTER_API_KEY }}
+      opencode_go_api_key: \${{ secrets.OPENCODE_GO_API_KEY }}
       gh_token: \${{ secrets.AUTOFIX_PAT || github.token }}
 AUTOFIXJOB
 fi
@@ -159,6 +160,7 @@ Connects [trained-assist/pr-autofix](https://github.com/trained-assist/pr-autofi
 | Secret | Value |
 |--------|-------|
 | `OPENROUTER_API_KEY` | Free key from [openrouter.ai](https://openrouter.ai) |
+| `OPENCODE_GO_API_KEY` | Optional — OpenCode Go key; primary provider when set, OpenRouter becomes fallback |
 
 Optionally add `AUTOFIX_PAT` (Fine-Grained PAT with contents+pull_requests write) if your org restricts workflow write permissions.
 
