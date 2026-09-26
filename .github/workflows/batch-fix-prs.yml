@@ -99,7 +99,7 @@ jobs:
         if: steps.guard.outputs.skip == 'false'
         run: |
           curl -fsSL \
-            https://raw.githubusercontent.com/trained-assist/pr-autofix/v1.3.0/scripts/autofix.mjs \
+            https://raw.githubusercontent.com/trained-assist/pr-autofix/v1.3.1/scripts/autofix.mjs \
             -o /tmp/autofix-from-main.mjs
           echo "script lines: $(wc -l < /tmp/autofix-from-main.mjs)"
           node --check /tmp/autofix-from-main.mjs && echo "syntax OK"
