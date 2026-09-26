@@ -1,12 +1,15 @@
 {
   "version": 1,
-  "updated": "2026-09-26",
+  "updated": "2026-09-27",
   "defaultCanaryProfile": "trained-assist-product-owner",
+  "scheduleReference": "https://github.com/trained-assist/trained-assist-agent/issues/1489",
   "fieldNotes": {
     "domainName": "human domain label (recruiting / sales-crm / …)",
     "domain": "tri-state capability flag yes / unverified / no, NOT the domain name (issue #1511 status model). domain=yes requires scripts/staging/canaries/<skill>.json plus a green live canary",
     "coreTools": "core MCP tool file basenames under src/mcp-skills/tools/ that must exist whenever core=yes (checked by scripts/check-migration-matrix.mjs)",
-    "serving": "the single runtime switch: core | domain. serving=domain requires a config/mcp-skill-sources.json source with enabled:true and a non-empty profiles allowlist"
+    "serving": "the single runtime switch: core | domain. serving=domain requires a config/mcp-skill-sources.json source with enabled:true and a non-empty profiles allowlist",
+    "schedulable": "schedule axis (issue #1489, §1.3 / S3.1–S3.3): yes = a domain action already declares schedulability (allowedTriggers includes cron, optional schedule block) | planned = schedulability is part of the domain's #1489 rollout | no = not a scheduled use case",
+    "scheduleNote": "free-text evidence for the schedulable axis; MUST be non-empty when schedulable=yes (checked by scripts/check-migration-matrix.mjs)"
   },
   "entries": [
     {
@@ -34,6 +37,8 @@
       "core": "yes",
       "domain": "yes",
       "serving": "core",
+      "schedulable": "yes",
+      "scheduleNote": "hh_proactive_search declares allowedTriggers [user, cron, durable_task] (#1489 §1.3); today it runs on a dedicated 30-min timer in server.js — engine migration to cron-service is #1489 S7.1",
       "canaryProfile": "trained-assist-product-owner",
       "evidence": "scripts/staging/canaries/hh.json (pinned revision 2d194cd4a65f9ff3888aacdeea87afc33b0971b4, live canary #1463/#1466)",
       "ownerIssue": "#1470"
@@ -77,6 +82,8 @@
       "core": "yes",
       "domain": "no",
       "serving": "core",
+      "schedulable": "yes",
+      "scheduleNote": "expo auto_cron runs the expo pipeline on a schedule (#1489 §1.2); target is an expo publish action driven by cron-service (#1489 S8.3)",
       "canaryProfile": "trained-assist-product-owner",
       "evidence": "#1470 inventory section B (≈5 100 core lines, no canary yet)",
       "ownerIssue": "#1470"
@@ -97,6 +104,8 @@
       "core": "yes",
       "domain": "unverified",
       "serving": "core",
+      "schedulable": "planned",
+      "scheduleNote": "no schedule declaration yet; #1489 S8.4 uses a non-HH skill (freelance or engineering) to prove post-scheduling works without core changes",
       "canaryProfile": "trained-assist-product-owner",
       "evidence": "#1470 inventory section C — freelance-skill repo exists, outsource_* still in core; sibling mount only, no canary spec",
       "ownerIssue": "#1470"
@@ -125,6 +134,8 @@
       "core": "yes",
       "domain": "unverified",
       "serving": "core",
+      "schedulable": "planned",
+      "scheduleNote": "no schedule declaration yet; #1489 S8.4 uses a non-HH skill (freelance or engineering) to prove post-scheduling works without core changes",
       "canaryProfile": "trained-assist-product-owner",
       "evidence": "#1470 inventory section C — engineering repo exists (#1418), 60–63 still in core; no canary spec",
       "ownerIssue": "#1470"
@@ -148,6 +159,8 @@
       "core": "yes",
       "domain": "no",
       "serving": "core",
+      "schedulable": "no",
+      "scheduleNote": "no scheduled use case in #1489; optional low-demand domain",
       "canaryProfile": "trained-assist-product-owner",
       "evidence": "#1470 inventory section C — optional, low demand",
       "ownerIssue": "#1470"
@@ -167,6 +180,8 @@
       "core": "yes",
       "domain": "no",
       "serving": "core",
+      "schedulable": "no",
+      "scheduleNote": "no scheduled use case in #1489; optional low-demand domain",
       "canaryProfile": "trained-assist-product-owner",
       "evidence": "#1470 inventory section C — optional, low demand",
       "ownerIssue": "#1470"
@@ -193,6 +208,8 @@
       "core": "yes",
       "domain": "no",
       "serving": "core",
+      "schedulable": "no",
+      "scheduleNote": "no scheduled use case in #1489; optional low-priority domain",
       "canaryProfile": "trained-assist-product-owner",
       "evidence": "#1470 inventory section C — optional, low priority (tilda/illustrate/label)",
       "ownerIssue": "#1470"
