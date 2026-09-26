@@ -1,5 +1,5 @@
-Goal: Serve HH through the sealed approved MCP source (adapter wins over the sibling checkout) with a reversible core<->domain admin-config toggle — #1470 P0.1c, #1511.
+Goal: Phase 2 — extract @trained-assist/mcp-skill-testkit, enforce domain-skill repo rules, and ship the create-domain-skill scaffold (#1440).
 
-- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1528
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1532
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
