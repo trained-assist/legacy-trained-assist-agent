@@ -61,7 +61,6 @@
     "src/runner/intent-engine.js": {
       "removeIn": "P1.3-runner-vacancy",
       "modules": [
-        "hh-cold-search-schedule",
         "hh-vacancy"
       ]
     },

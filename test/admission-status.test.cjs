@@ -14,7 +14,7 @@ const opts = { taskId: 'task', user: { id: 42, username: 'test' }, secrets: { BO
 // MAX_CONCURRENT_TASKS). Per-profile cap waits were removed — a busy
 // lane/session is the one case where the "waiting for previous work" message
 // may appear.
-function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedToken = 'canonical-token' } = {}) {
+function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedToken = 'canonical-token', sessionsOnDisk = {}, scopeCalls = [] } = {}) {
   const source = fs.readFileSync(require.resolve('../src/runner'), 'utf8');
   const start = source.indexOf('function runTask(opts) {');
   const end = source.indexOf('// Returns context card string', start);
@@ -31,7 +31,12 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
     queuedSessions: new Set(),
     queuedByOwner: new Map(), pendingSessionStops: new Set(),
     ownerKey: (u, id) => `${u}\0${id}`, consumePendingStop: () => false,
-    legacyAdmissionScopes: () => ['lane:test'],
+    legacyAdmissionScopes: args => { scopeCalls.push(args); return ['lane:test']; },
+    getCurrentSessionId: () => null,
+    sessions: {
+      getSession: (_wd, id) => sessionsOnDisk[id] || null,
+      belongsToConversation: require('../src/session-store').belongsToConversation,
+    },
     fromLegacyTelegram: () => null, sessionShadow: { shadowCompare: () => null },
     admission: {
       isBusy: () => !!gate,
@@ -111,4 +116,32 @@ test('recruiter admission, runner replies and restart journal keep the originati
  await tick();h.gate.resolve();await done;
  assert.equal(original.BOT_TOKEN,'classic','concurrent classic tasks must retain their token');
  assert.ok(h.messages.some(m=>/Начинаю работу/.test(m)));
+});
+
+// 2026-09-26 incident: chat -5501536471 showed "Ожидаю завершения предыдущей работы"
+// with nothing running in it. The gateway's session classifier had handed it the
+// session of ANOTHER chat of the profile (s-1004371070440-…), whose live run held the
+// session writer guard. A foreign session must never feed admission or activity.
+test('foreign-chat session id is dropped before admission: no cross-chat queueing', async () => {
+  const scopeCalls = []; let seen;
+  const foreign = { id: 's-foreign', liveChatId: -1004371070440 };
+  const h = harness({
+    sessionsOnDisk: { 's-foreign': foreign }, scopeCalls,
+    taskOpts: { ...opts, user: { id: -5501536471, username: 'test' }, sessionId: 's-foreign' },
+    run: async o => { seen = o; },
+  });
+  await h.start(); await tick();
+  assert.equal(scopeCalls[0].sessionId, null, 'admission must not lock the other chat session');
+  assert.equal(seen.sessionId, null, 'run falls back to this chat own session');
+  assert.notEqual(seen.activitySessionId, 's-foreign', 'activity must not leak into the other chat');
+});
+
+test('own-chat session id is kept for admission (same-dialog ordering intact)', async () => {
+  const scopeCalls = [];
+  const h = harness({
+    sessionsOnDisk: { 's-own': { id: 's-own', liveChatId: 42 } }, scopeCalls,
+    taskOpts: { ...opts, sessionId: 's-own' },
+  });
+  await h.start(); await tick();
+  assert.equal(scopeCalls[0].sessionId, 's-own');
 });

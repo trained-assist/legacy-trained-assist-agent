@@ -213,7 +213,7 @@ let _secretsCache = null;
 const {
   fetchAllHhNegotiations, fetchDiscardedNegotiations, getHhDiscardedWithCache, hhCacheFile, getHhNegotiationsWithCache,
   syncHhMessagesToHistory, runHhScoringForUser,
-  buildProactiveUrlForScheduler, scheduleProactiveSearchRuns, scheduleHhBackgroundScoring,
+  buildProactiveUrlForScheduler, scheduleHhBackgroundScoring,
 } = createHhNegotiations({
   refreshHhToken: (...a) => refreshHhToken(...a),
   readChatId,
@@ -561,6 +561,7 @@ async function main() {
         url.pathname !== '/web/verify' && url.pathname !== '/web/projects' &&
         url.pathname !== '/web/project-create' &&
         url.pathname !== '/web/sessions-list' && url.pathname !== '/web/session-get' &&
+        url.pathname !== '/web/session-trace' &&
         url.pathname !== '/web/intake-file-bearer' &&
         url.pathname !== '/web/run-bearer' && url.pathname !== '/web/reply-bearer' &&
         url.pathname !== '/web/reproject-preview' && url.pathname !== '/web/reproject-adjust' &&
@@ -1998,7 +1999,8 @@ ${recent || '(пока нет)'}
 
   scheduleNalogExpiryChecks(secrets);
   scheduleHhBackgroundScoring();
-scheduleProactiveSearchRuns(secrets);
+// Cold search runs on the generic cron (#1489 S7.1): one job per vacancy, managed by
+// hh_proactive_schedule in hh-skill. No HH timer in core.
   if (process.env.TEST_MODE !== '1') scheduleGtdController(secrets);
   // Generic cron engine (#1489): ticks only on CRON_SCHEDULER_ROLE=primary, never on staging.
   if (process.env.TEST_MODE !== '1') require('./cron-runtime').startScheduler();

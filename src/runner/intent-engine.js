@@ -1377,8 +1377,11 @@ async function runQuickAnswerUnchecked(task, userId, workDir, openrouterKey = nu
   }
 
   if (notificationIntents.HH_SEARCH_OFF_INTENT.test(task) && userId && workDir) {
+    // Through the provider: stops the profile's cron jobs and legacy state (#1489 S7.1).
     try {
-      require('../hh-cold-search-schedule').disableSearches(userId, workDir);
+      const out = JSON.parse(await require('../mcp-action').runMcpTool({
+        tool: 'hh_proactive_schedule', params: { action: 'disable' }, username: userId, workDir, timeoutMs: 20000 }) || '{}');
+      if (out.error || !out.ok) return 'Не удалось остановить автопоиск. Попробуй ещё раз.';
       return 'Автопоиск выключен для всех вакансий профиля. Ручной поиск доступен.';
     } catch { return 'Не удалось остановить автопоиск. Попробуй ещё раз.'; }
   }
