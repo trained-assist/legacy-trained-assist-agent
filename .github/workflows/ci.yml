@@ -59,6 +59,8 @@ jobs:
         run: npm test
       - name: Env-sync check
         run: node scripts/check-env-sync.js
+      - name: Migration matrix matches reality (issue #1511)
+        run: node scripts/check-migration-matrix.mjs
       - name: No direct connect-pending outside user-tokens.js
         run: |
           if grep -rn "connect-pending" src/ --include="*.js" | grep -v "src/user-tokens.js" | grep -v "src/server.js"; then

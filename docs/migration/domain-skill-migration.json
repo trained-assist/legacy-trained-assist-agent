@@ -1,0 +1,201 @@
+{
+  "version": 1,
+  "updated": "2026-09-26",
+  "defaultCanaryProfile": "trained-assist-product-owner",
+  "fieldNotes": {
+    "domainName": "human domain label (recruiting / sales-crm / …)",
+    "domain": "tri-state capability flag yes / unverified / no, NOT the domain name (issue #1511 status model). domain=yes requires scripts/staging/canaries/<skill>.json plus a green live canary",
+    "coreTools": "core MCP tool file basenames under src/mcp-skills/tools/ that must exist whenever core=yes (checked by scripts/check-migration-matrix.mjs)",
+    "serving": "the single runtime switch: core | domain. serving=domain requires a config/mcp-skill-sources.json source with enabled:true and a non-empty profiles allowlist"
+  },
+  "entries": [
+    {
+      "skill": "hh",
+      "domainName": "recruiting",
+      "repo": "trained-assist/trained-assist-hh-skill",
+      "mcpServerId": "hh-skills",
+      "actions": [
+        "calltips_get_login", "calltips_prepare", "calltips_list_candidates",
+        "boolean_search", "jd_generate", "interview_questions_bank", "salary_benchmark", "sourcing_checklist",
+        "interview_set_criteria", "interview_get_criteria", "interview_analyze",
+        "candidate_report_context", "candidate_report_add_note", "candidate_report_render",
+        "applylink_create_vacancy", "applylink_list_vacancies", "applylink_get_candidates",
+        "demo_activate", "demo_status", "demo_candidates", "demo_next_wave", "demo_candidate_profile", "demo_reply", "demo_deactivate"
+      ],
+      "coreTools": [
+        "93-calltips.js",
+        "96-recruiter-tools.js",
+        "99-interview-analysis.js",
+        "97b-candidate-client-report.js",
+        "41-applylink.js",
+        "98-demo.js"
+      ],
+      "plan": "in-progress",
+      "core": "yes",
+      "domain": "yes",
+      "serving": "core",
+      "canaryProfile": "trained-assist-product-owner",
+      "evidence": "scripts/staging/canaries/hh.json (pinned revision 2d194cd4a65f9ff3888aacdeea87afc33b0971b4, live canary #1463/#1466)",
+      "ownerIssue": "#1470"
+    },
+    {
+      "skill": "expo",
+      "domainName": "sales-crm",
+      "repo": "trained-assist/trained-assist-sales-skill",
+      "mcpServerId": "sales-skills",
+      "actions": [
+        "weeek_set_token", "weeek_status", "weeek_list_funnels", "weeek_list_statuses", "weeek_list_deals",
+        "weeek_get_deal", "weeek_create_deal", "weeek_update_deal", "weeek_delete_deal",
+        "weeek_list_contacts", "weeek_get_contact", "weeek_create_contact", "weeek_update_contact",
+        "weeek_add_task", "weeek_add_comment",
+        "expo_enable", "expo_find_participants", "expo_parse_participants",
+        "expo_classify_targets", "expo_generate_ex_array", "expo_check_target_revenue",
+        "expo_pipeline_get_criteria", "expo_pipeline_set_criteria", "expo_pipeline_qualify",
+        "expo_pipeline_status", "expo_pipeline_get_site_config", "expo_pipeline_set_site_config",
+        "expo_build_catalog", "expo_deploy_catalog", "expo_pipeline_run",
+        "flexi_status", "flexi_set_exhibition", "flexi_get_notes", "flexi_get_notes_bulk",
+        "flexi_add_note", "flexi_reject_company", "flexi_unreject_company",
+        "company_set_dadata_token", "company_find_by_name", "company_get_by_inn", "company_review", "company_find_by_email",
+        "inn_status", "inn_set_dadata_token", "inn_set_checko_key", "inn_set_rusprofile_cookie", "inn_enrich_batch",
+        "dadata_suggest", "dadata_find", "dadata_address",
+        "checko_discover", "checko_get", "checko_qualify"
+      ],
+      "coreTools": [
+        "30-weeek.js",
+        "85-expo.js",
+        "86-expo-flexi.js",
+        "87-expo-pipeline.js",
+        "88-expo-catalog.js",
+        "89-expo-pipeline-run.js",
+        "92-flexi-sales.js",
+        "40-company.js",
+        "70-inn-enrichment.js",
+        "71-dadata.js",
+        "72-checko.js"
+      ],
+      "plan": "planned",
+      "core": "yes",
+      "domain": "no",
+      "serving": "core",
+      "canaryProfile": "trained-assist-product-owner",
+      "evidence": "#1470 inventory section B (≈5 100 core lines, no canary yet)",
+      "ownerIssue": "#1470"
+    },
+    {
+      "skill": "outsource",
+      "domainName": "freelance",
+      "repo": "trained-assist/trained-assist-freelance-skill",
+      "mcpServerId": "freelance-skills",
+      "actions": [
+        "outsource_new", "outsource_assess", "outsource_add_info",
+        "outsource_questions", "outsource_list", "outsource_set_folder"
+      ],
+      "coreTools": [
+        "94-outsource-project.js"
+      ],
+      "plan": "planned",
+      "core": "yes",
+      "domain": "unverified",
+      "serving": "core",
+      "canaryProfile": "trained-assist-product-owner",
+      "evidence": "#1470 inventory section C — freelance-skill repo exists, outsource_* still in core; sibling mount only, no canary spec",
+      "ownerIssue": "#1470"
+    },
+    {
+      "skill": "engineering",
+      "domainName": "engineering",
+      "repo": "trained-assist/trained-assist-engineering",
+      "mcpServerId": "engineering-skills",
+      "actions": [
+        "github_status", "github_list_repos", "github_get_file", "github_list_issues",
+        "github_create_issue", "github_update_issue", "github_add_comment", "github_list_prs",
+        "github_create_pr", "github_search", "github_create_or_update_file",
+        "dev_workspace_setup", "dev_new_repo",
+        "ba_development_playbook", "ba_clarify_requirements", "ba_write_spec",
+        "ba_client_spec_template", "ba_export_client_doc",
+        "cicd_track_pr"
+      ],
+      "coreTools": [
+        "60-github.js",
+        "61-dev.js",
+        "62-business-analyst.js",
+        "63-ci-cd.js"
+      ],
+      "plan": "planned",
+      "core": "yes",
+      "domain": "unverified",
+      "serving": "core",
+      "canaryProfile": "trained-assist-product-owner",
+      "evidence": "#1470 inventory section C — engineering repo exists (#1418), 60–63 still in core; no canary spec",
+      "ownerIssue": "#1470"
+    },
+    {
+      "skill": "getcourse",
+      "domainName": "edu",
+      "repo": "trained-assist/trained-assist-edu-skill",
+      "mcpServerId": "edu-skills",
+      "actions": [
+        "gc_status", "gc_connect", "gc_user_add", "gc_user_find", "gc_group_courses", "gc_group_list",
+        "gc_user_trainings", "gc_order_list", "gc_user_notifications", "gc_course_list",
+        "gc_course_create", "gc_section_create", "gc_lesson_create", "gc_lesson_add_video",
+        "gc_lesson_add_text", "gc_lesson_sort", "gc_discover", "gc_api_call"
+      ],
+      "coreTools": [
+        "80-getcourse.js",
+        "81-gc-discovery.js"
+      ],
+      "plan": "planned",
+      "core": "yes",
+      "domain": "no",
+      "serving": "core",
+      "canaryProfile": "trained-assist-product-owner",
+      "evidence": "#1470 inventory section C — optional, low demand",
+      "ownerIssue": "#1470"
+    },
+    {
+      "skill": "nalog",
+      "domainName": "finance",
+      "repo": "trained-assist/trained-assist-finance-skill",
+      "mcpServerId": "finance-skills",
+      "actions": [
+        "nalog_get_profile", "nalog_get_incomes", "nalog_create_receipt", "nalog_refresh_token"
+      ],
+      "coreTools": [
+        "10-nalog.js"
+      ],
+      "plan": "planned",
+      "core": "yes",
+      "domain": "no",
+      "serving": "core",
+      "canaryProfile": "trained-assist-product-owner",
+      "evidence": "#1470 inventory section C — optional, low demand",
+      "ownerIssue": "#1470"
+    },
+    {
+      "skill": "marketing",
+      "domainName": "marketing",
+      "repo": "trained-assist/trained-assist-marketing-skill",
+      "mcpServerId": "marketing-skills",
+      "actions": [
+        "tilda_list_all_projects", "tilda_set_config", "tilda_status", "tilda_list_pages",
+        "tilda_get_page", "tilda_backup_page", "tilda_create_staging", "tilda_publish_page",
+        "tilda_get_blocks", "tilda_save_block",
+        "illustrate_setup", "illustrate_providers", "illustrate_styles", "illustrate_preview_prompt",
+        "illustrate_generate", "illustrate_refine", "illustrate_tips",
+        "image_label"
+      ],
+      "coreTools": [
+        "20-tilda.js",
+        "95-illustrate.js",
+        "96-label.js"
+      ],
+      "plan": "planned",
+      "core": "yes",
+      "domain": "no",
+      "serving": "core",
+      "canaryProfile": "trained-assist-product-owner",
+      "evidence": "#1470 inventory section C — optional, low priority (tilda/illustrate/label)",
+      "ownerIssue": "#1470"
+    }
+  ]
+}
