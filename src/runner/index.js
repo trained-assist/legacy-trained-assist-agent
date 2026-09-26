@@ -708,6 +708,19 @@ function runTask(opts) {
     // this fixed set of intents) — fall through to the normal queued path as a safety net.
   }
 
+  // A session of ANOTHER chat/topic of this profile is never ours (the gateway's remembered
+  // id can leak across chats, e.g. its session classifier picks a sibling chat's dialog).
+  // resolveRunSession already drops it for the run itself — drop it HERE too, before the
+  // admission scopes and activity are derived from it, or this chat queues behind the
+  // other chat's live run ("Ожидаю завершения предыдущей работы" with nothing running).
+  if (opts.sessionId && !opts.webExactSession && !opts.forceNew && opts.user.id) {
+    const claimed = sessions.getSession(opts.user.workDir, opts.sessionId);
+    if (claimed && !sessions.belongsToConversation(claimed, opts.user.id, runThreadId)) {
+      console.warn('[%s] foreign session %s dropped for chat=%s thread=%s', opts.taskId, opts.sessionId, opts.user.id, runThreadId);
+      opts.sessionId = null;
+      if (opts.activitySessionId === claimed.id) delete opts.activitySessionId;
+    }
+  }
   if (!Object.hasOwn(opts, 'activitySessionId')) opts.activitySessionId = opts.sessionId || getCurrentSessionId(opts.user.workDir, opts.user.id, opts.user.audience, runThreadId) || null;
   if (opts.sessionId && !opts.forceNew && opts.user.id) {
     try {
