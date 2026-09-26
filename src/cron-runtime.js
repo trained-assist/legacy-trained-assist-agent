@@ -5,35 +5,42 @@
 //
 // - Registry: action manifests of the sibling skill providers. Only actions
 //   whose manifest lists 'cron' in allowedTriggers can be scheduled — nothing is
-//   inferred from tool names. Today that is the HH provider; generalising the
-//   headless transport to every sibling is P3 (S3.4).
+//   inferred from tool names. Every present sibling (src/skill-siblings.js) that
+//   ships a committed action-provider-manifest.json is registered (S3.4).
 // - Transport: the scoped-child router (action-transport → mcp-action), the same
 //   per-call USER_ID/WORK_DIR isolation as every MCP tool call.
 // - Role: only the host with CRON_SCHEDULER_ROLE=primary ticks. Staging never
 //   ticks (STAGING_ROOT set by the staging isolation harness), whatever the env.
 
 const fs = require('fs');
-const path = require('path');
 const { ActionProviderRegistry } = require('./action-provider-registry');
 const { ActionExecutions } = require('./action-executions');
 const { createMcpTransport } = require('./action-transport');
 const { createCronService } = require('./cron-service');
+const { presentSiblings } = require('./skill-siblings');
 
 const TICK_INTERVAL_MS = 60 * 1000;
-// The provider's committed, core-valid manifest (built by its scripts/build-manifest.cjs
+// Each provider's committed, core-valid manifest (built by its scripts/build-manifest.cjs
 // and checked in CI). Static JSON: no provider code runs in core to learn its policy.
-// Previously this read src/action-manifest.js, which existed only as an untracked
-// file on the prod host (#1502) — a clean host would silently lose HH from cron.
-const HH_MANIFEST = path.join(__dirname, '..', '..', 'trained-assist-hh-skill', 'action-provider-manifest.json');
+// Never an untracked host-only file (#1502) — a clean host must schedule the same set.
+function siblingManifests(log, root) {
+  const list = [];
+  for (const s of presentSiblings(root ? { root } : undefined)) {
+    if (!fs.existsSync(s.actionManifestPath)) continue;
+    try { list.push(JSON.parse(fs.readFileSync(s.actionManifestPath, 'utf8'))); }
+    catch (err) { log(`[cron] provider ${s.id} manifest unreadable: ${err.message}`); }
+  }
+  return list;
+}
 
 function schedulerRole(env = process.env) {
   if (env.STAGING_ROOT) return 'staging';
   return env.CRON_SCHEDULER_ROLE === 'primary' ? 'primary' : 'off';
 }
 
-function buildRegistry({ manifests = null, log = () => {} } = {}) {
+function buildRegistry({ manifests = null, root = null, log = () => {} } = {}) {
   const registry = new ActionProviderRegistry();
-  const list = manifests || (fs.existsSync(HH_MANIFEST) ? [JSON.parse(fs.readFileSync(HH_MANIFEST, 'utf8'))] : []);
+  const list = manifests || siblingManifests(log, root);
   for (const manifest of list) {
     // One bad provider must not take the scheduler down for the others.
     try { registry.register(manifest); }
