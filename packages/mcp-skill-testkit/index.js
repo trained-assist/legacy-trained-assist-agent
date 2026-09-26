@@ -9,6 +9,7 @@ const { fakeProvider, FAKE_PROVIDER_ENTRYPOINT, DEFAULT_TOOLS } = require('./lib
 const { replayFixtures, loadFixtures } = require('./lib/replay-fixtures');
 const { assertManifestConforms, DEFAULT_SCHEMA } = require('./lib/manifest');
 const { expectToolContract, resultText } = require('./lib/tool-contract');
+const { artifactDigest } = require('./lib/artifact-digest');
 const { checkDomainSkillRepo, reportDomainSkillRepo, REQUIRED_ARTIFACTS } = require('./lib/conformance');
 
 module.exports = {
@@ -17,6 +18,7 @@ module.exports = {
   replayFixtures,
   assertManifestConforms,
   expectToolContract,
+  artifactDigest,
   checkDomainSkillRepo,
   reportDomainSkillRepo,
   // extras used by core / advanced consumers

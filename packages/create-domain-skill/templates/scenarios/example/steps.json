@@ -1,0 +1,11 @@
+{
+  "name": "example-happy-path",
+  "source": "docs/user-scenarios/{{domain}}/01-{{domain}}-overview.md",
+  "steps": [
+    {
+      "call": "tools/call",
+      "params": { "name": "example_status", "arguments": {} },
+      "expect": { "content": [{ "type": "text" }] }
+    }
+  ]
+}

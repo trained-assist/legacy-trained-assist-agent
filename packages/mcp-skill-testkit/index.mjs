@@ -7,6 +7,7 @@ export const {
   replayFixtures,
   assertManifestConforms,
   expectToolContract,
+  artifactDigest,
   checkDomainSkillRepo,
   reportDomainSkillRepo,
   loadFixtures,
