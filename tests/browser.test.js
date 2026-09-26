@@ -136,3 +136,49 @@ describe('writeMcpConfig engineering-skills registration', () => {
     expect(config.mcpServers).toHaveProperty('trained-skills');
   });
 });
+
+// Issue #1470 P0.1c / #1511: the HH serving toggle. When the host source runtime
+// materializes a sealed hh source for the run (extraServers['hh-skills']) that
+// adapter must win and the sibling checkout must NOT be registered — otherwise
+// the sibling name would shadow the adapter via mergeAdapterServers(). With no
+// sealed server for the run (admin config rolled back, profile ineligible,
+// artifact unavailable) the sibling is the core fallback.
+describe('writeMcpConfig sealed-source toggle (hh core <-> domain)', () => {
+  const sealedServers = () => ({
+    'hh-skills': { command: process.execPath, args: ['/opt/adapter.js', '--binding-file', '/run/hh-skills/run-binding.json'] },
+  });
+
+  function presentSibling(name = 'hh-sibling-index.js') {
+    const p = path.join(tmpDir, name);
+    fs.writeFileSync(p, '// sibling MCP entry');
+    return p;
+  }
+
+  it('a sealed hh source wins over a present sibling checkout', () => {
+    const sibling = presentSibling();
+    const configPath = writeMcpConfig(tmpDir, null, { extraServers: sealedServers(), siblingPaths: { 'hh-skills': sibling } });
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+    expect(config.mcpServers['hh-skills'].args[0]).toBe('/opt/adapter.js');
+    expect(config.mcpServers['hh-skills'].args.join(' ')).toContain('run-binding.json');
+    expect(config.mcpServers['hh-skills'].args[0]).not.toBe(sibling);
+    expect(config.mcpServers).toHaveProperty('trained-skills');
+  });
+
+  it('falls back to the sibling (core) when no sealed server is materialized for the run', () => {
+    const sibling = presentSibling();
+    const configPath = writeMcpConfig(tmpDir, null, { siblingPaths: { 'hh-skills': sibling } });
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+    expect(config.mcpServers['hh-skills'].command).toBe('node');
+    expect(config.mcpServers['hh-skills'].args[0]).toBe(sibling);
+  });
+
+  it('does not resurrect a stale sibling path for a sealed run (negative test)', () => {
+    const sibling = presentSibling();
+    const configPath = writeMcpConfig(tmpDir, null, { extraServers: sealedServers(), siblingPaths: { 'hh-skills': sibling } });
+    const written = fs.readFileSync(configPath, 'utf8');
+
+    expect(written).not.toContain(sibling);
+  });
+});
