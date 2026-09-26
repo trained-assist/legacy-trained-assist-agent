@@ -41,7 +41,7 @@ test('no-op without MEDIA_GATEWAY_URL', async () => {
   assert.equal(fetched.length, 0);
 });
 
-test('no-op without a positive chatId (web/internal runs)', async () => {
+test('no-op without a real chatId (web/internal sentinel 0 or non-numeric)', async () => {
   process.env.MEDIA_GATEWAY_URL = 'https://gw.example/';
   delete require.cache[require.resolve('../src/gateway-callback')];
   const { notifyRunFinished } = cb();
@@ -50,6 +50,17 @@ test('no-op without a positive chatId (web/internal runs)', async () => {
   assert.equal(await notifyRunFinished({ chatId: null, secret: 's' }), false);
   assert.equal(await notifyRunFinished({ chatId: 'nope', secret: 's' }), false);
   assert.equal(fetched.length, 0);
+});
+
+test('negative chatId (Telegram group) is delivered, not dropped (#1534 regression)', async () => {
+  process.env.MEDIA_GATEWAY_URL = 'https://gw.example';
+  delete require.cache[require.resolve('../src/gateway-callback')];
+  const { notifyRunFinished } = cb();
+  mockFetchOk();
+  const sent = await notifyRunFinished({ chatId: -5578467476, requestId: 'intake-abc', secret: 's' });
+  assert.equal(sent, true);
+  assert.equal(fetched.length, 1);
+  assert.equal(JSON.parse(fetched[0].init.body).chatId, -5578467476);
 });
 
 test('POSTs run-finished with bearer, trailing slash stripped, full payload', async () => {
@@ -117,4 +128,21 @@ test('isChatTaskRunning: counter true from runTask entry until settle', async ()
   // so it has run by the time our await resumes. MEDIA_GATEWAY_URL is unset
   // in this test env → notify is a no-op.
   assert.equal(runner.isChatTaskRunning(chatId), false);
+});
+
+test('isChatTaskRunning tracks NEGATIVE group chatId too (#1534 regression)', async () => {
+  const runner = require('../src/runner');
+  const groupChatId = -5578467476;
+  assert.equal(runner.isChatTaskRunning(groupChatId), false);
+  const p = runner.runTask({
+    taskId: 'gw-cb-group-test',
+    user: { id: groupChatId, username: 'gwtest', workDir: null, audience: 'default' },
+    task: 'стоп',
+    secrets: {},
+    threadId: null,
+    requestId: 'gw-cb-group-req-1',
+  });
+  assert.equal(runner.isChatTaskRunning(groupChatId), true);
+  await p;
+  assert.equal(runner.isChatTaskRunning(groupChatId), false);
 });

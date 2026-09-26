@@ -15,7 +15,8 @@ const MEDIA_GATEWAY_URL = (process.env.MEDIA_GATEWAY_URL || '').replace(/\/+$/, 
 /**
  * Notify the Telegram gateway that a run for this chat has finished.
  * No-op when the gateway URL is not configured (dev/tests) or the chat is
- * not a real Telegram chat (web/internal runs, chatId <= 0).
+ * not a real Telegram chat (web/internal runs use the chatId 0 sentinel).
+ * Telegram group/supergroup ids are NEGATIVE and must be delivered too.
  *
  * @param {object} p
  * @param {number|string} p.chatId   Telegram chat the run streamed into
@@ -30,7 +31,9 @@ const MEDIA_GATEWAY_URL = (process.env.MEDIA_GATEWAY_URL || '').replace(/\/+$/, 
 async function notifyRunFinished({ chatId, threadId = null, requestId = null, taskId = null, outcome = 'done', secret = process.env.AGENT_SECRET }) {
   if (!MEDIA_GATEWAY_URL) return false;
   const numericChatId = Number(chatId);
-  if (!Number.isSafeInteger(numericChatId) || numericChatId <= 0) return false;
+  // 0 is the web/internal sentinel; any other safe integer is a real chat,
+  // including NEGATIVE group/supergroup ids.
+  if (!Number.isSafeInteger(numericChatId) || numericChatId === 0) return false;
   if (!secret) return false;
   try {
     const res = await fetch(`${MEDIA_GATEWAY_URL}/internal/run-finished`, {

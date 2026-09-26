@@ -567,7 +567,13 @@ function killTaskByUsername(username, audience = null) {
 // IntakeBuffer `busy` for exactly this window.
 function runTask(opts) {
   const delivery = taskDelivery(opts);
-  const acceptedChatId = delivery.user?.id > 0 ? delivery.user.id : null;
+  // Telegram group/supergroup ids are NEGATIVE — only 0 is the internal/web
+  // sentinel (no real chat). Restricting this to >0 silently dropped every
+  // group run from the counter and the run-finished push, so a group chat's
+  // IntakeBuffer stayed `busy` for BUSY_MAX_MS (45 min) after each run
+  // (#1534 regression: «▶️ Запустить» dead in every group).
+  const rawChatId = Number(delivery.user?.id);
+  const acceptedChatId = Number.isSafeInteger(rawChatId) && rawChatId !== 0 ? rawChatId : null;
   _bumpAcceptedByChat(acceptedChatId);
   let ret;
   try {
