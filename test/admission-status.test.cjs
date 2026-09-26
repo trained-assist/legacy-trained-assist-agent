@@ -16,7 +16,11 @@ const opts = { taskId: 'task', user: { id: 42, username: 'test' }, secrets: { BO
 // may appear.
 function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedToken = 'canonical-token', sessionsOnDisk = {}, scopeCalls = [] } = {}) {
   const source = fs.readFileSync(require.resolve('../src/runner'), 'utf8');
-  const start = source.indexOf('function runTask(opts) {');
+  // Slice the real admission body. Epic #1527 PR1 renamed the public runTask
+  // into a thin acceptedByChat/run-finished wrapper around _runTaskInner — the
+  // harness exercises admission, so it pins the inner function (the wrapper's
+  // helpers live outside this slice and would ReferenceError in the sandbox).
+  const start = source.indexOf('function _runTaskInner(opts) {');
   const end = source.indexOf('// Returns context card string', start);
   const messages = [], journal = new Map();
   const gate = chatPending ? deferred() : null;
@@ -49,7 +53,10 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
     _runTask: run,
   };
   vm.createContext(sandbox);
-  vm.runInContext(source.slice(start, end), sandbox);
+  // The slice starts at _runTaskInner (see the start-marker comment above) —
+  // alias it back to the name the harness calls: this test exercises the
+  // admission body, not the acceptedByChat wrapper.
+  vm.runInContext(source.slice(start, end) + '\nrunTask = _runTaskInner;', sandbox);
   return { start: () => sandbox.runTask(taskOpts), messages, journal, gate };
 }
 
