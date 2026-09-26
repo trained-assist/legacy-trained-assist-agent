@@ -40,7 +40,7 @@ function fixtureSnapshot(source = fixtureSource()) {
   return { version: 1, generationId: 'gen-e2e', sources: [source], core: { servers: [] }, diagnostics: [] };
 }
 
-async function harness({ assetLoader } = {}) {
+async function harness({ assetLoader, providerEnvs, providerArgs = [] } = {}) {
   const root = tmpDir();
   const executions = new ActionExecutions(path.join(root, 'ops.db'));
   cleanups.push(() => executions.db.close());
@@ -54,7 +54,7 @@ async function harness({ assetLoader } = {}) {
   await broker.listen(socketPath);
   const runBinding = { engineRunId: 'run-1', rootTaskId: 'task-1', profileId: 'alice', projectId: null,
     trigger: 'user', origin: 'mcp', providerId: 'fake' };
-  broker.registerCapability('cap-1', { generation: { actions: registry }, runBinding });
+  broker.registerCapability('cap-1', { generation: { actions: registry }, runBinding, providerEnvs });
   cleanups.push(() => broker.close());
 
   const source = fixtureSource();
@@ -73,9 +73,9 @@ async function harness({ assetLoader } = {}) {
   fs.writeFileSync(bindingPath, JSON.stringify(binding, null, 2));
   const adapter = createAdapter({
     binding, snapshot, source, journal, executionRoot: path.join(root, 'leases'), hostId: 'host-1',
-    assetLoader: assetLoader || (async () => ({
-      command: process.execPath, argv: [FIXTURE], entrypoint: FIXTURE, copyPath: FIXTURE,
-      env: { PATH: process.env.PATH || '' }, release: () => {},
+    assetLoader: assetLoader || (async ({ envAllowlist }) => ({
+      command: process.execPath, argv: [FIXTURE, ...providerArgs], entrypoint: FIXTURE, copyPath: FIXTURE,
+      env: envAllowlist, release: () => {},
     })),
   });
   cleanups.push(() => adapter.close('test'));
@@ -127,5 +127,43 @@ describe('core adapter E2E (engine -> adapter -> broker -> invokeAction -> provi
     const rec = journal.get(adapter.leaseKey).record;
     expect(rec.lifecycleState).toBe('released');
     expect(rec.cleanupReason).toBe('done');
+  });
+});
+
+describe('provider env policy (epic #1470 P0.1a)', () => {
+  const HOST_ENV = { PATH: process.env.PATH || '', HOME: '/srv/home', AGENT_SECRET: 's3cret',
+    NODE_OPTIONS: '--require /evil.js', UNLISTED_SECRET: 'nope' };
+  const { buildProviderEnv, validatePolicy } = require('../src/mcp-provider-env');
+  const policy = validatePolicy({ version: 1, providers: { fake: {
+    identity: ['USER_ID'], hostPaths: ['HOME'], passthrough: ['AGENT_SECRET'] } } });
+
+  it('provider child receives host-built env: identity from the binding, only allowlisted keys', async () => {
+    const env = buildProviderEnv({ policy, providerId: 'fake', profileId: 'alice', hostEnv: HOST_ENV });
+    const { adapter } = await harness({ providerEnvs: { fake: env }, providerArgs: ['--echo-env'] });
+    const result = await adapter.callTool('marker_read', { q: 'env', profileId: 'bob' });
+    expect(result.status).toBe('succeeded');
+    expect(result.output.userId).toBe('alice');
+    expect(result.output.envKeys).toEqual(expect.arrayContaining(['AGENT_SECRET', 'HOME', 'PATH', 'USER_ID']));
+    expect(result.output.envKeys).not.toContain('NODE_OPTIONS');
+    expect(result.output.envKeys).not.toContain('UNLISTED_SECRET');
+  });
+
+  it('without a host env for the provider the child gets PATH only (no adapter env inheritance)', async () => {
+    const { adapter } = await harness({ providerArgs: ['--echo-env'] });
+    const result = await adapter.callTool('marker_read', { q: 'env' });
+    expect(result.status).toBe('succeeded');
+    expect(result.output.userId).toBe(null);
+    expect(result.output.envKeys.filter(k => !['PATH', 'PWD', 'SHLVL', '_'].includes(k))).toEqual([]);
+  });
+
+  it('broker refuses env for a provider outside the run or with a bad capability', async () => {
+    const { broker, binding } = await harness({ providerEnvs: { fake: { PATH: '/bin', AGENT_SECRET: 'x' } } });
+    const { ActionBrokerClient } = require('../src/mcp-action-broker');
+    const client = await ActionBrokerClient.connect(binding.brokerEndpoint, { capability: 'cap-1', onProvider: async () => null });
+    cleanups.push(() => client.close());
+    await expect(client.providerEnv('other')).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(await client.providerEnv('fake')).toEqual({ PATH: '/bin', AGENT_SECRET: 'x' });
+    broker.revokeCapability('cap-1');
+    await expect(client.providerEnv('fake')).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 });

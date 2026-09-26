@@ -11,6 +11,9 @@ function ok(c, m) { c ? (pass++) : (fail++, console.log('FAIL:', m)); }
 // AGENT_TOKENS_ROOT must be set before requiring user-tokens/runner (module-load-time const).
 const tokensRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pin-card-tokens-'));
 process.env.AGENT_TOKENS_ROOT = tokensRoot;
+// Issue #1467: ladder health is now read from ~/.config/opencode/model-health.json (per-model,
+// shared). Isolate it so a real VM's backoff state cannot change which rung this test resolves.
+process.env.OPENCODE_MODEL_HEALTH_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pin-card-health-')), 'model-health.json');
 
 const { _pin } = require('../src/runner');
 const { buildContextCard } = _pin;

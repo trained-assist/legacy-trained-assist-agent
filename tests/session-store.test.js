@@ -57,6 +57,26 @@ describe('appendUserMessage', () => {
     expect(session.messages[1].role).toBe('user');
     expect(session.messages[1].content).toBe('second message');
   });
+
+  it('skips a user message identical to the previous one (restart [ПРОДОЛЖЕНИЕ] stacking)', () => {
+    const id = createSession(tmpDir, { task: 'task' });
+    appendUserMessage(tmpDir, id, '[ПРОДОЛЖЕНИЕ] Сервер перезапустился');
+    appendUserMessage(tmpDir, id, '[ПРОДОЛЖЕНИЕ] Сервер перезапустился');
+    appendUserMessage(tmpDir, id, '[ПРОДОЛЖЕНИЕ] Сервер перезапустился');
+
+    const session = getSession(tmpDir, id);
+    expect(session.messages).toHaveLength(2); // task + one continuation, not 4
+    expect(session.messages.filter(m => m.content === '[ПРОДОЛЖЕНИЕ] Сервер перезапустился')).toHaveLength(1);
+  });
+
+  it('still records a distinct follow-up after an identical message', () => {
+    const id = createSession(tmpDir, { task: 'task' });
+    appendUserMessage(tmpDir, id, '[ПРОДОЛЖЕНИЕ] Сервер перезапустился');
+    appendUserMessage(tmpDir, id, 'реальное продолжение');
+
+    const session = getSession(tmpDir, id);
+    expect(session.messages.map(m => m.content)).toEqual(['task', '[ПРОДОЛЖЕНИЕ] Сервер перезапустился', 'реальное продолжение']);
+  });
 });
 
 describe('appendReply', () => {

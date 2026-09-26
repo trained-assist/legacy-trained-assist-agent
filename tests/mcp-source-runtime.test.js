@@ -60,12 +60,13 @@ function hostBinding(overrides = {}) {
     projectId: null, trigger: 'user', origin: 'mcp', channel: null, resourceBindingVersion: 'v1', ...overrides };
 }
 
-async function runtimeWith({ generation, executions } = {}) {
+async function runtimeWith({ generation, executions, envPolicy, hostEnv } = {}) {
   const root = tmpDir();
   const ex = executions || new ActionExecutions(path.join(root, 'ops.db'));
   if (!executions) cleanups.push(() => ex.db.close());
   const runtime = createSourceRuntime({ generation: generation || fakeGeneration(), executions: ex,
-    runtimeRoot: root, socketPath: path.join(root, 'broker.sock') });
+    runtimeRoot: root, socketPath: path.join(root, 'broker.sock'),
+    envPolicy: envPolicy ?? { version: 1, providers: {} }, hostEnv });
   cleanups.push(() => runtime.close());
   return { runtime, ex, root };
 }
@@ -108,6 +109,23 @@ describe('source runtime host wiring', () => {
     expect(result.status).toBe('succeeded');
     expect(result.output).toEqual({ tool: 'marker_read', q: 'host' });
     run.release();
+  });
+
+  it('hands the provider a host-built env over the capability, never via the binding file (#1470 P0.1a)', async () => {
+    const { runtime } = await runtimeWith({
+      envPolicy: { version: 1, providers: { fake: { identity: ['USER_ID'], passthrough: ['AGENT_SECRET'] } } },
+      hostEnv: { PATH: '/bin', AGENT_SECRET: 'host-secret-value', OTHER_SECRET: 'nope' },
+    });
+    const run = await runtime.prepareRun({ hostRunBinding: hostBinding(), runtimeDir: path.join(tmpDir(), 'run-env') });
+    const bindingText = fs.readFileSync(path.join(run.runtimeDir, 'fake-skills', 'run-binding.json'), 'utf8');
+    expect(bindingText).not.toContain('host-secret-value');
+    const binding = JSON.parse(bindingText);
+    const client = await ActionBrokerClient.connect(binding.brokerEndpoint, {
+      capability: binding.brokerCapability, onProvider: async () => null });
+    cleanups.push(() => client.close());
+    expect(await client.providerEnv('fake')).toEqual({ PATH: '/bin', USER_ID: 'alice', AGENT_SECRET: 'host-secret-value' });
+    run.release();
+    await expect(client.providerEnv('fake')).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
   it('never shadows an existing core server name', () => {

@@ -13,12 +13,13 @@ const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag } = require('../auth
 const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice } = require('../engine-crash-policy');
 const opencodeLadder = require('../opencode-ladder');
 const opencodeGoToggle = require('../opencode-go-toggle');
-const { MAX_RETRIES: MAX_INCOMPLETE_RETRIES, getRetryDelayMs } = require('../retry-policy');
+const { MAX_RETRIES: MAX_INCOMPLETE_RETRIES, getRetryDelayMs, isTestMode } = require('../retry-policy');
 const { recordUsage } = require('../usage-store');
 const { classifyDeterministic: classifyFailureDeterministic } = require('../failure-classifier');
 const executionHistory = require('../execution-history');
 const { markEngineSuccess, markEngineFailure, isCredentialInvalidClass } = require('../engine-health');
 const { randomUUID } = require('crypto');
+const { recordQuickExchange, escalateRows } = require('../quick-reply');
 const {
   loadUserTokens,
   listConnectedServices,
@@ -143,6 +144,20 @@ const MAX_CONTINUATIONS = 10; // auto-resume after timeout up to 10 times
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 min silence → kill + auto-restart (all engines)
 const QUICK_CRASH_MS = 15 * 1000; // crash faster than this after launch → likely transient, worth 1 retry
 const MAX_QUICK_RETRIES = 1; // cap so a repeatable crash doesn't loop forever
+// #1474: a provider-side fault (rejected key, quota/usage limit, rate limit, 5xx) says nothing
+// about the engine SESSION — the transcript is intact, only the upstream call failed. Such an
+// error must not trigger the native-resume fallback (which drops the engine session and restarts
+// from a rebuilt context — the "lost history" users saw after the 2026-09-26 dead-key restarts).
+// 'context' (prompt too long) is deliberately NOT a provider fault: a fresh rebuilt context is the
+// right answer there.
+function isProviderFault(text) {
+  const t = String(text || '');
+  if (!t) return false;
+  if (opencodeGoToggle.isDeadKeyError(t)) return true;
+  if (/usage limit|purchase more credits|rate.?limit|too many requests|\b429\b|\b5\d\d\b|overloaded|upstream request failed/i.test(t)) return true;
+  const verdict = opencodeLadder.classifyError(t);
+  return !!verdict && verdict.class !== 'context';
+}
 const MAX_RESUME_ATTEMPTS = 3; // cap on auto-retries for a task resumed after a server restart — a
 // restart is our fault, not the user's, so it's worth retrying automatically, but bounded: without
 // this, a task whose resume keeps crashing (e.g. a genuinely broken session) would retry forever
@@ -667,15 +682,23 @@ function runTask(opts) {
   if (!opts.forceClaude && isPreQueueQuickIntent((opts.task || '').trim())) {
     const quick = getQuickAnswer(opts.task, opts.user.username, opts.user.workDir, false, opts.user.id, opts.user.telegramUserId, opts.user.audience || 'default', runThreadId);
     if (quick) {
+      // Never invisible: an accepted task answered here leaves no other trace (#1479).
+      console.log('[%s] pre-queue quick-answer len=%d', opts.taskId, quick.length);
       const msg = `⚡ ${quick}`;
       const botToken = opts.secrets?.TELEGRAM_BOT_TOKEN || opts.secrets?.BOT_TOKEN;
       const chatId = opts.user.id;
+      // Every ⚡ reply is one tap from the agent (src/quick-reply.js).
+      const qaSessionId = recordQuickExchange(opts.user.workDir, {
+        username: opts.user.username, chatId, threadId: runThreadId, audience: opts.user.audience,
+        projectId: opts.projectId || null, task: opts.task, reply: quick,
+      });
+      const extra = { reply_markup: { inline_keyboard: escalateRows(qaSessionId) } };
       return (async () => {
         if (botToken) {
           const im = opts.initialMsgId;
           try {
-            if (im) await tgEdit(botToken, chatId, im, msg, {}).catch(() => sendTo(botToken, chatId, msg));
-            else     await sendTo(botToken, chatId, msg);
+            if (im) await tgEdit(botToken, chatId, im, msg, extra).catch(() => sendTo(botToken, chatId, msg, extra));
+            else     await sendTo(botToken, chatId, msg, extra);
           } catch (e) { console.warn('[runner] pre-queue quick-answer send:', e.message); }
         }
         return quick;
@@ -891,8 +914,8 @@ function buildContextCard(username, workDir, chatId, actualModel = null, threadI
         if (tok && vac.id) {
           const vacQs = multi ? `&vacancy_id=${encodeURIComponent(vac.id)}` : '';
           const hasProactive = _hasProactiveResults(dataDir, username, multi ? vac.id : null);
-          const proactiveLink = hasProactive ? ` · [Поиск →](${require('../hh-autoscan').proactiveUrlFor(username, multi ? vac.id : null)})` : '';
-          lines.push(`🔗 [Кандидаты →](${require('../hh-quick').hhReviewUrl(username, vac.id)}) · [История →](${base}/hh/sync-log?username=${encodeURIComponent(username)}&token=${tok}${vacQs}) · [ATS →](${base}/hh/ats-editor?username=${encodeURIComponent(username)}&token=${tok}${vacQs})${proactiveLink}`);
+          const proactiveLink = hasProactive ? ` · [Поиск →](${require('../review-links').proactiveUrl(username, multi ? vac.id : null)})` : '';
+          lines.push(`🔗 [Кандидаты →](${require('../review-links').reviewUrl(username, vac.id)}) · [История →](${base}/hh/sync-log?username=${encodeURIComponent(username)}&token=${tok}${vacQs}) · [ATS →](${base}/hh/ats-editor?username=${encodeURIComponent(username)}&token=${tok}${vacQs})${proactiveLink}`);
         }
       });
     }
@@ -1585,6 +1608,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // разбор того же запроса — прежний ответ прикладываем как контекст. clarify (❓): рамку
   // задаёт CLARIFY-блок промпта, задачу не трогаем. Без mode — задача как есть.
   if (forceClaude && activeSessionId && sessionExists) {
+    // A ⚡ side session (src/quick-reply.js) becomes a real dialog once escalated.
+    sessions.promoteSideSession(user.workDir, activeSessionId);
     const sess = sessions.getSession(user.workDir, activeSessionId);
     if (!task) task = sess?.lastUserMessage || '';
     if (task && sess && explicitMode === 'deep') {
@@ -1666,13 +1691,14 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // qa_more|{sessionId} (tg-bot callbacks.js) reruns this session with forceClaude+deep;
     // runner.js's own forceClaude-deep wrap (below, "Пользователь запустил проработку того
     // же запроса") already attaches the quick reply as prior context — no new plumbing
-    // needed there. Utility replies (ping/help/sessions/...) stay button-less: they're not
-    // logged to session history at all, so there's nothing yet to hand off to Claude.
-    const expandMarkup = !isUtility && activeSessionId
-      ? { inline_keyboard: [[{ text: '🔎 Разобраться подробнее', callback_data: `qa_more|${activeSessionId}` }]] }
-      : null;
+    // needed there.
+    // Utility replies are not in the chat's session, so they escalate from a side session
+    // (recordQuickExchange) — every ⚡ reply gets the button, none is a dead end.
+    const escalateSessionId = isUtility
+      ? recordQuickExchange(user.workDir, { username: user.username, chatId, threadId, audience, projectId: boundProjectId, task, reply: quickReply })
+      : activeSessionId;
     const quickExtra = { reply_markup: { inline_keyboard: [
-      ...(expandMarkup?.inline_keyboard || []), ...inputInspectionRows(initialMsgId, activeSessionId),
+      ...escalateRows(escalateSessionId), ...inputInspectionRows(initialMsgId, activeSessionId),
     ] } };
     if (initialMsgId) {
       await tgEdit(BOT_TOKEN, chatId, initialMsgId, `⚡ ${quickReply}`, quickExtra).catch(() => tgSend(BOT_TOKEN, chatId, `⚡ ${quickReply}`, quickExtra, threadId));
@@ -2224,7 +2250,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // restart-retry budget on a resume that cannot succeed. resumeSessionId is NOT carried into
     // the retry, so the next attempt takes the normal context-rebuild path; resumeFallbackDone
     // is belt-and-braces against re-entering this branch.
-    if (resumeSessionId && !resumeFallbackDone && !restartShutdown) {
+    const resumeErrText = codexErrorMsg || fullOutput.text.trim().slice(-1000);
+    const providerFault = isProviderFault(resumeErrText);
+    if (resumeSessionId && !resumeFallbackDone && !restartShutdown && !providerFault) {
       console.warn(`[${taskId}] resume: fallback reason=native_resume_failed engine=${engine} (${reason})`);
       const fallbackMsg = '↩️ Не удалось продолжить сессию движка — перезапускаю с восстановленным контекстом.';
       if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, fallbackMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId));
@@ -2255,8 +2283,15 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // that can re-fire it — bounded by MAX_RESUME_ATTEMPTS so a genuinely broken resume
     // can't loop forever across restarts.
     if (resumedAfterRestart && resumeAttempts < MAX_RESUME_ATTEMPTS && !restartShutdown) {
+      // Provider fault on the shared Go gateway: degrade it (rotate key / flip) BEFORE retrying,
+      // otherwise every resume attempt hits the same dead key (2026-09-26: 3/3 burned on one key).
+      let providerNote = '';
+      if (providerFault && engine === 'opencode' && ocProfileIsDeepseek) {
+        try { if (opencodeGoToggle.noteFailure(ocActiveModel, resumeErrText)) providerNote = 'шлюз Go переключён на рабочий ключ'; } catch {}
+      }
+      if (providerFault) console.warn(`[${taskId}] resume: provider fault — keeping engine session ${resumeSessionId || '-'} (${resumeErrText.slice(0, 200)})`);
       const altNote = forceOpencodeAlternation({ engine, ocProfileName, ocProfileOverrides, ocProfileIsDeepseek, ocRole });
-      const retryMsg = `🔄 Восстановление после перезапуска сервера не удалось (${reason}) — пробую ещё раз (${resumeAttempts + 1}/${MAX_RESUME_ATTEMPTS})${altNote ? `, ${altNote}` : ''}…`;
+      const retryMsg = `🔄 Восстановление после перезапуска сервера не удалось (${reason}) — пробую ещё раз (${resumeAttempts + 1}/${MAX_RESUME_ATTEMPTS})${providerNote ? `, ${providerNote}` : ''}${altNote ? `, ${altNote}` : ''}…`;
       if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, retryMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, retryMsg, threadId));
       else await tgSend(BOT_TOKEN, chatId, retryMsg, threadId);
       _recordFailureAttempt(executionId, {
@@ -2270,6 +2305,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         sessionId: activeSessionId, webExactSession,
         forceClaude, initialMsgId: msgId, pinnedMsgId, secrets,
         resumedAfterRestart: true, resumeAttempts: resumeAttempts + 1,
+        // Provider fault → the engine session is intact: resume it natively again, don't rebuild.
+        resumeSessionId: providerFault ? resumeSessionId : null, resumeFallbackDone,
         continuationCount, mode, projectId, internalGtd, engine,
         executionId,
         lastAttemptError: { reason: `восстановление после перезапуска сервера не удалось (${reason})`, errorText: codexErrorMsg || fullOutput.text.trim().slice(-1000) },
@@ -2278,7 +2315,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     }
 
     result = resumedAfterRestart
-      ? `⚠️ Не удалось восстановить сессию после перезапуска сервера (${reason}), попытка ${resumeAttempts + 1}/${MAX_RESUME_ATTEMPTS}. Это сбой сервера, а не твоей задачи — отправь «продолжай», чтобы попробовать вручную ещё раз.`
+      ? `⚠️ Не удалось восстановить сессию после перезапуска сервера (${reason}) — ${Math.min(resumeAttempts + 1, MAX_RESUME_ATTEMPTS)} из ${MAX_RESUME_ATTEMPTS} автоматических попыток не помогли. Это сбой сервера, а не твоей задачи — отправь «продолжай», чтобы попробовать вручную ещё раз.`
       : incompleteRetryAttempts > 0
       ? `⚠️ Работа прервана (${reason}) — не помогло и после ${incompleteRetryAttempts} автоматических попыток. Отправь «продолжай», чтобы попробовать вручную ещё раз.`
       : `⚠️ Работа прервана (${reason}). Завершение задачи не подтверждено. Отправь «продолжай», чтобы продолжить эту сессию.`;
@@ -2300,6 +2337,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // which never mentions "rate limit"/"429"/"quota" — so classifyError() below always misses and
   // the ladder never degrades, even though the raw error was a clean quota hit.
   const preLadderText = codexErrorMsg || claudeResult || fullOutput.text || result;
+
+  // Set only when the current rung failed with a transient per-model fault ("Bad Request"): the
+  // shared per-model backoff (issue #1467) then decides how long to wait before retrying the SAME
+  // model (15s → 30s → 60s …), instead of the generic crash backoff in the retry branch below.
+  let transientRetryDelayMs = null;
 
   // Shared "deepseek" OpenCode profile (issue #1096): on a Go quota hit, degrade the gateway —
   // first rotate to a spare service-account key (opencode-go-keys.js) and stay on Go; only once
@@ -2326,7 +2368,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       const onGo = opencodeGoToggle.getMode() === 'go';
       const newProfile = opencodeGoToggle.resolveProfileName();
       const switchMsg = onGo
-        ? `⚠️ OpenCode Go (${failedModel}) исчерпал лимит ключа — переключаюсь на резервный ключ Go, пробую снова.`
+        ? (opencodeGoToggle.isDeadKeyError(preLadderText)
+          ? `⚠️ OpenCode Go (${failedModel}): ключ отклонён шлюзом (Invalid credential) — переключаюсь на резервный ключ Go, пробую снова.`
+          : `⚠️ OpenCode Go (${failedModel}) исчерпал лимит ключа — переключаюсь на резервный ключ Go, пробую снова.`)
         : `⚠️ OpenCode Go (${failedModel}) исчерпал лимит — общий тумблер на этой VM переключён на OpenRouter (профиль «deepseek» → ${newProfile}), пробую снова. Автовозврат на Go через ~5ч или вручную: /oc_go.`;
       if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, switchMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, switchMsg, threadId));
       else await tgSend(BOT_TOKEN, chatId, switchMsg, threadId);
@@ -2367,6 +2411,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       // MAX_INCOMPLETE_RETRIES = 3) before forceOpencodeAlternation moves the task to the sibling
       // rung. Only a quota/rate-limit or a context overflow justifies skipping the rung right away.
       if (verdict.class === 'transient') {
+        // Shared per-model backoff already recorded the failure; carry its retry delay down to the
+        // generic retry branch so the SAME model is retried on that short schedule.
+        if (Number.isFinite(verdict.retryAfterMs)) transientRetryDelayMs = verdict.retryAfterMs;
         _recordFailureAttempt(executionId, {
           taskId, projectId, sessionId: activeSessionId, webExactSession, engine: 'opencode', model: verdict.model,
           errorText: preLadderText, action: 'transient_same_rung_retry',
@@ -2557,16 +2604,22 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // shared backoff schedule, before handing it back to a human.
   //
   // For an intermittent per-rung fault like "Bad Request" the first MAX_INCOMPLETE_RETRIES
-  // attempts stay on the SAME model (a flaky rung is often just flaky once), and one extra
-  // attempt is allowed on the ALTERNATIVE rung (forceOpencodeAlternation advances the ladder on
-  // that last retry only) — owner 2026-09-26: "три ретрая не сработали → соседняя модель".
+  // attempts stay on the SAME model, retried on the model's own short exponential backoff
+  // (transientRetryDelayMs, issue #1467), and one extra attempt is allowed on the ALTERNATIVE rung
+  // (forceOpencodeAlternation advances the ladder on that last retry only) — owner 2026-09-26:
+  // "три ретрая не сработали → соседняя модель".
   // The extra slot only exists for OpenCode, whose ladder has a real alternative model; for
   // claude/codex forceOpencodeAlternation is a no-op, so a 4th retry would just repeat the same
   // failure with no way to differ (and would break the "capped at 3" contract those paths had).
   const altRetryBudget = engine === 'opencode' ? 1 : 0;
   if (incomplete && !resumedAfterRestart && !restartShutdown && incompleteRetryAttempts < MAX_INCOMPLETE_RETRIES + altRetryBudget) {
     const nextAttempt = incompleteRetryAttempts + 1;
-    const delayMs = getRetryDelayMs(Math.min(nextAttempt, MAX_INCOMPLETE_RETRIES)) || 0;
+    // A transient per-model fault carries its own backoff (15s → 30s → 60s …): retry the same
+    // model on that schedule. Everything else (bare crash, dropped connection) keeps the generic
+    // crash backoff. TEST_MODE collapses both to milliseconds so retry tests stay fast.
+    const delayMs = (transientRetryDelayMs != null && !isTestMode())
+      ? transientRetryDelayMs
+      : (getRetryDelayMs(Math.min(nextAttempt, MAX_INCOMPLETE_RETRIES)) || 0);
     const escalate = engine === 'opencode' && nextAttempt > MAX_INCOMPLETE_RETRIES;
     const altNote = forceOpencodeAlternation({ engine, ocProfileName, ocProfileOverrides, ocProfileIsDeepseek, ocRole, escalate });
     const retryMsg = escalate
@@ -2650,6 +2703,15 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         clearAuthFailedFlag(engine);
       } catch (e) {
         console.warn('[runner] engine-health self-heal failed:', e.message);
+      }
+    }
+    // A successful OpenCode run also clears this model's shared health (issue #1467) — a transient
+    // backoff (15s → 30s → 60s …) must not linger after the model has demonstrably recovered.
+    if (engine === 'opencode' && ocActiveModel) {
+      try {
+        opencodeLadder.recordSuccess(ocActiveModel);
+      } catch (e) {
+        console.warn('[runner] model-health success reset failed:', e.message);
       }
     }
   }
@@ -2787,7 +2849,7 @@ function interruptForRestart() {
 }
 
 module.exports = {
-  interruptForRestart, MAX_RESUME_ATTEMPTS,
+  interruptForRestart, MAX_RESUME_ATTEMPTS, isProviderFault,
   runTask, getQuickAnswer, runQuickAnswer, shouldAttemptQuickAnswer, generateConnectLink, getPendingTasks, clearPendingTask, ensureSkillDir,
   resolveRunSession,
   isTaskRunning, isSessionRunning, isSessionQueuedFor, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,

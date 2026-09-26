@@ -625,7 +625,15 @@ async function runEngineProcess(opts) {
             }
           } else if (event.type === 'error') {
             const errMsg = event.error?.data?.message || event.error?.message || JSON.stringify(event.error);
-            console.warn(`[${taskId}] opencode error event:`, errMsg);
+            // Model + Go key fingerprint on the SAME line: "Invalid credential" vs quota vs a
+            // model-specific fault is otherwise undiagnosable from journalctl (2026-09-26).
+            try { if (!ocAgentModels || !Object.keys(ocAgentModels).length) ocAgentModels = readOcAgentModels(); } catch {}
+            const errModel = (ocAgentModels && (ocAgentModels[currentOcAgent] || ocAgentModels._default)) || null;
+            let keyTag = '';
+            if (/^opencode-go\//.test(errModel || '')) {
+              try { keyTag = ' ' + require('../opencode-go-keys').activeKeyFingerprint(); } catch {}
+            }
+            console.warn(`[${taskId}] opencode error event: model=${errModel || '?'} agent=${currentOcAgent || '?'}${keyTag}:`, errMsg);
             codexErrorMsg = errMsg;
             const isRateLimit = /429|rate.?limit|too many requests/i.test(errMsg);
             const userErrMsg = isRateLimit

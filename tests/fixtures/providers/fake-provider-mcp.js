@@ -9,6 +9,7 @@
 //   --fail-tool         make tools/call return isError:true
 //   --exit-on-call      exit the process before answering tools/call
 //   --hang-on-call      never answer tools/call
+//   --echo-env          include received env keys + USER_ID in the result
 
 const readline = require('readline');
 
@@ -16,6 +17,7 @@ const argv = process.argv.slice(2);
 const FAIL_TOOL = argv.includes('--fail-tool');
 const EXIT_ON_CALL = argv.includes('--exit-on-call');
 const HANG_ON_CALL = argv.includes('--hang-on-call');
+const ECHO_ENV = argv.includes('--echo-env'); // env-policy tests: report what the child received
 
 const TOOLS = [
   {
@@ -64,7 +66,8 @@ rl.on('line', (line) => {
     }
     send({ jsonrpc: '2.0', id, result: {
       content: [{ type: 'text', text: JSON.stringify({ marker: args.q ?? null, tool: params?.name || null }) }],
-      structuredContent: { marker: args.q ?? null, tool: params?.name || null },
+      structuredContent: { marker: args.q ?? null, tool: params?.name || null,
+        ...(ECHO_ENV ? { envKeys: Object.keys(process.env).filter(k => !k.startsWith('npm_')).sort(), userId: process.env.USER_ID ?? null } : {}) },
     } });
     return;
   }

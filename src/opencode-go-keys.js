@@ -31,6 +31,10 @@ const PROVIDER = 'opencode-go';
 // The Go console's rate-limit reset window is ~5h (same constant opencode-go-toggle uses for its
 // openrouter auto-revert) — a key burned on a quota hit is assumed usable again after that.
 const EXHAUST_TTL_MS = 5 * 60 * 60 * 1000;
+// A key the gateway REJECTS ("Invalid credential" / 401 — revoked or expired, 2026-09-26 incident)
+// won't heal in 5h. Park it for a day so every deploy (which rewrites auth.json to the pool's first
+// key) doesn't silently put a dead key back in front of the whole VM; see ensureUsableActiveKey().
+const DEAD_KEY_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Comma/whitespace-separated pool, e.g. OPENCODE_GO_API_KEYS="oc_sk_primary,oc_sk_backup".
 // OPENCODE_GO_API_KEY (the original single-key secret) is the fallback so a VM without the pool
@@ -79,7 +83,7 @@ function writeActiveKey() {
 // EXHAUST_TTL_MS. Returns { fromIndex, toIndex } on a successful rotation, or null when the pool
 // has fewer than two keys / every other key is still burned (caller then degrades to the next
 // gateway). Never throws — a rotation failure must not take down the retry path that called it.
-function rotate() {
+function rotate({ ttlMs = EXHAUST_TTL_MS } = {}) {
   try {
     const pool = readPool();
     if (pool.length < 2) return null;
@@ -90,7 +94,7 @@ function rotate() {
       if (!(exhausted[k] > now)) delete exhausted[k]; // expired → key is usable again
     }
     const from = currentIndex();
-    exhausted[from] = now + EXHAUST_TTL_MS;
+    exhausted[from] = now + ttlMs;
     state.exhausted = exhausted;
     _writeJson(STATE_FILE, state);
 
@@ -111,4 +115,39 @@ function rotate() {
   }
 }
 
-module.exports = { STATE_FILE, AUTH_FILE, PROVIDER, EXHAUST_TTL_MS, readPool, currentIndex, writeActiveKey, rotate };
+// Startup self-heal: a deploy rewrites auth.json to the pool's FIRST key (infra/opencode-switch-
+// profile.sh) regardless of whether that key is parked as exhausted/dead. If the active key is still
+// within its exhaustion window and another key isn't, move auth.json onto the first usable one.
+// Returns { fromIndex, toIndex } when it switched, null otherwise. Never throws.
+function ensureUsableActiveKey() {
+  try {
+    const pool = readPool();
+    if (pool.length < 2) return null;
+    const now = Date.now();
+    const exhausted = _readState().exhausted || {};
+    const from = currentIndex();
+    if (!(exhausted[from] > now)) return null;
+    const to = pool.findIndex((_, i) => !(exhausted[i] > now));
+    if (to < 0) return null;
+    const auth = _readJson(AUTH_FILE);
+    auth[PROVIDER] = { type: 'api', key: pool[to] };
+    _writeJson(AUTH_FILE, auth, 0o600);
+    return { fromIndex: from, toIndex: to };
+  } catch (err) {
+    console.warn('[opencode-go-keys] startup key check failed:', err.message);
+    return null;
+  }
+}
+
+// Non-secret identity of the active key for logs: "key#<index>/<sha256 prefix>". Lets an operator
+// tell from journalctl alone WHICH pool key a failing call used, without ever logging the key.
+function activeKeyFingerprint() {
+  try {
+    const key = _readJson(AUTH_FILE)?.[PROVIDER]?.key;
+    if (!key) return 'key#none';
+    const sha = require('crypto').createHash('sha256').update(key).digest('hex').slice(0, 8);
+    return `key#${readPool().indexOf(key)}/${sha}`;
+  } catch { return 'key#?'; }
+}
+
+module.exports = { STATE_FILE, AUTH_FILE, PROVIDER, EXHAUST_TTL_MS, DEAD_KEY_TTL_MS, readPool, currentIndex, writeActiveKey, rotate, ensureUsableActiveKey, activeKeyFingerprint };

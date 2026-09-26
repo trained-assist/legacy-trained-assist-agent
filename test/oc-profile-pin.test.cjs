@@ -23,7 +23,7 @@ test('/oc_ds_or pins ocProfile to the literal deepseek-openrouter file', () => {
   assert.match(reply, /Закреплено намертво/);
   assert.equal(profiles.getOcProfile(wd), 'deepseek-openrouter');
   const overrides = opencodeLadder.buildOcProfileOverrides(profiles.getOcProfile(wd));
-  assert.equal(overrides.model, 'openrouter/z-ai/glm-5.3-flash');
+  assert.equal(overrides.model, 'openrouter/deepseek/deepseek-v4-flash-0731');
 });
 
 test('/oc_deepseek_openrouter is a full-word alias for /oc_ds_or', () => {

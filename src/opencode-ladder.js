@@ -1,25 +1,29 @@
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const modelHealth = require('./model-health');
 
-// Model-ladder resolver for OpenCode profiles (issue #1061 Фаза 1-2).
+// Model-ladder resolver for OpenCode profiles (issue #1061 Фаза 1-2; unified per-model health
+// issue #1467).
 //
 // A profile (.opencode/profiles/<name>.json) declares, per agent role, a ladder of models in
 // preference order instead of one fixed model. Before each OpenCode invocation the runner asks
 // this module to resolve the ladder into the flat {model, agent: {role: {model}}} shape OpenCode
 // actually consumes (same shape the old static profiles already had — writeOpencodeMcpConfig in
 // claude-runner.js doesn't change). After a failed invocation the runner reports the error back
-// here; a quota/rate-limit-class error marks that (profile, role, model) exhausted with a TTL so
-// the next resolve skips it, a config-class error (one-time account setup, e.g. "Global regions"
-// not enabled) marks it exhausted with no TTL and is NOT meant to be retried automatically — the
-// caller is expected to alert an operator instead of burning through the rest of the ladder.
+// here; a quota/rate-limit-class error skips that MODEL (with a TTL), a config-class error
+// (one-time account setup, e.g. "Global regions" not enabled) skips it with no TTL and is NOT
+// meant to be retried automatically — the caller alerts an operator instead of burning through
+// the rest of the ladder.
 //
-// State file default matches issue #1061 spec: ~/.config/opencode/ladder-state.json. Override via
-// OPENCODE_LADDER_STATE_FILE for tests (resolved at require time, same pattern as auth-flag.js's
-// AGENT_DATA_DIR so tests can point it at a tmpdir without touching the real file).
-const STATE_FILE = process.env.OPENCODE_LADDER_STATE_FILE ||
-  path.join(os.homedir(), '.config', 'opencode', 'ladder-state.json');
-
+// Ladders are config-driven (issue #1467): a profile carries `"ladderRef": "<name>"` pointing at
+// config/model-routing.json's `ladders`, so the model lists are data in ONE place instead of being
+// hardcoded in every profile. A profile with an inline `ladder` (legacy) or a flat `model` keeps
+// working unchanged, so un-migrated profiles don't break.
+//
+// Health is stored per MODEL, not per (profile, role, model) — the owner's "клиент единый сервис,
+// единый для всех профилей": the same physical model listed in several profiles shares one
+// backoff/exhaustion record (src/model-health.js). The `profile`/`role` args on the functions
+// below are kept for call-site/back-compat but no longer part of the state key.
 const ROLES = ['build', 'plan', 'explore', 'general', 'review'];
 
 // Not more than this many rungs burned per task — a ladder where every rung rate-limits in a
@@ -92,46 +96,21 @@ function classifyError(text) {
   return hit ? { class: hit.class, ttlMs: hit.ttlMs } : null;
 }
 
-function _readState() {
-  try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-  } catch {
-    return {};
-  }
-}
+// ---- Shared per-model health (issue #1467) ------------------------------------------------
+// Thin compatibility layer over src/model-health.js. The old API (markExhausted/clearExhausted
+// with a (profile, role, model) key) is preserved so existing callers and tests keep working, but
+// the state now lives in one per-model store shared by every profile.
 
-function _writeState(state) {
-  fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-}
-
-function _isExhausted(state, profile, role, model) {
-  const resetsAt = state?.[profile]?.[role]?.exhausted?.[model];
-  if (resetsAt === undefined) return false;
-  if (resetsAt === null) return true; // config-class: never auto-clears
-  return Date.parse(resetsAt) > Date.now(); // still within TTL
-}
-
-// Marks (profile, role, model) exhausted. ttlMs null => never auto-clears (config-class).
+// Marks `model` skipped. ttlMs null => never auto-clears (config-class), matching the old
+// per-profile config-class contract.
 function markExhausted(profile, role, model, ttlMs) {
-  const state = _readState();
-  state[profile] = state[profile] || {};
-  state[profile][role] = state[profile][role] || { exhausted: {} };
-  state[profile][role].exhausted = state[profile][role].exhausted || {};
-  state[profile][role].exhausted[model] = ttlMs == null ? null : new Date(Date.now() + ttlMs).toISOString();
-  _writeState(state);
+  if (!model) return;
+  if (ttlMs == null) modelHealth.recordFailure(model, { class: 'config' });
+  else modelHealth.recordFailure(model, { class: 'quota', retryAfterMs: ttlMs });
 }
 
 function clearExhausted(profile, role, model) {
-  const state = _readState();
-  if (model) {
-    delete state?.[profile]?.[role]?.exhausted?.[model];
-  } else if (role) {
-    delete state?.[profile]?.[role];
-  } else {
-    delete state?.[profile];
-  }
-  _writeState(state);
+  modelHealth.clear(model || undefined);
 }
 
 // Classifies an engine error and, if it's ladder-relevant, marks the model exhausted.
@@ -147,29 +126,37 @@ function recordFailure(profile, role, model, errorText) {
     return { class: 'context', model, alertNeeded: false };
   }
   if (verdict.class === 'transient') {
-    // Intermittent per-rung fault (e.g. "Bad Request") — retry the SAME model first. Also no
-    // markExhausted: the rung is fine most of the time, so poisoning it for every user because
-    // one request tripped would be wrong. The runner escalates to the next rung only after its
-    // own same-model retry budget is spent (forceAdvance on the last attempt).
-    return { class: 'transient', model, alertNeeded: false };
+    // Shared per-model backoff (issue #1467): the model gets a short, exponentially growing skip
+    // window (15s → 30s → 60s …) so every profile dodges it while it's flaky — but the runner
+    // still RETRIES THE SAME model once that window elapses (owner 2026-09-26: "три ретрая, потом
+    // соседняя модель"). retryAfterMs lets the runner schedule that retry instead of falling back
+    // to the generic crash backoff, so the first retry really is ~15s.
+    const e = modelHealth.recordFailure(model, { class: 'transient', errorText });
+    const retryAfterMs = e && e.skipUntil ? Math.max(0, Date.parse(e.skipUntil) - Date.now()) : null;
+    return { class: 'transient', model, alertNeeded: false, retryAfterMs };
   }
   markExhausted(profile, role, model, verdict.ttlMs);
   return { class: verdict.class, model, alertNeeded: verdict.class === 'config' };
 }
 
-// Ladder for one role, oldest/legacy-compatible: a profile with `ladder.<role>` uses that; a
-// profile with only the old flat `agent.<role>.model` (or top-level `model`) is a single-rung
-// ladder — so profiles that haven't been migrated to `ladder` yet keep working unchanged.
+// Ladder for one role. Config-driven first (issue #1467): a profile may name a ladder from
+// config/model-routing.json (`ladderRef`) instead of hardcoding the model list. Legacy shapes stay
+// supported: an inline `ladder.<role>`, or the old flat `agent.<role>.model` / top-level `model`
+// as a single-rung ladder.
 function _roleLadder(profileRaw, role) {
+  if (profileRaw.ladderRef) {
+    const named = modelHealth.ladder(profileRaw.ladderRef);
+    if (named?.[role]?.length) return named[role];
+  }
   if (profileRaw.ladder?.[role]?.length) return profileRaw.ladder[role];
   const flat = profileRaw.agent?.[role]?.model || profileRaw.model;
   return flat ? [flat] : [];
 }
 
-// First non-exhausted model in the role's ladder. Never returns undefined for a non-empty
-// ladder — if every rung is currently exhausted, degrades to the last rung rather than failing
-// resolution outright (some model beats none; the caller's retry-count cap is what prevents an
-// infinite loop, not this function refusing to pick anything).
+// First non-skipped model in the role's ladder. Never returns undefined for a non-empty ladder —
+// if every rung is currently skipped, degrades to the last rung rather than failing resolution
+// outright (some model beats none; the caller's retry-count cap is what prevents an infinite loop,
+// not this function refusing to pick anything).
 //
 // skipModels (optional) additionally excludes specific models WITHOUT touching persisted state —
 // used for the context-overflow case, where a rung should be skipped for this one task's retry
@@ -177,9 +164,8 @@ function _roleLadder(profileRaw, role) {
 function resolveModel(profileRaw, profileName, role, skipModels) {
   const ladder = _roleLadder(profileRaw, role);
   if (!ladder.length) return null;
-  const state = _readState();
   const skip = skipModels && skipModels.length ? new Set(skipModels) : null;
-  const usable = ladder.find(m => !_isExhausted(state, profileName, role, m) && !(skip && skip.has(m)));
+  const usable = ladder.find(m => !modelHealth.isSkipped(m) && !(skip && skip.has(m)));
   return usable || ladder[ladder.length - 1];
 }
 
@@ -207,22 +193,29 @@ function buildOcProfileOverrides(profileName, profilesDir, opts) {
   };
 }
 
-// Forces the ladder to skip (profile, role, model) on the NEXT resolve, for a bounded window —
-// used by the unified crash-retry in runner/index.js to try a different model even when the
-// failure wasn't classified as quota/config (a bare crash tells us nothing about which provider
-// is at fault, so "try the other one" is a reasonable blind guess — the owner's own framing was
-// "если один то второй и наоборот"). Short TTL vs. the hours/days quota TTLs above, because this
-// isn't asserting the model IS actually rate-limited — just that this task's own retry schedule
-// (max ~13.5min: 30s+3min+10min) shouldn't hammer the same rung on every attempt.
+// Forces the ladder to skip `model` on the NEXT resolve, for a bounded window — used by the
+// unified crash-retry in runner/index.js to try a different model even when the failure wasn't
+// classified as quota/config (a bare crash tells us nothing about which provider is at fault, so
+// "try the other one" is a reasonable blind guess — the owner's own framing was "если один то
+// второй и наоборот"). Short TTL vs. the hours/days quota TTLs above, because this isn't asserting
+// the model IS actually rate-limited — just that this task's own retry schedule shouldn't hammer
+// the same rung on every attempt. Shared per model (issue #1467), so `profile`/`role` are vestigial.
 const RETRY_FORCE_TTL_MS = 15 * 60 * 1000;
 
 function forceAdvance(profile, role, model) {
   if (!profile || !model) return;
-  markExhausted(profile, role, model, RETRY_FORCE_TTL_MS);
+  modelHealth.recordFailure(model, { class: 'force', retryAfterMs: RETRY_FORCE_TTL_MS });
+}
+
+// A successful OpenCode run proves the model works — clear its shared health record so a transient
+// backoff doesn't linger across tasks after the model has already recovered (issue #1467).
+function recordSuccess(model) {
+  modelHealth.recordSuccess(model);
 }
 
 module.exports = {
-  ROLES, MAX_LADDER_ATTEMPTS, STATE_FILE, RETRY_FORCE_TTL_MS,
+  ROLES, MAX_LADDER_ATTEMPTS, RETRY_FORCE_TTL_MS,
   classifyError, resolveModel, buildOcProfileOverrides,
-  markExhausted, clearExhausted, recordFailure, forceAdvance,
+  markExhausted, clearExhausted, recordFailure, forceAdvance, recordSuccess,
+  stateFile: modelHealth.stateFile,
 };

@@ -157,3 +157,43 @@ test('rotate is a no-op with a single key (legacy VM without a provisioned pool)
   fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ 'opencode-go': { type: 'api', key: 'oc_primary' } }));
   assert.equal(keys.rotate(), null);
 });
+
+// 2026-09-26 incident: the primary Go key was revoked ("Upstream request failed: Invalid
+// credential"). That error wasn't classified, so no rotation happened and every Go call on the VM
+// failed; each deploy then rewrote auth.json back onto the dead primary.
+test('noteFailure rotates off a REJECTED key (Invalid credential) and parks it for a day', () => {
+  const { mod, dir, keys } = freshModule();
+  process.env.OPENCODE_GO_API_KEYS = 'oc_dead,oc_live';
+  fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ 'opencode-go': { type: 'api', key: 'oc_dead' } }));
+
+  assert.equal(mod.noteFailure('opencode-go/deepseek-v4-flash', 'Upstream request failed: Invalid credential'), true);
+  assert.equal(mod.getMode(), 'go');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'auth.json'), 'utf8'))['opencode-go'].key, 'oc_live');
+  const state = JSON.parse(fs.readFileSync(keys.STATE_FILE, 'utf8'));
+  assert.ok(state.exhausted['0'] > Date.now() + keys.EXHAUST_TTL_MS, 'dead key parked longer than a quota hit');
+});
+
+test('noteFailure still ignores unrelated errors (no rotation on a generic crash)', () => {
+  const { mod, dir } = freshModule();
+  process.env.OPENCODE_GO_API_KEYS = 'oc_a,oc_b';
+  fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ 'opencode-go': { type: 'api', key: 'oc_a' } }));
+  assert.equal(mod.noteFailure('opencode-go/deepseek-v4-flash', 'Bad Request: {model: x}'), false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'auth.json'), 'utf8'))['opencode-go'].key, 'oc_a');
+});
+
+test('ensureUsableActiveKey moves a deploy-reset auth.json off a parked key; no-op otherwise', () => {
+  const { dir, keys } = freshModule();
+  process.env.OPENCODE_GO_API_KEYS = 'oc_dead,oc_live';
+  const auth = path.join(dir, 'auth.json');
+  fs.writeFileSync(auth, JSON.stringify({ 'opencode-go': { type: 'api', key: 'oc_dead' } }));
+  assert.equal(keys.ensureUsableActiveKey(), null, 'nothing parked → leave the primary alone');
+
+  keys.rotate({ ttlMs: keys.DEAD_KEY_TTL_MS });
+  // Simulate the deploy rewriting auth.json to the pool's first (dead) key.
+  fs.writeFileSync(auth, JSON.stringify({ 'opencode-go': { type: 'api', key: 'oc_dead' }, other: { type: 'api', key: 'x' } }));
+  assert.deepEqual(keys.ensureUsableActiveKey(), { fromIndex: 0, toIndex: 1 });
+  const after = JSON.parse(fs.readFileSync(auth, 'utf8'));
+  assert.equal(after['opencode-go'].key, 'oc_live');
+  assert.equal(after.other.key, 'x', 'other providers survive');
+  assert.match(keys.activeKeyFingerprint(), /^key#1\/[0-9a-f]{8}$/);
+});

@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const { compileSourceGeneration, planSessionMcp, materializeSessionMcp } = require('./mcp-skill-generation');
 const { ActionBroker } = require('./mcp-action-broker');
 const { ActionExecutions } = require('./action-executions');
+const { loadProviderEnvPolicy, buildProviderEnv } = require('./mcp-provider-env');
 
 const DEFAULT_CONFIG_PATH = path.resolve(__dirname, '..', 'config', 'mcp-skill-sources.json');
 const DEFAULT_RUNTIME_ROOT = path.join(process.env.AGENT_DATA_DIR || path.join(require('os').homedir(), 'agent-data'), 'mcp-runs');
@@ -64,6 +65,8 @@ function createSourceRuntime(options = {}) {
 
   const generation = options.generation
     || compileSourceGeneration(config, coreCatalog, { root, runtimeRoot });
+  const envPolicy = options.envPolicy ?? loadProviderEnvPolicy();
+  const hostEnv = options.hostEnv ?? process.env;
   const executions = options.executions || new ActionExecutions();
   const broker = new ActionBroker({ executions, now: options.now });
   const socketPath = options.socketPath || path.join(runtimeRoot, 'broker.sock');
@@ -90,7 +93,11 @@ function createSourceRuntime(options = {}) {
     if (!plan.servers.some(s => s.kind === 'external')) return null;
 
     const materialized = materializeSessionMcp(plan, runtimeDir);
-    broker.registerCapability(capability, { generation, runBinding: binding });
+    const providerEnvs = {};
+    for (const s of plan.servers) {
+      if (s.kind === 'external') providerEnvs[s.providerId] = buildProviderEnv({ policy: envPolicy, providerId: s.providerId, profileId: plan.hostBinding.profileId, hostEnv });
+    }
+    broker.registerCapability(capability, { generation, runBinding: binding, providerEnvs });
     runs.set(runtimeDir, { capability, materialized });
 
     let released = false;

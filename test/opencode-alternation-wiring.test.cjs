@@ -15,6 +15,7 @@ const path = require('node:path');
 function freshModule() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-alternation-wiring-test-'));
   process.env.OPENCODE_LADDER_STATE_FILE = path.join(dir, 'ladder-state.json');
+  process.env.OPENCODE_MODEL_HEALTH_FILE = path.join(dir, 'model-health.json');
   process.env.OPENCODE_GO_MODE_FILE = path.join(dir, 'go-mode.json');
   delete require.cache[require.resolve('../src/opencode-ladder')];
   delete require.cache[require.resolve('../src/opencode-go-toggle')];

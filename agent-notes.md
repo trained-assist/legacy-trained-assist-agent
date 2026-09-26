@@ -39,3 +39,20 @@
 - Фикс: `src/media-vision.js` (`extractImageText`, OpenRouter + google/gemini-2.5-flash, тот же паттерн что applylink/worker.js `geminiPdf`/`imageToText` — включая isRefusal() guard, отказ-предложением от модели не должен течь в текст как реальный OCR). Триггерится в `src/server.js` /run только когда `profiles.getEngine(workDir, userId) === 'opencode'` && mime image/* && есть OPENROUTER_API_KEY — для Claude не дергается (не нужно + не тратим деньги).
 - Результат кладётся ПРЯМО под старую заметку: `[Распознано на изображении: ...]` — OpenCode читает как обычный текст задачи, новый intake-путь не нужен.
 - Спека: specs/opencode-image-ocr-spec.md. Codex-движок НЕ проверялся (GPT-4o скорее всего и так видит картинки) — сознательно вне скоупа.
+
+## PR-аудит 2026-09-26: autofix сломан ГЛОБАЛЬНО + CI-аномалия
+- pr-autofix v1.2 битый для ВСЕХ PR: ci.yml glue дёргает trained-assist/pr-autofix@v1.2, а тот берёт ref из github.workflow_ref (у pull_request это `refs/pull/<n>/merge` в РЕПЕ ВЫЗЫВАЮЩЕГО) и пытается fetch `raw.githubusercontent.com/trained-assist/pr-autofix/<этот-ref>/scripts/autofix.mjs` → 404 → curl exit 22 → autofix=failure на каждом PR. Восстановление конфликта через autofix мертво. Фикс: в pr-autofix резолвить ref корректно (свой pinned tag / inputs.version / github.action_ref), не workflow_ref вызывающего.
+- Checklist-tracking PR (типа #1439) регулярно конфликтуют на checklist.md (main его постоянно переписывает); recovery-путь через autofix мёртв (см. выше) → стоячие chore-PR. Правило: GTD-запись о уже смерженном PR дешевле перезалить на свежую ветку, чем реебейзить конфликт.
+- Аномалия CI: PR #1446 — 0 workflow-ранов на head sha даже после nudge-коммита («ci: nudge CI trigger»), ветка с 5 коммитами, Actions жив (соседние ветки бегут). Workaround: push пустого коммита не помог; следующий левел — close&reopen PR (pull_request.synchronize/reopened триггерит ран). Если и это нет — смотреть events/timeline PR.
+
+## PR CI «не запустился» — настоящий механизм (2026-09-26, чинил #1446)
+- GitHub МОЛЧА дропает pull_request-воркфлоу у PR с mergeable_state=dirty: 0 check-runs, 0 workflow runs, ни skipped, ничего. close&reopen НЕ помогает (проверено на #1446). Лечит только мерж main в ветку: конфликт снят + тот же push уже запускает CI.
+- Порядок при «CI не стартовал»: сначала GET /pulls/N → mergeable_state. Dirty → resolve локально (merge origin/main, ALLOW_PR_UPDATE=1 push) и не трогать close&reopen.
+- checklist.md и docs/requirements-log.md — «горячие» файлы, их трогает КАЖДЫЙ PR → ветка рождается конфликтной после каждого мержа в main. Резолв-паттерн: версия main + дописать свой блок/секцию в конец.
+- Push в PR-ветку требует ALLOW_PR_UPDATE=1 (гейт хука: «emergency override, explain why»). Штатный сценарий резолва конфликтов — это ровно тот override-кейс.
+- forceOpencodeAlternation теперь совмещённая семантика: escalate (PR #1446: первые 3 ретрая на той же модели, 4-й двигает лестницу) + ocRole (P3b #1451: rung по роли); deepseek двигает свою лестницу ДО флипа тумблера.
+
+## Web-задача, убитая рестартом агента — анатомия (2026-09-26)
+- Симптом «agent task rejected» в вебе — НЕ валидация агента: это worker.mjs fallback на любой не-200 не-JSON ответ. Реальная цепочка: рестарт assist-agent убил веб-таск (nginx: «upstream prematurely closed» → 502 HTML) → воркер выдумал текст → receipt в /home/vova/agent-data/web-mutations/<user>/ остался state=accepted навсегда → повторный Начать из того же черновика 409 «duplicate request already accepted» навечно. Фикс: agent#1454 (claimWebMutation takeover при отсутствии pending-journal записи + финализация receipt при boot-очистке) + web#51 (честный «Агент недоступен (HTTP 502)»).
+- LOCAL TEST TRAP: в shell экспортирован AGENT_DATA_DIR=/home/vova/agent-data → тесты, задающие только HOME=tmp, всё равно пишут в ПРОД agent-data. Локальные прогоны: env -u AGENT_DATA_DIR. Pollution (alice/req-123 done-receipt, web-canary/) вычищен 2026-09-26.
+- git worktree не шарит node_modules → ln -s <main-checkout>/node_modules <worktree>/node_modules.

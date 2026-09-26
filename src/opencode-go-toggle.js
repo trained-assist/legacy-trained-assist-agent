@@ -76,15 +76,25 @@ function noteFailure(model, errorText) {
   if (!/^opencode-go\//.test(model || '')) return false;
   if (getMode() === 'openrouter') return false; // already switched
   const { classifyError } = require('./opencode-ladder');
+  const keys = require('./opencode-go-keys');
+  // A rejected key ("Invalid credential" / 401) is a dead key, not a dead gateway: rotate exactly
+  // like a quota hit, but park it for a day. Before 2026-09-26 this fell through as an unclassified
+  // error, so every Go call on the VM failed until a human noticed (and each resume burned its
+  // attempts against the same dead key while the ladder degraded pointlessly between models).
+  const dead = isDeadKeyError(errorText);
   const verdict = classifyError(errorText);
-  if (!verdict || verdict.class !== 'quota') return false;
-  const rotated = require('./opencode-go-keys').rotate();
+  if (!dead && (!verdict || verdict.class !== 'quota')) return false;
+  const rotated = keys.rotate(dead ? { ttlMs: keys.DEAD_KEY_TTL_MS } : undefined);
   if (rotated) {
-    console.log(`[opencode-go-toggle] Go key ${rotated.fromIndex} exhausted — rotated to key ${rotated.toIndex}, staying on Go`);
+    console.log(`[opencode-go-toggle] Go key ${rotated.fromIndex} ${dead ? 'REJECTED (invalid credential)' : 'exhausted'} — rotated to key ${rotated.toIndex}, staying on Go`);
     return true;
   }
   setMode('openrouter', { auto: true });
   return true;
+}
+
+function isDeadKeyError(errorText) {
+  return /invalid credential|invalid api key|\b401\b|unauthorized/i.test(String(errorText || ''));
 }
 
 // Unconditional flip for the unified crash-retry in runner/index.js — same "if one fails, try
@@ -97,4 +107,4 @@ function forceFlip() {
   return setMode(next, { auto: true });
 }
 
-module.exports = { STATE_FILE, AUTO_REVERT_MS, getMode, setMode, resolveProfileName, noteFailure, forceFlip };
+module.exports = { STATE_FILE, AUTO_REVERT_MS, getMode, setMode, resolveProfileName, noteFailure, forceFlip, isDeadKeyError };

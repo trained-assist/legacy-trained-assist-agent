@@ -25,6 +25,7 @@ const { acquireProvider } = require('../src/mcp-skill-generation');
 const { ActionBrokerClient } = require('../src/mcp-action-broker');
 const { ProviderJournal } = require('../src/mcp-provider-journal');
 const { ProviderRuntime } = require('../src/mcp-provider-runtime');
+const { toolResultText } = require('../src/mcp-tool-result');
 
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
 
@@ -124,9 +125,13 @@ function createAdapter({
         throw adapterError(lease.state === 'held' ? 'LEASE_HELD' : 'NEEDS_RECONCILE',
           `Provider lease not acquired: ${lease.state}`);
       }
+      // Host-built env over the capability socket (P0.1a); PATH-only when the
+      // host has no policy for this provider. Never the adapter's own env.
+      const hostEnv = typeof broker?.providerEnv === 'function' ? await broker.providerEnv(binding.providerId) : null;
+      const env = { ...envAllowlist, ...(hostEnv || {}) };
       runtime = new ProviderRuntime({
         journal, leaseKey, leaseGeneration, hostId, bootId,
-        resolveAsset: () => assetLoader({ binding, snapshot, source, executionRoot, envAllowlist, root }),
+        resolveAsset: () => assetLoader({ binding, snapshot, source, executionRoot, envAllowlist: env, root }),
         shutdownGraceMs,
       });
       await runtime.start();
@@ -190,7 +195,7 @@ function serveStdio(adapter, { input = process.stdin, output = process.stdout, o
         send({ jsonrpc: '2.0', id, result: { tools: adapter.listTools() } });
       } else if (method === 'tools/call') {
         const result = await adapter.callTool(params?.name, params?.arguments || {});
-        const text = typeof result === 'string' ? result : JSON.stringify(result);
+        const text = toolResultText(params?.name, result, { pretty: false });
         send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });
       } else {
         send({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });

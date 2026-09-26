@@ -1,10 +1,4 @@
 {
-  "ladder": {
-    "build":   ["opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4-flash", "opencode-go/mimo-v2.6-flash"],
-    "plan":    ["opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4-pro", "opencode-go/mimo-v2.6-flash"],
-    "explore": ["opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4-flash", "opencode-go/mimo-v2.6-flash"],
-    "general": ["opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4-flash", "opencode-go/mimo-v2.6-flash"],
-    "review":  ["opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4-pro", "opencode-go/mimo-v2.6-flash"]
-  },
+  "ladderRef": "deepseek-go",
   "model": "opencode-go/deepseek-v4.1-flash"
 }

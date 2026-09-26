@@ -23,7 +23,7 @@ const os = require('os');
 
 const { writeMcpConfig } = require('./browser');
 const { buildEngineCommand, runEngineProcess } = require('./runner/claude-runner');
-const { parseLlmJson } = require('./hh-scoring');
+const { parseLlmJson } = require('./llm-client');
 const { loadUserTokens } = require('./user-tokens');
 const { getDefaultSourceRuntime } = require('./mcp-source-runtime');
 

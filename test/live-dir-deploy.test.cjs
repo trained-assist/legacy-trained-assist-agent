@@ -189,3 +189,13 @@ test('disk-hygiene crons use the stable agent-master path, not the per-release p
 });
 
 
+
+test('deploy.sh skips the restart when the target SHA is already live (PR run + push run double deploy)', () => {
+  const body = fs.readFileSync(path.resolve(__dirname, '../scripts/deploy.sh'), 'utf8');
+  const skip = body.indexOf('already live');
+  assert.ok(skip > 0, 'same-SHA guard present');
+  assert.ok(skip < body.indexOf('==> Building release'), 'guard runs before build and before the service is stopped');
+  assert.match(body, /FORCE_DEPLOY/);
+  const manual = fs.readFileSync(path.resolve(__dirname, '../.github/workflows/deploy-manual.yml'), 'utf8');
+  assert.match(manual, /FORCE_DEPLOY=1 DEPLOY_ENV=gcp/, 'manual deploy keeps forcing a restart');
+});

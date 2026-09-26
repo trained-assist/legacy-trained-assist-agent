@@ -48,22 +48,39 @@ if [[ ! -f "$PROFILE_FILE" ]]; then
   exit 1
 fi
 
+ROUTING="${OPENCODE_ROUTING_FILE:-$REPO_DIR/config/model-routing.json}"
+[[ -f "$ROUTING" ]] || ROUTING=/dev/null
+
 mkdir -p "$(dirname "$OUT")"
-# Profile files declare a `ladder` (per-role model preference list) instead of a flat model —
-# flatten to first rung per role for this machine-wide baseline. `rolePrompts.<role>` (e.g.
-# russian's strict-reviewer prompt) rides along unchanged, same as the old flat `agent.<role>.prompt`.
-jq -s '
-  (.[1]) as $p |
-  ($p.model // $p.ladder.build[0]) as $topModel |
+# Profile files point at a central ladder via `ladderRef` (config/model-routing.json, #1467) or
+# carry a legacy inline `ladder` / flat `model` — flatten to first rung per role for this
+# machine-wide baseline. `rolePrompts.<role>` (e.g. russian's strict-reviewer prompt) rides along.
+TMP_OUT="$(mktemp)"
+trap 'rm -f "$TMP_OUT"' EXIT
+jq -n --slurpfile base "$BASE" --slurpfile p "$PROFILE_FILE" --slurpfile r <(cat "$ROUTING" 2>/dev/null || echo '{}') '
+  ($p[0]) as $p |
+  ((if $p.ladderRef then ($r[0].ladders // {})[$p.ladderRef] else null end) // $p.ladder // {}) as $l |
+  ($p.model // $l.build[0]) as $topModel |
   (
     $p.agent //
-    (($p.ladder // {}) | to_entries | map({
+    ($l | to_entries | map({
       key: .key,
-      value: ({model: .value[0]} + (if $p.rolePrompts[.key] then {prompt: $p.rolePrompts[.key]} else {} end))
+      value: ({model: .value[0]} + (if ($p.rolePrompts // {})[.key] then {prompt: $p.rolePrompts[.key]} else {} end))
     }) | from_entries)
   ) as $agentCfg |
-  .[0] * {model: $topModel, agent: $agentCfg}
-' "$BASE" "$PROFILE_FILE" > "$OUT"
+  $base[0] * {model: $topModel, agent: $agentCfg}
+' > "$TMP_OUT"
+
+# opencode rejects the WHOLE config on `"model": null` ("Expected string | undefined, got null
+# model") and every OpenCode task then exits 1 at start — the per-invocation OPENCODE_CONFIG
+# override does not help, the global file is validated first. Never install such a config: keep
+# the previous (working) one and fail the step loudly instead.
+if ! jq -e '(.model | type == "string" and length > 0) and ([.agent[]?.model | select(. != null) | type == "string"] | all)' "$TMP_OUT" >/dev/null; then
+  echo "opencode-switch-profile: profile '$PROFILE' resolved to no model (ladderRef/ladder unresolvable) — keeping existing $OUT" >&2
+  exit 1
+fi
+mv "$TMP_OUT" "$OUT"
+trap - EXIT
 
 echo "opencode profile → $PROFILE ($OUT)"
 

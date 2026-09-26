@@ -84,7 +84,7 @@ jobs:
               > /home/vova/secrets.env
             chmod 600 /home/vova/secrets.env
             node "$DEPLOY_TMP/scripts/register-hook.js"
-            DEPLOY_ENV=gcp REPO_DIR=/home/vova/trained-assist-agent bash "$DEPLOY_TMP/scripts/deploy.sh"
+            FORCE_DEPLOY=1 DEPLOY_ENV=gcp REPO_DIR=/home/vova/trained-assist-agent bash "$DEPLOY_TMP/scripts/deploy.sh"
             rm -rf "$DEPLOY_TMP"
 
   deploy-ru:

@@ -96,13 +96,13 @@ class ActionBroker {
   get path() { return this.#path; }
   get size() { return this.#capabilities.size; }
 
-  registerCapability(capability, { generation, runBinding, approved = false, deadlineMs = DEFAULT_DEADLINE_MS, coreServers = null } = {}) {
+  registerCapability(capability, { generation, runBinding, approved = false, deadlineMs = DEFAULT_DEADLINE_MS, coreServers = null, providerEnvs = null } = {}) {
     if (typeof capability !== 'string' || !capability) throw new TypeError('capability required');
     if (!generation || !generation.actions) throw new TypeError('generation with actions required');
     if (!runBinding || typeof runBinding !== 'object') throw new TypeError('runBinding required');
     this.#capabilities.set(capability, {
       generation, runBinding, approved: approved === true, deadlineMs,
-      coreServers, revoked: false, registeredAt: this.#now(),
+      coreServers, providerEnvs: providerEnvs || null, revoked: false, registeredAt: this.#now(),
     });
     return { capability, endpoint: this.#path };
   }
@@ -150,9 +150,26 @@ class ActionBroker {
         return;
       }
       if (msg.type === 'call') return void this.#handleCall(socket, pending, msg);
+      if (msg.type === 'providerEnv') return void this.#handleProviderEnv(socket, msg);
     }, (err) => {
       try { writeLine(socket, { v: 1, type: 'protocolError', error: { message: err.message } }); } catch { /* ignore */ }
     });
+  }
+
+  // Host-built provider env (src/mcp-provider-env.js), handed only to the
+  // adapter holding a live capability, only for a provider of this run.
+  #handleProviderEnv(socket, msg) {
+    const respond = (ok, extra) => writeLine(socket, { v: 1, type: 'result', id: msg.id, ok, ...extra });
+    if (typeof msg.id !== 'string' || typeof msg.capability !== 'string' || typeof msg.providerId !== 'string') {
+      return respond(false, { error: { code: 'INVALID_ARGUMENTS', message: 'Malformed providerEnv request' } });
+    }
+    const entry = this.#capabilities.get(msg.capability);
+    if (!entry || entry.revoked) return respond(false, { error: { code: 'FORBIDDEN', message: 'Unknown or revoked capability' } });
+    // No env map registered (host without a policy) → adapter keeps PATH only.
+    if (!entry.providerEnvs) return respond(true, { result: { env: null } });
+    const env = Object.prototype.hasOwnProperty.call(entry.providerEnvs, msg.providerId) ? entry.providerEnvs[msg.providerId] : null;
+    if (!env) return respond(false, { error: { code: 'FORBIDDEN', message: 'Provider not in this run' } });
+    return respond(true, { result: { env: { ...env } } });
   }
 
   async #handleCall(socket, pending, msg) {
@@ -286,6 +303,15 @@ class ActionBrokerClient {
     return new Promise((resolve, reject) => {
       this.#pending.set(id, { resolve, reject });
       const sent = writeLine(this.#socket, { v: 1, type: 'call', id, capability: this.#capability, action, arguments: args || {} });
+      if (!sent) { this.#pending.delete(id); reject(Object.assign(new Error('Broker not writable'), { code: 'PROVIDER_UNAVAILABLE' })); }
+    });
+  }
+
+  providerEnv(providerId) {
+    const id = newId('env');
+    return new Promise((resolve, reject) => {
+      this.#pending.set(id, { resolve: (r) => resolve(r?.env || null), reject });
+      const sent = writeLine(this.#socket, { v: 1, type: 'providerEnv', id, capability: this.#capability, providerId });
       if (!sent) { this.#pending.delete(id); reject(Object.assign(new Error('Broker not writable'), { code: 'PROVIDER_UNAVAILABLE' })); }
     });
   }

@@ -19,7 +19,17 @@ const {
   generateConnectLink,
   SERVICE_DISPLAY,
 } = require('../user-tokens');
-const { hhMyVacancies, hhFunnelStats, hhNewResponses, hhAtsEditor, hhReviewPage, hhWherePrompt, hhShowAtsConfig, hhStylePage, hhStatus, readActiveVacancy, hhSendPreview, hhSendConfirm, hhSendCancel, hhRejectDryRun, hhRejectConfirm, hhRejectCancel, hhBatchEvaluate, hhManualScan } = require('../hh-quick');
+const { runHostAction } = require('../mcp-action');
+
+// Outbound HH effects (send / mass reject) can take longer than a read.
+const HH_CONFIRM_TIMEOUT_MS = 120_000;
+
+// One user-typed HH quick command → host-only hh-skill action (epic #1470 P1.3).
+// Resolves to the provider's text ('' = no quick answer); rejects on provider failure.
+async function hhQuickAnswer({ intent, task, username, workDir, timeoutMs }) {
+  const text = await runHostAction({ tool: 'hh_quick_answer', params: { intent, task }, username, workDir, timeoutMs });
+  return text || '';
+}
 const { readVacancyState, initVacancyState, appendVacancyMessage, writeVacancyState, generateVacancyFromMessages, publishVacancyPage, publishToHH, getMissingFields } = require('../hh-vacancy');
 const { loadUserSiteIntents } = require('../user-sites');
 const { deleteServiceAccount: deleteGdriveSA } = require('../mcp-skills/tools/50-gdrive');
@@ -177,10 +187,28 @@ const MODEL_INFO_INTENT = /(?:на\s+какой\s+(?:модел|нейросет
 // «Ожидаю завершения предыдущей работы»").
 // OC_PROFILE_INTENT (/oc_max, /oc_deepseek, …) — same class again: getQuickAnswer handles it as
 // a sync profiles.json write (it also pins this chat's engine), so it rides the same whitelist.
+// Fuzzy natural-language info intents (HELP/USAGE/SECRETS_*/CONTEXT_*/MODEL_INFO) are
+// unanchored: they exist for a SHORT standalone question («что ты умеешь», «сколько я
+// потратил»). Inside a real task the same words are just prose («…посчитай расход токенов…»,
+// «какие есть возможности…») and used to swallow the whole task with a canned ⚡ reply —
+// silently, before the queue (#1479, 2026-09-26). Slash commands keep matching as before;
+// prose must be a single short message to count as an info question.
+const FUZZY_INFO_MAX_CHARS = 100;
+function isShortStandaloneQuestion(task) {
+  const raw = String(task || '').trim();
+  if ((raw.match(/\[Сообщение \d+\]/g) || []).length > 1) return false;
+  const text = raw.replace(/^\[Сообщение \d+\]\s*/, '').replace(/^@\w+\s*/, '').trim();
+  return text.length <= FUZZY_INFO_MAX_CHARS;
+}
+function fuzzyInfoIntent(re, task) {
+  if (!re.test(task)) return false;
+  const text = String(task || '').trim().replace(/^\[Сообщение \d+\]\s*/, '').replace(/^@\w+\s*/, '');
+  return /^\//.test(text) || isShortStandaloneQuestion(task);
+}
 function isPreQueueQuickIntent(task) {
-  return PING_INTENT.test(task) || HELP_INTENT.test(task) || AGENT_INFO_INTENT.test(task) ||
-    MODEL_INFO_INTENT.test(task) || SECRETS_LIST_INTENT.test(task) || SECRETS_LOG_INTENT.test(task) ||
-    USAGE_INTENT.test(task) || CONTEXT_OFF_INTENT.test(task) || CONTEXT_ON_INTENT.test(task) ||
+  return PING_INTENT.test(task) || fuzzyInfoIntent(HELP_INTENT, task) || AGENT_INFO_INTENT.test(task) ||
+    fuzzyInfoIntent(MODEL_INFO_INTENT, task) || fuzzyInfoIntent(SECRETS_LIST_INTENT, task) || fuzzyInfoIntent(SECRETS_LOG_INTENT, task) ||
+    fuzzyInfoIntent(USAGE_INTENT, task) || fuzzyInfoIntent(CONTEXT_OFF_INTENT, task) || fuzzyInfoIntent(CONTEXT_ON_INTENT, task) ||
     ENGINE_SWITCH_INTENT.test(task) || OC_GO_TOGGLE_INTENT.test(task) ||
     OC_PROFILE_INTENT.test(task) || PROJECT_INTENT.test(task) || SETTINGS_INTENT.test(task);
 }
@@ -379,7 +407,7 @@ function switchChatEngineToOpencode(workDir, chatId) {
 //   FALL-THROUGH (not return null): intent matched but data missing → next pattern may give useful answer
 //   RETURN NULL (→ Claude): situation ambiguous, or Claude must call a tool (e.g. gdrive_setup) autonomously
 // See README.md § "Guard conditions — fall-through vs return null" for the full audit table.
-function getQuickAnswer(task, userId, workDir, sessionExists = false, chatId = null, telegramUserId = null, audience = 'default', threadId = null) {
+function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, chatId = null, telegramUserId = null, audience = 'default', threadId = null) {
   // Stale PR alarm — fires repeatedly from csm-relay after PR is already merged
   if (STALE_PR_ALARM_INTENT.test(task)) {
     const prNum = task.match(/#(\d+)/)?.[1];
@@ -560,7 +588,7 @@ function getQuickAnswer(task, userId, workDir, sessionExists = false, chatId = n
 
   // /get_agent_info — show current engine, model, profile, VM, version
   // Also natural-language "what model/agent are you?" questions (MODEL_INFO_INTENT).
-  if (AGENT_INFO_INTENT.test(task) || MODEL_INFO_INTENT.test(task)) {
+  if (AGENT_INFO_INTENT.test(task) || fuzzyInfoIntent(MODEL_INFO_INTENT, task)) {
     const eng = workDir ? profiles.getEngine(workDir, chatId) : 'claude';
     const vmName = process.env.VM_NAME || 'unknown';
     let commit = 'unknown';
@@ -619,7 +647,7 @@ function getQuickAnswer(task, userId, workDir, sessionExists = false, chatId = n
       profiles.setOcProfile(workDir, 'deepseek');
       const engineNote = switchChatEngineToOpencode(workDir, chatId);
       const opencodeGoToggle = require('../opencode-go-toggle');
-      const modeLabel = opencodeGoToggle.getMode() === 'go' ? 'Go (opencode-go/deepseek-v4.1-flash)' : 'OpenRouter (openrouter/z-ai/glm-5.3-flash)';
+      const modeLabel = opencodeGoToggle.getMode() === 'go' ? 'Go (opencode-go/deepseek-v4.1-flash)' : 'OpenRouter (openrouter/deepseek/deepseek-v4-flash-0731)';
       return `✅ OpenCode профиль → DEEPSEEK — общий, единая модель на всех ролях\n\nПрименён только для твоего профиля. Реальный шлюз (Go или OpenRouter) переключается общим VM-тумблером — сейчас: ${modeLabel}. Ручное переключение: /oc_go, /oc_openrouter. Авто-переключение на OpenRouter при упоре в лимит Go, авто-возврат через ~5ч.${engineNote}`;
     }
     const profileFile = path.join(__dirname, '..', '..', '.opencode', 'profiles', `${raw}.json`);
@@ -631,7 +659,7 @@ function getQuickAnswer(task, userId, workDir, sessionExists = false, chatId = n
       value:    'VALUE — DeepSeek V4 Flash → GLM → Qwen',
       free:     'FREE — только бесплатный inference (MiMo/Nemotron)',
       russian:  'RUSSIAN — GigaChat Pro/Ultra/Max',
-      'deepseek-openrouter': 'DEEPSEEK, закреплено на OpenRouter — openrouter/z-ai/glm-5.3-flash',
+      'deepseek-openrouter': 'DEEPSEEK, закреплено на OpenRouter — openrouter/deepseek/deepseek-v4-flash-0731',
       'deepseek-go':         'DEEPSEEK, закреплено на Go — opencode-go/deepseek-v4.1-flash',
     };
     const label = PROFILE_LABELS[raw] || raw;
@@ -652,7 +680,7 @@ function getQuickAnswer(task, userId, workDir, sessionExists = false, chatId = n
     const mode = ocGoToggleM[1].toLowerCase();
     const opencodeGoToggle = require('../opencode-go-toggle');
     opencodeGoToggle.setMode(mode, { auto: false });
-    const label = mode === 'go' ? 'Go (opencode-go/deepseek-v4.1-flash)' : 'OpenRouter (openrouter/z-ai/glm-5.3-flash)';
+    const label = mode === 'go' ? 'Go (opencode-go/deepseek-v4.1-flash)' : 'OpenRouter (openrouter/deepseek/deepseek-v4-flash-0731)';
     const stickyNote = mode === 'openrouter' ? ' Останется на OpenRouter, пока не переключишь обратно (/oc_go) — это ручное переключение, само не вернётся через 5ч (в отличие от авто-переключения при лимите).' : '';
     return `✅ Общий тумблер OpenCode Go/OpenRouter (VM-wide) → ${label}\n\nВлияет на всех, кто использует профиль «deepseek» (/oc_deepseek), а не только на твой.${stickyNote}`;
   }
@@ -690,7 +718,7 @@ function getQuickAnswer(task, userId, workDir, sessionExists = false, chatId = n
         return null; // fall through to async handler
       }
       // Skip other quick-answer patterns while collecting (except ping/help)
-      if (!PING_INTENT.test(task) && !HELP_INTENT.test(task)) {
+      if (!PING_INTENT.test(task) && !fuzzyInfoIntent(HELP_INTENT, task)) {
         const count = appendVacancyMessage(workDir, task);
         const countLabel = count === 1 ? 'блок' : count < 5 ? 'блока' : 'блоков';
         return `✅ Принял (${count} ${countLabel}). Ещё что-нибудь? Или скажи «всё» — начну генерировать.\nЧтобы отменить: «отмени создание вакансии».`;
@@ -783,7 +811,7 @@ function getQuickAnswer(task, userId, workDir, sessionExists = false, chatId = n
   if (PING_INTENT.test(task)) return '🟢 Онлайн. Готов к работе.';
 
   // /help — capability overview (static, no Claude needed)
-  if (HELP_INTENT.test(task)) {
+  if (fuzzyInfoIntent(HELP_INTENT, task)) {
     return [
       '🤖 Что я умею:',
       '',
@@ -825,7 +853,7 @@ function getQuickAnswer(task, userId, workDir, sessionExists = false, chatId = n
   }
 
   // /usage — token usage stats
-  if (USAGE_INTENT.test(task)) {
+  if (fuzzyInfoIntent(USAGE_INTENT, task)) {
     if (!workDir) return 'Не удалось определить рабочую директорию.';
     const t = getUsageTotals(workDir);
     if (!t || t.tasks === 0) return 'Данных об использовании пока нет.';
@@ -840,7 +868,7 @@ function getQuickAnswer(task, userId, workDir, sessionExists = false, chatId = n
   }
 
   // /context_off / /context_on — toggle context card
-  if (CONTEXT_OFF_INTENT.test(task) || CONTEXT_ON_INTENT.test(task)) {
+  if (fuzzyInfoIntent(CONTEXT_OFF_INTENT, task) || fuzzyInfoIntent(CONTEXT_ON_INTENT, task)) {
     if (!workDir) return 'Не удалось определить рабочую директорию.';
     const flagPath = path.join(workDir, '.context_disabled');
     if (CONTEXT_OFF_INTENT.test(task)) {
@@ -852,7 +880,7 @@ function getQuickAnswer(task, userId, workDir, sessionExists = false, chatId = n
   }
 
   // /secrets_list — show connected services
-  if (SECRETS_LIST_INTENT.test(task)) {
+  if (fuzzyInfoIntent(SECRETS_LIST_INTENT, task)) {
     const services = userId ? listConnectedServices(userId) : null;
     if (!services || services.length === 0) {
       return 'Нет подключённых сервисов.\n\nЧтобы подключить: «подключи GitHub», «подключи Налог.ру» и т. д.';
@@ -871,7 +899,7 @@ function getQuickAnswer(task, userId, workDir, sessionExists = false, chatId = n
   }
 
   // /secrets_log — show access log
-  if (SECRETS_LOG_INTENT.test(task)) {
+  if (fuzzyInfoIntent(SECRETS_LOG_INTENT, task)) {
     const log = userId ? getSecretsLog(userId) : null;
     if (!log || log.length === 0) return 'История обращений пуста.';
     const lines = log.map(l => {
@@ -1342,7 +1370,7 @@ async function verifyQuickAnswerIntent(task, answerPreview, openrouterKey) {
 // chat turn — e.g. after a forceNew dispatch. BUG_OR_FEATURE_INTENT honors it (PR3) so
 // the session it creates is the SAME one the gateway's lastSessionId now points at,
 // instead of an orphan the next buffered message can never find its way back to.
-async function runQuickAnswer(task, userId, workDir, openrouterKey = null, sessionExists = false, chatId = null, telegramUserId = null, sessionId = null, audience = 'default', threadId = null) {
+async function runQuickAnswerUnchecked(task, userId, workDir, openrouterKey = null, sessionExists = false, chatId = null, telegramUserId = null, sessionId = null, audience = 'default', threadId = null) {
   const notificationIntents = require('../domains/hh/intents');
   if (userId && workDir && (notificationIntents.HH_NOTIFY_OFF_INTENT.test(task) || notificationIntents.HH_NOTIFY_ON_INTENT.test(task))) {
     return 'Уведомления холодного поиска выключены: функция удалена для всех пользователей. Настройки автопоиска не изменены.';
@@ -1625,43 +1653,48 @@ async function runQuickAnswer(task, userId, workDir, openrouterKey = null, sessi
       HH_REJECT_INTENT, HH_REJECT_CONFIRM_INTENT, HH_REJECT_CANCEL_INTENT, HH_SCAN_INTENT];
     if (hhIntents.some(intent => intent.test(task)) && !task.trim().startsWith('/') &&
         !await verifyQuickAnswerIntent(task, 'Быстрый ответ HeadHunter: вакансии, статистика, ссылки на ревью кандидатов или настройки рекрутинга', openrouterKey)) return null;
-    if (HH_STATUS_INTENT.test(task)) return hhStatus(userId);
-    if (HH_MY_VACANCIES_INTENT.test(task)) {
-      const r = await hhMyVacancies(userId, workDir).catch(() => null);
-      if (r) return r;
-    }
-    if (HH_FUNNEL_INTENT.test(task)) {
-      const r = await hhFunnelStats(userId, workDir).catch(() => null);
-      if (r) return r;
-    }
-    if (HH_RESPONSES_INTENT.test(task)) {
-      const r = await hhNewResponses(userId, workDir).catch(() => null);
-      if (r) return r;
-    }
-    if (HH_ATS_EDITOR_INTENT.test(task)) return hhAtsEditor(userId);
-    if (HH_REVIEW_PAGE_INTENT.test(task)) {
-      // Candidate review page — return immediately if active vacancy exists.
-      // Vacancy draft existing is irrelevant: user explicitly asked for candidate review, not vacancy publish.
-      const av = workDir ? readActiveVacancy(workDir) : null;
-      if (av) return hhReviewPage(userId);
-    }
-    if (HH_WHERE_PROMPT_INTENT.test(task)) return hhWherePrompt(userId);
-    if (HH_SHOW_ATS_CONFIG_INTENT.test(task)) return hhShowAtsConfig(userId);
-    if (HH_STYLE_INTENT.test(task)) return hhStylePage(userId);
-    // Action intents — order matters: confirm/cancel BEFORE the bare intent
-    if (HH_SEND_CONFIRM_INTENT.test(task)) return await hhSendConfirm(userId, workDir).catch(() => '⚠️ Не удалось отправить — попробуй ещё раз.');
-    if (HH_SEND_CANCEL_INTENT.test(task)) return hhSendCancel(userId, workDir);
-    if (HH_SEND_INTENT.test(task)) return await hhSendPreview(userId, workDir, task).catch(() => '⚠️ Не удалось подготовить сообщение.');
-    if (HH_REJECT_CONFIRM_INTENT.test(task)) return await hhRejectConfirm(userId, workDir).catch(() => '⚠️ Не удалось отклонить — попробуй ещё раз.');
-    if (HH_REJECT_CANCEL_INTENT.test(task)) return hhRejectCancel(userId, workDir);
-    if (HH_REJECT_INTENT.test(task)) return await hhRejectDryRun(userId, workDir, task).catch(() => '⚠️ Не удалось подготовить dry-run.');
-    if (HH_EVALUATE_INTENT.test(task)) return await hhBatchEvaluate(userId, workDir).catch(() => '⚠️ Не удалось запустить оценку.');
-    if (HH_SCAN_INTENT.test(task)) return await hhManualScan(userId, workDir).catch(() => '⚠️ Не удалось запустить скан.');
+    // HH logic lives in trained-assist-hh-skill (epic #1470 P1.3): each intent is
+    // one host-only provider action. '' / provider failure = no quick answer →
+    // fall through to the full session (hh_* MCP tools), never a crash.
+    const quick = (intent, opts = {}) => hhQuickAnswer({ intent, task, username: userId, workDir, ...opts });
+    const orNull = (p) => p.then(r => r || null, () => null);
+    let r;
+    if (HH_STATUS_INTENT.test(task) && (r = await orNull(quick('status')))) return r;
+    if (HH_MY_VACANCIES_INTENT.test(task) && (r = await orNull(quick('my_vacancies')))) return r;
+    if (HH_FUNNEL_INTENT.test(task) && (r = await orNull(quick('funnel')))) return r;
+    if (HH_RESPONSES_INTENT.test(task) && (r = await orNull(quick('new_responses')))) return r;
+    if (HH_ATS_EDITOR_INTENT.test(task) && (r = await orNull(quick('ats_editor')))) return r;
+    // Candidate review page — only with an active vacancy (provider returns '' otherwise).
+    if (HH_REVIEW_PAGE_INTENT.test(task) && (r = await orNull(quick('review_page')))) return r;
+    if (HH_WHERE_PROMPT_INTENT.test(task) && (r = await orNull(quick('where_prompt')))) return r;
+    if (HH_SHOW_ATS_CONFIG_INTENT.test(task) && (r = await orNull(quick('show_ats_config')))) return r;
+    if (HH_STYLE_INTENT.test(task) && (r = await orNull(quick('style_page')))) return r;
+    // Action intents — order matters: confirm/cancel BEFORE the bare intent.
+    // Confirm = outbound HH effect: longer deadline, and a timeout must not invite
+    // a blind retry (the send may have gone through).
+    const confirmFail = (msg) => (e) => (e && e.code === 'timeout' ? '⚠️ HH не ответил вовремя — проверь на hh.ru, прежде чем повторять.' : msg);
+    if (HH_SEND_CONFIRM_INTENT.test(task)) return quick('send_confirm', { timeoutMs: HH_CONFIRM_TIMEOUT_MS }).catch(confirmFail('⚠️ Не удалось отправить — попробуй ещё раз.'));
+    if (HH_SEND_CANCEL_INTENT.test(task)) return quick('send_cancel').catch(() => '⚠️ Не удалось отменить — попробуй ещё раз.');
+    if (HH_SEND_INTENT.test(task)) return quick('send_preview').catch(() => '⚠️ Не удалось подготовить сообщение.');
+    if (HH_REJECT_CONFIRM_INTENT.test(task)) return quick('reject_confirm', { timeoutMs: HH_CONFIRM_TIMEOUT_MS }).catch(confirmFail('⚠️ Не удалось отклонить — попробуй ещё раз.'));
+    if (HH_REJECT_CANCEL_INTENT.test(task)) return quick('reject_cancel').catch(() => '⚠️ Не удалось отменить — попробуй ещё раз.');
+    if (HH_REJECT_INTENT.test(task)) return quick('reject_dry_run').catch(() => '⚠️ Не удалось подготовить dry-run.');
+    // HH_EVALUATE_INTENT / HH_SCAN_INTENT: no quick answer — the full session runs
+    // hh_batch_evaluate / hh_proactive_search with the slash command intact.
   }
 
 
 
   return null;
+}
+
+// Public entry points: an empty quick answer is never delivered (src/quick-reply.js).
+const { nonEmptyQuickReply } = require('../quick-reply');
+function getQuickAnswer(task, ...rest) {
+  return nonEmptyQuickReply(getQuickAnswerUnchecked(task, ...rest), task);
+}
+async function runQuickAnswer(task, ...rest) {
+  return nonEmptyQuickReply(await runQuickAnswerUnchecked(task, ...rest), task);
 }
 
 module.exports = {
@@ -1691,6 +1724,7 @@ module.exports = {
   MODEL_INFO_INTENT,
   BUG_OR_FEATURE_INTENT,
   isPreQueueQuickIntent,
+  fuzzyInfoIntent,
   isSlashCommand,
   shouldAttemptQuickAnswer,
   // Constants for runner.js _intents export

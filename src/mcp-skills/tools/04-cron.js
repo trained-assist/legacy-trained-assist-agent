@@ -19,6 +19,34 @@ const AGENT_SECRET = process.env.AGENT_SECRET || '';
 const GCP_PROJECT = process.env.GCP_PROJECT || 'alesa-personal-assistent';
 const GCP_REGION  = process.env.GCP_REGION  || 'us-central1';
 
+// ── Honesty gate (#1489 phase 0) ──────────────────────────────────────────────
+// The per-job GCP path never worked in prod: the VM SA lacks cloudscheduler.* (403, #954),
+// and even with IAM the job would POST /run with USER_ID = username while /run requires a
+// numeric chatId → 400. Users got "успешно" and nothing ever ran. Until the core cron-service
+// (#1489 phases 1–4) lands, every path that would create/fire a job refuses explicitly.
+// CRON_GCP_PER_JOB=1 re-enables the legacy path (still requires a numeric chat id).
+const UNAVAILABLE_MESSAGE =
+  'Расписания сейчас не работают: задача НЕ создана и сама запускаться не будет. ' +
+  'Чиним в trained-assist-agent#1489. Пока можно запускать вручную.';
+
+function schedulerGate(env = process.env) {
+  if (env.CRON_GCP_PER_JOB !== '1') {
+    return { ok: false, code: 'SCHEDULER_UNAVAILABLE', error: UNAVAILABLE_MESSAGE };
+  }
+  if (!/^-?\d{1,20}$/.test(String(env.USER_ID || ''))) {
+    return { ok: false, code: 'INVALID_TARGET', error: `${UNAVAILABLE_MESSAGE} (нет числового chat id у профиля)` };
+  }
+  if (!env.AGENT_SECRET) return { ok: false, code: 'SCHEDULER_UNAVAILABLE', error: 'AGENT_SECRET not configured — cannot create cron job.' };
+  return null;
+}
+
+function schedulerError(err) {
+  if (/GCP Scheduler 403|metadata server unavailable/i.test(err.message)) {
+    return { ok: false, code: 'SCHEDULER_UNAVAILABLE', error: `${UNAVAILABLE_MESSAGE} (${err.message.slice(0, 120)})` };
+  }
+  return { ok: false, code: 'SCHEDULER_ERROR', error: err.message };
+}
+
 // ── GCP helpers ───────────────────────────────────────────────────────────────
 
 async function getGcpToken() {
@@ -102,7 +130,7 @@ function makeCronId(label) {
 
 function makeGcpJob(id, schedule, timezone, task) {
   const runBody = JSON.stringify({
-    userId: parseInt(USER_ID) || USER_ID,
+    chatId: String(USER_ID),
     username: USER_HANDLE,
     task,
     context: `cron:${id}`,
@@ -173,11 +201,12 @@ const HH_DIGEST_TASK = `SCHEDULED: HH мониторинг — быстрый д
 // ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = {
+  _internals: { schedulerGate, schedulerError, makeGcpJob },
   tools: {
 
     cron_create: {
       description:
-        'Create a recurring scheduled task via Google Cloud Scheduler. ' +
+        'Create a recurring scheduled task. CURRENTLY UNAVAILABLE (#1489): returns ok:false/SCHEDULER_UNAVAILABLE — never tell the user a schedule was created unless ok:true. ' +
         'The task runs automatically on schedule, with full access to all connected skills. ' +
         'schedule: standard cron syntax (e.g. "*/30 * * * *" = every 30 min, "0 9 * * *" = daily at 9:00). ' +
         'label: short name shown in cron_list (e.g. "hh-digest", "weekly-report").',
@@ -192,7 +221,8 @@ module.exports = {
         },
       },
       handler: async ({ schedule, task, label, timezone = 'Europe/Moscow' }) => {
-        if (!AGENT_SECRET) return { error: 'AGENT_SECRET not configured — cannot create cron job.' };
+        const gate = schedulerGate();
+        if (gate) return gate;
 
         const id = makeCronId(label || 'cron');
         const gcpJob = makeGcpJob(id, schedule, timezone, task);
@@ -201,7 +231,7 @@ module.exports = {
         try {
           gcpResult = await schedulerRequest('POST', null, gcpJob);
         } catch (err) {
-          return { error: err.message };
+          return schedulerError(err);
         }
 
         const record = {
@@ -230,6 +260,7 @@ module.exports = {
 
     cron_hh_digest: {
       description:
+        'CURRENTLY UNAVAILABLE (#1489): returns ok:false — never report success unless ok:true. ' +
         'Convenience: create an HH recruiting digest cron — sends a Telegram summary of new responses/funnel per tracked vacancy, one block per vacancy if several are active. ' +
         'Uses context_get("hh", "active_vacancies") (falls back to the legacy singleton "active_vacancy") and per-vacancy "ats_config:{id}" at runtime. ' +
         'Track at least one vacancy first with hh_set_active_vacancy before enabling this cron.',
@@ -242,7 +273,8 @@ module.exports = {
         },
       },
       handler: async ({ schedule, timezone = 'Europe/Moscow' }) => {
-        if (!AGENT_SECRET) return { error: 'AGENT_SECRET not configured — cannot create cron job.' };
+        const gate = schedulerGate();
+        if (gate) return gate;
 
         const id = makeCronId('hh-digest');
         const gcpJob = makeGcpJob(id, schedule, timezone, HH_DIGEST_TASK);
@@ -251,7 +283,7 @@ module.exports = {
         try {
           gcpResult = await schedulerRequest('POST', null, gcpJob);
         } catch (err) {
-          return { error: err.message };
+          return schedulerError(err);
         }
 
         const record = {
@@ -361,10 +393,12 @@ module.exports = {
         const record = loadCronRecord(id);
         if (!record) return { error: `Cron ${id} not found.` };
 
+        const gate = schedulerGate();
+        if (gate) return gate;
         try {
           await schedulerRequest('POST', `${id}:resume`);
         } catch (err) {
-          return { error: err.message };
+          return schedulerError(err);
         }
 
         record.enabled = true;
@@ -386,10 +420,12 @@ module.exports = {
         const record = loadCronRecord(id);
         if (!record) return { error: `Cron ${id} not found.` };
 
+        const gate = schedulerGate();
+        if (gate) return gate;
         try {
           await schedulerRequest('POST', `${id}:run`);
         } catch (err) {
-          return { error: err.message };
+          return schedulerError(err);
         }
 
         return { ok: true, id, triggered: new Date().toISOString() };

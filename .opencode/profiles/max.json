@@ -1,9 +1,3 @@
 {
-  "ladder": {
-    "build":   ["opencode-go/gpt-6-luna", "opencode-go/gpt-5.6-luna", "opencode-go/glm-5.3", "opencode-go/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4-flash-0731"],
-    "plan":    ["opencode-go/gpt-6-luna", "opencode-go/gpt-5.6-luna", "opencode-go/glm-5.3", "opencode-go/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4-flash-0731"],
-    "explore": ["opencode-go/gpt-6-luna", "opencode-go/gpt-5.6-luna", "opencode-go/glm-5.3", "opencode-go/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4-flash-0731"],
-    "general": ["opencode-go/gpt-6-luna", "opencode-go/gpt-5.6-luna", "opencode-go/glm-5.3", "opencode-go/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4-flash-0731"],
-    "review":  ["opencode-go/gpt-6-luna", "opencode-go/gpt-5.6-luna", "opencode-go/glm-5.3", "opencode-go/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4-flash-0731"]
-  }
+  "ladderRef": "max"
 }

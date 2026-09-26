@@ -4,12 +4,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-// Isolated OPENCODE_LADDER_STATE_FILE per test run — same pattern as test/auth-flag.test.cjs —
-// so this never touches the real ~/.config/opencode/ladder-state.json, and so opencode-ladder.js
-// (which resolves STATE_FILE at require time) picks up the fresh path each time.
+// Isolated OPENCODE_MODEL_HEALTH_FILE per test run — same pattern as test/auth-flag.test.cjs —
+// so this never touches the real ~/.config/opencode/model-health.json. The state path is resolved
+// lazily by src/model-health.js on each call, so re-requiring opencode-ladder.js is enough to pick
+// up the fresh path (issue #1467: health is per-model, one shared store).
 function freshModule() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-ladder-test-'));
-  process.env.OPENCODE_LADDER_STATE_FILE = path.join(dir, 'ladder-state.json');
+  process.env.OPENCODE_MODEL_HEALTH_FILE = path.join(dir, 'model-health.json');
   delete require.cache[require.resolve('../src/opencode-ladder')];
   return { mod: require('../src/opencode-ladder'), dir };
 }
@@ -225,8 +226,8 @@ test('forceAdvance is a no-op when profile or model is missing', () => {
 });
 
 test('real free profile: every role ladder ends on a paid rung, not another :free model', () => {
-  const freeProfile = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'free.json'), 'utf8'));
-  for (const [role, ladder] of Object.entries(freeProfile.ladder)) {
+  const routing = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'model-routing.json'), 'utf8'));
+  for (const [role, ladder] of Object.entries(routing.ladders.free)) {
     const lastRung = ladder[ladder.length - 1];
     assert.ok(!lastRung.endsWith(':free'), `${role}'s last rung (${lastRung}) must be a paid model — if every :free rung is rate-limited/dead, there must be one guaranteed-to-work fallback left`);
   }
@@ -245,27 +246,53 @@ test('classifyError recognizes an intermittent "Bad Request" model rejection as 
   assert.equal(mod.classifyError('Bad Request: rate limit exceeded').class, 'quota');
 });
 
-test('recordFailure does NOT persist exhaustion for a transient Bad Request — retry the same rung first', () => {
+// Replaced (issue #1467, owner decision 2026-09-26): the old test asserted a transient "Bad
+// Request" never touches shared state ("must not poison the rung for other tasks"). That contract
+// is superseded — the owner asked for a unified PER-MODEL health with a short exponential backoff,
+// so a flaky model IS skipped briefly (shared across profiles) and then retried on that schedule.
+test('recordFailure gives a transient Bad Request a SHORT shared per-model backoff (issue #1467)', () => {
   const { mod } = freshModule();
   const verdict = mod.recordFailure('p', 'build', 'flaky-model', 'Bad Request: {"model":"flaky-model"}');
-  assert.deepEqual(verdict, { class: 'transient', model: 'flaky-model', alertNeeded: false });
-  assert.equal(mod.resolveModel({ ladder: { build: ['flaky-model', 'sibling'] } }, 'p', 'build'), 'flaky-model',
-    'a transient Bad Request must not poison the rung for other tasks');
+  assert.equal(verdict.class, 'transient');
+  assert.equal(verdict.model, 'flaky-model');
+  assert.equal(verdict.alertNeeded, false);
+  // "первый откат короткий (15с), далее ×2": the runner retries the SAME model on this schedule.
+  assert.ok(verdict.retryAfterMs >= 14000 && verdict.retryAfterMs <= 16000,
+    `expected ~15s first backoff, got ${verdict.retryAfterMs}ms`);
+  assert.equal(mod.resolveModel({ ladder: { build: ['flaky-model', 'sibling'] } }, 'p', 'build'), 'sibling',
+    'while the model is in its short backoff the ladder skips it — one shared health for all profiles');
+  // A success clears the record, so the model comes straight back.
+  mod.recordSuccess('flaky-model');
+  assert.equal(mod.resolveModel({ ladder: { build: ['flaky-model', 'sibling'] } }, 'p', 'build'), 'flaky-model');
 });
 
-test('deepseek-go profile: top rung is deepseek-v4.1-flash, degrading to deepseek and mimo siblings on the same Go gateway', () => {
-  const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'deepseek-go.json'), 'utf8'));
-  assert.ok(Array.isArray(raw.ladder?.build) && raw.ladder.build.length >= 2,
-    'deepseek-go must now carry a real ladder — the old single-uniform-model shape could only flip the gateway');
-  assert.equal(raw.ladder.build[0], 'opencode-go/deepseek-v4.1-flash');
-  assert.ok(raw.ladder.build.includes('opencode-go/mimo-v2.6-flash'),
+test('deepseek-go profile: config-driven ladder, top rung deepseek-v4.1-flash, degrading to deepseek and mimo siblings on the same Go gateway', () => {
+  const routing = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'model-routing.json'), 'utf8'));
+  const profile = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'deepseek-go.json'), 'utf8'));
+  assert.equal(profile.ladderRef, 'deepseek-go', 'profile must be config-driven (ladderRef), not hardcode the model list');
+  const ladder = routing.ladders['deepseek-go'];
+  assert.ok(Array.isArray(ladder?.build) && ladder.build.length >= 2,
+    'deepseek-go must carry a real ladder — the old single-uniform-model shape could only flip the gateway');
+  assert.equal(ladder.build[0], 'opencode-go/deepseek-v4.1-flash');
+  assert.ok(ladder.build.includes('opencode-go/mimo-v2.6-flash'),
     'the sibling alternative for a flaky deepseek rung must be a same-gateway model (mimo-v2.6-flash)');
-  for (const rung of raw.ladder.build) assert.ok(rung.startsWith('opencode-go/'), `deepseek-go rung ${rung} must stay on the Go gateway`);
+  for (const rung of ladder.build) assert.ok(rung.startsWith('opencode-go/'), `deepseek-go rung ${rung} must stay on the Go gateway`);
 });
 
-test('deepseek-openrouter profile: real ladder on the OpenRouter gateway with a mimo sibling', () => {
-  const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'deepseek-openrouter.json'), 'utf8'));
-  assert.ok(Array.isArray(raw.ladder?.build) && raw.ladder.build.length >= 2);
-  assert.equal(raw.ladder.build[0], 'openrouter/z-ai/glm-5.3-flash');
-  assert.ok(raw.ladder.build.includes('openrouter/xiaomi/mimo-v2.6-flash'));
+test('deepseek-openrouter profile: config-driven ladder on the OpenRouter gateway with a mimo sibling', () => {
+  const routing = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'model-routing.json'), 'utf8'));
+  const profile = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'deepseek-openrouter.json'), 'utf8'));
+  assert.equal(profile.ladderRef, 'deepseek-openrouter');
+  const ladder = routing.ladders['deepseek-openrouter'];
+  assert.ok(Array.isArray(ladder?.build) && ladder.build.length >= 2);
+  assert.equal(ladder.build[0], 'openrouter/deepseek/deepseek-v4-flash-0731');
+  assert.ok(ladder.build.includes('openrouter/xiaomi/mimo-v2.6-flash'));
+  assert.ok(!ladder.build.some(m => m.includes('glm')), 'the expensive GLM rung was replaced by the cheap mimo sibling (owner 2026-09-26)');
+});
+
+test('buildOcProfileOverrides resolves a ladderRef from config/model-routing.json (issue #1467)', () => {
+  const { mod, dir } = freshModule();
+  writeProfile(dir, 'by-ref', { ladderRef: 'max' });
+  const resolved = mod.buildOcProfileOverrides('by-ref', dir);
+  assert.equal(resolved.agent.build.model, 'opencode-go/gpt-6-luna');
 });

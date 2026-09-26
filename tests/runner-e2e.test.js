@@ -794,11 +794,26 @@ describe('Expand button — forceClaude escalation', () => {
     expect(claudeMsg.role).toBe('assistant');
   });
 
-  it('utility commands still have NO button (ping)', { timeout: 10000 }, async () => {
+  // Replaces «utility commands still have NO button (ping)»: owner requirement #1481 —
+  // every ⚡ reply is escalatable. The button points at a side session that stays out of
+  // the session index until tapped, then becomes a normal indexed dialog.
+  it('utility commands get the escalate button from an unindexed side session (ping)', { timeout: 20000 }, async () => {
     await chat('/ping');
     const sent = tgSent();
     expect(sent.length).toBe(1);
-    expect(sent[0].body.reply_markup).toBeUndefined();
+    const btn = sent[0].body.reply_markup?.inline_keyboard?.flat().find(b => /^qa_more\|/.test(b.callback_data));
+    expect(btn, 'every ⚡ reply carries «Разобраться подробнее»').toBeTruthy();
+    const sideId = btn.callback_data.split('|')[1];
+    expect(readSession(sideId)?.sideSession).toBe(true);
+    expect(listSessionIndex().some(s => s.id === sideId), 'side session must not enter the index').toBe(false);
+
+    await runTask({
+      taskId: `t-expand-ping-${Date.now()}`, user: makeUser(), task: '', context: null,
+      sessionId: sideId, contextFromSession: null, forceClaude: true, mode: 'deep',
+      secrets: { BOT_TOKEN: 'fake:token' },
+    });
+    expect(readSession(sideId)?.sideSession).toBeUndefined();
+    expect(listSessionIndex().some(s => s.id === sideId), 'escalated side session is a real dialog').toBe(true);
   });
 
 });

@@ -1,11 +1,26 @@
 # Model ladder — decision log
 
-Issue #1061. Each profile in `.opencode/profiles/*.json` declares a `ladder` per agent role: a
-list of models in preference order, tried top-down. `src/opencode-ladder.js` resolves the first
-non-exhausted rung before every OpenCode invocation, and marks a rung exhausted (with a TTL) when
-the runner reports back a quota/rate-limit error for it. This file is the human-readable log of
-*why* the rungs are ordered the way they are — update it alongside the JSON whenever the order
-changes, don't let it drift into a description of some past state.
+Issue #1061. A profile in `.opencode/profiles/*.json` declares, per agent role, a `ladder`: a list
+of models in preference order, tried top-down. `src/opencode-ladder.js` resolves the first
+non-skipped rung before every OpenCode invocation.
+
+Ladders and policy are **config-driven** (issue #1467). A profile carries
+`"ladderRef": "<name>"` pointing at `config/model-routing.json`'s `ladders`, so the model lists
+live in ONE file instead of being copied into every profile — updating a ladder no longer means
+editing several profiles that just happen to share it. A profile with an inline `ladder` or a flat
+`model` (legacy shape) still works unchanged.
+
+Health is stored **per model, not per profile** (issue #1467, owner 2026-09-26: "клиент единый
+сервис, единый для всех профилей") in `src/model-health.js` →
+`~/.config/opencode/model-health.json`. The same physical model appears in the ladders of several
+profiles (`deepseek-go`, `max`, `value`); before this its flakiness was learned separately in each,
+so a rung burned in one place was still tried fresh elsewhere. Now one shared record is used by
+every profile/role, and a skipped model comes back when the next call to it succeeds
+(`recordSuccess`).
+
+This file is the human-readable log of *why* the rungs are ordered the way they are — update it
+alongside `config/model-routing.json` whenever the order changes, don't let it drift into a
+description of some past state.
 
 ## Error classes (`src/opencode-ladder.js: CLASSIFIERS`)
 
@@ -22,14 +37,33 @@ changes, don't let it drift into a description of some past state.
   "subscription required", "requires Global regions" (OpenCode Go region not enabled on the
   account — a one-time setting, not a quota), "insufficient account funds" (Zen pay-as-you-go
   balance empty — needs a human to top up, doesn't reset itself).
-- **transient** (does NOT mark the rung exhausted, does NOT skip it): an intermittent per-rung
-  fault where the model usually works — currently `"Bad Request: {model:...}"` (observed live
-  2026-09-25 on `opencode-go/deepseek-v4.1-flash`, which intermittently rejects a request while
-  its siblings serve fine). The runner retries the SAME model up to `MAX_INCOMPLETE_RETRIES` (3)
-  times with backoff and only escalates to the sibling rung after those fail — see the owner
-  requirement (2026-09-26) "частенько багует, нужны ретраи грамотные, альтернатива — если три
-  ретрая не сработали". The macro-alternation (`forceOpencodeAlternation`) takes an `escalate`
-  flag so early same-model retries leave the rung untouched and only the last retry advances it.
+- **transient** (short shared per-model backoff, then retry the SAME model): an intermittent
+  per-rung fault where the model usually works — currently `"Bad Request: {model:...}"` (observed
+  live 2026-09-25 on `opencode-go/deepseek-v4.1-flash`, which intermittently rejects a request while
+  its siblings serve fine). Unlike quota/config, this is NOT persisted hours/days: `recordFailure`
+  gives the model a short skip window (issue #1467) and the runner retries the SAME model once that
+  window elapses, up to `MAX_INCOMPLETE_RETRIES` (3) times, and only escalates to the sibling rung
+  after those fail — see the owner requirement (2026-09-26) "частенько багует, нужны ретраи
+  грамотные, альтернатива — если три ретрая не сработали". The macro-alternation
+  (`forceOpencodeAlternation`) takes an `escalate` flag so early same-model retries leave the rung
+  untouched and only the last retry advances it.
+
+### Transient backoff (`src/model-health.js`, issue #1467)
+
+Policy is data in `config/model-routing.json` (`backoff`), with identical built-in defaults so a
+missing/unreadable config never breaks model selection:
+
+- `baseMs: 15000`, `multiplier: 2`, `capMs: 300000` → **15s → 30s → 60s → 120s → 240s → 300s
+  (cap)**. The owner's framing: "ошибка разовая обычно" — the first rollback must be SHORT, not
+  fifteen minutes.
+- `failureWindowMs: 900000` — a failure streak older than the window no longer counts, so a model
+  that had a bad hour yesterday is not permanently "sick".
+- `config`-class never auto-clears (`skipUntil: null`) and keeps alerting an operator — one model
+  needing manual account setup is now blocked for every profile (that is the intent of a single
+  client, but it must be loud).
+- `forceAdvance` (the blind crash-retry in `runner/index.js`, unrelated to error classification)
+  writes a short 15-min `force` skip so a task's own retry schedule doesn't hammer the same rung.
+  This one IS shared per model — a known trade-off, listed in the design doc.
 
 Codex auth-error patterns are still unconfirmed empirically (issue #1061 spike 0.1, open) — the
 config/quota classifiers above are OpenCode-engine-specific (they classify errors from `opencode
@@ -53,6 +87,15 @@ just stops because every Go rung rate-limited.
 DeepSeek V4 Flash (OpenRouter, paid) first — cheap and reliably available. GLM-5.3-flash and
 Qwen3.8-flash as fallbacks (former `quality`/`mimo` rungs). `plan` leads with GigaChat-Ultra —
 carried over from the pre-#1061 config, kept because planning benefited from it in practice.
+
+`review` was reordered 2026-09-26: `openrouter/deepseek/deepseek-v4-flash-0731` now leads instead
+of `nemotron-3-ultra-550b:free`. The free rung had ~70% request availability (owner report:
+"бесплатные LLM в 70% случаев ошибка request"), which made reviews flaky; deepseek-v4-flash at
+$0.021/M input / $0.32/M output is the cheapest reliable large-context model (1.3M ctx) on
+OpenRouter — Google's cheapest text model (gemma-3-4b, $0.05/M input) is 2.4x MORE expensive on
+input, so nothing from Google competes for the input-dominated review workload. The free
+nemotron stays as a fallback rung; `free.review` was left untouched (its contract is zero-cost,
+and deepseek already sits there as the paid last resort).
 
 ## `free` — zero cost, background/fallback use
 
@@ -92,13 +135,17 @@ no ladder, so the only possible response to a failure was flipping the whole tea
 The "Bad Request on the top rung" bug exposed the gap: when `opencode-go/deepseek-v4.1-flash`
 intermittently rejected a request, there was nothing to degrade to within the gateway.
 
-Both files now carry a real per-role ladder on their own gateway, ending on a `mimo-v2.6-flash`
-sibling (the owner's chosen analogue for the flaky deepseek rung):
+Both profiles now reference a real per-role ladder on their own gateway via `ladderRef` (the
+ladder itself lives in `config/model-routing.json`), ending on a `mimo-v2.6-flash` sibling (the
+owner's chosen analogue for the flaky deepseek rung):
 
-- `deepseek-go.json`: `opencode-go/deepseek-v4.1-flash` → `opencode-go/deepseek-v4-flash`
-  (or `-v4-pro` for `plan`/`review`) → `opencode-go/mimo-v2.6-flash`
-- `deepseek-openrouter.json`: `openrouter/z-ai/glm-5.3-flash` → `openrouter/deepseek/deepseek-v4-flash-0731`
-  → `openrouter/xiaomi/mimo-v2.6-flash`
+- `deepseek-go` (`ladderRef` in `deepseek-go.json`): `opencode-go/deepseek-v4.1-flash` →
+  `opencode-go/deepseek-v4-flash` (or `-v4-pro` for `plan`/`review`) → `opencode-go/mimo-v2.6-flash`
+- `deepseek-openrouter` (`ladderRef` in `deepseek-openrouter.json`):
+  `openrouter/deepseek/deepseek-v4-flash-0731` → `openrouter/xiaomi/mimo-v2.6-flash`
+  (2026-09-26: `openrouter/z-ai/glm-5.3-flash` dropped — it was the most expensive rung of this
+  ladder and added nothing over the deepseek/mimo pair, per the owner: "glm дорогая и не очень
+  она классная. вместо glm поставим этот Mimo").
 
 Behaviour consequence: a failing rung now degrades **within the same gateway** first; the VM-wide
 toggle flip is reserved for a genuine account-wide Go quota hit (`noteFailure` classifies it as
@@ -136,7 +183,8 @@ logging it into the session transcript) when it differs.
 
 ## Updating this file
 
-Whenever a rung's order changes in `.opencode/profiles/*.json`, add or edit the relevant section
+Whenever a rung's order changes in `config/model-routing.json` (the ladders) — or, for a
+still-inline legacy profile, in `.opencode/profiles/*.json` — add or edit the relevant section
 above with the reason — a benchmark result, a recurring rate-limit, a new model becoming
 available. Don't just bump the JSON silently; the whole point of this file is that the next
 person (or agent) picking up issue #1061's follow-ups doesn't have to reverse-engineer *why* rung

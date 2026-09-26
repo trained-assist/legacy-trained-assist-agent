@@ -1,10 +1,4 @@
 {
-  "ladder": {
-    "build":   ["openrouter/z-ai/glm-5.3-flash", "openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/xiaomi/mimo-v2.6-flash"],
-    "plan":    ["openrouter/z-ai/glm-5.3-flash", "openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/xiaomi/mimo-v2.6-flash"],
-    "explore": ["openrouter/z-ai/glm-5.3-flash", "openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/xiaomi/mimo-v2.6-flash"],
-    "general": ["openrouter/z-ai/glm-5.3-flash", "openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/xiaomi/mimo-v2.6-flash"],
-    "review":  ["openrouter/z-ai/glm-5.3-flash", "openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/xiaomi/mimo-v2.6-flash"]
-  },
-  "model": "openrouter/z-ai/glm-5.3-flash"
+  "ladderRef": "deepseek-openrouter",
+  "model": "openrouter/deepseek/deepseek-v4-flash-0731"
 }

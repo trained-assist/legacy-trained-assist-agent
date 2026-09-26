@@ -3,9 +3,9 @@
 // Hermes Phase 1 (docs/HERMES-INTEGRATION-CHECKLIST.md) — «тупой worker»:
 // один LLM-вызов со structured-output контрактом, без памяти/инструментов/cron.
 // Переиспользует GigaChat(primary)+OpenRouter(fallback), уже проверенные в
-// hh-scoring.js — заводить отдельного провайдера под Hermes не нужно.
+// hh-scoring.js (теперь платформенный src/llm-client.js) — отдельный провайдер не нужен.
 
-const { llmCall, gcCall, parseLlmJson, readGigachatKey, readOrKey } = require('./hh-scoring');
+const { llmCall, gcCall, parseLlmJson, readGigachatKey, readOrKey } = require('./llm-client');
 
 const DEFAULT_MODEL = 'google/gemini-2.5-flash';
 const DEFAULT_MAX_TOKENS = 3000;

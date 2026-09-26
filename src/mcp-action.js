@@ -52,19 +52,38 @@ function resolveIndexPath(tool) {
 }
 
 function runMcpTool({ tool, params, username, workDir, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+  if (!tool || typeof tool !== 'string') return Promise.reject(Object.assign(new Error('tool required'), { code: 'bad_request' }));
+  if (!listActionTools().some(t => t.name === tool)) return Promise.reject(Object.assign(new Error(`Unknown tool: ${tool}`), { code: 'bad_request' }));
+  // MCP_HOST_ACTION is forced off: /action and the action transport never reach host-only actions.
+  return spawnToolCall({ indexPath: resolveIndexPath(tool), tool, params, username, workDir, timeoutMs, hostAction: false });
+}
+
+// Host-only HH actions (epic #1470 P1.3): deterministic quick answers the runner
+// used to compute in-process from the core hh-quick copy. The provider hides them
+// from the model's tools/list and refuses them unless spawned with
+// MCP_HOST_ACTION=1 — set only here, for user-typed commands handled by core.
+function listHostActions() {
+  return hhRegistry && typeof hhRegistry.listHostActions === 'function' ? hhRegistry.listHostActions() : [];
+}
+
+function runHostAction({ tool, params, username, workDir, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+  if (!listHostActions().some(t => t.name === tool)) {
+    return Promise.reject(Object.assign(new Error(`Host action is not registered: ${tool}`), { code: 'ACTION_NOT_FOUND' }));
+  }
+  return spawnToolCall({ indexPath: HH_SKILL_INDEX_PATH, tool, params, username, workDir, timeoutMs, hostAction: true });
+}
+
+function spawnToolCall({ indexPath, tool, params, username, workDir, timeoutMs, hostAction }) {
   return new Promise((resolve, reject) => {
     const fail = (code, message) => reject(Object.assign(new Error(message), { code }));
 
-    if (!tool || typeof tool !== 'string') return fail('bad_request', 'tool required');
-    if (!listActionTools().some(t => t.name === tool)) return fail('bad_request', `Unknown tool: ${tool}`);
-
     // process.execPath (not the string 'node') — avoids depending on PATH resolution
     // inside whatever env/sandbox this server process is itself running under.
-    const child = spawn(process.execPath, [resolveIndexPath(tool)], {
+    const child = spawn(process.execPath, [indexPath], {
       // cwd matters, not just WORK_DIR: tools like context-store resolve paths off
       // process.cwd() (inherited from Claude Code's own cwd today), not the env var.
       cwd: workDir || process.cwd(),
-      env: { ...process.env, USER_ID: String(username || ''), WORK_DIR: workDir || '' },
+      env: { ...process.env, USER_ID: String(username || ''), WORK_DIR: workDir || '', MCP_HOST_ACTION: hostAction ? '1' : '' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -113,4 +132,4 @@ function runMcpTool({ tool, params, username, workDir, timeoutMs = DEFAULT_TIMEO
   });
 }
 
-module.exports = { runMcpTool, listActionTools, resolveToolSource };
+module.exports = { runMcpTool, runHostAction, listHostActions, listActionTools, resolveToolSource };
