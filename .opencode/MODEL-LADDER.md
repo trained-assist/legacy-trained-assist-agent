@@ -88,6 +88,15 @@ DeepSeek V4 Flash (OpenRouter, paid) first — cheap and reliably available. GLM
 Qwen3.8-flash as fallbacks (former `quality`/`mimo` rungs). `plan` leads with GigaChat-Ultra —
 carried over from the pre-#1061 config, kept because planning benefited from it in practice.
 
+`review` was reordered 2026-09-26: `openrouter/deepseek/deepseek-v4-flash-0731` now leads instead
+of `nemotron-3-ultra-550b:free`. The free rung had ~70% request availability (owner report:
+"бесплатные LLM в 70% случаев ошибка request"), which made reviews flaky; deepseek-v4-flash at
+$0.021/M input / $0.32/M output is the cheapest reliable large-context model (1.3M ctx) on
+OpenRouter — Google's cheapest text model (gemma-3-4b, $0.05/M input) is 2.4x MORE expensive on
+input, so nothing from Google competes for the input-dominated review workload. The free
+nemotron stays as a fallback rung; `free.review` was left untouched (its contract is zero-cost,
+and deepseek already sits there as the paid last resort).
+
 ## `free` — zero cost, background/fallback use
 
 Mostly `:free`-tier OpenRouter models, cycled per role so retries don't all hammer the same one.

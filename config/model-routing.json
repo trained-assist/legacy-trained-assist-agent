@@ -19,7 +19,7 @@
       "plan":    ["gigachat/GigaChat-Ultra", "openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/z-ai/glm-5.3-flash", "opencode-go/qwen3.8-flash"],
       "explore": ["openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/z-ai/glm-5.3-flash", "opencode-go/qwen3.8-flash"],
       "general": ["openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/z-ai/glm-5.3-flash", "opencode-go/qwen3.8-flash"],
-      "review":  ["openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/z-ai/glm-5.3-flash"]
+      "review":  ["openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "openrouter/z-ai/glm-5.3-flash"]
     },
     "free": {
       "build":   ["openrouter/nvidia/nemotron-3-super-120b-a12b:free", "openrouter/nvidia/nemotron-3.5-lightning:free", "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free", "openrouter/deepseek/deepseek-v4-flash-0731"],
