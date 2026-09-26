@@ -108,6 +108,18 @@ unrestricted USER_ID switch or a scheduler. Credential capability only exposes
 the requested service for the bound profile. Existing filesystem/env coupling is
 migration debt; PR 1 does not pretend it has disappeared.
 
+### Schedule declaration (#1489 S3.1–3.3)
+
+An action may carry an optional `schedule` block: `label`, `minIntervalMinutes`,
+`delivery` (`silent|on_change|on_error|always`), `costClass`
+(`free|cheap_llm|llm|paid_api`), optional `defaultCron` and `settingsSchema`.
+Registration rejects it unless `'cron'` is in allowedTriggers; a `defaultCron`
+must parse and be no tighter than `minIntervalMinutes`, and approval-gated
+actions get no default (a grant is always explicit). Job creation/update
+validates arguments against `settingsSchema` and refuses a schedule tighter than
+`minIntervalMinutes`. deploy.sh runs `scripts/check-skill-schedule.js` on a
+sibling's new revision and keeps the old one if the core registry rejects it.
+
 ## Generic cron API / canonical storage
 
 The six input schemas define cron_create/list/get/update/delete/run_now. Scope
@@ -146,6 +158,15 @@ schedule recalculates next_run_at, disabling stops new claims, deleting stops ne
 claims but does not kill an already running effect. Retry bounds/timeouts and
 backpressure are core policy, explicit in execution records and operational docs.
 Cloud Scheduler may wake core but holds no canonical action/job state.
+
+Provider jobs API (#1514): a skill's compatibility wrapper (e.g. `hh_proactive_schedule`)
+manages its own jobs through `POST /internal/cron/jobs` (`op: upsert|list|delete`,
+Bearer AGENT_SECRET) and never reads cron tables. Jobs are addressed by
+(profile, project, action, name); upsert is idempotent and patches only changed
+fields, so a repeated enable never postpones next_run_at. Creation policy is the
+engine's (cron trigger, settingsSchema, minIntervalMinutes, approval gate). Every
+answer carries `scheduler_role`; a wrapper must not report a job as running on a
+host whose role is not `primary`.
 
 ## Delivery sequence and acceptance gates
 

@@ -43,6 +43,9 @@ Environment=VACANCY_REMOTE_STORE_URL=https://platform.recruiter-assistant.ru
 # VACANCY_REMOTE_STORE_URL above (one RU box, several purposes).
 Environment=RU_EDGE_URL=https://platform.recruiter-assistant.ru
 Environment=VM_NAME=gcp-main
+# Generic cron engine (#1489): this host owns the canonical cron SQLite and ticks it.
+# Staging never ticks (STAGING_ROOT), whatever this says.
+Environment=CRON_SCHEDULER_ROLE=primary
 Environment=GCP_PROJECT=alesa-personal-assistent
 Environment=ANTHROPIC_MODEL=claude-opus-5-5
 

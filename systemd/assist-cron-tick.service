@@ -1,0 +1,12 @@
+[Unit]
+Description=Generic cron engine external alarm — POST /internal/cron/tick (#1489 P2.1)
+After=assist-agent.service
+
+[Service]
+Type=oneshot
+User=vova
+EnvironmentFile=-/home/vova/secrets.env
+# The in-process 60s tick is primary; this alarm keeps the engine ticking if that
+# interval ever stops. Both go through the same claim transaction, so a double
+# tick never runs an occurrence twice. 409 = host is not the scheduler primary.
+ExecStart=/bin/bash -c 'code=$(curl -s -o /dev/null -w "%%{http_code}" --max-time 20 -X POST -H "Authorization: Bearer $AGENT_SECRET" http://127.0.0.1:8080/internal/cron/tick); [ "$code" = 200 ] || [ "$code" = 409 ] || { echo "cron tick HTTP $code"; exit 1; }'

@@ -74,11 +74,22 @@ function createActionInvoker({ registry, executions, transport, now = () => Date
       if (existing.action !== action || JSON.stringify(existing.arguments) !== JSON.stringify(args)) {
         throw serviceError('CONFLICT', 'Idempotency key reused with different action or arguments');
       }
-      return resultFromRow(existing);
+      // A cron occurrence is claimed first (cron-service, inside the claim
+      // transaction) and executed here afterwards: only the claimer holding the
+      // claim's lease may start it; anyone else sees the recorded state.
+      const claimed = options.claimedExecutionId && existing.id === options.claimedExecutionId &&
+        existing.status === 'claimed';
+      if (!claimed) return resultFromRow(existing);
     }
 
     if (descriptor.requiresApproval && options.approved !== true) {
       throw serviceError('APPROVAL_REQUIRED', 'Action requires explicit approval');
+    }
+
+    if (existing) {
+      const started = executions.startClaimed(existing.id, { leaseOwner: options.leaseOwner, now: now() });
+      if (!started) return resultFromRow(executions.get(existing.id));
+      return run(existing.id, options.leaseOwner);
     }
 
     const executionId = options.executionId || crypto.randomUUID();
@@ -94,7 +105,9 @@ function createActionInvoker({ registry, executions, transport, now = () => Date
       if (row) return resultFromRow(row);
       throw err;
     }
+    return run(executionId, leaseOwner);
 
+    async function run(executionId, leaseOwner) {
     try {
       const output = await transport({ action, arguments: args, profileId, projectId, executionId, trigger });
       executions.finishExecution(executionId, { status: 'succeeded', result: output, leaseOwner, now: now() });
@@ -105,6 +118,7 @@ function createActionInvoker({ registry, executions, transport, now = () => Date
       const error = { code, message: String((err && err.message) || err).slice(0, 500), retryable };
       executions.finishExecution(executionId, { status, error, leaseOwner, now: now() });
       return { version: 1, executionId, status, error };
+    }
     }
   }
 
