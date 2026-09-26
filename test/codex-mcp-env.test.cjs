@@ -61,3 +61,11 @@ test('runEngineProcess wires the forwarding for codex (source contract)', () => 
   assert.match(src, /engine === 'codex' && mcpConfig\s*\?\s*withCodexMcpEnvForwarding\(engineArgs, mcpConfig, Object\.keys\(engineEnv\)\)/);
   assert.match(src, /spawn\(engineBin, spawnArgs, \{[\s\S]{0,40}env: engineEnv/);
 });
+
+// All user-facing times are МСК (card + session context use Europe/Moscow). Without an
+// explicit TZ the engine shell inherits the VM clock (UTC on GCP), so plain `date` disagrees
+// with every displayed time and the agent mixes a МСК target with `date -u` (2026-09-27).
+test('engine env pins TZ=Europe/Moscow to match the МСК UI', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'runner', 'claude-runner.js'), 'utf8');
+  assert.match(src, /TZ:\s*process\.env\.TZ\s*\|\|\s*'Europe\/Moscow'/);
+});

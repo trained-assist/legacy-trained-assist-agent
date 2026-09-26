@@ -139,5 +139,16 @@ function withFakeConnectedService(username) {
   if (prev === undefined) delete process.env.ANTHROPIC_MODEL; else process.env.ANTHROPIC_MODEL = prev;
 }
 
+// 7. currentTimeSection — one authoritative МСК clock line, in the same zone the card uses.
+//    Regression guard: the shell used to run UTC while the card showed МСК, so the agent
+//    paired a Moscow target with `date -u` and waited ~3h too long (incident 2026-09-27).
+{
+  const { _time } = require('../src/runner');
+  const line = _time.currentTimeSection(new Date('2026-09-27T18:48:00.000Z')); // 21:48 МСК
+  ok(/21:48/.test(line), `shows Moscow time for a UTC instant, got: ${line}`);
+  ok(/2026-09-27 18:48 UTC/.test(line), `shows the matching UTC instant, got: ${line}`);
+  ok(/МСК/.test(line) && /TZ=Europe\/Moscow/.test(line), 'names the timezone consistently');
+}
+
 console.log(`\npin-context-card: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
