@@ -857,9 +857,12 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     if (!workDir) return 'Не удалось определить рабочую директорию.';
     const t = getUsageTotals(workDir);
     if (!t || t.tasks === 0) return 'Данных об использовании пока нет.';
+    // The model reads fresh input + cache read + cache write every step, so the
+    // honest "what actually went in" total is the sum — report it first (#149).
+    const totalIn = t.input_tokens + t.cache_read + t.cache_write;
     const lines = [
       `📊 Использование токенов (всего ${t.tasks} задач):`,
-      `• Входящих: ${t.input_tokens.toLocaleString('ru-RU')}`,
+      `• Вход всего: ${totalIn.toLocaleString('ru-RU')} (новых ${t.input_tokens.toLocaleString('ru-RU')})`,
       `• Исходящих: ${t.output_tokens.toLocaleString('ru-RU')}`,
     ];
     if (t.cache_read > 0) lines.push(`• Из кэша: ${t.cache_read.toLocaleString('ru-RU')}`);

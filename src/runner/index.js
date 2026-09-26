@@ -82,6 +82,13 @@ const STOP_BUTTON_AFTER_SECS = 5;
 const MAX_MSG_LEN = 3500;
 
 // Telegram cards report token usage only; monetary estimates are not displayed.
+//
+// The model reads the WHOLE prompt every step (fresh input + cache read + cache
+// write), so reporting only input_tokens made a ~57K-step look like "вход 6K"
+// and misled the owner into doubting the system-prompt size (#149 follow-up,
+// owner decision 27.09.2026 "давай да поправим"). When any cache part is
+// present we show the honest total with a breakdown; with no cache at all the
+// footer is unchanged (total === input anyway).
 function formatCostFooter(usage) {
   if (!usage) return '';
   const inp = usage.input_tokens || 0;
@@ -89,11 +96,19 @@ function formatCostFooter(usage) {
   const cr  = usage.cache_read_input_tokens || 0;
   const cw  = usage.cache_creation_input_tokens || 0;
   const fmt = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-  const fmtK = n => n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
-  const parts = [`вход ${fmt(inp)}`, `выход ${fmt(out)}`];
-  if (cw > 0) parts.push(`кэш +${fmtK(cw)}`);
-  if (cr > 0) parts.push(`кэш ${fmtK(cr)}`);
+  const fmtK = n => n >= 1e6 ? `${Math.round(n / 1e4) / 100}M`
+    : n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
+  const parts = [inputPart(inp, cr, cw, fmt, fmtK), `выход ${fmt(out)}`];
   return `\n\nИспользование: ${parts.join(' · ')}`;
+}
+
+// "вход N" when no cache; "вход всего T (новых N, из кэша R, в кэш +W)" otherwise.
+function inputPart(inp, cr, cw, fmt, fmtK) {
+  if (cr <= 0 && cw <= 0) return `вход ${fmt(inp)}`;
+  const bits = [`новых ${fmtK(inp)}`];
+  if (cr > 0) bits.push(`из кэша ${fmtK(cr)}`);
+  if (cw > 0) bits.push(`в кэш +${fmtK(cw)}`);
+  return `вход всего ${fmtK(inp + cr + cw)} (${bits.join(', ')})`;
 }
 
 // breakdown: [{ agent, model, input, output, cacheRead, cacheWrite, cost }]
@@ -102,16 +117,18 @@ function formatCostFooter(usage) {
 function formatOcFooter(usage, breakdown) {
   if (!usage) return '';
   const fmt = n => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '\u202f');
-  const fmtK = n => n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
+  const fmtK = n => n >= 1e6 ? `${Math.round(n / 1e4) / 100}M`
+    : n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
   let model = '';
   if (breakdown) {
     for (const s of breakdown) {
       if (s.model) { model = s.model.split('/').pop().replace(/:free$/, ''); break; }
     }
   }
-  const parts = [`вход ${fmt(usage.input)}`, `выход ${fmt(usage.output)}`];
-  if (usage.cacheWrite > 0) parts.push(`кэш +${fmtK(usage.cacheWrite)}`);
-  if (usage.cacheRead > 0) parts.push(`кэш ${fmtK(usage.cacheRead)}`);
+  const inp = usage.input || 0;
+  const cr  = usage.cacheRead || 0;
+  const cw  = usage.cacheWrite || 0;
+  const parts = [inputPart(inp, cr, cw, fmt, fmtK), `выход ${fmt(usage.output)}`];
   const m = model ? ` ${model}` : '';
   return `\n\nИспользование${m}: ${parts.join(' · ')}`;
 }
