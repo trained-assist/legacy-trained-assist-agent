@@ -44,6 +44,13 @@ function playbookError(code, message) {
 }
 
 function defaultSiblingRoots() {
+  // Explicit override (test/build environments that don't have the domain
+  // checkouts on disk next to this repo). Delimiter-separated, e.g.
+  // PLAYBOOK_SIBLING_ROOTS=/fixtures/trained-assist-engineering:/fixtures/other.
+  const override = process.env.PLAYBOOK_SIBLING_ROOTS;
+  if (override) {
+    return override.split(path.delimiter).filter(Boolean);
+  }
   return DEFAULT_SIBLING_REPOS
     .map(repo => path.join(REPO_PARENT, repo))
     .filter(dir => fs.existsSync(path.join(dir, 'playbooks')));

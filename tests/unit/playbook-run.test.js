@@ -23,6 +23,7 @@ const require = createRequire(import.meta.url);
 let root;
 let prevUsers;
 let prevData;
+let prevSiblingRoots;
 
 const PATHS = '../../src/data-paths.js';
 const STORE = '../../src/playbook-store.js';
@@ -62,9 +63,19 @@ const ALICE = { userId: 'alice' };
 beforeEach(() => {
   prevUsers = process.env.USERS_DIR;
   prevData = process.env.AGENT_DATA_DIR;
+  prevSiblingRoots = process.env.PLAYBOOK_SIBLING_ROOTS;
   root = mkdtempSync(join(tmpdir(), 'playbook-run-'));
   process.env.USERS_DIR = join(root, 'users');
   process.env.AGENT_DATA_DIR = join(root, 'data');
+  // The development playbook now lives in the trained-assist-engineering sibling
+  // repo. CI has no sibling checkout on disk, so point resolution at a fixture
+  // sibling built from tests/fixtures/development.json — otherwise these tests
+  // would pass only on a dev machine that happens to have the sibling cloned.
+  const siblingRoot = join(root, 'siblings', 'trained-assist-engineering');
+  mkdirSync(join(siblingRoot, 'playbooks'), { recursive: true });
+  writeFileSync(join(siblingRoot, 'playbooks', 'development.json'),
+    readFileSync(new URL('../fixtures/development.json', import.meta.url), 'utf8'));
+  process.env.PLAYBOOK_SIBLING_ROOTS = siblingRoot;
 });
 
 afterEach(() => {
@@ -72,6 +83,8 @@ afterEach(() => {
   else process.env.USERS_DIR = prevUsers;
   if (prevData === undefined) delete process.env.AGENT_DATA_DIR;
   else process.env.AGENT_DATA_DIR = prevData;
+  if (prevSiblingRoots === undefined) delete process.env.PLAYBOOK_SIBLING_ROOTS;
+  else process.env.PLAYBOOK_SIBLING_ROOTS = prevSiblingRoots;
   rmSync(root, { recursive: true, force: true });
 });
 
