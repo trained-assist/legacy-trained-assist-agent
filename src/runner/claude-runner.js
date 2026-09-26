@@ -339,6 +339,11 @@ async function runEngineProcess(opts) {
       ...(user.username ? { AGENT_USER_HANDLE: user.username }   : {}),
       ...(sessionFilePath ? { AGENT_SESSION_FILE: sessionFilePath } : {}),
       AGENT_TASK_ID: taskId,
+      // All user-facing times are Moscow (МСК) — the pinned card and session context
+      // format with timeZone 'Europe/Moscow'. Without this the engine shell inherited the
+      // VM clock (UTC on GCP), so plain `date` disagreed with every time the user sees and
+      // the agent mixed a МСК target with `date -u`, scheduling waits ~3h off (2026-09-27).
+      TZ: process.env.TZ || 'Europe/Moscow',
       CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0', // disable 600s background-task kill
       // opencode's config file goes to user.workDir (outside the code cwd) — see
       // writeOpencodeMcpConfig for why it must never land in the git worktree.
