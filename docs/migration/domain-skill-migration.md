@@ -87,6 +87,7 @@ this epic's — the matrix only records where each domain stands.
 - [x] HH HTTP routes (`/hh/*`, `/api/hh/*`) live in hh-skill `src/hh-routes.js`; core `server.js` only mounts them via `hhLib('hh-routes')` (#1470)
 - [x] `calltips_*` + recruiter text tools (`boolean_search`, `jd_generate`, `interview_questions_bank`, `salary_benchmark`, `sourcing_checklist`) served by hh-skill (`94-calltips`, `95-recruiter-tools`); core copies removed (#1470 P1.4)
 - [x] HH intents (`hh-intents.js`), prompt domains (`src/prompt-domains/hh*.md`) and Call Tips endpoints live in hh-skill; core reads prompt domains from every sibling repo in the skill catalog (#1470)
+- [x] vacancy-creation quick flow lives in hh-skill `src/hh-vacancy-quick.js`; core `intent-engine` only orders the checks and calls its hooks (#1470)
 
 State: **dual** (domain canary-mounted to sandbox, core serves everyone).
 
