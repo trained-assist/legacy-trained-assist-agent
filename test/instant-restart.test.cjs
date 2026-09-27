@@ -33,7 +33,8 @@ test('SIGTERM handler flags the restart and exits without draining', () => {
   const body = serverSrc.slice(start, end);
   assert.match(body, /interruptForRestart\(\)/);
   assert.match(body, /process\.exit\(0\)/);
-  assert.doesNotMatch(body, /await|setTimeout/);
+  // No drain: the handler must not pause admission or wait on active tasks.
+  assert.doesNotMatch(body, /drain|paused|maintenance\.pause/);
 });
 
 const { isTaskResumable } = require('../src/pending-task-resume');
@@ -41,7 +42,7 @@ const { isTaskResumable } = require('../src/pending-task-resume');
 function resumeHarness({ pending, now = Date.now(), retryDelayMs = () => 0, engineSessionIds = {}, secrets = { BOT_TOKEN: 'tok' } }) {
   const start = serverSrc.indexOf('const RESUME_WINDOW_MS');
   const end = serverSrc.indexOf('async function main()', start);
-  const calls = [], runs = [], cleared = [], delays = [], resumeKinds = [];
+  const calls = [], runs = [], cleared = [], delays = [], resumeKinds = [], releases = [];
   const sandbox = {
     taskDelivery: require('../src/bot-delivery').taskDelivery,
     path, console: { log() {}, error() {}, warn() {} }, Date: class extends Date { static now() { return now; } },
@@ -61,9 +62,12 @@ function resumeHarness({ pending, now = Date.now(), retryDelayMs = () => 0, engi
     fetch: async (url, init) => { calls.push({ url, body: JSON.parse(init.body) }); return {}; },
     runTask: opts => { runs.push(opts); return Promise.resolve(); },
   };
+  // releaseChat() calls require('./gateway-callback') from inside the sandbox
+  // slice; expose a stub so the harness needs no real module resolution.
+  sandbox.require = () => ({ notifyRunFinished: async (p) => { releases.push(p); return true; } });
   vm.createContext(sandbox);
   vm.runInContext(`${serverSrc.slice(start, end)}; this.resume = resumePendingTasks;`, sandbox);
-  return { resume: () => sandbox.resume(secrets), calls, runs, cleared, delays, resumeKinds, now };
+  return { resume: () => sandbox.resume(secrets), calls, runs, cleared, delays, resumeKinds, releases, now };
 }
 
 const task = (over = {}) => ({ taskId: 'alice-1', username: 'alice', userId: 42, task: 'work', initialMsgId: 7,
@@ -163,6 +167,7 @@ test('a resumed task that fails to start tells the user', async () => {
     fetch: async (url, init) => { calls.push(JSON.parse(init.body)); return {}; },
     runTask: () => Promise.reject(new Error('boom')),
   };
+  sandbox.require = () => ({ notifyRunFinished: async () => true });
   vm.createContext(sandbox);
   vm.runInContext(`${serverSrc.slice(start, serverSrc.indexOf('async function main()', start))}; this.resume = resumePendingTasks;`, sandbox);
   await sandbox.resume({ BOT_TOKEN: 'tok' });
@@ -183,6 +188,44 @@ test('stale entries are cleared; recent-but-expired ones notify, very old ones s
   assert.deepEqual(h.cleared, ['recent-expired', 'ancient', 'gtd']);
   assert.equal(h.calls.length, 1, 'only the recent user task is announced');
   assert.match(h.calls[0].body.text, /не возобновилась/);
+});
+
+// ── Gateway release on restart (epic #1527 follow-up) ──────────────────────────────────────
+// The restart kills the run's own run-finished push, and resumePendingTasks is the only
+// component that knows the task is never coming back. Without these releases the chat stays
+// `busy` on the gateway and «▶️ Запустить агента» answers «уже идёт прогон» after every deploy.
+
+test('a stale (never-resumed) task releases its chat on the gateway', async () => {
+  const h = resumeHarness({ pending: [
+    task({ taskId: 'stale-1', userId: -5578467476, startedAt: Date.now() - 3 * 3600_000 }),
+  ] });
+  await h.resume();
+  assert.equal(h.runs.length, 0);
+  assert.equal(h.releases.length, 1, 'the chat must be released, not left busy');
+  assert.equal(h.releases[0].chatId, -5578467476, 'negative group id delivered (#1534)');
+});
+
+test('a give-up after MAX_RESUME_ATTEMPTS releases its chat', async () => {
+  const h = resumeHarness({ pending: [task({ taskId: 'giveup-1', userId: -5039573935, resumeAttempts: 4 })] });
+  await h.resume();
+  assert.equal(h.runs.length, 0);
+  assert.equal(h.releases.length, 1);
+  assert.equal(h.releases[0].chatId, -5039573935);
+});
+
+test('internal GTD turns never push a gateway release (no user chat hold)', async () => {
+  const h = resumeHarness({ pending: [
+    task({ taskId: 'gtd-2', userId: -5039573935, startedAt: Date.now() - 3 * 3600_000, internalGtd: true }),
+  ] });
+  await h.resume();
+  assert.equal(h.releases.length, 0);
+});
+
+test('a natively-resumed task does NOT release the chat — the run owns the hold', async () => {
+  const h = resumeHarness({ pending: [task({ taskId: 'live-1', userId: -5578467476 })], engineSessionIds: { claude: 'sid' } });
+  await h.resume();
+  assert.equal(h.runs.length, 1);
+  assert.equal(h.releases.length, 0, 'a live re-run keeps busy until its own run-finished');
 });
 
 // ── Native resume (#1234 Sub-2) — degradation guards ───────────────────────────────────────

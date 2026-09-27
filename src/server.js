@@ -307,6 +307,22 @@ async function resumePendingTasks(secrets) {
       ? tgCall(token, 'editMessageText', { chat_id: p.userId, message_id: p.initialMsgId, text })
       : tgCall(token, 'sendMessage', { chat_id: p.userId, text });
   };
+  // Every resume path that ends WITHOUT handing off to a run must release the
+  // gateway's busy hold for that chat. The original run's push was lost with the
+  // dying process, and `resumePendingTasks` is the only component that knows the
+  // task is never coming back — otherwise the chat stays `busy` until the
+  // gateway's slow safety nets catch up, and «▶️ Запустить агента» looks broken
+  // after every deploy. Delivery is fire-and-forget; the gateway no-ops on an
+  // unknown/already-released chat.
+  const { notifyRunFinished } = require('./gateway-callback');
+  const releaseChat = (p) => {
+    if (p.internalGtd || !p.userId) return Promise.resolve();
+    return notifyRunFinished({
+      chatId: p.userId, threadId: p.threadId || null,
+      requestId: p.requestId || null, taskId: p.taskId, outcome: 'error',
+      secret: secrets.AGENT_SECRET,
+    }).catch(() => {});
+  };
 
   for (const p of pending) {
     const now = Date.now();
@@ -316,6 +332,7 @@ async function resumePendingTasks(secrets) {
     // symptom. Drop it silently (a ping needs no apology, and re-pinging is trivial).
     if (isNonTaskMessage(p.task)) {
       clearPendingTask(p.taskId);
+      await releaseChat(p);
       console.log(`[resume] dropped non-task ${p.taskId} (user=${p.username}): "${String(p.task).slice(0, 40)}"`);
       continue;
     }
@@ -323,6 +340,7 @@ async function resumePendingTasks(secrets) {
     if (!resumable) {
       // Stale entries would otherwise block GTD indefinitely: isTaskRunning() reads this journal.
       clearPendingTask(p.taskId);
+      await releaseChat(p);
       console.log(`[resume] cleared stale task ${p.taskId} (user=${p.username}, age=${Math.round(age / 60000)}min)`);
       // A web task is never resumable (no Telegram audience), so every restart
       // lands here with its mutation receipt stuck in 'accepted' — which then
@@ -374,6 +392,7 @@ async function resumePendingTasks(secrets) {
       // repeatable break, not restart noise. Stop retrying and say so plainly.
       await notifyFailure(p, `⚠️ Не удалось восстановить сессию после ${MAX_RESUME_ATTEMPTS} попыток через перезапуски сервера. Это сбой сервера, не твоей задачи — напиши запрос заново.`);
       clearPendingTask(p.taskId);
+      await releaseChat(p);
       console.warn(`[resume] user=${p.username} session=${p.sessionId} gave up after ${MAX_RESUME_ATTEMPTS} attempts`);
       continue;
     }
@@ -410,6 +429,7 @@ async function resumePendingTasks(secrets) {
         if (p.internalGtd && p.sessionId) require('./gtd-controller').settleResumedGtd(workDir, p.sessionId, reply);
       } catch (err) {
         console.error(`[resume] user=${p.username} error:`, err.message);
+        await releaseChat(p);
         if (!p.internalGtd) await notifyFailure(p, '⚠️ Не удалось продолжить задачу после перезапуска. Повтори запрос.');
       }
     };
@@ -2016,7 +2036,18 @@ ${recent || '(пока нет)'}
     shuttingDown = true;
     interruptForRestart();
     server.close();
-    process.exit(0);
+    // `interruptForRestart()` settles every running task's promise, which fires
+    // the fire-and-forget run-finished push — and `process.exit(0)` immediately
+    // after would drop it mid-flight. The push is the ONLY way the gateway
+    // learns a restart released a chat, so a restart must deliver it before
+    // dying, otherwise every in-flight group chat stays `busy` until the
+    // gateway's slow safety nets catch up (see gateway-callback.js). Bounded
+    // by the fetches' own 5s timeout, so a restart stays quick.
+    const flushed = require('./gateway-callback').flushRunFinished();
+    // Never block the restart on a hung request: exit on whichever comes first.
+    const exit = () => process.exit(0);
+    setTimeout(exit, 6000).unref?.();
+    flushed.then(exit, exit);
   };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT',  shutdown);
