@@ -69,6 +69,10 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Unit tests
         run: npm test
+      - name: Agent isolation e2e with real unix users (issue #1649)
+        run: |
+          command -v setfacl >/dev/null || sudo apt-get install -y -qq acl
+          AGENT_ISOLATION_E2E=1 node --test test/agent-isolation-e2e.test.cjs
       - name: Env-sync check
         run: node scripts/check-env-sync.js
       - name: No direct connect-pending outside user-tokens.js
