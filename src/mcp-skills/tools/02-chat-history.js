@@ -6,6 +6,9 @@ const chatHistory = require('../../chat-history');
 const groupHistory = require('../../group-history-store');
 const { threadOf } = require('../../session-store');
 
+// get_group_history window when the caller passes no since_hours (the store keeps 7 days).
+const DEFAULT_GROUP_HISTORY_HOURS = 6;
+
 /**
  * get_chat_history — retrieve conversation history from previous sessions
  * in the same Telegram chat (by liveChatId).
@@ -162,29 +165,32 @@ module.exports = {
     get_group_history: {
       description:
         'Messages group participants wrote while the bot stayed quiet (NOT addressed to the bot), ' +
-        'for the current group chat / forum topic, last 7 days. Each run\'s prompt only includes ' +
+        'for the current group chat / forum topic. Default window: last 6 hours; pass since_hours ' +
+        '(up to 168 = 7 days kept) for older. Each run\'s prompt only includes ' +
         'the ones that are NEW since the previous task; use this tool for earlier ones ' +
         '(«что обсуждали вчера», «что Петя писал утром»). Oldest first.',
       inputSchema: {
         type: 'object',
         properties: {
-          since_hours: { type: 'number', description: 'Only messages from the last N hours.' },
+          since_hours: { type: 'number', description: 'Only messages from the last N hours (default 6; history is kept 7 days = 168).' },
           limit: { type: 'number', description: 'Max messages, newest kept (default 100, max 1000).' },
         },
       },
-      handler: async ({ since_hours, limit = 100 } = {}) => {
+      handler: async ({ since_hours = DEFAULT_GROUP_HISTORY_HOURS, limit = 100 } = {}) => {
         const username = process.env.AGENT_USER_ID;
         if (!username) return { error: 'AGENT_USER_ID not set' };
         const chatId = resolveCurrentChatId();
         if (chatId == null) return { error: 'Current session has no chat.' };
         if (!(Number(chatId) < 0)) return { chat_id: String(chatId), messages: [], total: 0, note: 'Not a group chat.' };
         const threadId = resolveCurrentThreadId();
+        const sinceHours = Number(since_hours) > 0 ? Number(since_hours) : DEFAULT_GROUP_HISTORY_HOURS;
         const entries = groupHistory.readGroupHistory(username, chatId, threadId ?? null, {
-          sinceHours: Number(since_hours) > 0 ? Number(since_hours) : null,
+          sinceHours,
           limit,
         });
         return {
           chat_id: String(chatId),
+          since_hours: sinceHours,
           messages: entries.map(e => ({ from: e.from, text: e.text, at: formatTime(e.ts) })),
           total: entries.length,
           note: entries.length ? undefined : 'No group history kept for this chat (or /history_off).',

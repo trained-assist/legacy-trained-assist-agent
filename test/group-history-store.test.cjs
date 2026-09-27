@@ -37,13 +37,16 @@ test('private chats, junk and old entries are not kept', () => {
 });
 
 test('get_group_history returns the current chat/topic, filters by since_hours', async () => {
-  store.appendGroupHistory('u2', CHAT, null, [e(10, 1, 'утром', 300), e(11, 2, 'только что')], NOW);
+  store.appendGroupHistory('u2', CHAT, null, [e(9, 0, 'вчера', 20 * 60), e(10, 1, 'утром', 300), e(11, 2, 'только что')], NOW);
   store.appendGroupHistory('u2', CHAT, 7, [e(12, 1, 'в теме 7')], NOW);
   process.env.AGENT_USER_ID = 'u2';
 
   process.env.AGENT_SESSION_FILE = sessionFile(CHAT, null);
-  let r = await tool.handler({});
+  let r = await tool.handler({}); // default window = last 6 hours
   assert.deepStrictEqual(r.messages.map(m => m.text), ['утром', 'только что']);
+  assert.strictEqual(r.since_hours, 6);
+  r = await tool.handler({ since_hours: 24 });
+  assert.deepStrictEqual(r.messages.map(m => m.text), ['вчера', 'утром', 'только что']);
   r = await tool.handler({ since_hours: 1 });
   assert.deepStrictEqual(r.messages.map(m => m.text), ['только что']);
 
