@@ -137,7 +137,53 @@ function writePage({ slug, title, content, source, format, passwordHash, is_publ
   fs.writeFileSync(idxPath, JSON.stringify(list.slice(0, 200)));
 }
 
+// Publish one page for a profile — the publish_page tool and core's
+// POST /internal/publish (domain skill repos, #1470) both go through here.
+function publishPage({ username, content, slug, title, password, is_public, format } = {}) {
+  if (!content) return { error: 'content required' };
+  if (!slug) return { error: 'slug required' };
+  const slugClean = cleanSlug(slug);
+  const pageTitle = title || slugClean;
+  const fmt = format || detectFormat(content);
+  const passwordHash = password ? sha256(password) : null;
+  const isPublic = is_public !== undefined ? is_public : !password;
+
+  let htmlContent = fmt === 'html' ? content : wrapContent(content, pageTitle, fmt);
+  const rawSource = fmt !== 'html' ? content : undefined;
+
+  try {
+    writePage({
+      slug: slugClean,
+      title: pageTitle,
+      content: htmlContent,
+      source: rawSource,
+      format: fmt,
+      passwordHash,
+      is_public: isPublic,
+      username,
+    });
+  } catch (e) {
+    return { error: `Write failed: ${e.message}` };
+  }
+
+  const base = profileDomain(username);
+  const pageUrl = `${base}/p/${slugClean}`;
+
+  return {
+    url: password ? `${pageUrl}?password=${password}` : pageUrl,
+    public_url: pageUrl,
+    slug: slugClean,
+    is_protected: !!password,
+    ...(rawSource ? { raw_url: `${pageUrl}?raw` } : {}),
+    ...(RAW_HOST_RE.test(base) ? {
+      domain_tip: 'Ссылка на сыром IP/sslip.io — для документов, уходящих клиенту/партнёру, ' +
+        'настрой один раз красивый домен: set_publish_domain("https://your-domain.ru"), дальше все ссылки будут на нём.',
+    } : {}),
+  };
+}
+
 module.exports = {
+  publishPage,
   tools: {
     publish_page: {
       description:
@@ -180,49 +226,8 @@ module.exports = {
         },
       },
       handler: async ({ content, slug, title, password, is_public, format } = {}) => {
-        if (!content) return { error: 'content required' };
-        if (!slug) return { error: 'slug required' };
         if (!USER_ID) return { error: 'USER_ID not set — not running inside agent session' };
-
-        const username = USER_ID;
-        const slugClean = cleanSlug(slug);
-        const pageTitle = title || slugClean;
-        const fmt = format || detectFormat(content);
-        const passwordHash = password ? sha256(password) : null;
-        const isPublic = is_public !== undefined ? is_public : !password;
-
-        let htmlContent = fmt === 'html' ? content : wrapContent(content, pageTitle, fmt);
-        const rawSource = fmt !== 'html' ? content : undefined;
-
-        try {
-          writePage({
-            slug: slugClean,
-            title: pageTitle,
-            content: htmlContent,
-            source: rawSource,
-            format: fmt,
-            passwordHash,
-            is_public: isPublic,
-            username,
-          });
-        } catch (e) {
-          return { error: `Write failed: ${e.message}` };
-        }
-
-        const base = profileDomain(username);
-        const pageUrl = `${base}/p/${slugClean}`;
-
-        return {
-          url: password ? `${pageUrl}?password=${password}` : pageUrl,
-          public_url: pageUrl,
-          slug: slugClean,
-          is_protected: !!password,
-          ...(rawSource ? { raw_url: `${pageUrl}?raw` } : {}),
-          ...(RAW_HOST_RE.test(base) ? {
-            domain_tip: 'Ссылка на сыром IP/sslip.io — для документов, уходящих клиенту/партнёру, ' +
-              'настрой один раз красивый домен: set_publish_domain("https://your-domain.ru"), дальше все ссылки будут на нём.',
-          } : {}),
-        };
+        return publishPage({ username: USER_ID, content, slug, title, password, is_public, format });
       },
     },
 
