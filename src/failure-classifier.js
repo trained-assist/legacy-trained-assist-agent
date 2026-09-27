@@ -99,35 +99,21 @@ function classifyDeterministic(text, opts = {}) {
 // so it's deliberately excluded from what Stage B's LLM is allowed to pick.
 const LLM_VALID_CLASSES = new Set(FAILURE_CLASSES.filter(c => c !== 'USER_STOP'));
 
-// Stage B: cheap-LLM fallback for text Stage A didn't recognize. Same OpenRouter call shape as
-// runner/index.js's classifyTaskCompleteness (gemini-2.5-flash, response_format json_object,
-// safe fallback on any error/timeout) — deliberately reused rather than inventing a second
-// pattern for talking to OpenRouter. Only fires when Stage A found nothing: most failures are
+// Stage B: cheap-LLM fallback for text Stage A didn't recognize — on the service-LLM ladder
+// (src/service-llm.js), safe fallback on any error/timeout. Only fires when Stage A found nothing: most failures are
 // still resolved by the free, instant regex table above, matching the spec's "if rule uverenno
 // opredelyaet class — LLM ne vyzyvaetsya".
-async function classifyWithLLM(text, { apiKey, model, timeoutMs = 8000 } = {}) {
+async function classifyWithLLM(text, { apiKey, timeoutMs = 8000 } = {}) {
   const t = String(text || '').trim();
-  const orKey = apiKey || process.env.OPENROUTER_API_KEY;
-  if (!t || !orKey) return { class: 'UNKNOWN', retryable: true, source: 'llm', confidence: 0 };
-  const mdl = model || process.env.FAILURE_CLASSIFIER_MODEL || 'google/gemini-2.5-flash';
+  const serviceLlm = require('./service-llm');
+  if (!t || !serviceLlm.available(apiKey)) return { class: 'UNKNOWN', retryable: true, source: 'llm', confidence: 0 };
   try {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { Authorization: `Bearer ${orKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: mdl, temperature: 0, max_tokens: 40,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: 'Classify execution failure text into a fixed enum. Reply only with compact JSON.' },
-          { role: 'user', content: `Error text from an AI coding agent execution:\n${t.slice(-2000)}\n\nJSON: {"class":"AUTH|QUOTA|RATE_LIMIT|CONTEXT|TRANSIENT|MODEL_ERROR|TOOL_ERROR|CONFIG|UNKNOWN","retryable":bool,"confidence":0..1}` },
-        ],
-      }),
+    // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
+    const obj = await serviceLlm.serviceJson({
+      system: 'Classify execution failure text into a fixed enum. Reply only with compact JSON.',
+      user: `Error text from an AI coding agent execution:\n${t.slice(-2000)}\n\nJSON: {"class":"AUTH|QUOTA|RATE_LIMIT|CONTEXT|TRANSIENT|MODEL_ERROR|TOOL_ERROR|CONFIG|UNKNOWN","retryable":bool,"confidence":0..1}`,
+      maxTokens: 40, timeoutMs, apiKey, source: 'failure-classifier',
     });
-    if (!res.ok) return { class: 'UNKNOWN', retryable: true, source: 'llm', confidence: 0 };
-    const data = await res.json();
-    const raw = data?.choices?.[0]?.message?.content || '';
-    const obj = JSON.parse(raw.replace(/^```json\s*|\s*```$/g, '').trim());
     if (!LLM_VALID_CLASSES.has(obj?.class)) {
       return { class: 'UNKNOWN', retryable: true, source: 'llm', confidence: 0 };
     }

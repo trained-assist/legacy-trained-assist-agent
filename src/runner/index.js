@@ -1310,9 +1310,8 @@ async function detectPlanInAnswer(text, apiKey, { timeoutMs = 10000 } = {}) {
   // (баг от 2026-09-15). Выровняли с detectMenuInAnswer (100) — там та же дешёвая
   // LLM и тот же риск ложных срабатываний на коротком тексте, отдельного порога не нужно.
   if (t.length < 100) return false;
-  const orKey = apiKey || process.env.OPENROUTER_API_KEY;
-  if (!orKey) return false;
-  const model = process.env.GTD_INTENT_MODEL || 'google/gemini-2.5-flash';
+  const serviceLlm = require('../service-llm');
+  if (!serviceLlm.available(apiKey)) return false;
   const system = [
     'Ты смотришь на ответ ассистента и решаешь: описан ли в нём ПЛАН дальнейших действий,',
     'который ассистент предлагает выполнить СЛЕДУЮЩИМ шагом («дальше предлагаю сделать…»,',
@@ -1323,23 +1322,8 @@ async function detectPlanInAnswer(text, apiKey, { timeoutMs = 10000 } = {}) {
     'Ответь СТРОГО одним JSON: {"plan": true|false}. Сомневаешься → false.',
   ].join(' ');
   try {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { 'Authorization': `Bearer ${orKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model, temperature: 0, max_tokens: 20,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: t.slice(0, 3000) },
-        ],
-      }),
-    });
-    if (!res.ok) return false;
-    const data = await res.json();
-    const raw = data?.choices?.[0]?.message?.content || '';
-    const obj = JSON.parse(raw.replace(/^```json\s*|\s*```$/g, '').trim());
+    // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
+    const obj = await serviceLlm.serviceJson({ system, user: t.slice(0, 3000), maxTokens: 20, timeoutMs, apiKey, source: 'plan-detect' });
     return obj?.plan === true;
   } catch (e) {
     console.warn('[plan-detect]', e.message);
@@ -1359,9 +1343,8 @@ async function detectPlanInAnswer(text, apiKey, { timeoutMs = 10000 } = {}) {
 async function detectMenuInAnswer(text, apiKey, { timeoutMs = 10000 } = {}) {
   const t = String(text || '').trim();
   if (t.length < 100) return null;
-  const orKey = apiKey || process.env.OPENROUTER_API_KEY;
-  if (!orKey) return null;
-  const model = process.env.GTD_INTENT_MODEL || 'google/gemini-2.5-flash';
+  const serviceLlm = require('../service-llm');
+  if (!serviceLlm.available(apiKey)) return null;
   const system = [
     'Ты смотришь на ответ ассистента и решаешь: предлагает ли он пользователю ЯВНЫЙ ВЫБОР',
     'из 2-4 конкретных самостоятельных альтернатив (напр. "Вариант А: ... Вариант Б: ...",',
@@ -1376,23 +1359,7 @@ async function detectMenuInAnswer(text, apiKey, { timeoutMs = 10000 } = {}) {
     'Сомневаешься → menu:false.',
   ].join(' ');
   try {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { 'Authorization': `Bearer ${orKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model, temperature: 0, max_tokens: 150,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: t.slice(0, 3000) },
-        ],
-      }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const raw = data?.choices?.[0]?.message?.content || '';
-    const obj = JSON.parse(raw.replace(/^```json\s*|\s*```$/g, '').trim());
+    const obj = await serviceLlm.serviceJson({ system, user: t.slice(0, 3000), maxTokens: 150, timeoutMs, apiKey, source: 'menu-detect' });
     if (obj?.menu !== true || !Array.isArray(obj.labels)) return null;
     const labels = obj.labels.map(s => String(s || '').trim()).filter(Boolean).slice(0, 4);
     return labels.length >= 2 ? labels : null;

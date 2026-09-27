@@ -78,7 +78,8 @@ test('routeInput: one OpenRouter call with json response_format, validated outpu
   const out = await ir.routeInput('создай PR', { openrouterKey: 'k', fetchImpl: f });
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].body.response_format.type, 'json_object');
-  assert.equal(f.calls[0].body.model, 'google/gemini-2.5-flash');
+  // Service-LLM ladder (src/service-llm.js); no Go key in the test env → the OpenRouter last rung.
+  assert.equal(f.calls[0].body.model, 'deepseek/deepseek-v4-flash-0731');
   assert.equal(out.route, 'agent');
   assert.deepEqual(out.tools_hint, ['engineering_spawn_workspace']);
   assert.deepEqual(out.usage, { in: 500, out: 60, cost: 0.0003 });

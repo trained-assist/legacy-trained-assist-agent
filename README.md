@@ -556,6 +556,7 @@ Enforced in CI (`ci.yml` → "Recruiter/HH tools must call OpenRouter, not spawn
 | `src/inn-pipeline/` | Multi-source pipeline for company lookup by INN. Sources: `sources/dadata.js`, `sources/checko.js`, `sources/egrul.js`, `sources/bfo.js`, `sources/site-scraper.js`. Helpers in `lib/`: cache, matcher, usage-log, variants. |
 | `src/site-connector.js` | Generic website connector: Playwright login → BFS crawl → Claude Haiku analysis → intent generation. Used by `POST /connect/site` and `src/user-sites.js`. |
 | `src/user-sites.js` | Stores and loads connected-site settings per profile. Reads intents from the crawl results; used by `runner.js` to inject site-specific quick answers. |
+| `src/service-llm.js` | Small in-process "service" LLM calls (answer buttons, paragraph formatting, classifiers, summaries, routing, intake gate, tg-format fixer, playbook validator, issue gate, bug reports) — `serviceChat`/`serviceJson`/`serviceText`. Walks the same `deepseek` ladder as OpenCode tasks (`config/model-routing.json`: Go rungs → paid OpenRouter last) with model-health skips, Go key rotation (`opencode-go-keys.js`) and a JSON guard. Research / presentation / vision calls (site-connector, calltips, media-vision, HH/MCP domain tools, Hermes) intentionally stay on their own Gemini path. |
 | `src/engine-health.js` | Per-engine operational health (`healthy`/`degraded`/`unavailable`) in SQLite, separate from credentials (`auth-flag.js`) and failure history (`execution-history.js`). `markEngineSuccess` self-heals on success; `markEngineFailure` escalates at `ENGINE_UNAVAILABLE_AFTER_FAILURES`. Only class `AUTH` is credential-invalid. |
 | `src/readiness.js` | `computeReadiness()` for `GET /readiness` — data dir writable, execution-owner lock present, ≥1 engine usable. A single unavailable engine does not make the server unready. |
 | `src/failure-classifier.js` | Deterministic + cheap-LLM classifier mapping error text onto the fixed `FAILURE_CLASSES` enum (`failure-taxonomy.js`). Feeds `engine-health.js` and `execution-history.js`. |
@@ -875,6 +876,18 @@ curl -s -X POST http://localhost:3000/run \
 ```
 
 To redirect output somewhere else (e.g. your own chat) during testing — just change `userId` to your chat ID. The `username` controls which files/tokens Claude sees; `userId` controls where the reply goes.
+
+> **Rule: if you start `node src/server.js` for testing, you must kill it when done.**
+> An agent session that backgrounds the server and then dies leaves an orphan (`PPID=1`)
+> whose stdout/stderr pipes are closed — historically this spun at ~90% CPU for days
+> (2026-09-27, 14 orphans → load average 28). Always background it as a job and clean up:
+> ```bash
+> node src/server.js & SRV=$!
+> # ... test against it ...
+> kill "$SRV" 2>/dev/null    # or: kill %1
+> ```
+> The `src/stream-gone.js` guard (`installCrashGuards()`) is a safety net for the
+> closed-pipe case, not a substitute for killing the process you started.
 
 ---
 

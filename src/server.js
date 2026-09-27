@@ -37,6 +37,7 @@ const { createHhNegotiations } = hhLib('hh-negotiations');
 
 const profiles = require('./profiles');
 const dataPaths = require('./data-paths');
+const { installCrashGuards } = require('./stream-gone');
 
 const PORT = process.env.PORT || 3001;
 // Single source of truth (src/data-paths.js) — do not re-derive from HOME.
@@ -2122,15 +2123,8 @@ function readBodyBuffer(req, maxBytes = 1_048_576) {
 // to surface "HH re-auth required" to the recruiter).
 // Implemented in hh-utils.js (refreshHhToken), imported above (issue #942 P0.6).
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[unhandledRejection] at:', promise, 'reason:', reason);
-  // Log but do NOT crash — a single bad request should not kill the server.
-});
-
-process.on('uncaughtException', (err) => {
-  console.error('[uncaughtException]', err);
-  // Same: log and keep running unless it's a startup error.
-});
+// Orphaned-server EPIPE guard (see src/stream-gone.js).
+installCrashGuards();
 
 main().catch(err => { console.error('Fatal:', err); process.exit(1); });
 

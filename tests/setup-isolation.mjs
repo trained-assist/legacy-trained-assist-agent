@@ -15,6 +15,9 @@ for (const [key, file] of Object.entries({
   OPENCODE_GO_KEYS_STATE_FILE: 'go-keys-state.json',
   OPENCODE_GO_AUTH_FILE: 'auth.json', OPENCODE_MODEL_HEALTH_FILE: 'model-health.json',
 })) process.env[key] = join(root, file);
+// Provider keys from the developer's shell must not leak into tests (CI has none) — a test that
+// needs one sets it explicitly.
+for (const key of ['OPENROUTER_API_KEY', 'OPENCODE_GO_API_KEYS', 'OPENCODE_GO_API_KEY']) delete process.env[key];
 process.once('exit', () => rmSync(root, { recursive: true, force: true }));
 // Runner fixtures fake the `claude` binary; production's default engine is opencode (2026-09-27).
 if (!process.env.AGENT_DEFAULT_ENGINE) process.env.AGENT_DEFAULT_ENGINE = 'claude';

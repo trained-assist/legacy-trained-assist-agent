@@ -1,5 +1,13 @@
 # Requirements Log — trained-assist-agent
 
+## Orphaned `node src/server.js` EPIPE CPU-burn loop (2026-09-27)
+
+| Статус | Требование | Описание |
+|--------|-----------|----------|
+| ✅ реализовано | **EPIPE-guard в crash-хендлерах** | `src/stream-gone.js` → `installCrashGuards()`: `uncaughtException`/`unhandledRejection` с `code` EPIPE/ERR_STREAM_DESTROYED сразу `process.exit(0)` без логирования; `process.stdout/stderr.on('error')` тоже выходят на EPIPE; логи внутри хендлеров обёрнуты в try/catch, чтобы падающий лог не перебрасывал исключение. Устанавливается в `src/server.js` вместо прежних инлайн-хендлеров. |
+| ✅ реализовано | **Регресс-тест** | `test/stream-gone.test.cjs` — дочерний процесс с закрытыми stdio: стрим-ошибка и EPIPE-uncaughtException дают выход 0, а не спин; не-EPIPE остаётся залогирован и процесс живёт. |
+| ✅ реализовано | **Правило в README** | Раздел Testing & Debugging: агент, запустивший `node src/server.js` для теста, обязан его убить (`kill $SRV` / `kill %1`). |
+
 ## HH Recruiting (90-hh.js)
 
 | Статус | Требование | Описание |
@@ -309,3 +317,5 @@
 | ✅ реализовано | **Ротация двух ключей Go + автовозврат** | Лимит/отклонённый ключ → ротация на второй ключ (только ключевые ошибки: лимит, 429, invalid credential; 503/Bad Request — это про модель, ключ не трогаем). Оба ключа на паузе → Go-ступени лестницы пропускаются до момента, когда оживёт первый ключ (≤15 мин лимит, 1 ч отклонённый), потом Go снова сам. |
 | ✅ реализовано | **Бэкофф на соседней ступени начинается заново** | После 3 ретраев переход на альтернативную модель ждал 10 мин (3-й шаг расписания), теперь 30 с (1-й шаг). Бэкофф по модели (15с→30с→60с…) уже был свой у каждой модели. |
 | ✅ реализовано | **Лог шагов показывает реальную модель** | `opencode step[...]` брал метку из глобального opencode.json (`gpt-6-luna`), хотя задача шла на OpenRouter. |
+| ✅ реализовано | **Служебные LLM-вызовы на той же лестнице** | `src/service-llm.js`: кнопки ответа, форматирование, classify, саммари сессий/проектов, intake-gate, input-router, tg-format, failure-classifier, gtd-intent, plan/menu-detect, quick-answer verify, project-match, reproject, playbook-validator, issue-fixer gate, bugs-collector, mainstream-tester → Go (mimo → deepseek-v4.1-flash → muse-spark) → OpenRouter последней. Ресёрч/презентации/зрение остаются на Gemini (владелец: «gemini для рисеча и презентаций прямо гуд»): site-connector, calltips, media-vision, HH/MCP-доменные тулы, Hermes. |
+| 🔵 планируется | **Отдельный сервис trained-assist-llm-ladder** | Вынести лестницу (llm-gateway + service-llm + ключи + model-health) в отдельный репо/сервис с OpenAI-совместимым API на поддомене trainedassist.store; клиенты — с fallback на прямой вызов. Ждёт подтверждения имени (ledder vs ladder). |

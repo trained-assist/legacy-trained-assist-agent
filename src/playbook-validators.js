@@ -373,31 +373,21 @@ function parseJsonLoose(raw) {
   try { return JSON.parse(s); } catch { return null; }
 }
 
-// Default `llmValidate`: one bounded OpenRouter request returning a verdict
-// object. With no API key it short-circuits to inconclusive without a request.
-function makeLlmValidate({ fetchImpl = globalThis.fetch, apiKey = null, model = null, timeoutMs = LLM_VALIDATOR_TIMEOUT_MS } = {}) {
+// Default `llmValidate`: one bounded request on the service-LLM ladder (src/service-llm.js: Go
+// rungs → OpenRouter last) returning a verdict object. With no provider key it short-circuits to
+// inconclusive without a request.
+function makeLlmValidate({ fetchImpl = null, apiKey = null, timeoutMs = LLM_VALIDATOR_TIMEOUT_MS } = {}) {
   return async function llmValidate(ctx) {
-    const key = apiKey != null ? apiKey : process.env.OPENROUTER_API_KEY;
-    if (!key) return { status: 'inconclusive', reason: 'no-openrouter-key' };
-    const useModel = model || process.env.PLAYBOOK_VALIDATION_MODEL || DEFAULT_VALIDATION_MODEL;
+    const serviceLlm = require('./service-llm');
+    if (!serviceLlm.available(apiKey)) return { status: 'inconclusive', reason: 'no-llm-key' };
     const { system, user } = buildLlmValidatorPrompt(ctx);
-    const res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: useModel,
-        temperature: 0,
-        max_tokens: 200,
-        response_format: { type: 'json_object' },
-        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      }),
+    const r = await serviceLlm.serviceChat({
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      json: true, maxTokens: 200, timeoutMs, apiKey, source: 'playbook-validator', fetchImpl,
     });
-    if (!res.ok) return { status: 'inconclusive', reason: `llm-http-${res.status}` };
-    const data = await res.json();
-    const obj = parseJsonLoose(data && data.choices && data.choices[0] && data.choices[0].message
-      ? data.choices[0].message.content : '');
-    if (!obj) return { status: 'inconclusive', reason: 'llm-bad-json' };
+    if (!r) return { status: 'inconclusive', reason: 'llm-unavailable' };
+    const obj = r.value;
+    if (!obj || typeof obj !== 'object') return { status: 'inconclusive', reason: 'llm-bad-json' };
     return { status: obj.status, reason: obj.reason };
   };
 }
