@@ -169,15 +169,14 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: trained-assist/pr-autofix/.github/workflows/autofix-callable.yml@v1.5.3
+    uses: trained-assist/pr-autofix/.github/workflows/autofix-callable.yml@v1.6.0
     with:
       pr_number: ${{ github.event.pull_request.number }}
       original_branch: ${{ github.head_ref }}
       # When merge failed but CI passed — batch mode (skips CI log, goes straight to git merge)
       run_id: ${{ (needs.merge.result == 'failure' && needs.ci.result == 'success' && needs.staging-gate.result == 'success') && '0' || github.run_id }}
     secrets:
-      openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
-      opencode_go_api_key: ${{ secrets.OPENCODE_GO_API_KEY }}
+      llm_ladder_token: ${{ secrets.LLM_LADDER_TOKEN }}
       gh_token: ${{ secrets.AUTOFIX_PAT || github.token }}
 
   merge:
