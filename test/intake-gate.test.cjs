@@ -12,7 +12,9 @@ function fakeFetch(content) {
 
 test('holds when text or key is missing', async () => {
   assert.deepEqual(await checkCompleteness('', 'key'), { level: 'insufficient', complete: false });
-  assert.deepEqual(await checkCompleteness('hi', ''), { level: 'insufficient', complete: false });
+  const saved = process.env.LLM_LADDER_TOKEN; delete process.env.LLM_LADDER_TOKEN; // no ladder token
+  try { assert.deepEqual(await checkCompleteness('hi', ''), { level: 'insufficient', complete: false }); }
+  finally { if (saved !== undefined) process.env.LLM_LADDER_TOKEN = saved; }
 });
 
 test('propagates API errors to the fail-closed HTTP boundary', async () => {

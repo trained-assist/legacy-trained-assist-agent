@@ -34,8 +34,11 @@ const isoEnv = {
 const childEnv = { ...isoEnv, ...process.env };
 // Provider keys from the developer's shell must not leak into tests (CI has none).
 for (const k of ['OPENROUTER_API_KEY', 'OPENCODE_GO_API_KEYS', 'OPENCODE_GO_API_KEY', 'LLM_LADDER_TOKEN']) delete childEnv[k];
-// …nor may they call the live llm-ladder worker with the VM's token file.
-childEnv.LLM_LADDER_DISABLED = '1';
+// …nor may they call the live llm-ladder worker: point service-llm at an unroutable host with a
+// dummy token — tests that mock fetch see the worker's OpenAI-shaped protocol, anything unmocked
+// fails soft instead of reaching production.
+childEnv.LLM_LADDER_URL = 'http://llm-ladder.invalid';
+childEnv.LLM_LADDER_TOKEN = 'test-ladder-token';
 for (const k of Object.keys(isoEnv)) {
   if (process.env[k] && process.env[k].startsWith(os.homedir())) childEnv[k] = isoEnv[k];
 }
