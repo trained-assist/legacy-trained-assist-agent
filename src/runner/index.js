@@ -1,4 +1,5 @@
 const { taskDelivery } = require('../bot-delivery');
+const { startShadow: startInputRouterShadow } = require('../input-router');
 const { atomicJson } = require('../atomic-json');
 let restartShutdown = false;
 const fs = require('fs');
@@ -1782,7 +1783,15 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // restart-resume), but NOT for slash commands — a command is unambiguous and must never be
   // replayed to the LLM. See shouldAttemptQuickAnswer (intent-engine).
   const dispatchQuick = () => runQuickAnswer(task, user.username, user.workDir, secrets.OPENROUTER_API_KEY, sessionExists, chatId, user.telegramUserId, activeSessionId, audience, threadId);
-  const quickReply = shouldAttemptQuickAnswer(forceClaude, task) ? await dispatchQuick() : null;
+  // #1542 P1: input router in SHADOW mode — started concurrently, never awaited,
+  // only logged next to the legacy quick-intent decision (src/input-router.js).
+  const routerShadow = startInputRouterShadow({
+    text: task, source: 'quick', user: user.username, sessionId: activeSessionId || null,
+    openrouterKey: secrets.OPENROUTER_API_KEY, ctx: { sessionExists },
+  });
+  const quickAttempted = shouldAttemptQuickAnswer(forceClaude, task);
+  const quickReply = quickAttempted ? await dispatchQuick() : null;
+  routerShadow.record({ quick: !!quickReply, attempted: quickAttempted, slash: /^\//.test(String(task || '').trim()), forceClaude: !!forceClaude });
   if (quickReply) {
     console.log('[%s] quick-answer len=%d', taskId, quickReply.length);
     const isUtility = PING_INTENT.test(task) || HELP_INTENT.test(task) ||
