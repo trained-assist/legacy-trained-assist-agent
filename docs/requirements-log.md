@@ -4,6 +4,7 @@
 
 | Статус | Требование | Описание |
 |--------|-----------|----------|
+| ✅ реализовано | **Анализ интервью в hh-skill** (#1470, 2026-09-27) | `99-interview-analysis` перенесён в hh-skill (имена `interview_*` прежние). `95-video-analysis` остаётся в ядре (ffmpeg/Deepgram — медиа, hh-skill guard запрещает `child_process`) и вызывает `interview_analyze` через `siblingLib('hh', …)` лениво. |
 | ✅ реализовано | **Профиль кандидата для клиента в hh-skill** (#1470, 2026-09-27) | `97b` + `src/candidate-report.js` перенесены в hh-skill (`97-candidate-client-report.js`, `hh-candidate-report.js`, hh-skill#41); публикация — через `POST /internal/publish` ядра (#1636), а не `require` core. Быстрые ответы «добавь в требования…» остаются в ядре и берут библиотеку через `hhLib`. |
 | ✅ реализовано | **Удалён legacy `94-outsource-project`** (#1470, 2026-09-27) | Дубль `freelance_*` из freelance-skill. Единственный профиль с данными `outsource-projects/` (aleksandrl-iquarus) уже мигрирован `migrate-outsource.js` (dry-run: 3/3 в индексе); вызовов `outsource_*` за 30 дней в логах нет. |
 | ✅ реализовано | **EPIPE-guard в crash-хендлерах** | `src/stream-gone.js` → `installCrashGuards()`: `uncaughtException`/`unhandledRejection` с `code` EPIPE/ERR_STREAM_DESTROYED сразу `process.exit(0)` без логирования; `process.stdout/stderr.on('error')` тоже выходят на EPIPE; логи внутри хендлеров обёрнуты в try/catch, чтобы падающий лог не перебрасывал исключение. Устанавливается в `src/server.js` вместо прежних инлайн-хендлеров. |
