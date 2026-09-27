@@ -44,7 +44,7 @@ test('buildAgentEnv keeps engine vars, run identity and profile tokens; drops se
     CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0', AGENT_USER_ID: 'alice', AGENT_CHAT_ID: '1',
     AGENT_BOT_TOKEN: 'bot', CLOUDFLARE_API_TOKEN: 'cf', GH_TOKEN: 'profile-gh', AGENT_SESSION_FILE: '/x',
   }, { userTokenNames: ['GH_TOKEN', 'AGENT_SECRET'], extra: { AGENT_RUN_TOKEN: 'rt_x', TELEGRAM_BOT_TOKEN: 'nope' } });
-  for (const k of ['PATH', 'HOME', 'LANG', 'LC_ALL', 'ANTHROPIC_MODEL', 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', 'AGENT_USER_ID', 'AGENT_CHAT_ID', 'GH_TOKEN', 'AGENT_RUN_TOKEN']) {
+  for (const k of ['PATH', 'HOME', 'LANG', 'LC_ALL', 'ANTHROPIC_MODEL', 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', 'AGENT_USER_ID', 'GH_TOKEN', 'AGENT_RUN_TOKEN']) {
     assert.ok(k in env, `${k} kept`);
   }
   for (const k of ['AGENT_SECRET', 'TELEGRAM_BOT_TOKEN', 'DEEPGRAM_API_KEY', 'OPENROUTER_API_KEY', 'INN_DADATA_SECRET', 'SOME_SERVER_ONLY_SETTING', 'AGENT_BOT_TOKEN', 'CLOUDFLARE_API_TOKEN', 'AGENT_SESSION_FILE']) {

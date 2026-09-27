@@ -64,7 +64,8 @@ const ENGINE_ENV_ALLOW = new Set([
   // engine credential injected per run (short-lived access token, never the refresh token)
   'CLAUDE_CODE_OAUTH_TOKEN',
   // run identity (not secrets)
-  'AGENT_USER_ID', 'AGENT_CHAT_ID', 'AGENT_TASK_ID', 'AGENT_THREAD_ID',
+  // (no chat id: without a bot token the engine cannot use it; MCP tools get it via the bridge)
+  'AGENT_USER_ID', 'AGENT_TASK_ID', 'AGENT_THREAD_ID',
   'AGENT_USER_NAME', 'AGENT_USER_HANDLE',
   // run-scoped callback credentials (src/agent-run-tokens.js, src/agent-mcp-bridge.js)
   'AGENT_RUN_TOKEN', 'AGENT_MCP_BRIDGE_SOCKET',
@@ -74,7 +75,7 @@ const ENGINE_ENV_ALLOW_PREFIXES = ['LC_', 'CLAUDE_CODE_'];
 // Server-only names that must never reach an engine even if some other rule
 // (e.g. a profile token file with a colliding name) would admit them.
 const SERVER_ONLY_ENV = new Set([
-  'AGENT_SECRET', 'AGENT_BOT_TOKEN', 'TELEGRAM_BOT_TOKEN', 'RECRUITER_BOT_TOKEN', 'FREELANCE_BOT_TOKEN',
+  'AGENT_SECRET', 'TELEGRAM_BOT_TOKEN', 'RECRUITER_BOT_TOKEN', 'FREELANCE_BOT_TOKEN',
   'BOT_SECRET', 'ANTHROPIC_API_KEY', 'DEEPGRAM_API_KEY', 'OPENAI_API_KEY', 'FAL_KEY',
   'IDEOGRAM_API_KEY', 'RECRAFT_API_KEY', 'CF_API_TOKEN', 'CLOUDFLARE_API_TOKEN', 'OPENROUTER_API_KEY',
   'GITHUB_ISSUES_TOKEN', 'WEB_JWT_SECRET', 'WEB_VERIFY_SECRET', 'CHECKLIST_API_KEY',
