@@ -27,7 +27,6 @@ src/mcp-skills/tools/NN-name.js
 | 30 | `30-weeek.js` | Weeek CRM |
 | 40 | `40-company.js` | company lookup |
 | 50 | `50-gdrive.js` | Google Drive |
-| 60 | `60-github.js` | GitHub |
 | 70 | `70-inn-enrichment.js` | INN enrichment (router) |
 | 71 | `71-dadata.js` | DaData |
 | 72 | `72-checko.js` | Checko |

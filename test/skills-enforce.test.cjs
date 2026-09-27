@@ -36,14 +36,14 @@ function writeAndRead(workDir, skills) {
   return JSON.parse(fs.readFileSync(p, 'utf8'));
 }
 
-// Every server attached and every module "ready", plus a not-ready github → github.setup.
+// Every server attached and every module "ready", plus a not-ready github (engineering-skills) → github.setup.
 function probeFor(cfg) {
   const localMods = fs.readdirSync(path.join(ROOT, 'src', 'mcp-skills', 'tools')).filter(f => f.endsWith('.js'));
   const all = {
-    'trained-skills': Object.fromEntries(localMods.map(m => [m, m !== '60-github.js'])),
+    'trained-skills': Object.fromEntries(localMods.map(m => [m, true])),
     'hh-skills': { '90-hh.js': true },
     'freelance-skills': { '10-freelance-project.js': true },
-    'engineering-skills': { '20-workspace.js': true },
+    'engineering-skills': { '20-workspace.js': true, '60-github.js': false },
   };
   return Object.fromEntries(Object.entries(all).filter(([id]) => id in cfg.mcpServers));
 }
@@ -77,7 +77,7 @@ test("skills.json {enabled:['recruiting']} → no engineering/freelance sibling,
   assert.strictEqual(file, path.join(wd, EFFECTIVE_FILE));
   assert.strictEqual(cfg.mcpServers['hh-skills'].env.SKILLS_RESOLVED, file);
   const eff = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.ok(eff.hidden.modules.includes('60-github.js'));
+  assert.ok(eff.hidden.modules.includes('engineering-skills/60-github.js'));
   assert.ok(!eff.hidden.modules.includes('hh-skills/97-candidate-client-report.js'));
   assert.ok(!eff.hidden.modules.includes('04-cron.js'), 'core is always on');
   assert.ok(!eff.hidden.modules.includes('40-company.js'), 'shared module on via recruiting/company');
@@ -147,10 +147,10 @@ test('registry tools/list: SKILLS_RESOLVED hides switched-off modules; unset/bro
   const file = cfg.mcpServers['trained-skills'].env.SKILLS_RESOLVED;
   const base = { SKILLS_RESOLVED: '' };
   const legacy = listTools(base).names;
-  assert.ok(legacy.includes('github_status') && legacy.includes('video_analyze_batch'));
+  assert.ok(legacy.includes('tilda_status') && legacy.includes('video_analyze_batch'));
 
   const filtered = listTools({ SKILLS_RESOLVED: file }).names;
-  assert.ok(!filtered.includes('github_status'), 'software-engineering module hidden');
+  assert.ok(!filtered.includes('tilda_status'), 'tilda module hidden');
   assert.ok(filtered.includes('video_analyze_batch'), 'recruiting module kept');
   assert.ok(filtered.includes('connect'), 'core kept');
 
