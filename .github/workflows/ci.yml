@@ -215,11 +215,18 @@ jobs:
             OUTPUT=$(gh pr merge --squash --match-head-commit "${{ github.event.pull_request.head.sha }}" "${{ github.event.pull_request.html_url }}" 2>&1) && EXIT=0 || EXIT=$?
             echo "$OUTPUT"
             [ $EXIT -eq 0 ] && break
-            if echo "$OUTPUT" | grep -q "not up to date with the base branch"; then
-              echo "Branch is behind main — updating branch to trigger a fresh CI run..."
-              gh pr update-branch "${{ github.event.pull_request.html_url }}" && echo "Branch updated." || echo "update-branch failed (possible conflict — autofix will handle it)"
-              exit 0
+            # Staleness by merge state, not by error text: newer gh reports a behind
+            # branch as "the base branch policy prohibits the merge", which the old
+            # grep missed → 5 retries → autofix re-created the PR (#1663 → #1665).
+            STATE=$(gh pr view "${{ github.event.pull_request.html_url }}" --json mergeStateStatus --jq .mergeStateStatus 2>/dev/null || echo UNKNOWN)
+            echo "mergeStateStatus=$STATE"
+            if [ "$STATE" = "BEHIND" ] || echo "$OUTPUT" | grep -q "not up to date with the base branch"; then
+              echo "Branch is behind main — updating it in place to trigger a fresh CI run on this PR..."
+              # Conflicts → fail the job so autofix resolves them (exit 0 here used to skip autofix).
+              gh pr update-branch "${{ github.event.pull_request.html_url }}" && { echo "Branch updated."; exit 0; }
+              echo "update-branch failed (likely a conflict) — leaving it to autofix"; exit 1
             fi
+            [ "$STATE" = "DIRTY" ] && { echo "Merge conflict with main — leaving it to autofix"; exit 1; }
             echo "Merge attempt $i failed, retrying in 15s..."
             sleep 15
           done
