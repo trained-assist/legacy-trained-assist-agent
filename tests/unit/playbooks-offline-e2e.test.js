@@ -225,6 +225,42 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     expect(other.error).toMatch(/not found/);
   });
 
+  it('a step cut off by a restart is resumed in its own engine session — no re-run from scratch (#1671)', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { store, task } = startPlan(G, 'feature');
+    const calls = [];
+    const base = scriptedEngine({ calls });
+    let cutOff = null; // the resume sink of the run the restart killed
+    const runTask = async (o) => {
+      const title = (o.task.match(/Step \(\d+\/\d+\): (.*)/) || [])[1] || '';
+      if (/^Реализация/.test(title) && !cutOff) {
+        calls.push({ title, engine: o.engine, ocProfile: o.ocProfile });
+        cutOff = o.resumeSink;
+        return new Promise(() => {}); // engine dies with the old process
+      }
+      return base(o);
+    };
+    // drive until the implement step is cut off
+    for (let i = 0; i < 100 && !cutOff; i++) {
+      await G.runDueDurable({ secrets: {}, now: Date.now(), isTaskRunning: () => false, registry: fakeGitHub(), runTask,
+        llmValidate: async () => ({ status: 'pass', subject: null, evidence: {} }), hookSinks: { notify: async () => {} } });
+      await drain();
+    }
+    expect(cutOff).toMatchObject({ kind: 'durable', taskId: task.id });
+    // restart: the boot sweep must NOT re-queue a step that is being resumed
+    expect(G.reconcileOrphanedRunning(store, { graceMs: 0, exceptItemIds: [cutOff.itemId] })).toBe(0);
+    expect(store.getTaskItem(cutOff.itemId).status).toBe('running');
+    // the resumed engine session finishes; its reply settles the step
+    await G.resumeDurableReply(cutOff, 'ИТОГ ШАГА\n- доделано после рестарта\nDURABLE: done', {
+      store, registry: fakeGitHub(), hookSinks: { notify: async () => {} },
+      llmValidate: async () => ({ status: 'pass', subject: null, evidence: { reason: 'offline e2e judge' } }),
+    });
+    expect(store.getTaskItem(cutOff.itemId).status).toBe('done');
+    const t = await drive(G, task.id, { runTask, registry: fakeGitHub() });
+    expect(t.status).toBe('done');
+    expect(calls.filter(c => /^Реализация/.test(c.title))).toHaveLength(1); // never re-run from scratch
+  }, 30_000);
+
   it('a step killed by a restart is re-queued and completes', async () => {
     const G = require('../../src/gtd-controller.js');
     const { store, task } = startPlan(G, 'feature');

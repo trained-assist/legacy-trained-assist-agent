@@ -1,8 +1,26 @@
 // Whether a journaled pending task is still worth auto-resuming after a restart.
 // Pulled out of server.js so the age-window decision is unit-testable without
 // booting the whole server (see tests/unit/pending-task-resume.test.js).
+// Where a journaled task's result goes (#1671). Resume must not be Telegram-only:
+//   durable  — a playbook plan step; its reply settles the step (gtd-controller)
+//   web      — a web-UI task; the runner persists the answer in the web session and
+//              the resume closes the web mutation receipt
+//   telegram — a chat task (legacy entries: identified by userId)
+// null → nowhere to deliver the result, not resumable.
+const WEB_TASK_RE = /^(.+)-web-([A-Za-z0-9_-]+)$/;
+function resumeSinkOf(p) {
+  if (!p) return null;
+  const s = p.resumeSink;
+  if (s && s.kind === 'durable' && s.taskId && s.itemId) return { ...s };
+  if (s && s.kind === 'web' && s.requestId) return { ...s, username: s.username || p.username };
+  const web = WEB_TASK_RE.exec(p.taskId || '');
+  if (web && web[1] === p.username) return { kind: 'web', username: p.username, requestId: web[2] };
+  if (p.userId) return { kind: 'telegram', chatId: p.userId };
+  return null;
+}
+
 function isTaskResumable(p, now, windowMs) {
-  if (!p || !p.startedAt || !p.username || !p.userId) return false;
+  if (!p || !p.startedAt || !p.username || !resumeSinkOf(p)) return false;
   // A task needs recoverable work. Usually that is its text — but a forceClaude request
   // (inline-button callbacks: «🔎 Разобраться подробнее» / plan / menu) intentionally carries
   // NO task text: runner/index.js re-derives it from the session's last user message
@@ -15,4 +33,4 @@ function isTaskResumable(p, now, windowMs) {
   return (now - p.startedAt) < windowMs;
 }
 
-module.exports = { isTaskResumable };
+module.exports = { isTaskResumable, resumeSinkOf, WEB_TASK_RE };
