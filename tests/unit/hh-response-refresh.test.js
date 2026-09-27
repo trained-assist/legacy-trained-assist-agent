@@ -102,7 +102,7 @@ describe('HH response refresh and durable triage', () => {
   });
   it('review links ignore infrastructure URL and complaint cannot qualify for HH quick reply',()=>{
     const {hhReviewUrl}=require('../../src/domains/hh/lib').hhLib('hh-quick');expect(hhReviewUrl(username,vacancy)).toContain('https://recruiter-assistant.ru/hh/review?');
-    const {HH_SERVICE_CHANGE_INTENT}=require('../../src/domains/hh/intents');
+    const {HH_SERVICE_CHANGE_INTENT}=require('../../src/domains/hh/lib').hhLib('hh-intents');
     expect(HH_SERVICE_CHANGE_INTENT.test('работа с откликами с хх отстала от жизни нужно прокачать. диалог: покажи кандидатов')).toBe(true);
     expect(HH_SERVICE_CHANGE_INTENT.test('покажи кандидатов')).toBe(false);
   });

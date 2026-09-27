@@ -42,4 +42,10 @@ function hhLib(name) {
   }
 }
 
-module.exports = { hhLib, hhSkillDir, hhModulePath };
+// true when the hh-skill module loaded; lets per-message core paths skip HH quietly.
+function hhAvailable(name) {
+  hhLib(name);
+  return !unavailable.has(name);
+}
+
+module.exports = { hhLib, hhAvailable, hhSkillDir, hhModulePath };

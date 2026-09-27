@@ -82,3 +82,18 @@ test('server starts and serves core routes without the hh-skill sibling; only /h
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('quick answers keep working without the hh-skill sibling (HH intents never match)', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hh-lib-qa-'));
+  const script = "require('./src/runner/intent-engine').runQuickAnswer('/hh_status', 'u', process.env.WD, null)" +
+    ".then(r => { console.log('RESULT', JSON.stringify(r)); }, e => { console.error('THROWN', e.message); process.exit(1); })";
+  try {
+    const r = spawnSync(process.execPath, ['-e', script], {
+      cwd: ROOT, encoding: 'utf8', timeout: 60_000,
+      env: { ...process.env, HOME: tmp, WD: tmp, USERS_DIR: tmp, AGENT_DATA_DIR: tmp, AGENT_TOKENS_DIR: tmp,
+        HH_SKILL_DIR: path.join(tmp, 'no-such-hh-skill') },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /RESULT/);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
