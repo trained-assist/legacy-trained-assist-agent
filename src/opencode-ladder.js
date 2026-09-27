@@ -49,6 +49,11 @@ const CLASSIFIERS = [
   // class through the config/quota branch in runner/index.js for a case this rare. Whoever
   // fixes the ladder should still remove the dead rung from the profile JSON and this TTL
   // becomes moot.
+  // A Go model gated behind the workspace privacy setting "allow paid endpoints that train on
+  // request data" (seen live 2026-09-27 on opencode-go/muse-spark-1.3-contributor, both keys).
+  // Only an owner flipping that setting in the OpenCode console fixes it — skip the rung for a day
+  // instead of burning three same-model retries on it each time the ladder reaches it.
+  { class: 'quota', ttlMs: 24 * 60 * 60 * 1000, pattern: /trains on request data/i },
   { class: 'quota', ttlMs: 30 * 24 * 60 * 60 * 1000, pattern: /unavailable for free/i },
   { class: 'quota', ttlMs: 30 * 24 * 60 * 60 * 1000, pattern: /model not found/i },
   { class: 'quota', ttlMs: 30 * 24 * 60 * 60 * 1000, pattern: /no endpoints found/i },

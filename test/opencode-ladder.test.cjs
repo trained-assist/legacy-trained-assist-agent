@@ -288,3 +288,10 @@ test('buildOcProfileOverrides resolves a ladderRef from config/model-routing.jso
   const resolved = mod.buildOcProfileOverrides('by-ref', dir);
   assert.equal(resolved.agent.build.model, 'opencode-go/gpt-6-luna');
 });
+
+test('a training-gated Go model (workspace privacy setting off) is skipped for a day, not retried', () => {
+  const { mod } = freshModule();
+  const v = mod.classifyError("Upstream request failed: This Go model trains on request data. Allow paid endpoints that train on request data in your workspace's Privacy settings to use it.");
+  assert.equal(v.class, 'quota');
+  assert.equal(v.ttlMs, 24 * 60 * 60 * 1000);
+});
