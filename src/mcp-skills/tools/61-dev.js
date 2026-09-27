@@ -37,6 +37,31 @@ function getToken() {
   throw new Error('GitHub токен не подключён. Вызови connect({ service: "github" }) чтобы получить ссылку для ввода токена.');
 }
 
+const GH_API = 'https://api.github.com';
+async function ghFetch(path, opts = {}) {
+  const token = getToken();
+  const url = path.startsWith('http') ? path : `${GH_API}${path}`;
+  const res = await fetch(url, {
+    ...opts,
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'trained-assist-agent',
+      ...opts.headers,
+    },
+    signal: opts.signal || AbortSignal.timeout(15000),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    const msg = err.message || res.statusText;
+    const detail = err.errors ? ` (${err.errors.map(e => e.message).join('; ')})` : '';
+    throw new Error(`GitHub API ${res.status}: ${msg}${detail}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
 // Same hooks this agent's own repos use (.githooks/ at repo root) — copied into
 // every workspace dev_workspace_setup touches so branch-per-session is enforced
 // there too, not just in the agent's own checkouts.
@@ -308,6 +333,66 @@ module.exports = {
             '# Then call github_create_pr',
           ],
         };
+      },
+    },
+
+    dev_supersede_pr: {
+      description: 'Supersede an open PR per the immutable-PR protocol (trained-assist-engineering#27): the replacement PR #M must already be open; then comment "Superseded by #M" on the old PR, add the `superseded` label, and close it. Optionally appends "attempt K → #M" as a comment on the tracking issue #T. Idempotent — skips without re-commenting/re-closing if the PR is already closed/merged or already carries the `superseded` label. GitHub stays the single source of truth. Call github_pr_checks first to confirm the old PR is actually broken before superseding.',
+      inputSchema: {
+        type: 'object',
+        required: ['repo', 'pr_number', 'new_pr_number'],
+        properties: {
+          repo: { type: 'string', description: 'owner/repo' },
+          pr_number: { type: 'number', description: 'Old PR number to supersede' },
+          new_pr_number: { type: 'number', description: 'Replacement PR number that is already open' },
+          issue_number: { type: 'number', description: 'Optional: tracking issue #T — appends "attempt K → #M" log line' },
+          attempt: { type: 'string', description: 'Optional attempt id (e.g. "3") used in the issue log line' },
+        },
+      },
+      handler: async ({ repo, pr_number, new_pr_number, issue_number, attempt }) => {
+        if (!repo || !pr_number || !new_pr_number) throw new Error('repo, pr_number and new_pr_number are required');
+        const pr = await ghFetch(`/repos/${repo}/pulls/${pr_number}`);
+        if (pr.state !== 'open') {
+          return { status: 'skipped', reason: `PR #${pr_number} is already ${pr.state}`, url: pr.html_url };
+        }
+        if ((pr.labels || []).some(l => l.name === 'superseded')) {
+          return { status: 'skipped', reason: `PR #${pr_number} already carries the superseded label`, url: pr.html_url };
+        }
+        await ghFetch(`/repos/${repo}/issues/${pr_number}/comments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body: `Superseded by #${new_pr_number} — closing in favour of the new PR.` }),
+        });
+        try {
+          await ghFetch(`/repos/${repo}/labels`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'superseded', color: 'ededed', description: 'This PR is superseded by a newer one' }),
+          });
+        } catch (e) {
+          if (!/422|already taken|already exists/i.test(String(e.message))) throw e; // 422 = label exists — fine
+        }
+        await ghFetch(`/repos/${repo}/issues/${pr_number}/labels`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ labels: ['superseded'] }),
+        });
+        await ghFetch(`/repos/${repo}/pulls/${pr_number}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state: 'closed' }),
+        });
+        let issue_log = null;
+        if (issue_number) {
+          const line = `attempt ${attempt || '?'} → PR #${new_pr_number}`;
+          await ghFetch(`/repos/${repo}/issues/${issue_number}/comments`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body: line }),
+          });
+          issue_log = { issue: issue_number, comment: line };
+        }
+        return { status: 'superseded', pr: pr_number, new_pr: new_pr_number, url: pr.html_url, issue_log };
       },
     },
 
