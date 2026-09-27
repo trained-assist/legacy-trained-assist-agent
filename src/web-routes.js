@@ -362,39 +362,15 @@ function checkOrigin(req, secrets) {
   return false;
 }
 
-function prepareWebTaskFiles(username, task, fileRefs) {
-  if (!Array.isArray(fileRefs) || !fileRefs.length) return { task, fileRefs: [] };
-  const fs = require('fs');
+async function prepareWebTaskFiles(username, task, fileRefs, secrets = {}) {
   const workDir = userWorkDir(username);
-  const uploadsDir = path.join(workDir, 'media', 'intake');
-  fs.mkdirSync(uploadsDir, { recursive: true });
-  let effectiveTask = task || '';
-  const normalized = [];
-
-  for (const ref of fileRefs) {
-    if (!ref || typeof ref.id !== 'string' || !/^[a-f0-9]{16,64}$/.test(ref.id)) {
-      const err = new Error('invalid fileRef'); err.statusCode = 400; throw err;
-    }
-    const storeDir = path.join(workDir, 'media', 'intake-store', ref.id);
-    const src = path.join(storeDir, 'data');
-    let meta = {};
-    try { meta = JSON.parse(fs.readFileSync(path.join(storeDir, 'meta.json'), 'utf8')); } catch {}
-    const rawName = ref.name || meta.name || 'file';
-    const safeName = path.basename(rawName).replace(/[^a-zA-Z0-9._\-() ]/g, '_').slice(0, 200);
-    const mime = ref.mime || ref.type || meta.mime || 'application/octet-stream';
-    const filePath = path.join(uploadsDir, `${ref.id}-${safeName}`);
-    try {
-      fs.copyFileSync(src, filePath);
-      const fd = fs.openSync(filePath, 'r');
-      try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-    } catch (e) {
-      const err = new Error('attachment not persisted'); err.statusCode = 503; throw err;
-    }
-    const note = `[Файл сохранён: ${filePath} (${mime}). Временное медиа: TTL 48 часов. Если файл нужен проекту надолго, сохрани его в артефакты проекта.]`;
-    effectiveTask = effectiveTask ? `${note}\n\n${effectiveTask}` : note;
-    normalized.push({ id: ref.id, name: safeName, mime });
-  }
-  return { task: effectiveTask, fileRefs: normalized };
+  const engine = require('./profiles').getEngine(workDir, 0);
+  return require('./intake-materializer').materializeFileRefs({
+    workDir, username, fileRefs, task, engine,
+    openrouterKey: secrets.OPENROUTER_API_KEY,
+    gatewayUrl: process.env.MEDIA_GATEWAY_URL,
+    agentSecret: secrets.AGENT_SECRET,
+  });
 }
 
 async function streamWebTask({ req, res, secrets, username, task, sessionId, newSessionId = null, projectId = null, fileRefs = [], requestId = null }) {
