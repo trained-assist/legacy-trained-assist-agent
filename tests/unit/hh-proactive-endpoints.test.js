@@ -263,7 +263,7 @@ describe('multi-vacancy tagging + tab switcher (step 7/7)', () => {
     );
     // /hh/proactive 404s ("no data yet") unless at least one search-results-*.json
     // snapshot exists — seed a minimal one; the route overlays the unified
-    // all-candidates store on top of it anyway (see handlers/hh.js).
+    // all-candidates store on top of it anyway (see hh-skill src/hh-routes.js).
     const proactiveDir = join(dataDir, 'hh', MULTI_VAC_UID, 'proactive');
     mkdirSync(proactiveDir, { recursive: true });
     writeFileSync(

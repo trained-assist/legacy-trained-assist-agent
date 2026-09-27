@@ -6,7 +6,7 @@
 // run-bearer/reply-bearer), cookie auth (auth/logout), and the static web-ui
 // asset server.
 //
-// Dispatcher pattern (same as src/handlers/hh.js #1030, src/handlers/connect.js
+// Dispatcher pattern (same as hh-skill src/hh-routes.js #1030, src/handlers/connect.js
 // #1039): returns `false` when no route matched so server.js can continue to
 // the next handler; any route match ends the request itself.
 const path = require('path');

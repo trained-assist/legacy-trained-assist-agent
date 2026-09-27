@@ -6,7 +6,7 @@
 //
 // Must stay byte-compatible with hh-skill's hhReviewUrl()/proactiveUrlFor():
 // the same links are emitted by provider tools. Token = HMAC-SHA256(AGENT_SECRET,
-// username).slice(0,16), verified by handlers/hh.js.
+// username).slice(0,16), verified by hh-skill src/hh-routes.js.
 
 const { createHmac } = require('crypto');
 
