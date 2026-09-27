@@ -29,7 +29,7 @@ else
   if [[ -f "$SECRETS" ]]; then
     PROFILE=$(grep '^OPENCODE_PROFILE=' "$SECRETS" 2>/dev/null | cut -d= -f2 | tr -d '"' || true)
   fi
-  PROFILE="${PROFILE:-max}"
+  PROFILE="${PROFILE:-deepseek-go}"
 fi
 
 # Normalize aliases

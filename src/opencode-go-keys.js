@@ -28,13 +28,16 @@ const AUTH_FILE = process.env.OPENCODE_GO_AUTH_FILE ||
   path.join(os.homedir(), '.local', 'share', 'opencode', 'auth.json');
 const PROVIDER = 'opencode-go';
 
-// The Go console's rate-limit reset window is ~5h (same constant opencode-go-toggle uses for its
-// openrouter auto-revert) — a key burned on a quota hit is assumed usable again after that.
-const EXHAUST_TTL_MS = 5 * 60 * 60 * 1000;
-// A key the gateway REJECTS ("Invalid credential" / 401 — revoked or expired, 2026-09-26 incident)
-// won't heal in 5h. Park it for a day so every deploy (which rewrites auth.json to the pool's first
-// key) doesn't silently put a dead key back in front of the whole VM; see ensureUsableActiveKey().
-const DEAD_KEY_TTL_MS = 24 * 60 * 60 * 1000;
+// How long a key burned on a quota hit is skipped by rotation — same short window as
+// opencode-go-toggle's OpenRouter auto-revert (owner 2026-09-27: come back to Go fast). Re-trying a
+// still-exhausted key is one fast quota error; skipping a recovered key for the Go console's full
+// ~5h window meant hours of metered OpenRouter for nothing.
+const EXHAUST_TTL_MS = Number(process.env.OPENCODE_GO_REVERT_MS) || 15 * 60 * 1000;
+// A key the gateway REJECTS ("Invalid credential" / 401) is parked longer so every deploy (which
+// rewrites auth.json to the pool's first key) doesn't put it back in front of the VM right away;
+// see ensureUsableActiveKey(). 1h, not a day: on 2026-09-27 key#1 was still parked from a 401 the
+// day before although it answered fine, which left the pool with no spare key.
+const DEAD_KEY_TTL_MS = 60 * 60 * 1000;
 
 // Comma/whitespace-separated pool, e.g. OPENCODE_GO_API_KEYS="oc_sk_primary,oc_sk_backup".
 // OPENCODE_GO_API_KEY (the original single-key secret) is the fallback so a VM without the pool
@@ -139,6 +142,22 @@ function ensureUsableActiveKey() {
   }
 }
 
+// Epoch ms when the earliest currently-exhausted key becomes usable again, 0 when a key is usable
+// right now, null when the pool is empty. opencode-go-toggle uses it to come back from OpenRouter
+// as soon as ANY Go key heals, instead of sitting on the paid gateway for a fixed 5h.
+function nextUsableAt(now = Date.now()) {
+  const pool = readPool();
+  if (!pool.length) return null;
+  const exhausted = _readState().exhausted || {};
+  let earliest = Infinity;
+  for (let i = 0; i < pool.length; i++) {
+    const until = exhausted[i];
+    if (!(until > now)) return 0;
+    earliest = Math.min(earliest, until);
+  }
+  return earliest;
+}
+
 // Non-secret identity of the active key for logs: "key#<index>/<sha256 prefix>". Lets an operator
 // tell from journalctl alone WHICH pool key a failing call used, without ever logging the key.
 function activeKeyFingerprint() {
@@ -150,4 +169,4 @@ function activeKeyFingerprint() {
   } catch { return 'key#?'; }
 }
 
-module.exports = { STATE_FILE, AUTH_FILE, PROVIDER, EXHAUST_TTL_MS, DEAD_KEY_TTL_MS, readPool, currentIndex, writeActiveKey, rotate, ensureUsableActiveKey, activeKeyFingerprint };
+module.exports = { STATE_FILE, AUTH_FILE, PROVIDER, EXHAUST_TTL_MS, DEAD_KEY_TTL_MS, readPool, currentIndex, writeActiveKey, rotate, ensureUsableActiveKey, nextUsableAt, activeKeyFingerprint };

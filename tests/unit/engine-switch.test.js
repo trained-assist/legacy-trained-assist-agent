@@ -38,8 +38,8 @@ describe('profiles.getEngine / setEngine', () => {
   beforeEach(() => { workDir = mkdtempSync(join(tmpdir(), 'engine-switch-test-')); });
   afterEach(() => { rmSync(workDir, { recursive: true, force: true }); });
 
-  it('defaults to claude with no profile.json', () => {
-    expect(profiles.getEngine(workDir)).toBe('claude');
+  it('defaults to opencode (Go) with no profile.json since 2026-09-27', () => {
+    expect(profiles.getEngine(workDir)).toBe('opencode');
   });
 
   it('setEngine without chatId sets the profile-wide default', () => {
@@ -50,8 +50,8 @@ describe('profiles.getEngine / setEngine', () => {
   it('setEngine with chatId overrides only that chat, others keep the default', () => {
     profiles.setEngine(workDir, 'codex', 'chat-1');
     expect(profiles.getEngine(workDir, 'chat-1')).toBe('codex');
-    expect(profiles.getEngine(workDir, 'chat-2')).toBe('claude');
-    expect(profiles.getEngine(workDir)).toBe('claude');
+    expect(profiles.getEngine(workDir, 'chat-2')).toBe('opencode');
+    expect(profiles.getEngine(workDir)).toBe('opencode');
   });
 });
 

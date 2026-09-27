@@ -35,12 +35,32 @@ test('setMode flips resolveProfileName', () => {
   assert.equal(mod.getMode(), 'go');
 });
 
-test('manual switch to openrouter never auto-reverts', () => {
+test('manual switch to openrouter is NOT sticky — it expires after AUTO_REVERT_MS too (2026-09-27)', () => {
   const { mod } = freshModule();
   mod.setMode('openrouter', { auto: false });
   const state = JSON.parse(fs.readFileSync(mod.STATE_FILE, 'utf8'));
-  assert.equal(state.autoRevertAt, null);
+  assert.equal(state.switchedBy, 'manual');
+  assert.ok(state.autoRevertAt, 'manual OpenRouter switch carries an expiry');
+  assert.equal(mod.getMode(), 'openrouter', 'still on OpenRouter inside the window');
+  state.autoRevertAt = new Date(Date.now() - 1000).toISOString();
+  fs.writeFileSync(mod.STATE_FILE, JSON.stringify(state));
+  assert.equal(mod.getMode(), 'go');
+});
+
+test('legacy sticky manual state (autoRevertAt=null) reverts AUTO_REVERT_MS after switchedAt', () => {
+  const { mod } = freshModule();
+  const write = (switchedAt) => fs.writeFileSync(mod.STATE_FILE, JSON.stringify({ mode: 'openrouter', switchedAt, switchedBy: 'manual', autoRevertAt: null }));
+  write(new Date().toISOString());
   assert.equal(mod.getMode(), 'openrouter');
+  write(new Date(Date.now() - mod.AUTO_REVERT_MS - 1000).toISOString());
+  assert.equal(mod.getMode(), 'go');
+});
+
+test('OpenRouter window is short (fast return to Go), not the old ~5h', () => {
+  const { mod, keys } = freshModule();
+  assert.ok(mod.AUTO_REVERT_MS <= 30 * 60 * 1000, `AUTO_REVERT_MS=${mod.AUTO_REVERT_MS}`);
+  assert.ok(keys.EXHAUST_TTL_MS <= 30 * 60 * 1000, `EXHAUST_TTL_MS=${keys.EXHAUST_TTL_MS}`);
+  assert.ok(keys.DEAD_KEY_TTL_MS > keys.EXHAUST_TTL_MS && keys.DEAD_KEY_TTL_MS <= 60 * 60 * 1000);
 });
 
 test('auto switch to openrouter reverts to go once AUTO_REVERT_MS has passed', () => {
@@ -138,6 +158,32 @@ test('noteFailure flips to openrouter once every Go key is exhausted', () => {
   assert.equal(mod.noteFailure('opencode-go/deepseek-v4.1-flash', 'usage limit'), true);
   assert.equal(mod.getMode(), 'openrouter');
   assert.equal(mod.resolveProfileName(), 'deepseek-openrouter');
+});
+
+test('full ladder: key#0 quota → key#1 → OpenRouter → after the window back on Go, keys rotate again', () => {
+  const { mod, dir } = freshModule();
+  process.env.OPENCODE_GO_API_KEYS = 'oc_primary,oc_backup';
+  const authFile = path.join(dir, 'auth.json');
+  const activeKey = () => JSON.parse(fs.readFileSync(authFile, 'utf8'))['opencode-go'].key;
+  fs.writeFileSync(authFile, JSON.stringify({ 'opencode-go': { type: 'api', key: 'oc_primary' } }));
+  const expire = (file, mutate) => { const st = JSON.parse(fs.readFileSync(file, 'utf8')); mutate(st); fs.writeFileSync(file, JSON.stringify(st)); };
+  const past = Date.now() - 1000;
+
+  assert.equal(mod.noteFailure('opencode-go/deepseek-v4.1-flash', 'usage limit exceeded'), true);
+  assert.equal(mod.getMode(), 'go'); assert.equal(activeKey(), 'oc_backup');
+  assert.equal(mod.noteFailure('opencode-go/deepseek-v4.1-flash', 'usage limit exceeded'), true);
+  assert.equal(mod.getMode(), 'openrouter', 'both keys burned → OpenRouter');
+
+  // Window passes: toggle AND key exhaustion both expire (same short TTL).
+  expire(mod.STATE_FILE, st => { st.autoRevertAt = new Date(past).toISOString(); });
+  expire(process.env.OPENCODE_GO_KEYS_STATE_FILE, st => { for (const k of Object.keys(st.exhausted)) st.exhausted[k] = past; });
+  assert.equal(mod.getMode(), 'go', 'back on Go after the window');
+  assert.equal(mod.resolveProfileName(), 'deepseek-go');
+
+  // Go still limited on the active key → rotates to the OTHER (recovered) key instead of flipping.
+  assert.equal(mod.noteFailure('opencode-go/deepseek-v4.1-flash', 'usage limit exceeded'), true);
+  assert.equal(mod.getMode(), 'go');
+  assert.equal(activeKey(), 'oc_primary');
 });
 
 test('rotate marks the active key exhausted with a TTL and returns null when all keys are burned', () => {

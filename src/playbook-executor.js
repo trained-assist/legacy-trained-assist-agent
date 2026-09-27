@@ -23,8 +23,10 @@ const ROLES = ['researcher', 'developer', 'reviewer', 'verifier'];
 // product choice — default `value` (deepseek/glm) for stable availability;
 // override with PLAYBOOK_LEVEL_MAP={"bachelor":{"engine":"opencode","ocProfile":"free"}}.
 const DEFAULT_LEVEL_MAP = Object.freeze({
-  bachelor: { engine: 'opencode', ocProfile: 'value' },
-  master: { engine: 'opencode', ocProfile: 'max' },
+  // Both OpenCode levels run on the standard Go deepseek profile (owner 2026-09-27) — `value`
+  // led with paid OpenRouter and `max` ended on it, which is how durable/web steps leaked there.
+  bachelor: { engine: 'opencode', ocProfile: 'deepseek' },
+  master: { engine: 'opencode', ocProfile: 'deepseek' },
   doctor: { engine: 'claude', ocProfile: null },
 });
 
