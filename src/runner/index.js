@@ -2121,7 +2121,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // gateway's button can show it instead of the gateway-side task text. Best-effort:
   // a write failure must never block the run — it degrades to a 404/fallback.
   try {
-    const runInputStore = require('./run-input-store');
+    const runInputStore = require('../run-input-store');
     runInputStore.writeInput(user.workDir, taskId, runInputStore.buildDocument({
       taskId,
       engine,
