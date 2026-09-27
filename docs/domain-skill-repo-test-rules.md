@@ -1,10 +1,25 @@
 # Domain Skill Repo — Test & CI Rules
 
 Правила тестов и CI для **доменных skill-репозиториев** — `trained-assist-<domain>-skill`
-(recruiting, engineering, sales, freelance, …). Это обязательный контракт, а не
-рекомендация: новый доменный репо не считается готовым, пока не выполнены все
-разделы ниже. Основной репо (`trained-assist-agent`, Agent Control Plane) владеет
-этими правилами и предоставляет переиспользуемый harness.
+(recruiting, engineering, sales, freelance, …). Основной репо (`trained-assist-agent`,
+Agent Control Plane) владеет этими правилами и предоставляет переиспользуемый harness.
+
+> **Обязательный минимум (с 2026-09-28)** — то, без чего доменный репо нельзя
+> монтировать в прод; всё остальное в этом документе — рекомендуемый полный контур,
+> а не блокер переноса:
+>
+> 1. `npm run check` — каждый модуль `src/mcp-skills/tools/*.js` загружается.
+> 2. Юнит-тесты перенесённой логики (`node --test` / vitest), без сети и LLM.
+> 3. В CI: `node <core>/scripts/check-mcp-conformance.js .` — тот же MCP-контракт,
+>    которым `scripts/deploy.sh` проверяет сиблинг перед обновлением в проде.
+> 4. Таймауты на внешний HTTP, токен-файлы `0o600`, никаких `require` кода ядра
+>    (к ядру — только HTTP с `AGENT_SECRET`).
+>
+> Эталон минимума — `trained-assist-sales-skill`. Почему минимум, а не «всё
+> обязательно»: полный контур (L1–L3 + replay + фикстура/политика на каждый тул)
+> делал каждый перенос тула дороже самого переноса, а скаффолд под него
+> (`create-domain-skill`) так и не заработал (зависел от неопубликованного npm-пакета)
+> и удалён. Рецепт переноса: `docs/how-to-move-a-tool-to-a-domain-repo.md`.
 
 Область документа: **как тестировать доменный skill**, а не как его писать
 (это `docs/skill-spec-template.md`, `docs/how-to-add-skill.md`).
@@ -41,7 +56,7 @@
 
 ---
 
-## 1. Три слоя CI — обязательны в каждом доменном репо
+## 1. Три слоя CI — рекомендуемый полный контур (обязательный минимум — см. начало)
 
 ### L1. Contract (герметичный, без сети/LLM)
 
@@ -105,8 +120,7 @@ npx mcp-skill-conformance .        # или: node node_modules/@trained-assist/m
 
 **Чек в PR-шаблоне.** Каждый доменный репо несёт `.github/PULL_REQUEST_TEMPLATE.md`
 с conformance-чеклистом (канон —
-`packages/mcp-skill-testkit/assets/PULL_REQUEST_TEMPLATE.md`, его же кладёт
-`create-domain-skill`). PR не готов, пока чеклист не пройден и CI не зелёный.
+`packages/mcp-skill-testkit/assets/PULL_REQUEST_TEMPLATE.md`). PR не готов, пока чеклист не пройден и CI не зелёный.
 
 - **Изоляция всех data-root'ов** в temp: `HOME`, `TMPDIR`, `USERS_DIR`,
   `AGENT_DATA_DIR`, `AGENT_TOKENS_ROOT`. Guard преload'ится в каждый процесс
