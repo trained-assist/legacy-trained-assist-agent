@@ -5,7 +5,8 @@ let restartShutdown = false;
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { writeMcpConfig } = require('../browser');
+const { writeRunMcpConfig } = require('../browser');
+const { isolationConfig } = require('../agent-isolation');
 const sessions = require('../session-store');
 const answerActions = require('../answer-actions');
 const { getCurrentSessionId, setCurrentSessionId } = require('../session-store');
@@ -2005,9 +2006,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   const engine = acceptedEngine || profiles.getEngine(user.workDir, chatId);
 
   // Write per-user MCP config — gives Claude access only to this user's Chrome profile.
-  const mcpConfig = writeMcpConfig(user.workDir, user.username, {
+  // With isolation on (issue #1649) the file names only the MCP bridge client; the real
+  // server specs (with server-side env) stay in memory as bridgedServers.
+  const { mcpConfig, servers: bridgedServers } = writeRunMcpConfig(user.workDir, user.username, {
     userName: user.name, userHandle: user.username,
-  });
+  }, { bridged: isolationConfig().envAllowlist });
 
   // Strip ANTHROPIC_API_KEY so Claude uses OAuth from ~/.claude/.credentials.json.
   // The API key account is out of credits; OAuth (Mac subscription) has no per-token billing.
@@ -2160,7 +2163,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     restartShutdown: () => restartShutdown,
     activeTimers, tgEdit, tgSend, outputCallback, onProgress,
     consumePendingStop: () => consumePendingStop(user.username, activeSessionId),
-    engineBin, engineArgs, mcpConfig, ocProfileOverrides,
+    engineBin, engineArgs, mcpConfig, ocProfileOverrides, bridgedServers,
     cwd: codeCwd,
     // Watchdog step 1a (issue #942 [011]): heartbeat the pending-task journal on the
     // same 30s tick claude-runner.js already runs for the inactivity check, so a
