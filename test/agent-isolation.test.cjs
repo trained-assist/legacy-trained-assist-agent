@@ -1,0 +1,289 @@
+'use strict';
+// T0 agent process hardening (issue #1649) — everything that can be checked
+// without creating unix users. The real cross-user check (profile A cannot read
+// profile B / the server secrets file) is test/agent-isolation-e2e.test.cjs.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const net = require('net');
+const path = require('path');
+const { spawnSync } = require('child_process');
+
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-iso-'));
+process.env.AGENT_MCP_BRIDGE_DIR = path.join(tmpRoot, 'bridge');
+
+const iso = require('../src/agent-isolation');
+const tokens = require('../src/agent-run-tokens');
+const bridge = require('../src/agent-mcp-bridge');
+const { runEngineProcess } = require('../src/runner/claude-runner');
+const { writeRunMcpConfig } = require('../src/browser');
+
+const SERVER_ENV = {
+  PATH: process.env.PATH,
+  AGENT_SECRET: 'srv-agent-secret',
+  TELEGRAM_BOT_TOKEN: 'srv-bot-token',
+  DEEPGRAM_API_KEY: 'srv-deepgram',
+  OPENROUTER_API_KEY: 'srv-openrouter',
+  INN_DADATA_SECRET: 'srv-dadata',
+  SOME_SERVER_ONLY_SETTING: 'srv-other',
+};
+const SERVER_VALUES = Object.entries(SERVER_ENV).filter(([k]) => k !== 'PATH').map(([, v]) => v);
+
+function writeExe(file, body) {
+  fs.writeFileSync(file, body);
+  fs.chmodSync(file, 0o755);
+  return file;
+}
+
+// ── env allowlist ─────────────────────────────────────────────────────────────
+
+test('buildAgentEnv keeps engine vars, run identity and profile tokens; drops server secrets', () => {
+  const env = iso.buildAgentEnv({
+    ...SERVER_ENV, HOME: '/h', LANG: 'C.UTF-8', LC_ALL: 'C', ANTHROPIC_MODEL: 'm',
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0', AGENT_USER_ID: 'alice', AGENT_CHAT_ID: '1',
+    AGENT_BOT_TOKEN: 'bot', CLOUDFLARE_API_TOKEN: 'cf', GH_TOKEN: 'profile-gh', AGENT_SESSION_FILE: '/x',
+  }, { userTokenNames: ['GH_TOKEN', 'AGENT_SECRET'], extra: { AGENT_RUN_TOKEN: 'rt_x', TELEGRAM_BOT_TOKEN: 'nope' } });
+  for (const k of ['PATH', 'HOME', 'LANG', 'LC_ALL', 'ANTHROPIC_MODEL', 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS', 'AGENT_USER_ID', 'AGENT_CHAT_ID', 'GH_TOKEN', 'AGENT_RUN_TOKEN']) {
+    assert.ok(k in env, `${k} kept`);
+  }
+  for (const k of ['AGENT_SECRET', 'TELEGRAM_BOT_TOKEN', 'DEEPGRAM_API_KEY', 'OPENROUTER_API_KEY', 'INN_DADATA_SECRET', 'SOME_SERVER_ONLY_SETTING', 'AGENT_BOT_TOKEN', 'CLOUDFLARE_API_TOKEN', 'AGENT_SESSION_FILE']) {
+    assert.ok(!(k in env), `${k} dropped`);
+  }
+});
+
+test('isolationConfig: off by default, run-as implies the allowlist, bad names ignored', () => {
+  assert.deepEqual([iso.isolationConfig({}).envAllowlist, iso.isolationConfig({}).runAs], [false, false]);
+  assert.equal(iso.isolationConfig({ AGENT_ENV_ALLOWLIST: '1' }).envAllowlist, true);
+  const c = iso.isolationConfig({ AGENT_RUN_AS_USERS: 'ta-agent-1, ta-agent-2,Bad;rm' });
+  assert.deepEqual(c.runAsUsers, ['ta-agent-1', 'ta-agent-2']);
+  assert.equal(c.envAllowlist, true);
+});
+
+// ── run tokens ────────────────────────────────────────────────────────────────
+
+test('run tokens are scoped, header-parsed and revocable', () => {
+  const t = tokens.issueRunToken({ taskId: 'alice-1', username: 'alice' });
+  assert.match(t, /^rt_[0-9a-f]{64}$/);
+  assert.deepEqual({ ...tokens.verifyRunToken(t), issuedAt: 0 }, { taskId: 'alice-1', username: 'alice', issuedAt: 0 });
+  assert.equal(tokens.runTokenFromAuthHeader(`Bearer ${t}`).taskId, 'alice-1');
+  assert.equal(tokens.runTokenFromAuthHeader('Bearer srv-agent-secret'), null);
+  assert.equal(tokens.verifyRunToken('rt_' + '0'.repeat(64)), null);
+  tokens.revokeRunToken(t);
+  assert.equal(tokens.verifyRunToken(t), null);
+});
+
+// ── MCP config on disk ────────────────────────────────────────────────────────
+
+test('bridged MCP config on disk carries no server env; real specs stay in memory', () => {
+  const workDir = fs.mkdtempSync(path.join(tmpRoot, 'mcpcfg-'));
+  const prev = process.env.AGENT_SECRET;
+  process.env.AGENT_SECRET = 'srv-agent-secret-on-disk-check';
+  try {
+    const { mcpConfig, servers } = writeRunMcpConfig(workDir, 'alice', {}, { bridged: true });
+    const onDisk = fs.readFileSync(mcpConfig, 'utf8');
+    assert.ok(!onDisk.includes('srv-agent-secret-on-disk-check'), 'secret not in .mcp.json');
+    assert.ok(!/"env"/.test(onDisk), 'no env blocks at all');
+    const cfg = JSON.parse(onDisk);
+    assert.ok(cfg.mcpServers['trained-skills'].args.includes(bridge.CLIENT_PATH));
+    assert.equal(servers['trained-skills'].env.AGENT_SECRET, 'srv-agent-secret-on-disk-check');
+    const plain = writeRunMcpConfig(workDir, 'alice', {}, { bridged: false });
+    assert.equal(plain.servers, null);
+  } finally {
+    if (prev === undefined) delete process.env.AGENT_SECRET; else process.env.AGENT_SECRET = prev;
+  }
+});
+
+// ── runEngineProcess end-to-end with the allowlist + bridge ───────────────────
+
+const fakeMcp = writeExe(path.join(tmpRoot, 'fake-mcp.js'), `#!/usr/bin/env node
+require('readline').createInterface({ input: process.stdin }).on('line', (l) => {
+  const req = JSON.parse(l);
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result: {
+    serverHasSecret: process.env.AGENT_SECRET === 'srv-agent-secret',
+    fromConfig: process.env.FROM_CONFIG || null,
+    runToken: !!process.env.AGENT_RUN_TOKEN,
+  } }) + '\\n');
+});
+`);
+
+function fakeEngine(outDir) {
+  return writeExe(path.join(outDir, 'fake-engine'), `#!/bin/sh
+env > "${outDir}/engine.env"
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | "${process.execPath}" "${bridge.CLIENT_PATH}" trained-skills > "${outDir}/mcp.out" 2>"${outDir}/mcp.err"
+echo "$AGENT_RUN_TOKEN" > "${outDir}/token"
+echo '{"type":"result","result":"ok"}'
+`);
+}
+
+function baseOpts(outDir, bin) {
+  return {
+    engine: 'claude', taskId: `alice-${Date.now()}`, chatId: '42', thinkingStart: Date.now(), msgId: null,
+    BOT_TOKEN: 'srv-bot-token', secrets: { BOT_TOKEN: 'srv-bot-token', DEEPGRAM_API_KEY: 'srv-deepgram' },
+    user: { username: 'alice', workDir: outDir, name: 'Alice' },
+    cleanEnv: { ...SERVER_ENV }, userTokens: { GH_TOKEN: 'alice-gh' }, sessionFilePath: '',
+    restartShutdown: () => false, activeTimers: new Map(),
+    tgEdit: async () => ({ ok: true }), tgSend: async () => ({ ok: true }), outputCallback: null,
+    engineBin: bin, engineArgs: [], cwd: outDir,
+    bridgedServers: { 'trained-skills': { command: process.execPath, args: [fakeMcp], env: { FROM_CONFIG: 'yes' } } },
+  };
+}
+
+function parseEnvFile(file) {
+  return Object.fromEntries(fs.readFileSync(file, 'utf8').split('\n').filter(l => l.includes('=')).map(l => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+}
+
+test('without isolation the engine still gets the service env (sanity: the check below can fail)', async () => {
+  delete process.env.AGENT_ENV_ALLOWLIST;
+  const outDir = fs.mkdtempSync(path.join(tmpRoot, 'legacy-'));
+  const r = await runEngineProcess(baseOpts(outDir, fakeEngine(outDir)));
+  assert.equal(r.exitCode, 0);
+  const env = parseEnvFile(path.join(outDir, 'engine.env'));
+  assert.equal(env.AGENT_SECRET, 'srv-agent-secret');
+  assert.equal(env.AGENT_BOT_TOKEN, 'srv-bot-token');
+});
+
+test('with AGENT_ENV_ALLOWLIST=1 the engine sees no server-only env, MCP keeps it via the bridge, token dies with the run', async () => {
+  process.env.AGENT_ENV_ALLOWLIST = '1';
+  try {
+    const outDir = fs.mkdtempSync(path.join(tmpRoot, 'iso-'));
+    const r = await runEngineProcess(baseOpts(outDir, fakeEngine(outDir)));
+    assert.equal(r.exitCode, 0);
+    assert.equal(r.claudeResult, 'ok');
+
+    const raw = fs.readFileSync(path.join(outDir, 'engine.env'), 'utf8');
+    for (const v of [...SERVER_VALUES, 'srv-bot-token']) assert.ok(!raw.includes(v), `engine env must not contain ${v}`);
+    const env = parseEnvFile(path.join(outDir, 'engine.env'));
+    assert.equal(env.GH_TOKEN, 'alice-gh', 'current profile token is passed');
+    assert.equal(env.AGENT_USER_ID, 'alice');
+    assert.match(env.AGENT_RUN_TOKEN, /^rt_/);
+    assert.ok(env.AGENT_MCP_BRIDGE_SOCKET);
+
+    const mcp = JSON.parse(fs.readFileSync(path.join(outDir, 'mcp.out'), 'utf8').trim());
+    assert.deepEqual(mcp.result, { serverHasSecret: true, fromConfig: 'yes', runToken: true }, 'MCP server runs with the service env');
+
+    // After the run the token is revoked: the bridge refuses it.
+    const token = fs.readFileSync(path.join(outDir, 'token'), 'utf8').trim();
+    assert.equal(tokens.verifyRunToken(token), null);
+    const reply = await bridgeHandshake(env.AGENT_MCP_BRIDGE_SOCKET, token, 'trained-skills');
+    assert.match(reply, /unauthorized/);
+  } finally {
+    delete process.env.AGENT_ENV_ALLOWLIST;
+  }
+});
+
+function bridgeHandshake(socketPath, token, server) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    const s = net.createConnection(socketPath, () => s.write(JSON.stringify({ token, server }) + '\n'));
+    s.on('data', d => { data += d; });
+    s.on('close', () => resolve(data));
+    s.on('error', reject);
+  });
+}
+
+test('bridge: a valid token only opens servers registered for that run', async () => {
+  const sock = await bridge.ensureBridge(process.env.AGENT_MCP_BRIDGE_DIR);
+  const t = tokens.issueRunToken({ taskId: 'bob-1', username: 'bob' });
+  bridge.registerRun(t, { servers: { 'trained-skills': { command: process.execPath, args: [fakeMcp] } }, env: { PATH: process.env.PATH }, cwd: tmpRoot });
+  try {
+    assert.match(await bridgeHandshake(sock, t, 'hh-skills'), /unauthorized/, 'unknown server id');
+    assert.match(await bridgeHandshake(sock, 'rt_' + 'a'.repeat(64), 'trained-skills'), /unauthorized/, 'unknown token');
+    assert.match(await bridgeHandshake(sock, 'srv-agent-secret', 'trained-skills'), /unauthorized/, 'server secret is not a run token');
+  } finally {
+    bridge.unregisterRun(t);
+    tokens.revokeRunToken(t);
+  }
+});
+
+// ── run-as slots: leasing, gate ACLs, journal recovery ────────────────────────
+
+function fakeCfg(root, users = ['s1', 's2']) {
+  return {
+    ...iso.isolationConfig({ AGENT_RUN_AS_USERS: users.join(','), AGENT_RUN_AS_GROUP: 'ta-agents', AGENT_SERVICE_USER: 'svc' }),
+    slotLockDir: path.join(root, 'slots'), slotWaitMs: 0,
+  };
+}
+
+test('prepareIsolatedRun: exclusive slots, gate opened for one slot only, everything revoked on release', async () => {
+  const home = fs.mkdtempSync(path.join(tmpRoot, 'home-'));
+  const cfg = fakeCfg(home);
+  const calls = [];
+  const exec = (bin, args) => { calls.push([bin, ...args]); };
+  const wdA = path.join(home, 'users', 'alice');
+  const wdB = path.join(home, 'users', 'bob');
+  const sock = path.join(home, 'agent-data', 'agent-bridge', 'b.sock');
+
+  const a = await iso.prepareIsolatedRun(cfg, { workDir: wdA, engine: 'claude', exec, serviceHome: home, reach: [sock] });
+  const b = await iso.prepareIsolatedRun(cfg, { workDir: wdB, engine: 'claude', exec, serviceHome: home, reach: [sock] });
+  assert.notEqual(a.slot, b.slot);
+  await assert.rejects(iso.prepareIsolatedRun(cfg, { workDir: wdA, engine: 'claude', exec, serviceHome: home }), /no free run-as slot/);
+
+  const opened = (slot) => calls.filter(c => c[0] === 'setfacl' && c[1] === '-m' && c[2].startsWith(`u:${slot}:`)).map(c => [c[2], c[3]]);
+  assert.deepEqual(opened(a.slot).filter(([, p]) => p === wdA), [[`u:${a.slot}:rwx`, wdA]]);
+  assert.deepEqual(opened(a.slot).filter(([, p]) => p === wdB), [], 'A slot never gets B gate');
+  for (const d of [path.join(home, 'users'), home, path.join(home, 'agent-data'), path.join(home, 'agent-data', 'agent-bridge')]) {
+    assert.ok(opened(a.slot).some(([e, p]) => e === `u:${a.slot}:x` && p === d), `traverse-only on ${d}`);
+  }
+  assert.ok(calls.some(c => c[0] === 'setfacl' && c[1] === '-x' && c[2] === 'g:ta-agents' && c[3] === wdA), 'group access removed from the gate itself');
+  assert.ok(fs.existsSync(path.join(wdA, iso.GATE_MARKER)));
+  assert.equal(a.env.HOME, path.join(wdA, '.agent-home'));
+  assert.deepEqual(a.spawnArgv('/bin/true', ['x']), ['sudo', ['-n', '-u', a.slot, '--', '/bin/true', 'x']]);
+
+  calls.length = 0;
+  a.release();
+  const revoked = calls.filter(c => c[0] === 'setfacl' && c[1] === '-x').map(c => c[3]);
+  assert.deepEqual(new Set(revoked), new Set(a.aclPaths));
+  assert.ok(calls.some(c => c.includes('pkill')), 'slot processes reaped');
+  assert.ok(!fs.existsSync(iso.journalPath(cfg, a.slot)));
+  b.release();
+});
+
+test('a slot left by an interrupted run is revoked before its next lease', async () => {
+  const home = fs.mkdtempSync(path.join(tmpRoot, 'home-'));
+  const cfg = fakeCfg(home, ['s1']);
+  fs.mkdirSync(cfg.slotLockDir, { recursive: true });
+  // dead holder + journal of what it had opened
+  fs.writeFileSync(path.join(cfg.slotLockDir, 's1.lock'), '999999');
+  fs.writeFileSync(iso.journalPath(cfg, 's1'), JSON.stringify({ pid: 999999, paths: ['/stale/profile'] }));
+  const calls = [];
+  const run = await iso.prepareIsolatedRun(cfg, { workDir: path.join(home, 'users', 'carol'), engine: 'opencode', exec: (b, a) => calls.push([b, ...a]), serviceHome: home });
+  assert.equal(run.slot, 's1');
+  assert.ok(calls.some(c => c[0] === 'setfacl' && c[1] === '-x' && c[2] === 'u:s1' && c[3] === '/stale/profile'));
+  run.release();
+});
+
+test('engine home staging: claude gets an access token via env, never the refresh token file', () => {
+  const svcHome = fs.mkdtempSync(path.join(tmpRoot, 'svc-'));
+  fs.mkdirSync(path.join(svcHome, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(svcHome, '.claude', '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'acc', refreshToken: 'ref' } }));
+  fs.writeFileSync(path.join(svcHome, '.claude', 'settings.json'), '{}');
+  const wd = fs.mkdtempSync(path.join(tmpRoot, 'wd-'));
+  const st = iso.stageEngineHome('claude', wd, { serviceHome: svcHome });
+  assert.equal(st.env.CLAUDE_CODE_OAUTH_TOKEN, 'acc');
+  assert.ok(fs.existsSync(path.join(wd, '.agent-home', '.claude', 'settings.json')));
+  assert.ok(!fs.existsSync(path.join(wd, '.agent-home', '.claude', '.credentials.json')));
+  const all = spawnSync('grep', ['-r', 'ref', path.join(wd, '.agent-home')], { encoding: 'utf8' });
+  assert.equal(all.stdout, '', 'refresh token not staged');
+});
+
+// ── ops script ────────────────────────────────────────────────────────────────
+
+test('ops script: dry run is the default and changes nothing', () => {
+  const home = fs.mkdtempSync(path.join(tmpRoot, 'ops-'));
+  const script = path.join(__dirname, '..', 'scripts', 'ops', 'agent-isolation-setup.sh');
+  const r = spawnSync('bash', [script, '--service-user', 'svc', '--service-home', home, '--slots', '2', '--skip-sa-review', '--skip-engines'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /DRY RUN/);
+  assert.match(r.stdout, /\[dry-run\] useradd .*ta-agent-2/);
+  assert.match(r.stdout, /169\.254\.0\.0\/16 -j REJECT/);
+  assert.match(r.stdout, /AGENT_RUN_AS_USERS=ta-agent-1,ta-agent-2/);
+  assert.deepEqual(fs.readdirSync(home), [], 'nothing created');
+  const bad = spawnSync('bash', [script, '--service-user', 'svc', '--apply'], { encoding: 'utf8' });
+  if (process.getuid && process.getuid() !== 0) assert.notEqual(bad.status, 0, '--apply refuses without root');
+});
+
+test.after(async () => {
+  await bridge.closeBridge();
+  fs.rmSync(tmpRoot, { recursive: true, force: true });
+});

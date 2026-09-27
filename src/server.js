@@ -22,6 +22,7 @@ const { handleWebRoute } = require('./web-routes');
 const { handleConnect } = require('./handlers/connect');
 const { handleWeb } = require('./handlers/web');
 const { handleInternal } = require('./handlers/internal');
+const { runTokenFromAuthHeader } = require('./agent-run-tokens');
 const { runTask, generateConnectLink, getQuickAnswer, getPendingTasks, clearPendingTask, interruptForRestart, reconcileSoftContinuations, MAX_RESUME_ATTEMPTS } = require('./runner');
 const { runMcpTool } = require('./mcp-action');
 const { computeSkillsList } = require('./capabilities-skills');
@@ -658,6 +659,19 @@ async function main() {
 
     // Call Tips endpoints (/calltips-session, /calltips-tips) are served by hh-skill
     // src/hh-routes.js via handleHhPublic above (#1470).
+
+    // POST /tasks/:taskId/extend-timeout with a run-scoped token (issue #1649): an engine
+    // run may extend only its OWN task. AGENT_SECRET callers use the route further down.
+    if (req.method === 'POST' && /^\/tasks\/[^/]+\/extend-timeout$/.test(url.pathname)) {
+      const scope = runTokenFromAuthHeader(req.headers['authorization']);
+      if (scope) {
+        const taskId = url.pathname.split('/')[2];
+        if (scope.taskId !== taskId) return json(res, 403, { ok: false, error: 'forbidden: run token belongs to another task' });
+        const { extendTaskTimeout } = require('./runner');
+        const result = extendTaskTimeout(taskId);
+        return json(res, result.ok ? 200 : 404, result);
+      }
+    }
 
     // ── Auth: all endpoints require Bearer token ──────────────────────────────
     const auth = req.headers['authorization'] || '';
