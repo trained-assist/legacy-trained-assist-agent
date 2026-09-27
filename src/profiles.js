@@ -52,8 +52,9 @@ function setEngine(workDir, engine, chatId) {
   return clean;
 }
 
-// Which OpenCode model profile (max|value|free|russian — each a ladder of models per role, see
-// src/opencode-ladder.js, issue #1061) this profile's opencode tasks use. Profile-scoped only
+// Which OpenCode model profile (deepseek|doctor|free|max|value|russian — each mapped to an
+// llm-ladder worker ladder, see src/opencode-ladder-provider.js, issue #1687) this profile's
+// opencode tasks use. Profile-scoped only
 // (no per-chat level, unlike getEngine) — simplest fix that still satisfies "never shared across
 // users": each profile already maps 1:1 to a VM user, so this alone stops the old behaviour of
 // overwriting one machine-wide ~/.config/opencode/opencode.json for every profile on the box.
@@ -61,9 +62,8 @@ function setEngine(workDir, engine, chatId) {
 // instead of via a shared file.
 function getOcProfile(workDir) {
   const p = load(workDir);
-  // Default: the logical "deepseek" profile → opencode-go/deepseek-v4.1-flash (owner 2026-09-27:
-  // "стандартный опенкод на дипсик 4.1 флеш"). `max` was the old default; its paid OpenRouter
-  // last rung is what burned the OpenRouter balance.
+  // Default: the "deepseek" profile → the worker's deepseek ladder (owner 2026-09-27:
+  // "стандартный опенкод на дипсик 4.1 флеш").
   // deepseek-go / deepseek-openrouter were the two halves of the removed VM-wide toggle
   // (2026-09-27) — both now mean the single deepseek ladder (Go first, OpenRouter last rung).
   if (!p.ocProfile || p.ocProfile === 'deepseek-go' || p.ocProfile === 'deepseek-openrouter') return 'deepseek';

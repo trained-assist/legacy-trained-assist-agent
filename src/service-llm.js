@@ -112,4 +112,4 @@ async function serviceText({ system, user, ...rest }) {
   return r ? r.content : null;
 }
 
-module.exports = { serviceChat, serviceJson, serviceText, available, LADDER };
+module.exports = { serviceChat, serviceJson, serviceText, available, LADDER, LADDER_URL, ladderToken: _ladderToken };

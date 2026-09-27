@@ -3,7 +3,7 @@
 //
 // Unifies the two taxonomies that already existed split across engines:
 //   auth-flag.js       — 2 classes (AUTH_INVALID, QUOTA_EXCEEDED), all engines
-//   opencode-ladder.js — 3 classes (config, quota, context), OpenCode only
+//   opencode-ladder.js — 3 classes (config, quota, context), OpenCode only (removed in #1687)
 // into the fixed FAILURE_CLASSES enum from failure-taxonomy.js, covering Claude/Codex/OpenCode
 // alike. Does NOT replace either module — both keep their own state files (auth flag, ladder
 // exhaustion) and callers; this gives a single "what happened" answer callers can share instead

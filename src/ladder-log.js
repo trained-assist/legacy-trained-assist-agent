@@ -1,28 +1,23 @@
 'use strict';
 
 // Ladder observability log (owner 2026-09-27: «писать логи какая по счёту модель вызвалась,
-// дошло ли до платной, и отдельно — про лимиты, если столкнёмся»).
+// дошло ли до платной»).
 //
-// Two append-only JSONL files, one writer for every ladder in the process:
-//   calls.jsonl  — one line per ladder call: which rung (1-based) answered, of how many,
-//                  its billing tier, whether the call reached a PAID rung, every attempt.
-//                  Written by the runner's OpenCode ladder (src/runner/index.js). (The free-ladder
-//                  gateway moved to the trained-assist-llm-ladder worker, 2026-09-27.)
-//   limits.jsonl — SEPARATE file for limit hits: 429 rate limits, daily/free quotas, credits
-//                  exhausted, auth/config dead ends. Fed from the single choke point
-//                  model-health.recordFailure (non-transient classes), so no ladder can hit a
-//                  limit silently.
+// calls.jsonl — one line per OpenCode run (src/runner/index.js): which llm-ladder worker ladder and
+// role ran (`ladder/<ladder>:<role>`) and the outcome. Rung order, failover, per-model health, Go
+// key rotation and limit hits are the worker's (trained-assist-llm-ladder, issue #1687) — its own
+// log / `x-ladder-model` header says which rung served. A direct (non-ladder) model is logged with
+// its billing tier.
 //
 // Tier (billing) of a model key:
+//   ladder       — ladder/* (decided per call inside the worker)
 //   subscription — opencode-go/* (flat paid subscription, no marginal cost per call)
 //   free         — openrouter/*:free
-//   paid         — everything else (per-token billed: openrouter non-:free, gigachat, …)
-// reachedPaid = at least one attempted rung was tier 'paid' (money may have been spent).
+//   paid         — everything else (per-token billed)
+// reachedPaid = at least one attempted model was tier 'paid' (money may have been spent).
 //
-// Dir: LADDER_LOG_DIR, else a ladder-log/ folder NEXT TO the model-health state file
-// (~/.config/opencode/ladder-log in prod) — tests that point OPENCODE_MODEL_HEALTH_FILE at a tmpdir
-// therefore never write into the production log. Size-capped rotation (one .1 file)
-// so the log never grows unbounded. A logging error never breaks a model call.
+// Dir: LADDER_LOG_DIR, else ~/.config/opencode/ladder-log. Size-capped rotation (one .1 file) so
+// the log never grows unbounded. A logging error never breaks a model call.
 
 const fs = require('fs');
 const path = require('path');
@@ -31,33 +26,17 @@ const os = require('os');
 const MAX_BYTES = 5 * 1024 * 1024;
 
 function logDir() {
-  if (process.env.LADDER_LOG_DIR) return process.env.LADDER_LOG_DIR;
-  const healthFile = process.env.OPENCODE_MODEL_HEALTH_FILE ||
-    path.join(os.homedir(), '.config', 'opencode', 'model-health.json');
-  return path.join(path.dirname(healthFile), 'ladder-log');
+  return process.env.LADDER_LOG_DIR || path.join(os.homedir(), '.config', 'opencode', 'ladder-log');
 }
 function callsFile() { return path.join(logDir(), 'calls.jsonl'); }
-function limitsFile() { return path.join(logDir(), 'limits.jsonl'); }
 
 function modelTier(key, explicit) {
   if (explicit) return explicit;
   const k = String(key || '');
+  if (k.startsWith('ladder/')) return 'ladder';
   if (k.startsWith('opencode-go/')) return 'subscription';
   if (k.startsWith('openrouter/') && k.endsWith(':free')) return 'free';
   return 'paid';
-}
-
-// Limit kind from the error text — what exactly we ran into.
-function limitKind(errorText, cls) {
-  const t = String(errorText || '');
-  if (/free-models-per-day|per[- ]day|daily|RPD|quota/i.test(t)) return 'daily_quota';
-  if (/\b402\b|insufficient|credits?|balance|payment/i.test(t)) return 'credits';
-  if (/\b429\b|rate[- ]?limit|too many requests|RPM/i.test(t)) return 'rate_limit';
-  if (/\b40[13]\b|unauthori[sz]ed|forbidden|invalid.*key/i.test(t)) return 'auth';
-  if (/\b404\b|not found|gone from|catalog/i.test(t)) return 'model_gone';
-  if (cls === 'config') return 'config';
-  if (cls === 'force') return 'forced_advance';
-  return 'other';
 }
 
 function append(file, obj) {
@@ -73,7 +52,6 @@ function append(file, obj) {
 }
 
 // evt: { source, ladder, attempts:[{model, rung, outcome, error?}], outcome, latencyMs, ... }
-// rung/rungsTotal are 1-based positions in the configured ladder.
 function logCall(evt) {
   const attempts = (evt.attempts || []).map(a => ({ ...a, tier: modelTier(a.model, a.tier) }));
   const winner = attempts.find(a => a.outcome === 'ok') || null;
@@ -93,26 +71,8 @@ function logCall(evt) {
   };
   append(callsFile(), line);
   if (line.reachedPaid) {
-    console.warn(`[ladder-log] PAID rung reached: ${line.source}/${line.ladder} → ${attempts.filter(a => a.tier === 'paid').map(a => a.model).join(',')}`);
+    console.warn(`[ladder-log] PAID model reached: ${line.source}/${line.ladder} → ${attempts.filter(a => a.tier === 'paid').map(a => a.model).join(',')}`);
   }
-  return line;
-}
-
-// evt: { source, model, class, status?, retryAfterMs?, errorText? }
-function logLimit(evt) {
-  const line = {
-    ts: new Date().toISOString(),
-    source: evt.source || 'unknown',
-    model: evt.model || null,
-    tier: modelTier(evt.model),
-    kind: evt.kind || limitKind(evt.errorText, evt.class),
-    class: evt.class || null,
-    ...(evt.status != null ? { status: evt.status } : {}),
-    ...(Number.isFinite(evt.retryAfterMs) ? { retryAfterMs: evt.retryAfterMs } : {}),
-    ...(evt.errorText ? { error: String(evt.errorText).slice(0, 300) } : {}),
-  };
-  append(limitsFile(), line);
-  console.warn(`[ladder-log] LIMIT ${line.kind} on ${line.model} (${line.source})`);
   return line;
 }
 
@@ -129,40 +89,30 @@ function readJsonl(file) {
   return out;
 }
 
-// Aggregate for the last `sinceMs` (default 24h): rung distribution, paid share, limit hits.
+// Aggregate for the last `sinceMs` (default 24h): per-ladder counts, tiers, paid share.
 function summary(sinceMs = 24 * 3600 * 1000, now = Date.now()) {
   const cutoff = now - sinceMs;
-  const inWindow = r => Date.parse(r.ts) >= cutoff;
-  const calls = readJsonl(callsFile()).filter(inWindow);
-  const limits = readJsonl(limitsFile()).filter(inWindow);
-  const byRung = {};
+  const calls = readJsonl(callsFile()).filter(r => Date.parse(r.ts) >= cutoff);
+  const byLadder = {};
   const byTier = {};
   let failed = 0;
   let paid = 0;
   for (const c of calls) {
     if (c.outcome !== 'ok') failed++;
     if (c.reachedPaid) paid++;
-    const k = c.rung == null ? 'none' : `${c.source}#${c.rung}`;
-    byRung[k] = (byRung[k] || 0) + 1;
+    const k = `${c.source}#${c.ladder || 'none'}`;
+    byLadder[k] = (byLadder[k] || 0) + 1;
     if (c.tier) byTier[c.tier] = (byTier[c.tier] || 0) + 1;
-  }
-  const limitsByModel = {};
-  for (const l of limits) {
-    const k = `${l.model} ${l.kind}`;
-    limitsByModel[k] = (limitsByModel[k] || 0) + 1;
   }
   return {
     windowHours: Math.round(sinceMs / 3600000),
     calls: calls.length,
     failed,
     reachedPaid: paid,
-    byRung,
+    byLadder,
     byTier,
-    limits: limits.length,
-    limitsByModel,
-    lastLimit: limits[limits.length - 1] || null,
-    files: { calls: callsFile(), limits: limitsFile() },
+    files: { calls: callsFile() },
   };
 }
 
-module.exports = { logDir, callsFile, limitsFile, modelTier, limitKind, logCall, logLimit, summary };
+module.exports = { logDir, callsFile, modelTier, logCall, summary };

@@ -7,7 +7,8 @@
 // onto a concrete move against a durable task item, using ONLY mechanisms that
 // already exist —
 //   • re-pend + tier escalation          → retryFailedItem (here)
-//   • the OpenCode model ladder          → opencode-ladder.forceAdvance
+//   • the OpenCode model ladder          → the llm-ladder worker (#1687) — rung
+//     failover happens there, so a provider/model action here is a plain re-pend
 //   • the per-step engine/level resolver → playbook-executor.resolveStepExecution
 //     (bumping current_model_level walks bachelor→master→doctor and, at doctor,
 //      crosses to the Claude engine — that IS the existing engine-fallback path)
@@ -30,10 +31,8 @@ const QUALITY_MAX_ATTEMPTS = 3;
 
 // Which policy action re-pends the same target (the pre-P3c path).
 const RETRY_ACTIONS = new Set(['retry_same', 'conservative_retry', 'execution_retry', 'tool_specific_retry']);
-// Which action walks the model ladder one rung (and the engine at the top).
+// Which action bumps the step's model level (bachelor→master→doctor; the engine at the top).
 const MODEL_ACTIONS = new Set(['next_model', 'next_model_or_provider', 'compact_or_larger_context_model']);
-// Which action switches provider/engine rather than model.
-const PROVIDER_ACTIONS = new Set(['next_provider', 'alternate_provider', 'fallback', 'free_fallback']);
 
 // A failed item retries until its declared `max_attempts` are spent (P3a: the
 // per-step budget the compiler writes into the item). Tier escalation still
@@ -62,41 +61,12 @@ function _planMap(task) {
   return planLevelMap(_policy(task));
 }
 
-// Resolve through the PLAN's level map — otherwise a rung advance would move the
-// ladder of the default profile, not the one the step actually ran on.
+// Resolve through the PLAN's level map — the step's engine/fallbacks as the executor sees them.
 function _step(item, task) {
   return task && task.acceptance_criteria_json
     // same routing as the executor: a plan with its own level map ignores the role map
     ? resolveStepExecution(item, { levelMap: _planMap(task), useRoleMap: !(_policy(task) || {}).level_map })
     : { engine: 'claude', ocProfile: null, ocRole: null };
-}
-
-// Advance one rung of the OpenCode ladder for the role the step actually uses.
-// Mirrors runner/index.js forceOpencodeAlternation: forceAdvance() the model
-// currently filling that role. Lazy require so tests inject a fake and never
-// touch the real ladder-state file.
-function _advanceRung(item, task, ladder) {
-  const step = _step(item, task);
-  if (step.engine !== 'opencode' || !step.ocProfile) return null;
-  const lib = ladder || require('./opencode-ladder');
-  try {
-    const overrides = lib.buildOcProfileOverrides(step.ocProfile);
-    const role = step.ocRole || 'build';
-    const model = overrides && overrides.agent && overrides.agent[role] && overrides.agent[role].model;
-    if (!model) return null;
-    lib.forceAdvance(step.ocProfile, role, model);
-    return `${step.ocProfile}/${model}`;
-  } catch (e) {
-    console.warn('[durable-recovery] advanceRung:', e.message);
-    return null;
-  }
-}
-
-// Provider switch for a step = advancing a rung: every OpenCode profile (deepseek included,
-// whose ladder ends on OpenRouter) carries a per-role ladder. Claude is the strongest tier — no
-// alternative provider exists (SESSION-CRASH-RETRY-SPEC.md §2.4), so it just re-pends.
-function _switchProvider(item, task, ladder) {
-  return _advanceRung(item, task, ladder);
 }
 
 /**
@@ -111,7 +81,6 @@ function _switchProvider(item, task, ladder) {
  * @param {string}   [o.errorText]
  * @param {Function} [o.classifier]   sync/async (text, opts) → {class}
  * @param {number}   [o.budget]       recovery-step budget (default DEFAULT_RECOVERY_BUDGET)
- * @param {object}   [o.ladder]       injectable opencode-ladder (tests)
  * @param {boolean}  [o.escalate=true]
  * @param {number}   [o.retryDelayMs=0]
  * @returns {Promise<{recovered:boolean,failureClass:string,action:string|null,
@@ -120,7 +89,7 @@ function _switchProvider(item, task, ladder) {
 async function recoverDurableItem({
   store, task, itemId, errorText = '',
   classifier = classifyDeterministic, budget = DEFAULT_RECOVERY_BUDGET,
-  ladder = null, escalate = true, retryDelayMs = 0, quality = false,
+  escalate = true, retryDelayMs = 0, quality = false,
 } = {}) {
   const profileId = task.profile_id;
   const item = store.getTaskItem(itemId) || { id: itemId, attempt_count: 0, max_attempts: 1 };
@@ -193,18 +162,14 @@ async function recoverDurableItem({
 
   if (MODEL_ACTIONS.has(action)) {
     store.bumpModelLevel(itemId, profileId);
-    const advanced = _advanceRung(item, task, ladder);
-    if (advanced) move = `${action}:${advanced}`;
-  } else if (PROVIDER_ACTIONS.has(action)) {
-    const switched = _switchProvider(item, task, ladder);
-    if (switched) move = `${action}:${switched}`;
   } else if (action === 'backoff_retry_same') {
     const d = getRetryDelayMs(spent + 1);
     if (d == null) return terminal('backoff-exhausted');
     delayMs = d;
   }
-  // RETRY_ACTIONS (and any action this executor doesn't recognize) fall through
-  // to a plain re-pend — the safest bounded move.
+  // RETRY_ACTIONS, provider actions (switching the OpenCode rung/provider is the llm-ladder
+  // worker's job, #1687) and any unrecognized action fall through to a plain re-pend — the
+  // safest bounded move.
 
   const r = retryFailedItem(store, itemId, profileId, { retryDelayMs: delayMs, escalate });
   if (!r.retried) return terminal('attempts-exhausted');

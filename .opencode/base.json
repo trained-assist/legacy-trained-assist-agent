@@ -10,22 +10,6 @@
       ]
     }
   },
-  "provider": {
-    "gigachat": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "GigaChat",
-      "env": ["GIGACHAT_TOKEN"],
-      "options": {
-        "baseURL": "https://gigachat.devices.sberbank.ru/api/v1",
-        "apiKey": "${GIGACHAT_TOKEN}"
-      },
-      "models": {
-        "GigaChat-Ultra": { "name": "GigaChat Ultra" },
-        "GigaChat-Pro":   { "name": "GigaChat Pro"   },
-        "GigaChat-Max":   { "name": "GigaChat Max"   }
-      }
-    }
-  },
   "agent": {
     "review": {
       "mode": "subagent",

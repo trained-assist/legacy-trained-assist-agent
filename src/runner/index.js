@@ -13,9 +13,8 @@ const { getCurrentSessionId, setCurrentSessionId } = require('../session-store')
 const projects = require('../projects');
 const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag } = require('../auth-flag');
 const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice } = require('../engine-crash-policy');
-const opencodeLadder = require('../opencode-ladder');
-const opencodeGoKeys = require('../opencode-go-keys');
-const { MAX_RETRIES: MAX_INCOMPLETE_RETRIES, getRetryDelayMs, isTestMode } = require('../retry-policy');
+const ocLadder = require('../opencode-ladder-provider');
+const { MAX_RETRIES: MAX_INCOMPLETE_RETRIES, getRetryDelayMs } = require('../retry-policy');
 const { recordUsage } = require('../usage-store');
 const promptAudit = require('../prompt-audit');
 const { classifyDeterministic: classifyFailureDeterministic } = require('../failure-classifier');
@@ -184,10 +183,10 @@ const MAX_QUICK_RETRIES = 1; // cap so a repeatable crash doesn't loop forever
 function isProviderFault(text) {
   const t = String(text || '');
   if (!t) return false;
-  if (opencodeGoKeys.isDeadKeyError(t)) return true;
-  if (/usage limit|purchase more credits|rate.?limit|too many requests|\b429\b|\b5\d\d\b|overloaded|upstream request failed/i.test(t)) return true;
-  const verdict = opencodeLadder.classifyError(t);
-  return !!verdict && verdict.class !== 'context';
+  if (/invalid credential|invalid api key|unauthori[sz]ed|\b401\b/i.test(t)) return true;
+  if (/usage limit|purchase more credits|rate.?limit|too many requests|\b429\b|\b5\d\d\b|overloaded|upstream request failed|unexpected server error|bad\s*request/i.test(t)) return true;
+  const workerFailure = ocLadder.classifyWorkerFailure(t);
+  return !!workerFailure && workerFailure !== 'context';
 }
 const MAX_RESUME_ATTEMPTS = 3; // cap on auto-retries for a task resumed after a server restart — a
 // restart is our fault, not the user's, so it's worth retrying automatically, but bounded: without
@@ -1087,15 +1086,8 @@ function buildContextCard(username, workDir, chatId, actualModel = null, threadI
     // ~/.config/opencode/.current-profile file — that file is machine-wide and went stale
     // once #1045 scoped /oc_* switching to each profile individually.
     const ocProfile = profiles.getOcProfile(workDir);
-    const ocProfileResolved = ocProfile;
-    let ocModel = process.env.OPENCODE_MODEL || null;
-    try {
-      // Resolve through the ladder (issue #1061 Фаза 1-2), not a raw ocCfg.model read —
-      // profiles migrated to the `ladder` shape have no top-level `model`, so reading it
-      // directly would silently blank the pin's model line for every non-legacy profile.
-      const resolved = opencodeLadder.buildOcProfileOverrides(ocProfileResolved);
-      if (resolved.model) ocModel = resolved.model;
-    } catch (e) { console.warn('[runner] oc pin model:', e.message); }
+    // The llm-ladder worker model id this profile runs on (issue #1687), e.g. ladder/deepseek:build.
+    const ocModel = process.env.OPENCODE_MODEL || ocLadder.modelFor(ocProfile);
     lines.push(`⚙️ OpenCode · ${ocProfile}${ocModel ? ` (${ocModel})` : ''}`);
   } else if (eng === 'codex') {
     lines.push('⚙️ Codex CLI');
@@ -1419,30 +1411,6 @@ function buildOcCapabilitiesBlock(secrets) {
   return lines.join('\n');
 }
 
-// Provider alternation for the unified crash-retry paths below (resume-after-restart and the
-// generic mid-task incomplete retry) — issue: owner asked for "another LLM provider on retry,
-// alternating" in addition to the plain backoff, not just on the existing quota/config-classified
-// path (opencodeLadder.recordFailure / opencodeGoKeys.noteFailure further down, which only
-// fire when the error text matches a known quota/rate-limit pattern). A bare crash mid-task tells
-// us nothing about which provider is at fault, so this alternates blind on every unified retry
-// attempt, reusing the same ladder/toggle state the classified path already writes to — no new
-// state file. claude/codex have no alternative provider today (real scope boundary, not an
-// oversight — see SESSION-CRASH-RETRY-SPEC.md §2.4), so this is a no-op for those engines.
-//
-// `escalate` (default true) false means "this is an early same-model retry, don't move off the
-// rung yet" — the caller passes false for the first attempts of a transient per-rung fault
-// ("Bad Request") so the SAME model is retried up to MAX_INCOMPLETE_RETRIES times before the
-// alternative is tried (owner 2026-09-26: "три ретрая не сработали → соседняя модель").
-function forceOpencodeAlternation({ engine, ocProfileName, ocProfileOverrides, ocRole = 'build', escalate = true }) {
-  if (!escalate || engine !== 'opencode' || !ocProfileName) return null;
-  // Advance to the next rung of the role this run actually used (P3b, default `build`). Every
-  // profile — deepseek included — carries a real ladder, so this is the only lever needed.
-  const model = ocProfileOverrides?.agent?.[ocRole]?.model || ocProfileOverrides?.model;
-  if (!model) return null;
-  opencodeLadder.forceAdvance(ocProfileName, ocRole, model);
-  return `модель «${model}» отложена — пробую следующую ступень лестницы`;
-}
-
 // Failure Event recording (issue #1175, PR #1179 follow-up) — Phase A: observational only. Every
 // branch of the crash/retry maze below calls this right before it acts, so execution-history.js
 // builds a real per-executionId attempt chain from live production failures instead of unit-test
@@ -1456,18 +1424,18 @@ function forceOpencodeAlternation({ engine, ocProfileName, ocProfileOverrides, o
 // and stays opt-in via failure-classifier.classify() for callers who need it.
 // Never throws: classifyDeterministic is pure, and execution-history's own recordAttempt already
 // catches+warns internally rather than letting a history-write failure take down the retry itself.
-// Ladder call log (src/ladder-log.js): one line per OpenCode run — which rung of the profile's
-// role ladder ran (1-based), its billing tier, whether it was a paid rung. Never throws.
+// Ladder call log (src/ladder-log.js): one line per OpenCode run — which worker ladder/role ran
+// and the outcome. Rung order, failover and the served rung are the llm-ladder worker's (#1687).
+// Never throws.
 function _logOcLadderCall(ocProfileName, ocRole, model, outcome, errorText) {
   try {
-    const pos = opencodeLadder.rungPosition(ocProfileName, ocRole, model);
     require('../ladder-log').logCall({
       source: `runner:${ocProfileName}`,
-      ladder: pos?.ladder || ocProfileName,
-      rungsTotal: pos?.rungsTotal ?? null,
+      ladder: ocLadder.ladderFor(ocProfileName) || ocProfileName,
+      rungsTotal: null,
       outcome,
       attempts: [{
-        model, rung: pos?.rung ?? null, outcome,
+        model, rung: null, outcome,
         ...(errorText ? { error: String(errorText).slice(0, 200) } : {}),
       }],
       extra: { role: ocRole },
@@ -1595,7 +1563,7 @@ function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task,
     .catch(e => { console.warn('[gtd] schedule:', e.message); return null; });
 }
 
-async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, ladderAttempt = 0, contextSkipModels = [], resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null }) {
+async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null }) {
   // Strip @botname suffix from slash commands once at intake so all INTENT regexes match cleanly.
   let task = rawTask ? rawTask.replace(/^(\/\S+?)@\S+/, '$1') : rawTask;
   // Явный режим ответа из inline-кнопки: 'deep' (⏻ проработка, sticky) | 'clarify'
@@ -2115,17 +2083,16 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     ocRole: forcedOcRole || null,
   });
 
-  // Per-profile OpenCode model ladder (max|value|free|russian), resolved to the flat
-  // {model, agent: {role: {model}}} shape and folded into the per-invocation OPENCODE_CONFIG in
-  // runEngineProcess/writeOpencodeMcpConfig — see src/opencode-ladder.js (issue #1061 Фаза 1-2).
-  // ocProfileName is also used below to report a quota/rate-limit failure back to the resolver
-  // so the next attempt degrades to the ladder's next rung instead of repeating the same model.
+  // Per-profile OpenCode model routing: the profile maps to an llm-ladder worker ladder
+  // (src/opencode-ladder-provider.js, issue #1687) and the `ladder` provider + per-role model ids
+  // are folded into the per-invocation OPENCODE_CONFIG in runEngineProcess/writeOpencodeMcpConfig.
+  // Failover between rungs happens inside the worker — nothing to degrade here.
   let ocProfileOverrides = null;
   let ocProfileName = null;
   // P3b: the ladder role for this run. A durable step pins it from its contract
   // (researcher→explore, reviewer→review); every other caller keeps the historical
   // `build` role. `ocActiveModel` is that role's resolved rung (falling back to
-  // build) — the model failure reporting / provider alternation must key on.
+  // build) — the model failure reporting keys on.
   const ocRole = forcedOcRole || 'build';
   let ocActiveModel = null;
   if (engine === 'opencode') {
@@ -2133,12 +2100,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       // P3b: a durable step may pin an explicit OpenCode profile from its contract
       // (bachelor/master → value/max). Otherwise the profile's own choice wins.
       ocProfileName = forcedOcProfile || profiles.getOcProfile(user.workDir);
-      ocProfileOverrides = opencodeLadder.buildOcProfileOverrides(ocProfileName, undefined, { skipModels: contextSkipModels });
+      ocProfileOverrides = ocLadder.buildOcProfileOverrides(ocProfileName);
       ocActiveModel = ocProfileOverrides?.agent?.[ocRole]?.model || ocProfileOverrides?.model || null;
-      // Фаза 4 (issue #1061): the ladder can degrade between two turns of the SAME
-      // session (a different task exhausted a rung in the meantime) — that's not the
-      // intra-task retry loop below (which already messages via degradeMsg), it's a
-      // silent swap. Compare against the model recorded for this session's last turn.
+      // The profile (and so the worker ladder) can change between two turns of the SAME
+      // session. Compare against the model recorded for this session's last turn.
       // This is internals traceability only: the earlier user-facing «Модель сменилась»
       // chat message was debug noise and was removed on owner request (2026-09-27) — log
       // it internally, never message the chat or append it to the session transcript.
@@ -2446,15 +2411,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // that can re-fire it — bounded by MAX_RESUME_ATTEMPTS so a genuinely broken resume
     // can't loop forever across restarts.
     if (resumedAfterRestart && resumeAttempts < MAX_RESUME_ATTEMPTS && !restartShutdown) {
-      // Provider fault on the shared Go gateway: degrade it (rotate key / flip) BEFORE retrying,
-      // otherwise every resume attempt hits the same dead key (2026-09-26: 3/3 burned on one key).
-      let providerNote = '';
-      if (providerFault && engine === 'opencode') {
-        try { if (opencodeGoKeys.noteFailure(ocActiveModel, resumeErrText)?.rotated) providerNote = 'шлюз Go переключён на рабочий ключ'; } catch {}
-      }
       if (providerFault) console.warn(`[${taskId}] resume: provider fault — keeping engine session ${resumeSessionId || '-'} (${resumeErrText.slice(0, 200)})`);
-      const altNote = forceOpencodeAlternation({ engine, ocProfileName, ocProfileOverrides, ocRole });
-      const retryMsg = `🔄 Восстановление после перезапуска сервера не удалось (${reason}) — пробую ещё раз (${resumeAttempts + 1}/${MAX_RESUME_ATTEMPTS})${providerNote ? `, ${providerNote}` : ''}${altNote ? `, ${altNote}` : ''}…`;
+      const retryMsg = `🔄 Восстановление после перезапуска сервера не удалось (${reason}) — пробую ещё раз (${resumeAttempts + 1}/${MAX_RESUME_ATTEMPTS})…`;
       if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, retryMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, retryMsg, threadId));
       else await tgSend(BOT_TOKEN, chatId, retryMsg, threadId);
       _recordFailureAttempt(executionId, {
@@ -2485,211 +2443,40 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     console.warn(`[${taskId}] incomplete engine=${engine} exit=${exitCode} signal=${processSignal || '-'} terminal=${terminalSuccess} resumedAfterRestart=${resumedAfterRestart} resumeAttempts=${resumeAttempts} incompleteRetryAttempts=${incompleteRetryAttempts}`);
   }
 
-  // OpenCode-only: a quota/rate-limit or one-time-config error on the CURRENT ladder rung
-  // (issue #1061 Фаза 2) — checked before isAuthError below, which would otherwise treat the
-  // same "rate limit"/"quota exceeded" text as a total auth loss and stop the engine instead of
-  // just moving to the next model. Quota-class errors mark the rung exhausted (with TTL) and
-  // retry this same task on OpenCode again, capped at MAX_LADDER_ATTEMPTS so a ladder that
-  // rate-limits all the way round doesn't loop forever. Config-class errors (one-time account
-  // setup, e.g. Go "Global regions" not enabled) mark the rung exhausted with no TTL and alert
-  // the operator immediately instead — retrying other rungs won't fix a config problem, and
-  // doing so anyway would burn through the whole ladder on every task until a human intervenes.
-  // codexErrorMsg (the turn.failed/error event's own message) is the most reliable source of
-  // the real provider error text — e.g. a 429/rate-limit body. Without it here, a crash that
-  // misses the quick-crash branch above falls back to our own generic "Работа прервана" text,
-  // which never mentions "rate limit"/"429"/"quota" — so classifyError() below always misses and
-  // the ladder never degrades, even though the raw error was a clean quota hit.
+  // OpenCode-only: a failure on the llm-ladder worker side (issue #1687). The worker already walked
+  // every rung of the ladder (failover, per-model health, Go key rotation, paid tail) before
+  // answering, so there is nothing left to try in-process — no local fallback ladder. The run
+  // fails with a clear category instead:
+  //   worker_unreachable — the worker never served the call (network / rejected token) → BLOCKED
+  //   ladder_exhausted   — the worker answered 502 ladder_error, every rung failed      → BLOCKED
+  //   context            — the prompt did not fit the model; ask to split the task     → FAILED
+  // Checked before isAuthError below, which would otherwise treat "401"/"rate limit" text as a
+  // total engine auth loss. codexErrorMsg (the error event's own message) is the most reliable
+  // source of the real provider error text.
   const preLadderText = codexErrorMsg || claudeResult || fullOutput.text || result;
 
-  // Set only when the current rung failed with a transient per-model fault ("Bad Request"): the
-  // shared per-model backoff (issue #1467) then decides how long to wait before retrying the SAME
-  // model (15s → 30s → 60s …), instead of the generic crash backoff in the retry branch below.
-  let transientRetryDelayMs = null;
-
-  // OpenCode Go key fault (quota hit or rejected key) on any opencode-go/* rung: the Go quota is per
-  // key and account-wide across models, so the next Go rung would fail the same way. First rotate
-  // to a spare key (opencode-go-keys.js) and retry on Go. Only when every key is parked, skip ALL
-  // Go rungs of this ladder until the earliest key heals — the ladder then serves its OpenRouter
-  // last rung, and the Go rungs come back by themselves when the skip lapses. There is no VM-wide
-  // go/openrouter mode (removed 2026-09-27).
-  //
-  // Every OTHER per-rung fault ("Bad Request", a 5xx, a bare crash) falls through to the generic
-  // ladder block below, which retries / advances rung by rung.
   // Call log for every failed OpenCode run, before any branch below can return early.
   if (engine === 'opencode' && ocProfileName && ocActiveModel) {
     _logOcLadderCall(ocProfileName, ocRole, ocActiveModel, 'error', preLadderText);
   }
-  const goKeyFault = engine === 'opencode' && ocProfileName ? opencodeGoKeys.noteFailure(ocActiveModel, preLadderText) : null;
-  if (goKeyFault) {
-    const failedModel = ocActiveModel;
-    try {
-      // Go key quota / dead key — a limit hit that bypasses model-health, so log it explicitly.
-      require('../ladder-log').logLimit({
-        source: `runner:${ocProfileName}`, model: failedModel, class: 'go_key',
-        errorText: preLadderText,
-      });
-    } catch { /* never break the failure path */ }
-    let parked = [];
-    if (!goKeyFault.rotated) parked = opencodeLadder.parkProvider(ocProfileName, 'opencode-go/', goKeyFault.retryAt, preLadderText);
-    if (ladderAttempt < opencodeLadder.MAX_LADDER_ATTEMPTS) {
-      const backInMin = Math.max(1, Math.round((goKeyFault.retryAt - Date.now()) / 60000));
-      const switchMsg = goKeyFault.rotated
-        ? (goKeyFault.dead
-          ? `⚠️ OpenCode Go (${failedModel}): ключ отклонён шлюзом (Invalid credential) — переключаюсь на резервный ключ Go, пробую снова.`
-          : `⚠️ OpenCode Go (${failedModel}) исчерпал лимит ключа — переключаюсь на резервный ключ Go, пробую снова.`)
-        : `⚠️ Все ключи OpenCode Go на лимите — ${parked.length ? 'временно иду по запасной ступени лестницы (OpenRouter)' : 'пробую снова'}. Go вернётся сам примерно через ${backInMin} мин.`;
-      if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, switchMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, switchMsg, threadId));
-      else await tgSend(BOT_TOKEN, chatId, switchMsg, threadId);
-      if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, switchMsg);
-      _recordFailureAttempt(executionId, {
-        taskId, projectId, sessionId: activeSessionId, webExactSession, engine: 'opencode', model: failedModel,
-        errorText: preLadderText, action: goKeyFault.rotated ? 'go_key_rotation' : 'go_keys_parked',
-      });
-      const queuedRetry = runTask({
-        initiatedAt, threadId,
-        taskId: `${user.username}-${Date.now()}`,
-        user,
-        task,
-        context,
-        sessionId: activeSessionId, webExactSession,
-        forceClaude,
-        initialMsgId: msgId,
-        pinnedMsgId,
-        secrets,
-        retryCount,
-        continuationCount, mode, projectId, internalGtd,
-        engine: 'opencode',
-        engineFallbackDone,
-        ladderAttempt: ladderAttempt + 1,
-        executionId,
-      });
-      return { queuedRetry };
-    }
-  }
-
-  if (engine === 'opencode' && ocProfileName) {
-    const verdict = opencodeLadder.recordFailure(ocProfileName, ocRole, ocActiveModel, preLadderText);
-    if (verdict) {
-      // Intermittent per-rung fault ("Bad Request") — the rung is NOT marked exhausted. Leave it
-      // to the generic mid-task retry below, which retries the SAME model (bounded by
-      // MAX_INCOMPLETE_RETRIES = 3) before forceOpencodeAlternation moves the task to the sibling
-      // rung. Only a quota/rate-limit or a context overflow justifies skipping the rung right away.
-      if (verdict.class === 'transient') {
-        // Shared per-model backoff already recorded the failure; carry its retry delay down to the
-        // generic retry branch so the SAME model is retried on that short schedule.
-        if (Number.isFinite(verdict.retryAfterMs)) transientRetryDelayMs = verdict.retryAfterMs;
-        _recordFailureAttempt(executionId, {
-          taskId, projectId, sessionId: activeSessionId, webExactSession, engine: 'opencode', model: verdict.model,
-          errorText: preLadderText, action: 'transient_same_rung_retry',
-        });
-        // fall through to the generic incomplete-retry path below
-      } else {
-      // The request itself didn't fit this rung's context window — try the next rung for THIS
-      // task only (contextSkipModels, not a persisted/shared exhaustion — see recordFailure's
-      // 'context' branch), and once the ladder runs out, say so explicitly instead of silently
-      // retrying the same oversized prompt: the caller should split the request into smaller
-      // pieces rather than resend it as-is.
-      if (verdict.class === 'context') {
-        const nextSkip = [...contextSkipModels, verdict.model];
-        if (ladderAttempt < opencodeLadder.MAX_LADDER_ATTEMPTS) {
-          const contextMsg = `⚠️ Запрос не поместился в контекст модели «${verdict.model}» — пробую следующую ступень лестницы профиля «${ocProfileName}» (это не блокирует модель для других задач).`;
-          if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, contextMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, contextMsg, threadId));
-          else await tgSend(BOT_TOKEN, chatId, contextMsg, threadId);
-          if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, contextMsg);
-          _recordFailureAttempt(executionId, {
-            taskId, projectId, sessionId: activeSessionId, webExactSession, engine: 'opencode', model: verdict.model,
-            errorText: preLadderText, action: 'context_ladder_next_rung',
-          });
-          const queuedRetry = runTask({
-            initiatedAt, threadId,
-            taskId: `${user.username}-${Date.now()}`,
-            user,
-            task,
-            context,
-            sessionId: activeSessionId, webExactSession,
-            forceClaude,
-            initialMsgId: msgId,
-            pinnedMsgId,
-            secrets,
-            retryCount,
-            continuationCount, mode, projectId, internalGtd,
-            engine: 'opencode',
-            engineFallbackDone,
-            ladderAttempt: ladderAttempt + 1,
-            contextSkipModels: nextSkip,
-            executionId,
-          });
-          return { queuedRetry };
-        }
-        const tooBigMsg = `⛔ Запрос слишком большой для всех моделей лестницы профиля «${ocProfileName}» — разбей задачу на более мелкие части и отправь по шагам.`;
-        if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, tooBigMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, tooBigMsg, threadId));
-        else await tgSend(BOT_TOKEN, chatId, tooBigMsg, threadId);
-        if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, tooBigMsg);
-        _recordFailureAttempt(executionId, {
-          taskId, projectId, sessionId: activeSessionId, webExactSession, engine: 'opencode', model: verdict.model,
-          errorText: preLadderText, action: null,
-        });
-        executionHistory.finalizeExecution(executionId, 'FAILED');
-        return tooBigMsg;
-      }
-      if (verdict.class === 'config') {
-        // CONFIG is a one-time account/setup problem, NOT a credential loss — it degrades engine
-        // health (recorded below via _recordFailureAttempt → markEngineFailure) but must never be
-        // reported as auth-invalid (spec §7). The operator alert is the Telegram message below.
-        const configMsg = `⚠️ OpenCode-модель «${verdict.model}» требует ручной настройки аккаунта (не квота — оператор уже уведомлён, автопереключением на другую модель это не чинится).`;
-        if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, configMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, configMsg, threadId));
-        else await tgSend(BOT_TOKEN, chatId, configMsg, threadId);
-        if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, configMsg);
-        _recordFailureAttempt(executionId, {
-          taskId, projectId, sessionId: activeSessionId, webExactSession, engine: 'opencode', model: verdict.model,
-          errorText: preLadderText, action: null,
-        });
-        executionHistory.finalizeExecution(executionId, 'BLOCKED');
-        return configMsg;
-      }
-      if (ladderAttempt < opencodeLadder.MAX_LADDER_ATTEMPTS) {
-        const degradeMsg = `⚠️ Модель «${verdict.model}» исчерпала лимит — пробую следующую ступень лестницы профиля «${ocProfileName}».`;
-        if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, degradeMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, degradeMsg, threadId));
-        else await tgSend(BOT_TOKEN, chatId, degradeMsg, threadId);
-        if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, degradeMsg);
-        _recordFailureAttempt(executionId, {
-          taskId, projectId, sessionId: activeSessionId, webExactSession, engine: 'opencode', model: verdict.model,
-          errorText: preLadderText, action: 'ladder_next_rung',
-        });
-        const queuedRetry = runTask({
-          initiatedAt, threadId,
-          taskId: `${user.username}-${Date.now()}`,
-          user,
-          task,
-          context,
-          sessionId: activeSessionId, webExactSession,
-          forceClaude,
-          initialMsgId: msgId,
-          pinnedMsgId,
-          secrets,
-          retryCount,
-          continuationCount, mode, projectId, internalGtd,
-          engine: 'opencode',
-          engineFallbackDone,
-          ladderAttempt: ladderAttempt + 1,
-          executionId,
-        });
-        return { queuedRetry };
-      }
-      const exhaustedMsg = `⛔ Вся лестница моделей профиля «${ocProfileName}» временно недоступна (лимиты) — оператор уведомлён.`;
-      if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, exhaustedMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, exhaustedMsg, threadId));
-      else await tgSend(BOT_TOKEN, chatId, exhaustedMsg, threadId);
-      if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, exhaustedMsg);
-      // QUOTA is a plan/usage limit, NOT a credential loss (spec §7): health degrades via
-      // _recordFailureAttempt below; do NOT set the auth flag.
-      _recordFailureAttempt(executionId, {
-        taskId, projectId, sessionId: activeSessionId, webExactSession, engine: 'opencode', model: verdict.model,
-        errorText: preLadderText, action: null,
-      });
-      executionHistory.finalizeExecution(executionId, 'BLOCKED');
-      return exhaustedMsg;
-    }
-    }
+  const workerFailure = engine === 'opencode' && ocProfileName ? ocLadder.classifyWorkerFailure(preLadderText) : null;
+  if (workerFailure) {
+    const ladderName = ocLadder.ladderFor(ocProfileName) || ocProfileName;
+    const failMsg = workerFailure === 'context'
+      ? `⛔ Запрос слишком большой для модели лестницы «${ladderName}» — разбей задачу на более мелкие части и отправь по шагам.`
+      : workerFailure === 'ladder_exhausted'
+      ? `⛔ Вся лестница моделей «${ladderName}» временно недоступна (все ступени отказали в llm-ladder) — попробуй позже.`
+      : `⛔ Сервис моделей llm-ladder недоступен (лестница «${ladderName}») — задача не выполнена, попробуй позже.`;
+    console.warn(`[${taskId}] opencode ${workerFailure} (ladder ${ladderName}): ${String(preLadderText || '').slice(0, 300)}`);
+    if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, failMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, failMsg, threadId));
+    else await tgSend(BOT_TOKEN, chatId, failMsg, threadId);
+    if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, failMsg);
+    _recordFailureAttempt(executionId, {
+      taskId, projectId, sessionId: activeSessionId, webExactSession, engine: 'opencode', model: ocActiveModel,
+      errorText: `${workerFailure}: ${preLadderText || ''}`, action: null,
+    });
+    executionHistory.finalizeExecution(executionId, workerFailure === 'context' ? 'FAILED' : 'BLOCKED');
+    return failMsg;
   }
 
   // Detect an auth/quota failure for the current engine. Claude and Codex additionally get ONE
@@ -2761,37 +2548,17 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   }
 
   // Generic mid-task dead-end retry — reached only when the run is incomplete but none of the
-  // classifiers above claimed it (not a restart-resume, not an opencode ladder/quota hit, not an
+  // classifiers above claimed it (not a restart-resume, not an llm-ladder worker failure, not an
   // auth failure): a bare crash, a dropped connection, or the engine just not emitting a
   // completion event. Previously this dead-ended immediately with "напиши продолжай"; now it
   // retries the same task/session on the same engine, bounded by MAX_INCOMPLETE_RETRIES with the
-  // shared backoff schedule, before handing it back to a human.
-  //
-  // For an intermittent per-rung fault like "Bad Request" the first MAX_INCOMPLETE_RETRIES
-  // attempts stay on the SAME model, retried on the model's own short exponential backoff
-  // (transientRetryDelayMs, issue #1467), and one extra attempt is allowed on the ALTERNATIVE rung
-  // (forceOpencodeAlternation advances the ladder on that last retry only) — owner 2026-09-26:
-  // "три ретрая не сработали → соседняя модель".
-  // The extra slot only exists for OpenCode, whose ladder has a real alternative model; for
-  // claude/codex forceOpencodeAlternation is a no-op, so a 4th retry would just repeat the same
-  // failure with no way to differ (and would break the "capped at 3" contract those paths had).
-  const altRetryBudget = engine === 'opencode' ? 1 : 0;
-  if (incomplete && !resumedAfterRestart && !restartShutdown && incompleteRetryAttempts < MAX_INCOMPLETE_RETRIES + altRetryBudget) {
+  // shared backoff schedule, before handing it back to a human. Switching models is the llm-ladder
+  // worker's job (#1687), so there is no extra "alternative rung" attempt here any more.
+  if (incomplete && !resumedAfterRestart && !restartShutdown && incompleteRetryAttempts < MAX_INCOMPLETE_RETRIES) {
     const nextAttempt = incompleteRetryAttempts + 1;
-    // A transient per-model fault carries its own backoff (15s → 30s → 60s …): retry the same
-    // model on that schedule. Everything else (bare crash, dropped connection) keeps the generic
-    // crash backoff. TEST_MODE collapses both to milliseconds so retry tests stay fast.
-    const escalate = engine === 'opencode' && nextAttempt > MAX_INCOMPLETE_RETRIES;
-    // The alternative rung is a fresh model: its backoff starts from the FIRST step of the schedule,
-    // not from where the failing rung's retries left off (owner 2026-09-27: "от каждого шага снова
-    // 1 2 4, а не мультипликация от первого"). Before, the sibling waited the 3rd-step 10 minutes.
-    const delayMs = (transientRetryDelayMs != null && !isTestMode() && !escalate)
-      ? transientRetryDelayMs
-      : (getRetryDelayMs(escalate ? 1 : Math.min(nextAttempt, MAX_INCOMPLETE_RETRIES)) || 0);
-    const altNote = forceOpencodeAlternation({ engine, ocProfileName, ocProfileOverrides, ocRole, escalate });
-    const retryMsg = escalate
-      ? `🔄 Не помогло и после ${MAX_INCOMPLETE_RETRIES} попыток — пробую на альтернативной модели${altNote ? ` (${altNote})` : ''}…`
-      : `🔄 Работа прервана (${incompleteReason}) — пробую ещё раз (${nextAttempt}/${MAX_INCOMPLETE_RETRIES})${altNote ? `, ${altNote}` : ''}…`;
+    // TEST_MODE collapses the backoff to milliseconds so retry tests stay fast.
+    const delayMs = getRetryDelayMs(nextAttempt) || 0;
+    const retryMsg = `🔄 Работа прервана (${incompleteReason}) — пробую ещё раз (${nextAttempt}/${MAX_INCOMPLETE_RETRIES})…`;
     if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, retryMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, retryMsg, threadId));
     else await tgSend(BOT_TOKEN, chatId, retryMsg, threadId);
     if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, retryMsg);
@@ -2907,16 +2674,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         console.warn('[runner] engine-health self-heal failed:', e.message);
       }
     }
-    // A successful OpenCode run also clears this model's shared health (issue #1467) — a transient
-    // backoff (15s → 30s → 60s …) must not linger after the model has demonstrably recovered.
-    if (engine === 'opencode' && ocActiveModel) {
-      try {
-        opencodeLadder.recordSuccess(ocActiveModel);
-        _logOcLadderCall(ocProfileName, ocRole, ocActiveModel, 'ok');
-      } catch (e) {
-        console.warn('[runner] model-health success reset failed:', e.message);
-      }
-    }
+    if (engine === 'opencode' && ocActiveModel) _logOcLadderCall(ocProfileName, ocRole, ocActiveModel, 'ok');
   }
 
   // Кнопки действий под финальным ответом. Не показываем «Запустить проработку», если
@@ -3082,7 +2840,6 @@ module.exports = {
   // Exported for isSessionRunning tests only — the real Set of queued sessions
   _queuedSessions: queuedSessions, _queuedByOwner: queuedByOwner, _consumePendingStop: consumePendingStop, _ownerKey: ownerKey,
   // Exported for provider-alternation wiring tests only (unified crash-retry, issue #1132 follow-up)
-  _forceOpencodeAlternation: forceOpencodeAlternation,
   // Exported for failure-brain wiring tests only (issue #1175, PR #1179 follow-up)
   _recordFailureAttempt,
   // Exported for GTD scheduling-hook wiring tests only (regression: inline hook

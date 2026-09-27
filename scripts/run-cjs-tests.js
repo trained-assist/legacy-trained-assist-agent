@@ -22,13 +22,11 @@ const files = fs.readdirSync(dir)
 // 2026-09-27 incident: test/oc-profile-pin.test.cjs sent '/oc_openrouter' through getQuickAnswer
 // with no isolation, and every `npm test` run by an agent session ON THE VM flipped production's
 // (since removed) go/openrouter toggle to a sticky OpenRouter — which drained the balance. The
-// same class of leak still applies to the key pool, model health and the ladder log.
+// same class of leak still applies to the ladder log.
 const os = require('os');
 const isoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cjs-oc-state-'));
 const isoEnv = {
-  OPENCODE_GO_KEYS_STATE_FILE: path.join(isoDir, 'go-keys-state.json'),
-  OPENCODE_GO_AUTH_FILE: path.join(isoDir, 'auth.json'),
-  OPENCODE_MODEL_HEALTH_FILE: path.join(isoDir, 'model-health.json'),
+  LADDER_LOG_DIR: path.join(isoDir, 'ladder-log'),
   // Runner RAM watchdog off in tests (see tests/setup-isolation.mjs).
   MIN_FREE_RAM_MB: '0',
 };

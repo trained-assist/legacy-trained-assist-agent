@@ -572,15 +572,8 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     const vmName = process.env.VM_NAME || 'unknown';
     let commit = 'unknown';
     try { const sha = require('../release-info').getReleaseSha(); if (sha) commit = sha.slice(0, 8); } catch {}
-    let ocModel = process.env.OPENCODE_MODEL || '(из профиля)';
-    let ocProfile = workDir ? profiles.getOcProfile(workDir) : 'не задан';
-    try {
-      const ocProfilePath = path.join(__dirname, '..', '..', '.opencode', 'profiles', `${ocProfile}.json`);
-      if (fs.existsSync(ocProfilePath)) {
-        const ocCfg = JSON.parse(fs.readFileSync(ocProfilePath, 'utf8'));
-        if (ocCfg.model) ocModel = ocCfg.model;
-      }
-    } catch {}
+    const ocProfile = workDir ? profiles.getOcProfile(workDir) : 'не задан';
+    const ocModel = process.env.OPENCODE_MODEL || (workDir ? require('../opencode-ladder-provider').modelFor(ocProfile) : '(из профиля)');
     const engineLabel = eng === 'opencode' ? 'OpenCode' : eng === 'codex' ? 'Codex CLI' : 'Claude Code';
     const modelLine = eng === 'opencode'
       ? `🧠 Модель: \`${ocModel}\`\n📦 Профиль OC: ${ocProfile}`
@@ -614,16 +607,16 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     // ladder's automatic last rung.
     if (rawAlias === 'ds_or' || rawAlias === 'deepseek_openrouter') return OPENROUTER_RETIRED_MSG;
     const raw = ALIASES[rawAlias] || rawAlias;
-    const profileFile = path.join(__dirname, '..', '..', '.opencode', 'profiles', `${raw}.json`);
-    if (!fs.existsSync(profileFile)) return `⚠️ Профиль '${raw}' не найден (.opencode/profiles/${raw}.json)`;
+    if (!require('../opencode-ladder-provider').PROFILES.includes(raw)) return `⚠️ Профиль '${raw}' не найден`;
     profiles.setOcProfile(workDir, raw);
     const engineNote = switchChatEngineToOpencode(workDir, chatId);
+    // Rung order lives in the llm-ladder worker (#1687) — labels name the ladder, not models.
     const PROFILE_LABELS = {
-      max:      'MAX — лестница GPT-6/5.6 Luna → DeepSeek (дефолт)',
-      value:    'VALUE — DeepSeek V4 Flash → GLM → Qwen',
-      free:     'FREE — только бесплатный inference (MiMo/Nemotron)',
-      russian:  'RUSSIAN — GigaChat Pro/Ultra/Max',
-      deepseek: 'DEEPSEEK (дефолт) — Go: mimo-v2.6-flash → deepseek-v4.1-flash; платный хвост OpenRouter (deepseek → ling → mimo), когда все ключи Go на лимите, Go возвращается сам',
+      max:      'MAX — лестница doctor (сильнейшие модели Go)',
+      value:    'VALUE — лестница deepseek',
+      free:     'FREE — лестница free (дешёвые/бесплатные модели)',
+      russian:  'RUSSIAN — лестница deepseek + строгий русскоязычный рецензент',
+      deepseek: 'DEEPSEEK (дефолт) — лестница deepseek (Go → платный хвост OpenRouter)',
     };
     const label = PROFILE_LABELS[raw] || raw;
     return `✅ OpenCode профиль → ${label}\n\nПрименён только для твоего профиля (другие юзеры VM не затронуты). Следующая задача в OpenCode подхватит новые модели.${engineNote}`;

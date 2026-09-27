@@ -26,7 +26,7 @@ const { userWorkDir } = require('./data-paths');
 const { buildEngineCommand, runEngineProcess } = require('./runner/claude-runner');
 const { parseLlmJson } = require('./llm-client');
 const { loadUserTokens } = require('./user-tokens');
-const opencodeLadder = require('./opencode-ladder');
+const ocLadder = require('./opencode-ladder-provider');
 
 // Inside the profile workspace, not the tokens dir (issue #1649): the engine's cwd
 // must never be a place that holds the profile's credential files.
@@ -71,7 +71,7 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
   const resolvedEngine = engine || process.env.HERMES_RESEARCH_ENGINE || 'opencode';
   const resolvedProfile = ocProfile || (resolvedEngine === 'opencode' ? 'research' : null);
   const ocProfileOverrides = resolvedEngine === 'opencode'
-    ? opencodeLadder.buildOcProfileOverrides(resolvedProfile) : null;
+    ? ocLadder.buildOcProfileOverrides(resolvedProfile) : null;
   const [engineBin, engineArgs] = buildEngineCommand({ engine: resolvedEngine, ocProfile: resolvedProfile, ocRole: 'explore', prompt, mcpConfig, opencodeModel: ocProfileOverrides?.agent?.explore?.model });
 
   const { ANTHROPIC_API_KEY: _stripped, ...cleanEnv } = process.env;

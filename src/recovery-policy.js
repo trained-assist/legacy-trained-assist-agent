@@ -6,7 +6,7 @@
 //
 // Actions are opaque strings; this module does not perform them. The runner integration (a
 // separate, follow-up change — see issue #1175 checklist) maps each action onto a concrete step
-// against the existing degradation ladder (opencode-ladder.js), retry-policy.js backoff, and the
+// against the model ladder (now the llm-ladder worker, #1687), retry-policy.js backoff, and the
 // engine-fallback-to-opencode path already in runner/index.js.
 
 const { FAILURE_CLASSES } = require('./failure-taxonomy');

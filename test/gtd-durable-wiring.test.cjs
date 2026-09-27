@@ -667,8 +667,9 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     ok(store.getTask(r.task.id, 'u1').status === 'done', 'positional: plan finalizes after strict 1→2→3');
   }
 
-  // 21. P3c recovery: a QUOTA-classified failure walks the model ladder one rung
-  // (bachelor→master, still OpenCode here) and re-pends, recording class+action.
+  // 21. P3c recovery: a QUOTA-classified failure bumps the model level
+  // (bachelor→master, still OpenCode here) and re-pends, recording class+action. Rung
+  // failover inside a level is the llm-ladder worker's (#1687) — nothing advanced here.
   {
     const G21 = freshStore('21');
     const store = G21.durableStore();
@@ -680,13 +681,8 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
         minimum_model_level: 'bachelor', context_budget: 'small', validation: { command: 'true' }, max_attempts: 3 }],
     });
     store.updateTask(r.task.id, 'u1', { status: 'active' });
-    const advanced = [];
-    const ladder = {
-      buildOcProfileOverrides: () => ({ agent: { build: { model: 'anthropic/claude-sonnet' } } }),
-      forceAdvance: (p, role, model) => advanced.push([p, role, model]),
-    };
     await G21.runDueDurable({
-      secrets: {}, now: Date.now(), isTaskRunning: () => false, ladder,
+      secrets: {}, now: Date.now(), isTaskRunning: () => false,
       classifier: () => ({ class: 'QUOTA', retryable: true, source: 'rule', confidence: 1 }),
       runTask: async () => 'boom. DURABLE: failed: quota exceeded',
     });
@@ -694,10 +690,8 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     const item = store.listTaskItems(r.task.id, 'u1')[0];
     ok(item.status === 'pending' && item.current_model_level === 'master',
       `p3c: QUOTA advances model level bachelor→master and re-pends (got ${item.status}/${item.current_model_level})`);
-    ok(item.last_failure_class === 'QUOTA' && /^next_model_or_provider/.test(item.last_recovery_action || ''),
+    ok(item.last_failure_class === 'QUOTA' && item.last_recovery_action === 'next_model_or_provider',
       `p3c: failure class + action recorded on the item (got ${item.last_failure_class}/${item.last_recovery_action})`);
-    ok(advanced.length === 1 && advanced[0][0] === 'deepseek' && advanced[0][1] === 'build',
-      `p3c: opencode ladder advanced for the step's role (got ${JSON.stringify(advanced)})`);
   }
 
   // 22. P3c recovery: a terminal action leaves the item failed (alternative
@@ -768,13 +762,9 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
         minimum_model_level: 'bachelor', context_budget: 'small', validation: { command: 'true' }, max_attempts: 50 }],
     });
     store.updateTask(r.task.id, 'u1', { status: 'active' });
-    const ladder = {
-      buildOcProfileOverrides: () => ({ agent: { build: { model: 'some/model' } } }),
-      forceAdvance: () => {},
-    };
     let fires = 0;
     const failRun = () => G24.runDueDurable({
-      secrets: {}, now: Date.now(), isTaskRunning: () => false, ladder,
+      secrets: {}, now: Date.now(), isTaskRunning: () => false,
       classifier: () => ({ class: 'UNKNOWN', retryable: true, source: 'rule', confidence: 1 }),
       runTask: async () => { fires++; return 'boom. DURABLE: failed: exploded'; },
     });
@@ -788,9 +778,9 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     ok(extra === 0, `p3c: exhausted item is never re-fired (extra=${extra})`);
   }
 
-  // 25. P3c recovery: provider switch for the deepseek profile advances its ladder
-  // (the VM-wide go↔openrouter toggle is gone, 2026-09-27); the item re-pends with the
-  // action recorded.
+  // 25. P3c recovery: a provider-switch action for the deepseek profile is a plain bounded
+  // re-pend — switching provider/rung is the llm-ladder worker's job (#1687); the item
+  // re-pends with the action recorded.
   {
     const G25 = freshStore('25');
     const store = G25.durableStore();
@@ -804,20 +794,15 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
           minimum_model_level: 'bachelor', context_budget: 'small', validation: { command: 'true' }, max_attempts: 5 }],
       });
       store.updateTask(r.task.id, 'u1', { status: 'active' });
-      const advanced = [];
-      const ladder = {
-        buildOcProfileOverrides: () => ({ agent: { build: { model: 'opencode-go/deepseek-v4.1-flash' } } }),
-        forceAdvance: (p, role, model) => advanced.push(`${p}/${model}`),
-      };
       await G25.runDueDurable({
-        secrets: {}, now: Date.now(), isTaskRunning: () => false, ladder,
+        secrets: {}, now: Date.now(), isTaskRunning: () => false,
         classifier: () => ({ class: 'AUTH', retryable: false, source: 'rule', confidence: 1 }),
         runTask: async () => 'nope. DURABLE: failed: not logged in',
       });
       await drain();
       const item = store.listTaskItems(r.task.id, 'u1')[0];
-      ok(item.status === 'pending' && advanced.length === 1 && /^deepseek\//.test(advanced[0]) && /^alternate_provider/.test(item.last_recovery_action || ''),
-        `p3c: deepseek provider switch advances the deepseek ladder (got ${item.status}, advanced=${advanced}, ${item.last_recovery_action})`);
+      ok(item.status === 'pending' && item.last_recovery_action === 'alternate_provider',
+        `p3c: deepseek provider switch re-pends (got ${item.status}, ${item.last_recovery_action})`);
     } finally {
       delete process.env.PLAYBOOK_LEVEL_MAP;
     }
