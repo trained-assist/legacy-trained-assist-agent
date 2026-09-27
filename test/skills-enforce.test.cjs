@@ -92,18 +92,6 @@ test("skills.json {enabled:['recruiting']} → no engineering/freelance sibling,
   assert.ok(!block.includes(engBody));
 });
 
-test('sealed source for a switched-off sibling is not mounted either', () => {
-  const wd = tmpDir('sealed');
-  fs.writeFileSync(path.join(wd, 'skills.json'), JSON.stringify({ enabled: ['recruiting'] }));
-  const p = writeMcpConfig(wd, null, { siblingPaths, extraServers: {
-    'engineering-skills': { command: 'node', args: ['/x/sealed.js'] },
-    'hh-skills': { command: 'node', args: ['/x/sealed-hh.js'] },
-  } });
-  const cfg = JSON.parse(fs.readFileSync(p, 'utf8'));
-  assert.ok(!cfg.mcpServers['engineering-skills']);
-  assert.deepStrictEqual(cfg.mcpServers['hh-skills'].args, ['/x/sealed-hh.js']);
-});
-
 test('corrupted / malformed skills.json → exactly legacy', () => {
   const wd = tmpDir('corrupt');
   const legacy = writeAndRead(wd, undefined);

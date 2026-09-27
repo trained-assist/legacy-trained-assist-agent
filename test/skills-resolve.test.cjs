@@ -154,13 +154,11 @@ test('shadow: legacy profile → diff=0, writes .skills-resolved.json, audience 
   const mcp = path.join(dir, '.mcp.json');
   fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { playwright: {}, 'trained-skills': {}, 'hh-skills': {}, 'freelance-skills': {}, 'engineering-skills': {} } }));
   const lines = [];
-  // siblingExists isn't injectable through runShadow; readiness for host presence comes from fs,
-  // so compare via buildReadiness with a stub and a pre-built catalog.
   const rd = buildReadiness(catalog, { probe, siblingExists: () => true });
   assert.strictEqual(rd['engineering-skills'], true);
   assert.strictEqual(rd['hh-skills/90-hh.js'], true);
   const rec = runShadow({ workDir: dir, username: 'u1', audience: 'recruiter', mcpConfigPath: mcp,
-    domainReport: { probe, picked }, extraServers: { 'hh-skills': {}, 'freelance-skills': {}, 'engineering-skills': {} },
+    domainReport: { probe, picked }, siblingExists: () => true,
     catalog, log: l => lines.push(l) });
   assert.ok(rec, lines.join('\n'));
   assert.deepStrictEqual(rec.diff, []);
@@ -180,7 +178,7 @@ test('shadow reports a real difference and never throws on garbage', () => {
   assert.deepStrictEqual(readProfileSkills(dir), { enabled: ['recruiting'], disabled: [] });
   const lines = [];
   const rec = runShadow({ workDir: dir, username: 'u2', mcpConfigPath: mcp, domainReport: {},
-    extraServers: { 'hh-skills': {}, 'engineering-skills': {} }, catalog, log: l => lines.push(l) });
+    siblingExists: p => /trained-assist-(hh-skill|engineering)\b/.test(p), catalog, log: l => lines.push(l) });
   assert.deepStrictEqual(rec.diff, ['+sib:hh-skills', '-sib:engineering-skills']);
   assert.match(lines[0], /mode=profile diff=\+sib:hh-skills,-sib:engineering-skills/);
   // corrupt skills.json / missing config / bad args → one error line, null, no throw

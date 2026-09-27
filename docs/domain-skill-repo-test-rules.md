@@ -145,17 +145,14 @@ Mandatory-набор сценариев — `suites.json`; прогон с `skip
 | Режим | **детерминированный replay** | живой прогон / канарейка |
 | LLM | скриптованные фикстуры | cheap-LLM судья, живой Hermes |
 | Сеть | loopback-only (guard) | sandbox-аккаунты платформ |
-| Регистратор | не запускается (L1/L2 его не требуют) | **настоящий** control plane, `MCP_SKILL_SOURCES_CONFIG` + per-source `profiles` |
+| Монтирование | не запускается (L1/L2 его не требуют) | sibling-чекаут рядом с ядром, как в проде |
 | Вердикт | pass/fail по контракту | качество/поведение, алертинг |
 
 **Правило: LLM-судья — это staging, а не CI.** Судья-LLM в CI даёт
 недетерминированный, флейки-гейт. В CI «судья» — это зафиксированная фикстура
 ожидаемого вывода.
 
-Staging домена не поднимает мок-регистратор: он монтирует **настоящий** control
-plane к sandbox-профилю (`src/mcp-source-runtime.js`, inert по умолчанию;
-`enabled:false` → `prepareRun` no-op, пока источник не активирован админом).
-Канарейка = источник, примонтированный к одному профилю на смерженном SHA.
+Staging домена не поднимает мок-регистратор: домен монтируется так же, как в проде — sibling-чекаут рядом с ядром (`src/browser.js`). Отдельного sealed/dual-пути нет (удалён 2026-09-27).
 
 ---
 
@@ -237,7 +234,6 @@ Goal: <одна строка>
 - `docs/user-scenarios/GOALS.md` — скоуп/out-of-scope
 - `docs/CICD-REVIEW-2026-09-14.md` — состояние пайплайнов и дыры (staging-гейт)
 - `docs/REPO-HYGIENE-PLAYBOOK.md` — branch-per-session, immutable PRs, hooks
-- `contracts/mcp-skill-sources.schema.json`, `contracts/mcp-skill-runtime.schema.json`
+- `contracts/mcp-skill-sources.schema.json` — формат `mcp.manifest.json` доменного репо
 - `scripts/staging/run.mjs`, `scripts/staging/isolation-guard.cjs` — эталон replay-гейта
 - `tests/helpers/mcp.js`, `tests/fixtures/providers/fake-provider-mcp.js` — кирпичи kit
-- `src/mcp-source-runtime.js` — монтирование источника на staging
