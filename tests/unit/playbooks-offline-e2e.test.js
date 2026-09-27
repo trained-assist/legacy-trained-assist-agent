@@ -225,6 +225,94 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     expect(other.error).toMatch(/not found/);
   });
 
+  it('quality failures: attempt 2 gets the failure reasons, attempt 3 runs one level up', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { task } = startPlan(G, 'feature');
+    const calls = []; const prompts = [];
+    let fails = 0;
+    const base = scriptedEngine({ calls });
+    const runTask = async (o) => {
+      const title = (o.task.match(/Step \(\d+\/\d+\): (.*)/) || [])[1] || '';
+      if (/^Реализация/.test(title)) {
+        prompts.push(o.task);
+        if (fails < 2) { fails += 1; calls.push({ title, engine: o.engine, ocProfile: o.ocProfile }); return `тесты красные, попытка ${fails}\nDURABLE: failed: тесты красные (попытка ${fails})`; }
+      }
+      return base(o);
+    };
+    const t = await drive(G, task.id, { runTask, registry: fakeGitHub() });
+    expect(t.status).toBe('done');
+    const impl = calls.filter(c => /^Реализация/.test(c.title));
+    expect(impl.map(c => `${c.engine}/${c.ocProfile}`)).toEqual(['opencode/free', 'opencode/free', 'opencode/deepseek']);
+    expect(prompts[0]).not.toContain('ПРОШЛЫЕ ПОПЫТКИ');
+    expect(prompts[1]).toContain('ПРОШЛЫЕ ПОПЫТКИ');
+    expect(prompts[1]).toContain('попытка 1');
+    expect(prompts[2]).toContain('попытка 1');
+    expect(prompts[2]).toContain('попытка 2');
+  }, 30_000);
+
+  it('doctor without credentials walks claude → codex → opencode master', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { PlaybookStore } = require('../../src/playbook-store.js');
+    const { compilePlaybook } = require('../../src/playbook-compiler.js');
+    const pb = new PlaybookStore({ profileId: PROFILE }).get('new-software');
+    const c = compilePlaybook(pb, { goal: 'offline e2e: doctor fallback' });
+    const store = G.durableStore();
+    // default doctor rung (claude + fallback ladder); cheap levels on free
+    const { task } = store.createPlan({
+      profile_id: PROFILE, goal: c.goal, user_value: c.user_value, acceptance_criteria: c.acceptance_criteria,
+      items: c.items, hooks: c.hooks, playbook_id: pb.id, playbook_version: pb.version,
+      execution_policy: { level_map: { master: LEVEL_MAP.master, bachelor: LEVEL_MAP.bachelor }, hooks_approved: true },
+    });
+    store.updateTask(task.id, PROFILE, { status: 'active' });
+    const calls = [];
+    const base = scriptedEngine({ calls: [] });
+    const runTask = async (o) => {
+      const title = (o.task.match(/Step \(\d+\/\d+\): (.*)/) || [])[1] || '';
+      calls.push({ title, engine: o.engine, ocProfile: o.ocProfile });
+      if (o.engine === 'claude') return 'Not logged in · Please run /login';
+      if (o.engine === 'codex') return 'Error: invalid api key';
+      return base(o);
+    };
+    const t = await drive(G, task.id, { runTask, registry: fakeGitHub() });
+    expect(t.status).toBe('done');
+    const doc = calls.filter(x => /^Варианты решения/.test(x.title)).map(x => `${x.engine}/${x.ocProfile}`);
+    expect(doc).toEqual(['claude/null', 'codex/null', 'opencode/deepseek']);
+    const ex = store.db.prepare(`SELECT engine, provider, error_class FROM executions e JOIN task_items i ON i.id = e.task_item_id
+      WHERE e.task_id = ? AND i.title LIKE 'Варианты решения%' ORDER BY e.started_at`).all(task.id);
+    expect(ex.map(e => [e.engine, e.provider, e.error_class])).toEqual([
+      ['claude', null, 'AUTH'], ['codex', 'fallback-from-claude', 'AUTH'], ['opencode', 'fallback-from-claude', null]]);
+  }, 30_000);
+
+  it('doctor skips an engine marked unavailable by engine health, without burning an attempt', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { PlaybookStore } = require('../../src/playbook-store.js');
+    const { compilePlaybook } = require('../../src/playbook-compiler.js');
+    const pb = new PlaybookStore({ profileId: PROFILE }).get('new-software');
+    const c = compilePlaybook(pb, { goal: 'offline e2e: health' });
+    const store = G.durableStore();
+    const { task } = store.createPlan({
+      profile_id: PROFILE, goal: c.goal, user_value: c.user_value, acceptance_criteria: c.acceptance_criteria,
+      items: c.items, hooks: c.hooks, execution_policy: { level_map: { master: LEVEL_MAP.master, bachelor: LEVEL_MAP.bachelor } },
+    });
+    store.updateTask(task.id, PROFILE, { status: 'active' });
+    const calls = [];
+    const runTask = scriptedEngine({ calls });
+    const registry = fakeGitHub();
+    for (let i = 0; i < 200; i++) {
+      store.db.prepare(`UPDATE task_items SET due_at = ? WHERE task_id = ? AND status = 'waiting'`).run(Date.now(), task.id);
+      await G.runDueDurable({
+        secrets: {}, now: Date.now(), isTaskRunning: () => false, registry, runTask,
+        llmValidate: async () => ({ status: 'pass', subject: null, evidence: {} }), hookSinks: { notify: async () => {} },
+        engineHealth: e => ({ status: e === 'claude' ? 'unavailable' : 'healthy' }),
+      });
+      await drain();
+      if (store.getTask(task.id, PROFILE).status === 'done') break;
+    }
+    expect(store.getTask(task.id, PROFILE).status).toBe('done');
+    const doc = calls.filter(x => /^Варианты решения/.test(x.title)).map(x => x.engine);
+    expect(doc).toEqual(['codex']);
+  }, 30_000);
+
   it('a step killed by a restart is re-queued and completes', async () => {
     const G = require('../../src/gtd-controller.js');
     const { store, task } = startPlan(G, 'feature');

@@ -27,7 +27,14 @@ const DEFAULT_LEVEL_MAP = Object.freeze({
   // led with paid OpenRouter and `max` ended on it, which is how durable/web steps leaked there.
   bachelor: { engine: 'opencode', ocProfile: 'deepseek' },
   master: { engine: 'opencode', ocProfile: 'deepseek' },
-  doctor: { engine: 'claude', ocProfile: null },
+  // Claude has no model ladder of its own. When an engine is unavailable (engine
+  // health) or this step already failed on it with AUTH/CONFIG, the step runs on the
+  // next rung of `fallback` instead of failing: claude → codex → opencode master
+  // (owner 2026-09-28). Default behaviour, overridable per plan / env like the rest.
+  doctor: { engine: 'claude', ocProfile: null, fallback: [
+    { engine: 'codex', ocProfile: null },
+    { engine: 'opencode', ocProfile: 'deepseek' },
+  ] },
 });
 
 // executor_role → OpenCode agent role (opencode-ladder ROLES).
@@ -82,6 +89,20 @@ function planLevelMap(policy) {
   return merged;
 }
 
+// Quality escalation: the next level whose resolved engine/profile actually differs
+// from the current one (with bachelor and master on the same profile, a one-rung
+// bump would change nothing). null at the ceiling.
+function nextDistinctLevel(item, levelMap) {
+  const cur = resolveStepExecution(item, { levelMap });
+  const from = LEVELS.indexOf(cur.modelLevel);
+  if (from < 0) return null;
+  for (let i = from + 1; i < LEVELS.length; i++) {
+    const r = resolveStepExecution({ ...item, current_model_level: LEVELS[i] }, { levelMap });
+    if (r.engine !== cur.engine || r.ocProfile !== cur.ocProfile) return LEVELS[i];
+  }
+  return null;
+}
+
 function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = null } = {}) {
   const map = levelMap || loadLevelMap();
   const executionKind = item && item.execution_kind === 'programmatic' ? 'programmatic' : 'agent';
@@ -103,11 +124,18 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
 
   const mapped = map[level] || DEFAULT_LEVEL_MAP[level];
   const ocRole = mapped.engine === 'opencode' ? (ROLE_TO_OC[role] || 'build') : null;
+  const fbList = Array.isArray(mapped.fallback) ? mapped.fallback
+    : (mapped.fallback && typeof mapped.fallback === 'object' ? [mapped.fallback] : []);
   return {
     executionKind,
     engine: mapped.engine,
     ocProfile: mapped.engine === 'opencode' ? mapped.ocProfile : null,
     ocRole,
+    fallbacks: fbList.filter(fb => fb && fb.engine).map(fb => ({
+      engine: fb.engine,
+      ocProfile: fb.engine === 'opencode' ? fb.ocProfile : null,
+      ocRole: fb.engine === 'opencode' ? (ROLE_TO_OC[role] || 'build') : null,
+    })),
     // context_budget → skipModels is a no-op until a model→context registry
     // exists (design §4.3). Kept in the contract so P3c can populate it.
     skipModels: [],
@@ -116,4 +144,4 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
   };
 }
 
-module.exports = { resolveStepExecution, planLevelMap, DEFAULT_LEVEL_MAP, ROLE_TO_OC, LEVELS, ROLES };
+module.exports = { resolveStepExecution, planLevelMap, nextDistinctLevel, DEFAULT_LEVEL_MAP, ROLE_TO_OC, LEVELS, ROLES };
