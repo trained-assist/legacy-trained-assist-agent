@@ -90,9 +90,18 @@ npx mcp-skill-conformance .        # или: node node_modules/@trained-assist/m
 
 Она проверяет обязательные артефакты §5, conformance манифеста против
 `contracts/mcp-skill-sources.schema.json`, непустой mandatory-набор
-`staging/suites.json` и L3-гейты (quick-action-тулы не спавнят Claude; у
-`fetch` есть таймаут; секреты не логируются; пути через резолвер). Из core тот
-же чек доступен как `node scripts/check-domain-skill-repo.mjs <repo>`.
+`staging/suites.json` (или `scripts/staging/suites.json` — раскладка репо, что
+вендорили Phase 1 runner) без ссылок на несуществующие файлы, и L3-гейты
+(quick-action-тулы не спавнят Claude; у серверного `fetch` есть таймаут; секреты
+не логируются; пути через резолвер). Файл, который только генерирует HTML с
+клиентским JS, помечается комментарием `mcp-skill-conformance: browser-fetch` —
+явное, ревьюируемое исключение из правила таймаута. Из core тот же чек доступен
+как `node scripts/check-domain-skill-repo.mjs <repo>`.
+
+Пока пакет не опубликован в registry, доменный CI берёт кит из публичного core
+(sparse checkout `packages/mcp-skill-testkit` на **запиненном SHA**) и запускает
+`bin/mcp-skill-conformance.js` отдельной джобой `conformance`, которую требуют
+`ci` и `staging-gate`. Поднять пин = осознанно принять новые правила гейта.
 
 **Чек в PR-шаблоне.** Каждый доменный репо несёт `.github/PULL_REQUEST_TEMPLATE.md`
 с conformance-чеклистом (канон —

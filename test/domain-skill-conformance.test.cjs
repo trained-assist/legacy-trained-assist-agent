@@ -22,6 +22,7 @@ function makeRepo(t) {
   write('scenarios/demo/steps.json', '[]\n');
   write('fixtures/.gitkeep', '');
   write('staging/suites.json', JSON.stringify({ node: ['test/behavior.test.cjs'] }));
+  write('test/behavior.test.cjs', "'use strict';\n");
   write('.github/workflows/ci.yml', 'name: CI\n');
   write('checklist.md', '- [ ] CI green\n');
   write('mcp.manifest.json', JSON.stringify({
@@ -64,4 +65,32 @@ test('conformance CLI flags L3 guard violations', (t) => {
   const r = runCli(repo);
   assert.equal(r.status, 1);
   assert.match(r.stdout, /spawns Claude or requires the core runner/);
+});
+
+test('conformance accepts the vendored Phase 1 layout (scripts/staging/suites.json)', (t) => {
+  const { repo, write } = makeRepo(t);
+  fs.rmSync(path.join(repo, 'staging'), { recursive: true });
+  write('scripts/staging/suites.json', JSON.stringify({ node: ['test/behavior.test.cjs'] }));
+  const r = runCli(repo);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /scripts\/staging\/suites\.json/);
+});
+
+test('conformance fails when suites.json lists a file that no longer exists', (t) => {
+  const { repo, write } = makeRepo(t);
+  write('staging/suites.json', JSON.stringify({ node: ['test/behavior.test.cjs', 'test/renamed.test.cjs'] }));
+  const r = runCli(repo);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /lists missing files: test\/renamed\.test\.cjs/);
+});
+
+test('fetch without timeout is a violation unless the file declares browser-fetch', (t) => {
+  const { repo, write } = makeRepo(t);
+  write('src/page-html.js', "'use strict';\nmodule.exports = () => `<script>fetch('/x')</script>`;\n");
+  let r = runCli(repo);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /src\/page-html\.js: fetch\(\) without AbortSignal\.timeout/);
+  write('src/page-html.js', "'use strict';\n// mcp-skill-conformance: browser-fetch — emits client-side JS only\nmodule.exports = () => `<script>fetch('/x')</script>`;\n");
+  r = runCli(repo);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
 });
