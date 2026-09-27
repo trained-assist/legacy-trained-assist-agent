@@ -132,18 +132,28 @@ function durableStore() {
 // lease go back to pending with due_at=now, so the next claim re-executes them.
 // Fresher orphans stay running (their run may still be alive in this process).
 const RUNNING_ORPHAN_GRACE_MS = 45 * 60 * 1000; // mirrors FIRE_LEASE_MS
-function reconcileOrphanedRunning(store = durableStore(), { now = Date.now() } = {}) {
+// `graceMs: 0` is the boot-time sweep: right after a (re)start no durable step can
+// still be running — its engine was a child of the previous process — so every
+// 'running' item is an orphan and goes back to the queue now, not after the
+// 45-min grace. Its open execution rows are closed as interrupted.
+function reconcileOrphanedRunning(store = durableStore(), { now = Date.now(), graceMs = RUNNING_ORPHAN_GRACE_MS } = {}) {
   const rows = store.db.prepare(`SELECT i.id, i.updated_at FROM task_items i
     JOIN durable_tasks t ON t.id = i.task_id
     WHERE i.status = 'running' AND t.status = 'active'`).all();
-  const cutoff = now - RUNNING_ORPHAN_GRACE_MS;
+  const cutoff = now - graceMs;
   for (const row of rows) {
     if ((row.updated_at || 0) > cutoff) continue;
     store.updateTaskItem(row.id, { status: 'pending', due_at: now },
       store.db.prepare('SELECT profile_id FROM durable_tasks WHERE id = ?').get(
         store.db.prepare('SELECT task_id FROM task_items WHERE id = ?').get(row.id).task_id
       ).profile_id);
+    if (graceMs === 0) {
+      store.db.prepare(`UPDATE executions SET status = 'interrupted', finished_at = ?,
+          error_text = 'interrupted by server restart' WHERE task_item_id = ? AND status = 'running'`)
+        .run(now, row.id);
+    }
   }
+  return rows.filter(r => (r.updated_at || 0) <= cutoff).length;
 }
 
 // Profile ids that own runnable items right now, mapped to their claimable
