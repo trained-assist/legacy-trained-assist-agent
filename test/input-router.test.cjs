@@ -1,3 +1,8 @@
+// service-llm → llm-ladder worker: pin tests to an unroutable host + dummy token so they are
+// self-contained (staging runs this file directly, outside scripts/run-cjs-tests.js) and can
+// never reach the live worker via the VM's token file.
+process.env.LLM_LADDER_URL = 'http://llm-ladder.invalid';
+process.env.LLM_LADDER_TOKEN = 'test-ladder-token';
 // Input router SHADOW (epic #1542, P1): compression, section hint, output
 // validation, and the hard guarantee that shadow never throws / never blocks.
 const { test } = require('node:test');
@@ -78,23 +83,24 @@ test('routeInput: one OpenRouter call with json response_format, validated outpu
   const out = await ir.routeInput('создай PR', { openrouterKey: 'k', fetchImpl: f });
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].body.response_format.type, 'json_object');
-  // Service-LLM ladder (src/service-llm.js); no Go key in the test env → the OpenRouter last rung.
-  assert.equal(f.calls[0].body.model, 'deepseek/deepseek-v4-flash-0731');
+  // service-llm sends the ladder name to the llm-ladder worker, which picks the rung.
+  assert.equal(f.calls[0].body.model, 'deepseek');
   assert.equal(out.route, 'agent');
   assert.deepEqual(out.tools_hint, ['engineering_spawn_workspace']);
   assert.deepEqual(out.usage, { in: 500, out: 60, cost: 0.0003 });
 });
 
 test('routeInput returns null on every failure mode', async () => {
-  const savedKey = process.env.OPENROUTER_API_KEY; delete process.env.OPENROUTER_API_KEY; // hermetic: '' must not fall back to a real env key
+  const savedKey = process.env.LLM_LADDER_TOKEN; delete process.env.LLM_LADDER_TOKEN; // no ladder token → no call
   try {
   assert.equal(await ir.routeInput('x', { openrouterKey: '' , fetchImpl: fakeFetch(GOOD) }), null);
+  if (savedKey !== undefined) process.env.LLM_LADDER_TOKEN = savedKey;
   assert.equal(await ir.routeInput('', { openrouterKey: 'k', fetchImpl: fakeFetch(GOOD) }), null);
   assert.equal(await ir.routeInput('x', { openrouterKey: 'k', fetchImpl: async () => { throw new Error('net'); } }), null);
   assert.equal(await ir.routeInput('x', { openrouterKey: 'k', fetchImpl: async () => ({ ok: false, status: 500 }) }), null);
   assert.equal(await ir.routeInput('x', { openrouterKey: 'k', fetchImpl: fakeFetch('not json') }), null);
   assert.equal(await ir.routeInput('x', { openrouterKey: 'k', fetchImpl: async () => ({ ok: true, json: async () => { throw new Error('bad'); } }) }), null);
-  } finally { if (savedKey !== undefined) process.env.OPENROUTER_API_KEY = savedKey; }
+  } finally { if (savedKey !== undefined) process.env.LLM_LADDER_TOKEN = savedKey; }
 });
 
 test('shadow: disabled by INPUT_ROUTER_SHADOW=0, no call', () => {
@@ -105,7 +111,7 @@ test('shadow: disabled by INPUT_ROUTER_SHADOW=0, no call', () => {
     s.record({ quick: false });
     assert.equal(f.calls.length, 0);
   } finally { delete process.env.INPUT_ROUTER_SHADOW; }
-  assert.equal(ir.shadowEnabled(''), !!process.env.OPENROUTER_API_KEY);
+  assert.equal(ir.shadowEnabled(''), !!process.env.LLM_LADDER_TOKEN);
   assert.equal(ir.shadowEnabled('k'), true);
 });
 

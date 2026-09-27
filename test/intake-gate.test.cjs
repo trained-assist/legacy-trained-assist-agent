@@ -1,3 +1,8 @@
+// service-llm → llm-ladder worker: pin tests to an unroutable host + dummy token so they are
+// self-contained (staging runs this file directly, outside scripts/run-cjs-tests.js) and can
+// never reach the live worker via the VM's token file.
+process.env.LLM_LADDER_URL = 'http://llm-ladder.invalid';
+process.env.LLM_LADDER_TOKEN = 'test-ladder-token';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { checkCompleteness } = require('../src/intake-gate');
@@ -12,7 +17,9 @@ function fakeFetch(content) {
 
 test('holds when text or key is missing', async () => {
   assert.deepEqual(await checkCompleteness('', 'key'), { level: 'insufficient', complete: false });
-  assert.deepEqual(await checkCompleteness('hi', ''), { level: 'insufficient', complete: false });
+  const saved = process.env.LLM_LADDER_TOKEN; delete process.env.LLM_LADDER_TOKEN; // no ladder token
+  try { assert.deepEqual(await checkCompleteness('hi', ''), { level: 'insufficient', complete: false }); }
+  finally { if (saved !== undefined) process.env.LLM_LADDER_TOKEN = saved; }
 });
 
 test('propagates API errors to the fail-closed HTTP boundary', async () => {

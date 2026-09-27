@@ -18,7 +18,10 @@ for (const [key, file] of Object.entries({
 // Provider keys from the developer's shell must not leak into tests (CI has none) — a test that
 // needs one sets it explicitly.
 for (const key of ['OPENROUTER_API_KEY', 'OPENCODE_GO_API_KEYS', 'OPENCODE_GO_API_KEY', 'LLM_LADDER_TOKEN']) delete process.env[key];
-process.env.LLM_LADDER_DISABLED = '1'; // never call the live llm-ladder worker from tests
+// Never call the live llm-ladder worker from tests: unroutable host + dummy token (mocked fetch
+// sees the worker's OpenAI-shaped protocol; anything unmocked fails soft).
+process.env.LLM_LADDER_URL = 'http://llm-ladder.invalid';
+process.env.LLM_LADDER_TOKEN = 'test-ladder-token';
 process.once('exit', () => rmSync(root, { recursive: true, force: true }));
 // Runner fixtures fake the `claude` binary; production's default engine is opencode (2026-09-27).
 if (!process.env.AGENT_DEFAULT_ENGINE) process.env.AGENT_DEFAULT_ENGINE = 'claude';
