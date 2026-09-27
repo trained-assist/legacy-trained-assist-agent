@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 const require = createRequire(import.meta.url);
-const api = require('../src/hh-proactive-search');
-const schedule = require('../src/hh-cold-search-schedule');
+const api = require('../src/domains/hh/lib').hhLib('hh-proactive-search');
+const schedule = require('../src/domains/hh/lib').hhLib('hh-cold-search-schedule');
 let root, work, old;
 const user = 'fixture-notify';
 const keys = ['AGENT_DATA_DIR', 'AGENT_TOKENS_DIR', 'USER_ID', 'USERS_DIR', 'OPENROUTER_API_KEY'];
@@ -18,10 +18,10 @@ beforeEach(()=>{
 afterEach(()=>{vi.unstubAllGlobals();for(const k of keys)old[k]===undefined?delete process.env[k]:process.env[k]=old[k];fs.rmSync(root,{recursive:true,force:true});});
 it('stops all schedules with no selected vacancy, preserves other users and survives reload',()=>{
  api.saveSchedule(user,{enabled:true,vacancies:{A:{enabled:true,interval_hours:8},B:{enabled:true}}});
- api.saveSchedule('other',{enabled:true});require('../src/hh-autoscan').enable(user);
+ api.saveSchedule('other',{enabled:true});require('../src/domains/hh/lib').hhLib('hh-autoscan').enable(user);
  schedule.disableSearches(user,work);schedule.disableSearches(user,work);
  expect(api.loadSchedule(user)).toMatchObject({enabled:false,vacancies:{A:{enabled:false,interval_hours:8},B:{enabled:false}}});
- expect(api.loadSchedule('other').enabled).toBe(true);expect(require('../src/hh-autoscan').readState(user).enabled).toBe(false);
+ expect(api.loadSchedule('other').enabled).toBe(true);expect(require('../src/domains/hh/lib').hhLib('hh-autoscan').readState(user).enabled).toBe(false);
 });
 it('stops legacy state without an active vacancy and leaves manual search data intact',()=>{
  api.saveSchedule(user,{enabled:true,interval_hours:12});schedule.disableSearches(user,work);

@@ -1,6 +1,6 @@
 'use strict';
 
-// src/review-links.js must emit byte-identical links to the HH helpers it
+// src/review-links.js must emit byte-identical links to the hh-skill helpers it
 // replaces in runner/index.js (hh-quick.hhReviewUrl, hh-autoscan.proactiveUrlFor),
 // which hh-skill keeps emitting from its own tools (epic #1470 P1.3).
 
@@ -16,8 +16,8 @@ const ENVS = [
 test('reviewUrl / proactiveUrl match the legacy HH helpers', () => {
   for (const env of ENVS) {
     Object.assign(process.env, env);
-    const legacyQuick = require('../src/hh-quick');
-    const legacyAutoscan = require('../src/hh-autoscan');
+    const legacyQuick = require('../src/domains/hh/lib').hhLib('hh-quick');
+    const legacyAutoscan = require('../src/domains/hh/lib').hhLib('hh-autoscan');
     for (const [u, v] of [['kobzevvv', null], ['user x', '123'], ['u', 'a&b']]) {
       assert.equal(links.reviewUrl(u, v), legacyQuick.hhReviewUrl(u, v));
       assert.equal(links.proactiveUrl(u, v), legacyAutoscan.proactiveUrlFor(u, v));

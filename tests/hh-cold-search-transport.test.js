@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const { resolveSearchAreas, searchResumes } = require('../src/hh-cold-search-transport');
+const { resolveSearchAreas, searchResumes } = require('../src/domains/hh/lib').hhLib('hh-cold-search-transport');
 afterEach(() => vi.unstubAllGlobals());
 const response = (status, body = {}) => ({ ok: status === 200, status, headers: new Headers(), json: async () => body });
 describe('cold search geography and failures (#1232)', () => {
@@ -42,7 +42,7 @@ describe('cold search geography and failures (#1232)', () => {
 describe('vacancy-scoped context', () => {
   it('selects B without changing A, rejects unowned legacy config', () => {
     const fs = require('node:fs'); const path = require('node:path'); const os = require('node:os');
-    const { resolveSearchContext } = require('../src/hh-cold-search-context');
+    const { resolveSearchContext } = require('../src/domains/hh/lib').hhLib('hh-cold-search-context');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hh-context-'));
     const dir = path.join(root, 'contexts', 'hh'); fs.mkdirSync(dir, { recursive: true });
     const put = (key, value) => fs.writeFileSync(path.join(dir, key + '.json'), JSON.stringify({ value }));
@@ -62,7 +62,7 @@ describe('vacancy-scoped context', () => {
   });
   it('does not resurrect legacy selection after explicitly removing all vacancies', () => {
     const fs = require('node:fs'); const path = require('node:path'); const os = require('node:os');
-    const { readActiveVacancies } = require('../src/hh-utils');
+    const { readActiveVacancies } = require('../src/domains/hh/lib').hhLib('hh-utils');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hh-active-'));
     const dir = path.join(root, 'contexts', 'hh'); fs.mkdirSync(dir, { recursive: true });
     try {
@@ -76,7 +76,7 @@ describe('vacancy-scoped context', () => {
 
 describe('candidate triage and score per vacancy', () => {
   it('keeps A starred and B archived across search repeats and reloads', () => {
-    const { mergeSearchCandidatesIntoAll, setCandidateStatus, loadAllCandidates, allCandidatesPath } = require('../src/hh-proactive-search');
+    const { mergeSearchCandidatesIntoAll, setCandidateStatus, loadAllCandidates, allCandidatesPath } = require('../src/domains/hh/lib').hhLib('hh-proactive-search');
     const fs = require('node:fs'); const user = 'triage-' + Date.now();
     try {
       mergeSearchCandidatesIntoAll(user, [{ id: 'same', score: 9 }], {}, 'A');
@@ -97,8 +97,8 @@ describe('candidate triage and score per vacancy', () => {
 describe('full cold-search execution', () => {
   it('uses B criteria and region, preserves A, and saves every candidate before seen', async () => {
     const fs = require('node:fs'); const path = require('node:path'); const os = require('node:os');
-    const api = require('../src/hh-proactive-search');
-    const { latestProactiveFile } = require('../src/hh-cold-search-snapshots');
+    const api = require('../src/domains/hh/lib').hhLib('hh-proactive-search');
+    const { latestProactiveFile } = require('../src/domains/hh/lib').hhLib('hh-cold-search-snapshots');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hh-run-'));
     const oldData = process.env.AGENT_DATA_DIR, oldTokens = process.env.AGENT_TOKENS_DIR, oldKey = process.env.OPENROUTER_API_KEY;
     process.env.AGENT_DATA_DIR = path.join(root, 'data'); process.env.AGENT_TOKENS_DIR = path.join(root, 'tokens'); delete process.env.OPENROUTER_API_KEY;
@@ -146,7 +146,7 @@ describe('full cold-search execution', () => {
 describe('monitoring lifecycle and run exclusion', () => {
   it('a profile never runs two cold searches at once; a dead holder lock is reclaimed', async () => {
     const fs = require('node:fs'); const path = require('node:path'); const os = require('node:os');
-    const { acquireSearchLock } = require('../src/hh-cold-search-lock');
+    const { acquireSearchLock } = require('../src/domains/hh/lib').hhLib('hh-cold-search-lock');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hh-schedule-')); const old = process.env.AGENT_DATA_DIR;
     process.env.AGENT_DATA_DIR = path.join(root, 'data');
     try {
@@ -168,7 +168,7 @@ describe('monitoring lifecycle and run exclusion', () => {
 describe('scoring explanation belongs to the requested run', () => {
   it('does not mix latest B queries with A criteria or use config edited after the run', () => {
     const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
-    const { buildScoringPromptText } = require('../src/hh-proactive-search');
+    const { buildScoringPromptText } = require('../src/domains/hh/lib').hhLib('hh-proactive-search');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hh-explain-'));
     const old = process.env.AGENT_DATA_DIR;
     process.env.AGENT_DATA_DIR = root;
@@ -192,7 +192,7 @@ describe('scoring explanation belongs to the requested run', () => {
 describe('background scoring isolation', () => {
   it('scores latest snapshot of each vacancy with its own criteria and skips superseded history', async () => {
     const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
-    const api = require('../src/hh-proactive-search');
+    const api = require('../src/domains/hh/lib').hhLib('hh-proactive-search');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hh-bg-scope-'));
     const old = { AGENT_DATA_DIR: process.env.AGENT_DATA_DIR, AGENT_TOKENS_DIR: process.env.AGENT_TOKENS_DIR, OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY };
     process.env.AGENT_DATA_DIR = root; process.env.AGENT_TOKENS_DIR = path.join(root, 'tokens'); process.env.OPENROUTER_API_KEY = 'fixture';

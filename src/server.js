@@ -8,7 +8,8 @@ const { isTaskResumable } = require('./pending-task-resume');
 const { isNonTaskMessage } = require('./resume-hygiene');
 const { recordResume, getResumeStats } = require('./resume-stats');
 const { getRetryDelayMs } = require('./retry-policy');
-const { refreshHhToken } = require('./hh-utils');
+const { hhLib } = require('./domains/hh/lib');
+const { refreshHhToken } = hhLib('hh-utils');
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
@@ -32,7 +33,7 @@ const { listSessions, getSession: getSessionData, archiveSessions, getCurrentSes
 const { generateSummary } = require('./session-summary');
 const { startGetcourseLogin } = require('./getcourse-login');
 const { processMishaUpdate } = require('./misha-bot');
-const { createHhNegotiations } = require('./hh-negotiations');
+const { createHhNegotiations } = hhLib('hh-negotiations');
 
 const profiles = require('./profiles');
 const dataPaths = require('./data-paths');
@@ -206,7 +207,7 @@ function scheduleNalogExpiryChecks(secrets) {
 // Populated once in main() after loadSecrets(). Read by hh-negotiations.js via getSecretsCache().
 let _secretsCache = null;
 
-// HH negotiations/messages/background-scoring — moved to src/hh-negotiations.js (issue #942 P0.3).
+// HH negotiations/messages/background-scoring — trained-assist-hh-skill src/hh-negotiations.js, via hhLib (issue #942 P0.3, #1470).
 // The HH HTTP client lives in hh-utils (single implementation, issue #942 P0.4).
 // refreshHhToken (OAuth refresh) also lives in hh-utils; readChatId stays inline
 // (used by many other handlers here).
@@ -535,7 +536,7 @@ async function main() {
     // POST /apply/:username/:vacancyId) moved to the RU edge service — see
     // src/ru-edge.js. Vacancy hosting stays on platform.recruiter-assistant.ru by
     // owner decision (issue #1288); this agent still publishes to it via
-    // publishVacancyPage() in src/hh-vacancy.js (VACANCY_REMOTE_STORE_URL), unchanged.
+    // publishVacancyPage() in hh-skill src/hh-vacancy.js (VACANCY_REMOTE_STORE_URL), unchanged.
 
     // GET /health — no auth, liveness check for smoke tests and monitoring
     if (req.method === 'GET' && url.pathname === '/health') {

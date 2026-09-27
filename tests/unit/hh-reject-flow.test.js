@@ -11,9 +11,9 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { REJECT_REASON_ACTION, REJECTION_GREETING, standardRejectionText } = require('../../src/hh-rejection');
-const { createHhNegotiations, HH_DISCARD_ACTIONS } = require('../../src/hh-negotiations');
-const { generateReviewPageHtml } = require('../../src/hh-review-page-html');
+const { REJECT_REASON_ACTION, REJECTION_GREETING, standardRejectionText } = require('../../src/domains/hh/lib').hhLib('hh-rejection');
+const { createHhNegotiations, HH_DISCARD_ACTIONS } = require('../../src/domains/hh/lib').hhLib('hh-negotiations');
+const { generateReviewPageHtml } = require('../../src/domains/hh/lib').hhLib('hh-review-page-html');
 const { createMockHhServer } = require('../helpers/mock-hh-server');
 
 const mkTmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hh-reject-flow-'));

@@ -30,7 +30,8 @@ async function hhQuickAnswer({ intent, task, username, workDir, timeoutMs }) {
   const text = await runHostAction({ tool: 'hh_quick_answer', params: { intent, task }, username, workDir, timeoutMs });
   return text || '';
 }
-const { readVacancyState, initVacancyState, appendVacancyMessage, writeVacancyState, generateVacancyFromMessages, publishVacancyPage, publishToHH, getMissingFields } = require('../hh-vacancy');
+const { hhLib } = require('../domains/hh/lib');
+const { readVacancyState, initVacancyState, appendVacancyMessage, writeVacancyState, generateVacancyFromMessages, publishVacancyPage, publishToHH, getMissingFields } = hhLib('hh-vacancy');
 const { loadUserSiteIntents } = require('../user-sites');
 const { deleteServiceAccount: deleteGdriveSA } = require('../mcp-skills/tools/50-gdrive');
 const persona = require('../persona');
