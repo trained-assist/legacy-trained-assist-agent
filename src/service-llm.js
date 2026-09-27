@@ -10,6 +10,12 @@
 //     rung is retried once; with every key parked, all Go rungs are skipped until one heals;
 //   * guard — empty content, or non-JSON when json:true, fails the rung and moves on.
 //
+// Primary path: the trained-assist-llm-ladder Cloudflare Worker (same ladder, state in a Durable
+// Object, https://llm-ladder.trainedassist.store) when its token is present
+// ($AGENT_TOKENS_DIR/llm-ladder/token or LLM_LADDER_TOKEN). If the worker is unreachable (network,
+// timeout, 5xx) the SAME ladder runs in-process below — the worker is never a single point of
+// failure. A worker answer "every rung failed" is final (same providers either way).
+//
 // Research / presentation / vision calls deliberately stay on their own Gemini path (owner:
 // «gemini для рисеча и для презентаций он прямо гуд») — this is only for mechanical calls.
 
@@ -44,7 +50,7 @@ function _orKey(apiKey) {
 // True when at least one provider of the ladder has a key — callers use it where they used to
 // check for OPENROUTER_API_KEY.
 function available(apiKey) {
-  return !!(_goKey() || _orKey(apiKey));
+  return !!(_ladderToken() || _goKey() || _orKey(apiKey));
 }
 
 function _request(model, { messages, maxTokens, temperature, json }, apiKey) {
@@ -119,6 +125,55 @@ function _recordFailure(model, errorText, source) {
   }
 }
 
+const LADDER_URL = () => (process.env.LLM_LADDER_URL || 'https://llm-ladder.trainedassist.store').replace(/\/+$/, '');
+
+function _ladderToken() {
+  if (process.env.LLM_LADDER_DISABLED === '1') return null; // test runners
+  if (process.env.LLM_LADDER_TOKEN) return process.env.LLM_LADDER_TOKEN.trim();
+  try {
+    const { TOKENS_ROOT } = require('./data-paths');
+    return require('fs').readFileSync(require('path').join(TOKENS_ROOT, 'llm-ladder', 'token'), 'utf8').trim() || null;
+  } catch { return null; }
+}
+
+// → { result } on an answer, { final: true } when the worker says every rung failed,
+//   null when the worker is unavailable (caller falls back in-process).
+async function _viaWorker({ messages, maxTokens, temperature, json, timeoutMs, totalTimeoutMs, source }) {
+  const token = _ladderToken();
+  if (!token) return null;
+  const body = {
+    model: LADDER, messages, temperature, max_tokens: maxTokens,
+    ladder_timeout_ms: timeoutMs,
+    ...(totalTimeoutMs ? { ladder_total_timeout_ms: totalTimeoutMs } : {}),
+    ...(json ? { response_format: { type: 'json_object' } } : {}),
+  };
+  let res;
+  try {
+    res = await fetch(`${LADDER_URL()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout((totalTimeoutMs || timeoutMs * 4) + 3000),
+    });
+  } catch (e) {
+    console.warn(`[${source}] llm-ladder worker unreachable (${e.message}) — running the ladder in-process`);
+    return null;
+  }
+  const data = await res.json().catch(() => null);
+  if (res.ok) {
+    const content = String(data?.choices?.[0]?.message?.content || '').trim();
+    const value = json ? _parseJson(content) : undefined;
+    if (!content || (json && value === undefined)) return null; // worker guards this — be safe
+    return { result: { content, value, usage: data?.usage || null, model: data?.model || null } };
+  }
+  if (res.status === 502 && data?.error?.type === 'ladder_error') {
+    console.warn(`[${source}] llm-ladder: every rung failed: ${JSON.stringify(data.error.attempts || []).slice(0, 400)}`);
+    return { final: true };
+  }
+  console.warn(`[${source}] llm-ladder worker HTTP ${res.status} — running the ladder in-process`);
+  return null;
+}
+
 /**
  * @param {object} o
  * @param {Array}  o.messages       OpenAI-style messages
@@ -132,7 +187,18 @@ function _recordFailure(model, errorText, source) {
  * @param {Function}[o.fetchImpl]   injectable fetch (tests)
  * @returns {Promise<{content:string, value?:any, usage?:object, model:string}|null>} null = every rung failed
  */
-async function serviceChat({ messages, maxTokens = 800, temperature = 0, json = false, timeoutMs = 20000, totalTimeoutMs = null, apiKey = null, source = 'service-llm', fetchImpl = null } = {}) {
+async function serviceChat(o = {}) {
+  const { messages, maxTokens = 800, temperature = 0, json = false, timeoutMs = 20000, totalTimeoutMs = null, source = 'service-llm', fetchImpl = null } = o;
+  // An injected fetchImpl (tests) exercises the in-process ladder directly.
+  if (!fetchImpl) {
+    const w = await _viaWorker({ messages, maxTokens, temperature, json, timeoutMs, totalTimeoutMs, source });
+    if (w && w.result) return w.result;
+    if (w && w.final) return null;
+  }
+  return _serviceChatLocal(o);
+}
+
+async function _serviceChatLocal({ messages, maxTokens = 800, temperature = 0, json = false, timeoutMs = 20000, totalTimeoutMs = null, apiKey = null, source = 'service-llm', fetchImpl = null } = {}) {
   const opts = { messages, maxTokens, temperature, json, timeoutMs, fetchImpl };
   const deadline = totalTimeoutMs ? Date.now() + totalTimeoutMs : Infinity;
   // Only rungs whose provider has a key; if health skips every one of those, try them all anyway —

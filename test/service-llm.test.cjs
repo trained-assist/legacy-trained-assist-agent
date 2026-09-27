@@ -120,3 +120,55 @@ test('totalTimeoutMs stops walking the ladder once the budget is spent', async (
   assert.ok(calls.length < ladder().length, `stopped early (${calls.length} calls)`);
   assert.ok(Date.now() - t0 < 1500);
 });
+
+// ── Primary path: the llm-ladder Cloudflare Worker, in-process ladder as the fallback ──────────
+function withWorker(fn) {
+  return async () => {
+    const saved = { d: process.env.LLM_LADDER_DISABLED, t: process.env.LLM_LADDER_TOKEN, f: global.fetch };
+    delete process.env.LLM_LADDER_DISABLED;
+    process.env.LLM_LADDER_TOKEN = 'ladder_tok';
+    try { await fn(); } finally {
+      if (saved.d === undefined) delete process.env.LLM_LADDER_DISABLED; else process.env.LLM_LADDER_DISABLED = saved.d;
+      if (saved.t === undefined) delete process.env.LLM_LADDER_TOKEN; else process.env.LLM_LADDER_TOKEN = saved.t;
+      global.fetch = saved.f;
+    }
+  };
+}
+const okJson = (data, status = 200) => ({ ok: status === 200, status, json: async () => data, text: async () => JSON.stringify(data) });
+
+test('worker answers → used as-is (model = rung that answered), no in-process call', withWorker(async () => {
+  const s = fresh();
+  const urls = [];
+  global.fetch = async (url, init) => {
+    urls.push(url);
+    assert.equal(init.headers.Authorization, 'Bearer ladder_tok');
+    assert.equal(JSON.parse(init.body).response_format.type, 'json_object');
+    return okJson({ model: 'opencode-go/mimo-v2.6-flash', choices: [{ message: { content: '{"a":1}' } }] });
+  };
+  const r = await s.serviceChat({ messages: [{ role: 'user', content: 'hi' }], json: true });
+  assert.deepEqual(r.value, { a: 1 });
+  assert.equal(r.model, 'opencode-go/mimo-v2.6-flash');
+  assert.equal(urls.length, 1);
+  assert.match(urls[0], /llm-ladder\.trainedassist\.store\/v1\/chat\/completions$/);
+}));
+
+test('worker says every rung failed → final null, no duplicate in-process attempt', withWorker(async () => {
+  const s = fresh();
+  const urls = [];
+  global.fetch = async (url) => { urls.push(url); return okJson({ error: { type: 'ladder_error', attempts: [] } }, 502); };
+  assert.equal(await s.serviceChat({ messages: [{ role: 'user', content: 'hi' }] }), null);
+  assert.equal(urls.length, 1);
+}));
+
+test('worker unreachable → the same ladder runs in-process', withWorker(async () => {
+  const s = fresh();
+  const urls = [];
+  global.fetch = async (url) => {
+    urls.push(url);
+    if (url.includes('llm-ladder')) throw new Error('connect ECONNREFUSED');
+    return okJson({ choices: [{ message: { content: 'local ok' } }] });
+  };
+  const r = await s.serviceChat({ messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(r.content, 'local ok');
+  assert.match(urls[1], /opencode\.ai\/zen\/go/);
+}));
