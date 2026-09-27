@@ -2116,6 +2116,24 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     ? (systemPromptText ? `${systemPromptText}\n\n${ocCapBlock}` : ocCapBlock)
     : systemPromptText;
 
+  // «Посмотреть инпут»: persist the REAL model input for this run (system prompt +
+  // context/task, exactly what the engine receives) keyed by taskId, so the
+  // gateway's button can show it instead of the gateway-side task text. Best-effort:
+  // a write failure must never block the run — it degrades to a 404/fallback.
+  try {
+    const runInputStore = require('./run-input-store');
+    runInputStore.writeInput(user.workDir, taskId, runInputStore.buildDocument({
+      taskId,
+      engine,
+      sessionId: activeSessionId || null,
+      systemPrompt: ocSystemPrompt || systemPromptText,
+      prompt,
+      createdAt: Date.now(),
+      mcpServers: (() => { try { return Object.keys(JSON.parse(fs.readFileSync(mcpConfig, 'utf8')).mcpServers || {}); } catch { return []; } })(),
+      resumed: !!resumeSessionId,
+    }));
+  } catch (e) { console.warn('[runner] run-input snapshot:', e.message); }
+
   const opencodeModel = process.env.OPENCODE_MODEL || null;
   // Resolve the code cwd ONCE and hand the identical value to the argv builder
   // (codex `-C` on the fresh path) and the process spawner (spawn.cwd) — see
