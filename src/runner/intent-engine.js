@@ -12,13 +12,7 @@ const { execFile } = require('child_process');
 const sessions = require('../session-store');
 const { generateSummary } = require('../session-summary');
 const projects = require('../projects');
-const {
-  listConnectedServices,
-  revokeService,
-  getSecretsLog,
-  generateConnectLink,
-  SERVICE_DISPLAY,
-} = require('../user-tokens');
+const { revokeService, generateConnectLink } = require('../user-tokens');
 const { runHostAction } = require('../mcp-action');
 
 // Outbound HH effects (send / mass reject) can take longer than a read.
@@ -36,7 +30,6 @@ const readVacancyState = (workDir) => (hhAvailable('hh-vacancy') ? hhLib('hh-vac
 // keeps only the ORDER of checks. No hh-skill checkout → the hooks simply do not apply.
 const vacancyQuick = () => (hhAvailable('hh-vacancy-quick') ? hhLib('hh-vacancy-quick') : null);
 const { loadUserSiteIntents } = require('../user-sites');
-const { deleteServiceAccount: deleteGdriveSA } = require('../mcp-skills/tools/50-gdrive');
 const persona = require('../persona');
 const profiles = require('../profiles');
 const { savePassword: saveWebPassword, generatePassword: genWebPassword, generateMagicToken } = require('../web-auth');
@@ -67,11 +60,6 @@ const INN_CAPABILITY_INTENT  = /(?:скил|skill|умееш|можешь|ест
 const EXPO_CAPABILITY_INTENT = /(?:скил|skill|умееш|можешь|есть.{0,30}(?:скил|инструм|возможн)).{0,80}(?:участник|экспонент|выставк|expo)/i;
 const GC_CAPABILITY_INTENT   = /(?:умееш|можешь|есть.{0,30}(?:скил|инструм|возможн|функц)|что.{0,20}умееш).{0,80}(?:геткурс|getcourse|курс|урок|ученик|школ)/i;
 const AUDIO_CAPABILITY_INTENT = /(?:умееш|можешь|поддержива|транскрибир|распознаёш|распознаеш|расшифр).{0,60}(?:аудио|голосов|голос\b|запись|речь|звук|mp3|wav|ogg|voice|audio)|(?:транскрибац|транскрипц|расшифровк|распознавани).{0,40}(?:аудио|голосов|речи|записей|звука|файлов?)|(?:аудио|голосов).{0,40}(?:транскрибац|транскрипц|расшифровк|распознавани)|(?:умееш|можешь).{0,40}(?:из\s+)?(?:аудио|голосовых?\s+сообщений?|голосов(?:ого)?|записей?)\s+(?:в\s+текст|получить\s+текст|сделать\s+текст)|(?:можн[оа]|умееш|можешь).{0,20}(?:прислать|отправить|скинуть)\s+(?:аудио|голосов)/i;
-const SECRETS_LIST_INTENT   = /^\/secrets_list$|список.{0,15}подключённых|какие.{0,15}подключ|покажи.{0,15}сервис|мои.{0,15}доступ/i;
-const SECRETS_LOG_INTENT    = /^\/secrets_log$|история.{0,15}доступ|лог.{0,15}секрет|обращени.{0,15}секрет/i;
-const REVOKE_INTENT         = /отзов|revoke|удал.{0,10}доступ|отключ.{0,10}сервис|убер.{0,10}доступ/i;
-const REVOKE_SERVICE_RE     = /(github|гитхаб|weeek|вик|nalog|налог|нпд|самозан|figma|фигма|notion|linear|tilda|тильда|gdrive|гугл|google|dadata)/i;
-const REVOKE_CONFIRM_RE     = /^да[,.]?\s*(удал|отключ|подтвер|confirm)|^confirm$|^yes$/i;
 // "на какой email шарить", "почта SA", "дай адрес google" — always read from disk, never hallucinate
 const GDRIVE_SA_EMAIL_INTENT  = /(?:почт|email|e-mail|адрес).{0,40}(?:сервис|service|sa\b)|(?:сервис|service|sa\b).{0,40}(?:почт|email|e-mail|аккаун)|дай.{0,30}(?:почт|email|адрес).{0,30}(?:гугл|google|drive|аккаун)|на\s+(?:какой|что|какую).{0,30}(?:шар|поделить|пошар)|куда.{0,20}(?:шар|поделить|пошар)/i;
 // "пошарить таблицу тебе", "поделиться файлом", "как дать доступ к гугл" — needs SA email answer
@@ -196,18 +184,8 @@ const MODEL_INFO_INTENT = /(?:на\s+какой\s+(?:модел|нейросет
 // «какие есть возможности…») and used to swallow the whole task with a canned ⚡ reply —
 // silently, before the queue (#1479, 2026-09-26). Slash commands keep matching as before;
 // prose must be a single short message to count as an info question.
-const FUZZY_INFO_MAX_CHARS = 100;
-function isShortStandaloneQuestion(task) {
-  const raw = String(task || '').trim();
-  if ((raw.match(/\[Сообщение \d+\]/g) || []).length > 1) return false;
-  const text = raw.replace(/^\[Сообщение \d+\]\s*/, '').replace(/^@\w+\s*/, '').trim();
-  return text.length <= FUZZY_INFO_MAX_CHARS;
-}
-function fuzzyInfoIntent(re, task) {
-  if (!re.test(task)) return false;
-  const text = String(task || '').trim().replace(/^\[Сообщение \d+\]\s*/, '').replace(/^@\w+\s*/, '');
-  return /^\//.test(text) || isShortStandaloneQuestion(task);
-}
+const { fuzzyInfoIntent } = require('./quick/fuzzy');
+const { secretsQuickAnswer, SECRETS_LIST_INTENT, SECRETS_LOG_INTENT } = require('./quick/secrets');
 function isPreQueueQuickIntent(task) {
   return PING_INTENT.test(task) || fuzzyInfoIntent(HELP_INTENT, task) || AGENT_INFO_INTENT.test(task) ||
     fuzzyInfoIntent(MODEL_INFO_INTENT, task) || fuzzyInfoIntent(SECRETS_LIST_INTENT, task) || fuzzyInfoIntent(SECRETS_LOG_INTENT, task) ||
@@ -245,8 +223,6 @@ const EXPO_CRITERIA_INTENT  = /требовани.{0,20}(?:целев|квали
 const EXPO_STATUS_INTENT    = /статус.{0,20}(?:пайплайн|pipeline|выставк|обработк)|pipeline.{0,10}статус|сколько.{0,15}целевых|сколько.{0,15}компаний.{0,20}(?:выставк|обработан|pipeline)|expo.{0,10}статус/i;
 const EXPO_SITE_CONFIG_INTENT = /фильтр.{0,20}(?:сайт|каталог|выставк|диапазон)|сайт.{0,20}фильтр|диапазон.{0,20}(?:выручк|сайт)|настройк.{0,20}(?:сайт|каталог)|какие.{0,10}диапазон|revenue.*filter|site.*filter/i;
 // Checks whether a service is connected ("github подключен?", "статус nalog") — NOT imperative "подключи"
-const SERVICE_STATUS_INTENT = /(?:подключён|подключен|connected|активен|добавлен|работает|есть ли|подключён ли).{0,30}(?:github|weeek|вик|nalog|налог|нпд|figma|фигма|tilda|тильда|gdrive|getcourse|геткурс)|(?:github|weeek|вик|nalog|налог|нпд|figma|фигма|tilda|тильда|gdrive|getcourse|геткурс).{0,20}(?:подключён|подключен|connected|активен|добавлен|работает|статус|status)/i;
-const SERVICE_STATUS_RE     = /(github|weeek|вик|nalog|налог|нпд|figma|фигма|tilda|тильда|gdrive|getcourse|геткурс)/i;
 
 const TRUST_FOOTER = '\n\n🔒 Данные для входа не видны в переписке с ботом — они поступают прямо на сервер и хранятся в изолированном хранилище, отдельно от ИИ. Все обращения фиксируются в /secrets_log. Отзыв доступов: /secrets_list';
 
@@ -827,92 +803,9 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     return '📌 Контекст-карточка включена. Буду показывать статус после каждой задачи.';
   }
 
-  // /secrets_list — show connected services
-  if (fuzzyInfoIntent(SECRETS_LIST_INTENT, task)) {
-    const services = userId ? listConnectedServices(userId) : null;
-    if (!services || services.length === 0) {
-      return 'Нет подключённых сервисов.\n\nЧтобы подключить: «подключи GitHub», «подключи Налог.ру» и т. д.';
-    }
-    const lines = services.map(s => {
-      const d = s.mtime.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
-      return `• ${s.name} — обновлён ${d}`;
-    });
-    return [
-      '🔑 Подключённые сервисы:',
-      ...lines,
-      '',
-      'Отозвать: «отзови доступ к [сервис]»',
-      'История обращений: /secrets_log',
-    ].join('\n');
-  }
-
-  // /secrets_log — show access log
-  if (fuzzyInfoIntent(SECRETS_LOG_INTENT, task)) {
-    const log = userId ? getSecretsLog(userId) : null;
-    if (!log || log.length === 0) return 'История обращений пуста.';
-    const lines = log.map(l => {
-      const [ts, svcs] = l.split('\t');
-      const time = new Date(ts).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-      return `${time} — ${svcs}`;
-    });
-    return '📋 Последние обращения к вашим данным:\n' + lines.join('\n');
-  }
-
-  // Service status check — "github подключен?", "статус nalog"
-  if (SERVICE_STATUS_INTENT.test(task) && userId) {
-    const svcMatch = task.match(SERVICE_STATUS_RE);
-    if (svcMatch) {
-      const ALIASES = { вик: 'weeek', налог: 'nalog', нпд: 'nalog', фигма: 'figma', тильда: 'tilda', геткурс: 'getcourse', гугл: 'gdrive' };
-      const key = ALIASES[svcMatch[1].toLowerCase()] || svcMatch[1].toLowerCase();
-      const display = SERVICE_DISPLAY[key] || key;
-      const services = listConnectedServices(userId);
-      const found = services?.find(s => s.file === key);
-      if (found) {
-        const d = found.mtime.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
-        return `✅ ${display} подключён (обновлён ${d}).`;
-      }
-      return `❌ ${display} не подключён. Напиши «подключи ${display}» чтобы добавить.`;
-    }
-  }
-
-  // Revoke — delete a service token
-  if (REVOKE_INTENT.test(task)) {
-    const svcMatch = task.match(REVOKE_SERVICE_RE);
-    if (!svcMatch) return 'Укажи сервис для отзыва, например: «отзови доступ к GitHub»';
-    if (!userId) return 'Не удалось определить пользователя.';
-
-    const isGdrive = /gdrive|гугл|google/i.test(svcMatch[1]);
-
-    if (isGdrive && workDir) {
-      const pendingFile = path.join(workDir, '.revoke_gdrive_pending.json');
-      if (REVOKE_CONFIRM_RE.test(task)) {
-        // Confirmed — check pending file
-        let pending = null;
-        try { pending = JSON.parse(fs.readFileSync(pendingFile, 'utf8')); } catch { /* no pending */ }
-        const isValid = pending && pending.expiresAt > Date.now();
-        if (!isValid) return '⚠️ Подтверждение устарело. Напиши «отключи Google Drive» ещё раз.';
-        try { fs.unlinkSync(pendingFile); } catch { /* ignore */ }
-        // Fire-and-forget SA deletion (getQuickAnswer is sync)
-        deleteGdriveSA(userId).catch(e => console.error('[gdrive-revoke] SA delete failed:', e.message));
-        const revokeResult = revokeService(userId, 'gdrive');
-        if (revokeResult === 'not_found') return 'Сервис Google Drive не был подключён.';
-        return '✅ Google Drive отключён. Удаление сервис-аккаунта из GCP запущено.';
-      } else {
-        // First request — ask for confirmation, write pending file
-        const gdriveFile = path.join(os.homedir(), 'agent-tokens', String(userId), 'gdrive');
-        if (!fs.existsSync(gdriveFile)) return 'Google Drive не был подключён.';
-        try {
-          fs.writeFileSync(pendingFile, JSON.stringify({ service: 'gdrive', expiresAt: Date.now() + 5 * 60 * 1000 }), { mode: 0o600 });
-        } catch { /* non-critical */ }
-        return '⚠️ Это удалит подключение Google Drive и сервис-аккаунт из GCP.\n\nПодтвердить? Напиши «да, удали»';
-      }
-    }
-
-    const result = revokeService(userId, svcMatch[1]);
-    if (result === null) return `Не распознал сервис «${svcMatch[1]}». Доступные: GitHub, Weeek, Налог.ру, Figma, Tilda, Google Drive.`;
-    if (result === 'not_found') return `Сервис «${svcMatch[1]}» не был подключён.`;
-    return `✅ Доступ к ${SERVICE_DISPLAY[result] || result} отозван. Данные удалены с сервера.`;
-  }
+  // Connected services: /secrets_list, /secrets_log, «github подключен?», revoke (src/runner/quick/secrets.js).
+  const secretsAnswer = secretsQuickAnswer(task, { userId, workDir });
+  if (secretsAnswer !== undefined) return secretsAnswer;
 
   // "мои файлы гугл", "что мне пошарено", "список документов" — LIST before SHARE (пошаренные matches both)
   // User confirms they shared after gdrive setup — pass to Claude to call gdrive_list_files
