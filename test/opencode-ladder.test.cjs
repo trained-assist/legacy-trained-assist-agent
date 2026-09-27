@@ -266,16 +266,15 @@ test('recordFailure gives a transient Bad Request a SHORT shared per-model backo
   assert.equal(mod.resolveModel({ ladder: { build: ['flaky-model', 'sibling'] } }, 'p', 'build'), 'flaky-model');
 });
 
-test('deepseek profile: one config-driven ladder — cheapest paid Go models first (#1589), paid OpenRouter only as the LAST rung', () => {
+test('deepseek profile: one config-driven ladder — mimo → deepseek-v4.1-flash → muse-spark (owner 2026-09-27), paid OpenRouter only as the LAST rung', () => {
   const routing = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'model-routing.json'), 'utf8'));
   const profile = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'deepseek.json'), 'utf8'));
   assert.equal(profile.ladderRef, 'deepseek', 'profile must be config-driven (ladderRef), not hardcode the model list');
   assert.equal(routing.ladders['deepseek-go'], undefined, 'the toggle halves are gone (2026-09-27)');
   assert.equal(routing.ladders['deepseek-openrouter'], undefined, 'the toggle halves are gone (2026-09-27)');
   const ladder = routing.ladders.deepseek;
-  assert.equal(ladder.build[0], 'opencode-go/muse-spark-1.3-contributor', 'leads with the cheapest paid Go model the owner named');
-  assert.ok(ladder.build.includes('opencode-go/deepseek-v4.1-flash'));
-  assert.ok(ladder.build.includes('opencode-go/mimo-v2.6-flash'), 'same-gateway sibling for a flaky rung');
+  assert.deepEqual(ladder.build, ['opencode-go/mimo-v2.6-flash', 'opencode-go/deepseek-v4.1-flash',
+    'opencode-go/muse-spark-1.3-contributor', 'openrouter/deepseek/deepseek-v4-flash-0731'], 'order set by the owner');
   assert.equal(ladder.build[ladder.build.length - 1], 'openrouter/deepseek/deepseek-v4-flash-0731', 'OpenRouter is the final rung');
   for (const rung of ladder.build.slice(0, -1)) assert.ok(rung.startsWith('opencode-go/'), `rung ${rung} must be on Go`);
   for (const rung of ladder.build) assert.notEqual(rung, 'opencode-go/deepseek-v4-pro', 'expensive -pro rung removed (#1589)');

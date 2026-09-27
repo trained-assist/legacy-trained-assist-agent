@@ -41,11 +41,11 @@ test('deepseek: a failing top rung advances to the same-gateway Go sibling, not 
   const opencodeLadder = require('../src/opencode-ladder');
   const note = forceOpencodeAlternation({
     engine: 'opencode', ocProfileName: 'deepseek',
-    ocProfileOverrides: { model: 'opencode-go/muse-spark-1.3-contributor' },
+    ocProfileOverrides: { model: 'opencode-go/mimo-v2.6-flash' },
   });
   assert.match(note, /следующую ступень лестницы/);
   const next = opencodeLadder.resolveModel(deepseekProfile(), 'deepseek', 'build');
-  assert.equal(next, 'opencode-go/gpt-6-luna', 'next rung is still on Go');
+  assert.equal(next, 'opencode-go/deepseek-v4.1-flash', 'next rung is still on Go');
 });
 
 test('escalate:false leaves the rung untouched (early same-model retries must not move off it)', () => {
@@ -53,9 +53,9 @@ test('escalate:false leaves the rung untouched (early same-model retries must no
   const opencodeLadder = require('../src/opencode-ladder');
   assert.equal(forceOpencodeAlternation({
     engine: 'opencode', ocProfileName: 'deepseek',
-    ocProfileOverrides: { model: 'opencode-go/muse-spark-1.3-contributor' }, escalate: false,
+    ocProfileOverrides: { model: 'opencode-go/mimo-v2.6-flash' }, escalate: false,
   }), null);
-  assert.equal(opencodeLadder.resolveModel(deepseekProfile(), 'deepseek', 'build'), 'opencode-go/muse-spark-1.3-contributor');
+  assert.equal(opencodeLadder.resolveModel(deepseekProfile(), 'deepseek', 'build'), 'opencode-go/mimo-v2.6-flash');
 });
 
 test('ladder profile marks the current model exhausted and returns a user-facing note', () => {
@@ -82,5 +82,5 @@ test('all Go keys parked → parkProvider skips every Go rung, the ladder serves
   const state = JSON.parse(fs.readFileSync(file, 'utf8'));
   for (const m of parked) state[m].skipUntil = new Date(Date.now() - 1000).toISOString();
   fs.writeFileSync(file, JSON.stringify(state));
-  assert.equal(opencodeLadder.resolveModel(deepseekProfile(), 'deepseek', 'build'), 'opencode-go/muse-spark-1.3-contributor');
+  assert.equal(opencodeLadder.resolveModel(deepseekProfile(), 'deepseek', 'build'), 'opencode-go/mimo-v2.6-flash');
 });

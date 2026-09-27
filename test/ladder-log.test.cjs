@@ -61,7 +61,7 @@ test('model-health: quota/config failures land in limits log; transient/force do
 });
 
 test('runner rung position: 1-based index in the profile role ladder', () => {
-  const pos = ladder.rungPosition('deepseek', 'build', 'opencode-go/gpt-6-luna');
+  const pos = ladder.rungPosition('deepseek', 'build', 'opencode-go/deepseek-v4.1-flash');
   assert.ok(pos);
   assert.strictEqual(pos.rung, 2);
   assert.ok(pos.rungsTotal >= 2);

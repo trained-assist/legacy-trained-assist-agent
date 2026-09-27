@@ -133,6 +133,6 @@ test('ladder(name) returns the central config ladder and null for an unknown nam
   delete process.env.MODEL_ROUTING_CONFIG;
   const l = mh.ladder('deepseek');
   assert.ok(Array.isArray(l.build) && l.build.length >= 2);
-  assert.equal(l.build[0], 'opencode-go/muse-spark-1.3-contributor');
+  assert.equal(l.build[0], 'opencode-go/mimo-v2.6-flash');
   assert.equal(mh.ladder('does-not-exist'), null);
 });

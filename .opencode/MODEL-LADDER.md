@@ -131,13 +131,13 @@ profile is useful for any Russian-language task, not just recruiting.
 Every chat without an explicit choice runs on `deepseek` (`src/profiles.js`). It is ONE per-role
 ladder (`.opencode/profiles/deepseek.json` → `ladderRef: deepseek` in `config/model-routing.json`):
 
-`opencode-go/muse-spark-1.3-contributor` ($0.10/$0.20) → `opencode-go/gpt-6-luna` ($0.10/$0.50)
-→ `opencode-go/deepseek-v4.1-flash` ($0.15/$0.60) → `opencode-go/mimo-v2.6-flash`
+`opencode-go/mimo-v2.6-flash` → `opencode-go/deepseek-v4.1-flash` ($0.15/$0.60)
+→ `opencode-go/muse-spark-1.3-contributor` ($0.10/$0.20)
 → **`openrouter/deepseek/deepseek-v4-flash-0731`** (paid, last). Same ladder for every role.
 
-Order per the owner (2026-09-27, #1589): the two cheapest paid Go models first («сначала давай две
-самые дешёвые платные go … и потом уже финально open router эта модель»), `deepseek-v4-pro`
-dropped as too expensive, 5 rungs = `MAX_LADDER_ATTEMPTS` so the OpenRouter rung stays reachable.
+Order set by the owner 2026-09-27: «MiMo-V2.6-Flash → DeepSeek V4.1 Flash → Muse Spark 1.3
+Contributor → далее openrouter» (supersedes #1589's cheapest-first order; `gpt-6-luna` dropped,
+`deepseek-v4-pro` stays out).
 
 How it degrades and comes back — no manual switch anywhere:
 

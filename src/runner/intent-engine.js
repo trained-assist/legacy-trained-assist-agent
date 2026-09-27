@@ -643,7 +643,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
       value:    'VALUE — DeepSeek V4 Flash → GLM → Qwen',
       free:     'FREE — только бесплатный inference (MiMo/Nemotron)',
       russian:  'RUSSIAN — GigaChat Pro/Ultra/Max',
-      deepseek: 'DEEPSEEK (дефолт) — Go: muse-spark-1.3-contributor → gpt-6-luna → deepseek-v4.1-flash → mimo-v2.6-flash; OpenRouter только последней ступенью, когда все ключи Go на лимите, Go возвращается сам',
+      deepseek: 'DEEPSEEK (дефолт) — Go: mimo-v2.6-flash → deepseek-v4.1-flash → muse-spark-1.3-contributor; OpenRouter только последней ступенью, когда все ключи Go на лимите, Go возвращается сам',
     };
     const label = PROFILE_LABELS[raw] || raw;
     return `✅ OpenCode профиль → ${label}\n\nПрименён только для твоего профиля (другие юзеры VM не затронуты). Следующая задача в OpenCode подхватит новые модели.${engineNote}`;
@@ -657,7 +657,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     if (!workDir) return null;
     profiles.setOcProfile(workDir, 'deepseek');
     const engineNote = switchChatEngineToOpencode(workDir, chatId);
-    return `✅ OpenCode профиль → DEEPSEEK на Go (opencode-go/deepseek-v4.1-flash).${engineNote}`;
+    return `✅ OpenCode профиль → DEEPSEEK на Go (mimo-v2.6-flash → deepseek-v4.1-flash → muse-spark).${engineNote}`;
   }
 
   // Developer intent — if GitHub not connected, ask to connect before doing anything
