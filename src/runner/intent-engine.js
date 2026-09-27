@@ -1104,7 +1104,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     try {
       const pipelineDirC = path.join(workDir, 'expo-pipeline');
       if (fs.existsSync(pipelineDirC)) {
-        const { formatCriteriaText, readCriteria } = require('../mcp-skills/tools/87-expo-pipeline.js');
+        const { formatCriteriaText, readCriteria } = require('../domains/sibling-lib').siblingLib('sales', 'src/mcp-skills/tools/87-expo-pipeline.js');
         const criteria = readCriteria(workDir);
         return formatCriteriaText(criteria);
       }
@@ -1118,7 +1118,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     try {
       const pipelineDir = path.join(workDir, 'expo-pipeline');
       if (fs.existsSync(pipelineDir)) {
-        const { formatSiteConfigText, readSiteConfig } = require('../mcp-skills/tools/87-expo-pipeline.js');
+        const { formatSiteConfigText, readSiteConfig } = require('../domains/sibling-lib').siblingLib('sales', 'src/mcp-skills/tools/87-expo-pipeline.js');
         const config = readSiteConfig(workDir);
         return formatSiteConfigText(config);
       }

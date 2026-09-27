@@ -14,7 +14,8 @@ next to every release. Core uses it in four ways — the **domain module contrac
 |------|--------------------------|------------------|
 | MCP tools | `src/mcp-skills/tools/*.js` | `src/browser.js` mounts the sibling MCP server in each session's `.mcp.json`; `src/mcp-action.js` spawns it for `/action`, cron and host-only actions |
 | HTTP routes | e.g. `src/hh-routes.js` | `server.js` mounts them for the domain's path prefix via the bridge (`hhLib('hh-routes')`) |
-| Quick-answer intents / hooks | e.g. `src/hh-intents.js`, `src/hh-vacancy-quick.js` | `runner/intent-engine.js` keeps only the order of checks and calls the hooks |
+| Quick-answer intents / hooks | e.g. `src/hh-intents.js`, `src/hh-vacancy-quick.js` | `runner/intent-engine.js` keeps only the order of checks and calls the hooks (`hhLib`, `siblingLib`) |
+| Profile skill gating | catalog `modules: ["<server>/<file>"]` | `src/skills/{resolve,enforce}.js` mount the sibling if any enabled section needs one of its modules; the sibling registry skips `SKILLS_RESOLVED` hidden modules |
 | Prompt rules | `src/prompt-domains/*.md` | `src/prompt-domains/index.js` reads them from every sibling repo in `config/skill-catalog.json` |
 
 Missing/broken checkout → only that domain fails; core starts and serves everything
@@ -42,8 +43,9 @@ revision and hid current tools from it.
 
 - [x] repo created (lightweight CI: tools load, unit tests, core MCP-contract deploy gate); mounted as the `sales-skills` sibling (`src/skill-siblings.js`, `deploy.sh ensure_sibling`)
 - [x] Weeek CRM `30-weeek` + prompt domains `weeek`, `weeek.setup` (catalog section `crm-weeek` mounts `sales-skills`)
-- [ ] expo / Flexi: `85-expo`…`89-expo-pipeline-run`, `92-flexi-sales` — `89` calls core `04-cron` in-process, needs the host cron path first
-- [ ] company / INN: `40-company`, `70-inn-enrichment` (+ `src/inn-pipeline/`), `71-dadata`, `72-checko` — shared by `recruiting/company` and `flexi-expo`
+- [x] expo / Flexi: `85-expo`…`89-expo-pipeline-run`, `92-flexi-sales` (+ `expo-paths`, `catalog-template`); `89` auto_cron reports schedules unavailable (#1489) instead of calling core's in-process `04-cron` (it was a no-op in prod)
+- [x] company / INN: `40-company`, `70-inn-enrichment` (+ `inn-pipeline`), `71-dadata`, `72-checko`
+- Catalog sections address these as `sales-skills/<file>`: `recruiting/company` mounts the sibling for company/INN only; the sibling registry hides modules of switched-off sections (`SKILLS_RESOLVED`)
 
 ### freelance — `trained-assist-freelance-skill` (repo exists)
 

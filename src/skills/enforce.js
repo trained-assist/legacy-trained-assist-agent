@@ -27,6 +27,14 @@ function union(sections, ids, key) {
   return out;
 }
 
+// A section's sibling servers: listed ones plus the owners of its sibling modules
+// ('<server>/<file>' entries — a domain repo's modules gated per section, #1470).
+function sectionSiblings(sections, ids) {
+  const out = union(sections, ids, 'siblings');
+  for (const m of union(sections, ids, 'modules')) if (m.includes('/')) out.add(m.split('/')[0]);
+  return out;
+}
+
 // Pure: catalog + profileSkills → { sections, unknown, hidden: {siblings, modules, domains} }.
 function computePlan(catalog, profileSkills) {
   const sections = catalog.sections || {};
@@ -42,7 +50,7 @@ function computePlan(catalog, profileSkills) {
     sections: on,
     unknown: r.unknown,
     hidden: {
-      siblings: minus(union(sections, all, 'siblings'), union(sections, on, 'siblings')),
+      siblings: minus(sectionSiblings(sections, all), sectionSiblings(sections, on)),
       modules: minus(union(sections, all, 'modules'), union(sections, on, 'modules')),
       domains: minus(union(sections, all, 'promptDomains'), union(sections, on, 'promptDomains')),
     },

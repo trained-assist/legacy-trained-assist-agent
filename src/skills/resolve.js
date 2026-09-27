@@ -86,8 +86,13 @@ function resolve(catalog, profileSkills, readiness) {
     if (!sectionEnabled(id, section, ps)) continue;
     out.sections.push(id);
     for (const mod of section.modules || []) {
-      const key = `${LOCAL}/${mod}`;
-      (moduleReady(LOCAL, mod, readiness) === false ? setupOnly : modules).add(key);
+      // 'file.js' = a core module; '<server>/file.js' = a sibling domain repo's module.
+      const [server, file] = mod.includes('/') ? mod.split('/') : [LOCAL, mod];
+      if (server !== LOCAL) {
+        if (!servers[server] || servers[server].kind !== 'sibling' || !serverAttached(server, readiness)) continue;
+        siblings.add(server);
+      }
+      (moduleReady(server, file, readiness) === false ? setupOnly : modules).add(`${server}/${file}`);
     }
     for (const sib of section.siblings || []) {
       if (!servers[sib] || servers[sib].kind !== 'sibling') continue;
@@ -101,10 +106,12 @@ function resolve(catalog, profileSkills, readiness) {
     }
   }
 
-  // Sibling modules come from readiness (the sibling ships its own module list).
+  // Sibling modules not addressed by any section come from readiness (the sibling
+  // ships its own module list) — only for siblings mounted by a `siblings` entry.
+  const catalogModules = new Set(Object.values(sections).flatMap(sec => (sec.modules || []).filter(m => m.includes('/'))));
   for (const sib of siblings) {
     for (const [key, val] of Object.entries(readiness)) {
-      if (!key.startsWith(sib + '/') || key === `${sib}/*`) continue;
+      if (!key.startsWith(sib + '/') || key === `${sib}/*` || catalogModules.has(key)) continue;
       (val === false ? setupOnly : modules).add(key);
     }
   }

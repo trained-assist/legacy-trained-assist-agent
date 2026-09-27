@@ -39,7 +39,7 @@
     },
     "recruiting/company": {
       "title": "Компании (ИНН, DaData, Checko)",
-      "modules": ["40-company.js", "70-inn-enrichment.js", "71-dadata.js", "72-checko.js"]
+      "modules": ["sales-skills/40-company.js", "sales-skills/70-inn-enrichment.js", "sales-skills/71-dadata.js", "sales-skills/72-checko.js"]
     },
     "software-engineering": {
       "title": "Разработка ПО",
@@ -56,13 +56,13 @@
     "flexi-expo": {
       "title": "Выставки Flexi",
       "modules": [
-        "85-expo.js", "86-expo-flexi.js", "87-expo-pipeline.js", "88-expo-catalog.js",
-        "89-expo-pipeline-run.js", "92-flexi-sales.js",
-        "40-company.js", "70-inn-enrichment.js", "71-dadata.js", "72-checko.js"
+        "sales-skills/85-expo.js", "sales-skills/86-expo-flexi.js", "sales-skills/87-expo-pipeline.js", "sales-skills/88-expo-catalog.js",
+        "sales-skills/89-expo-pipeline-run.js", "sales-skills/92-flexi-sales.js",
+        "sales-skills/40-company.js", "sales-skills/70-inn-enrichment.js", "sales-skills/71-dadata.js", "sales-skills/72-checko.js"
       ],
       "promptDomains": ["expo", "flexi-sales"]
     },
-    "crm-weeek": { "title": "Weeek CRM", "siblings": ["sales-skills"], "promptDomains": ["weeek", "weeek.setup"] },
+    "crm-weeek": { "title": "Weeek CRM", "modules": ["sales-skills/30-weeek.js"], "promptDomains": ["weeek", "weeek.setup"] },
     "getcourse": { "title": "GetCourse", "modules": ["80-getcourse.js", "81-gc-discovery.js"], "promptDomains": ["getcourse", "getcourse.setup"] },
     "nalog": { "title": "Самозанятый НПД", "modules": ["10-nalog.js"], "promptDomains": ["nalog.setup"] },
     "tilda": { "title": "Tilda", "modules": ["20-tilda.js"], "promptDomains": ["tilda.setup"] },
