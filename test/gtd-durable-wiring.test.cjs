@@ -785,8 +785,9 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     ok(extra === 0, `p3c: exhausted item is never re-fired (extra=${extra})`);
   }
 
-  // 25. P3c recovery: provider switch for the deepseek pair flips go↔openrouter
-  // via the injectable toggle; the item re-pends with the action recorded.
+  // 25. P3c recovery: provider switch for the deepseek profile advances its ladder
+  // (the VM-wide go↔openrouter toggle is gone, 2026-09-27); the item re-pends with the
+  // action recorded.
   {
     const G25 = freshStore('25');
     const store = G25.durableStore();
@@ -800,17 +801,20 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
           minimum_model_level: 'bachelor', context_budget: 'small', validation: { command: 'true' }, max_attempts: 5 }],
       });
       store.updateTask(r.task.id, 'u1', { status: 'active' });
-      let flipped = 0;
-      const toggle = { getMode: () => 'go', forceFlip: () => { flipped++; return 'openrouter'; } };
+      const advanced = [];
+      const ladder = {
+        buildOcProfileOverrides: () => ({ agent: { build: { model: 'opencode-go/deepseek-v4.1-flash' } } }),
+        forceAdvance: (p, role, model) => advanced.push(`${p}/${model}`),
+      };
       await G25.runDueDurable({
-        secrets: {}, now: Date.now(), isTaskRunning: () => false, toggle,
+        secrets: {}, now: Date.now(), isTaskRunning: () => false, ladder,
         classifier: () => ({ class: 'AUTH', retryable: false, source: 'rule', confidence: 1 }),
         runTask: async () => 'nope. DURABLE: failed: not logged in',
       });
       await drain();
       const item = store.listTaskItems(r.task.id, 'u1')[0];
-      ok(item.status === 'pending' && flipped === 1 && /^alternate_provider/.test(item.last_recovery_action || ''),
-        `p3c: deepseek provider switch flips the go↔openrouter toggle (got ${item.status}, flips=${flipped}, ${item.last_recovery_action})`);
+      ok(item.status === 'pending' && advanced.length === 1 && /^deepseek\//.test(advanced[0]) && /^alternate_provider/.test(item.last_recovery_action || ''),
+        `p3c: deepseek provider switch advances the deepseek ladder (got ${item.status}, advanced=${advanced}, ${item.last_recovery_action})`);
     } finally {
       delete process.env.PLAYBOOK_LEVEL_MAP;
     }

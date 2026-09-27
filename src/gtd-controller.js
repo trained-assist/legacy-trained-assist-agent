@@ -318,7 +318,7 @@ async function fireTaskHooks(store, task, event, vars, sinks, approved) {
 // own max_attempts / execution_timeout_seconds. delay_after_sec / wait_deadline_at
 // shape when the store hands the item out (see durable-task-store.completeItem /
 // expireWaitingDeadlines).
-async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now(), maxFires = MAX_FIRES_PER_TICK, registry = null, llmValidate = null, classifier = null, ladder = null, toggle = null, hookSinks = null, approveHooks = null }) {
+async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now(), maxFires = MAX_FIRES_PER_TICK, registry = null, llmValidate = null, classifier = null, ladder = null, hookSinks = null, approveHooks = null }) {
   const store = durableStore();
   const validators = registry || getDefaultRegistry();
   // A programmatic step that fails is retried synchronously inside this pass
@@ -400,7 +400,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
         const errText = `programmatic validation not passed: ${failedKeys || 'no validations'}`;
         store.failItem(item.id, task.profile_id, { executionId, error: errText });
         const rec = await recoverDurableItem({
-          store, task, itemId: item.id, errorText: errText, classifier, ladder, toggle,
+          store, task, itemId: item.id, errorText: errText, classifier, ladder,
           escalate: false, retryDelayMs: FRESH_CLAIM_GRACE_MS,
         });
         store.finishExecution(executionId, {
@@ -491,7 +491,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
         await fireItemHooks(store, task, itemSnap, 'stage_exit', hookVars(), sinks, hooksApproved);
       } else if (/DURABLE:\s*failed/i.test(said)) {
         store.failItem(itemSnap.id, task.profile_id, { executionId, error: said.slice(0, 500) });
-        const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: said, classifier, ladder, toggle });
+        const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: said, classifier, ladder });
         store.finishExecution(executionId, {
           status: 'failed', error_class: rec.failureClass,
           error_text: `${rec.action || 'terminal'}: ${said}`.slice(0, 500),
@@ -506,7 +506,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
         // no terminal marker — treat as failure, bounded by the item's own max_attempts
         const errText = 'no DURABLE terminal marker in reply';
         store.failItem(itemSnap.id, task.profile_id, { executionId, error: errText });
-        const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier, ladder, toggle });
+        const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier, ladder });
         store.finishExecution(executionId, {
           status: 'failed', error_class: rec.failureClass,
           error_text: `${rec.action || 'terminal'}: no marker`.slice(0, 500),
@@ -528,7 +528,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       // tier escalation (a crash is not an item-quality signal) and with the
       // crash-retry backoff; after the budgets are spent the item stays failed.
       const rec = await recoverDurableItem({
-        store, task, itemId: itemSnap.id, errorText: e.message, classifier, ladder, toggle,
+        store, task, itemId: itemSnap.id, errorText: e.message, classifier, ladder,
         retryDelayMs: 5 * 60 * 1000, escalate: false,
       });
       store.finishExecution(executionId, {

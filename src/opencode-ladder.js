@@ -228,8 +228,31 @@ function rungPosition(profileName, role, model, profilesDir) {
   }
 }
 
+// Skip every rung of `profileName` whose model starts with `prefix` (e.g. 'opencode-go/') until
+// `untilMs`. Used when every OpenCode Go key is parked: the Go quota is per key and account-wide,
+// so no Go rung can work until a key heals — the ladder then serves its non-Go (OpenRouter) rung,
+// and the Go rungs come back on their own when the skip lapses. Returns the parked models.
+function parkProvider(profileName, prefix, untilMs, errorText, profilesDir) {
+  const parked = [];
+  try {
+    const dir = profilesDir || path.join(__dirname, '..', '.opencode', 'profiles');
+    const profileRaw = JSON.parse(fs.readFileSync(path.join(dir, `${profileName}.json`), 'utf8'));
+    const retryAfterMs = Math.max(60 * 1000, untilMs - Date.now());
+    for (const role of ROLES) {
+      for (const model of _roleLadder(profileRaw, role)) {
+        if (!model.startsWith(prefix) || parked.includes(model)) continue;
+        modelHealth.recordFailure(model, { class: 'quota', retryAfterMs, errorText, source: `runner:${profileName}` });
+        parked.push(model);
+      }
+    }
+  } catch (e) {
+    console.warn('[opencode-ladder] parkProvider:', e.message);
+  }
+  return parked;
+}
+
 module.exports = {
-  ROLES, rungPosition, MAX_LADDER_ATTEMPTS, RETRY_FORCE_TTL_MS,
+  ROLES, parkProvider, rungPosition, MAX_LADDER_ATTEMPTS, RETRY_FORCE_TTL_MS,
   classifyError, resolveModel, buildOcProfileOverrides,
   markExhausted, clearExhausted, recordFailure, forceAdvance, recordSuccess,
   stateFile: modelHealth.stateFile,

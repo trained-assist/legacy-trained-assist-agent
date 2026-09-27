@@ -13,7 +13,7 @@ editing several profiles that just happen to share it. A profile with an inline 
 Health is stored **per model, not per profile** (issue #1467, owner 2026-09-26: "клиент единый
 сервис, единый для всех профилей") in `src/model-health.js` →
 `~/.config/opencode/model-health.json`. The same physical model appears in the ladders of several
-profiles (`deepseek-go`, `max`, `value`); before this its flakiness was learned separately in each,
+profiles (`deepseek`, `max`, `value`); before this its flakiness was learned separately in each,
 so a rung burned in one place was still tried fresh elsewhere. Now one shared record is used by
 every profile/role, and a skipped model comes back when the next call to it succeeds
 (`recordSuccess`).
@@ -126,39 +126,39 @@ Russian-language quality — ladder degradation doesn't touch `rolePrompts`, onl
 the role). Renamed from `russian-recruiter` because the ladder mechanism is generic and this
 profile is useful for any Russian-language task, not just recruiting.
 
-## `deepseek` (logical profile) — Go or OpenRouter, now with a real ladder per gateway
+## `deepseek` — default profile: one ladder, Go first (2026-09-27)
 
-`/oc_deepseek` is a logical profile with no file of its own: it resolves to `deepseek-go.json`
-or `deepseek-openrouter.json` via the VM-wide go/openrouter toggle (`src/opencode-go-toggle.js`).
-Until 2026-09-26 both files were a single flat `{"model": ...}` — one uniform model per gateway,
-no ladder, so the only possible response to a failure was flipping the whole team's gateway.
-The "Bad Request on the top rung" bug exposed the gap: when `opencode-go/deepseek-v4.1-flash`
-intermittently rejected a request, there was nothing to degrade to within the gateway.
+Every chat without an explicit choice runs on `deepseek` (`src/profiles.js`). It is ONE per-role
+ladder (`.opencode/profiles/deepseek.json` → `ladderRef: deepseek` in `config/model-routing.json`):
 
-Both profiles now reference a real per-role ladder on their own gateway via `ladderRef` (the
-ladder itself lives in `config/model-routing.json`):
+`opencode-go/muse-spark-1.3-contributor` ($0.10/$0.20) → `opencode-go/gpt-6-luna` ($0.10/$0.50)
+→ `opencode-go/deepseek-v4.1-flash` ($0.15/$0.60) → `opencode-go/mimo-v2.6-flash`
+→ **`openrouter/deepseek/deepseek-v4-flash-0731`** (paid, last). Same ladder for every role.
 
-- `deepseek-go` (`ladderRef` in `deepseek-go.json`, same ladder for every role):
-  `opencode-go/muse-spark-1.3-contributor` ($0.10/$0.20) → `opencode-go/gpt-6-luna` ($0.10/$0.50)
-  → `opencode-go/deepseek-v4.1-flash` ($0.15/$0.60) → `opencode-go/mimo-v2.6-flash` →
-  `openrouter/deepseek/deepseek-v4-flash-0731`.
-  2026-09-27 (owner: «сначала давай две самые дешёвые платные go … и потом уже финально open
-  router эта модель»; owner named the top model directly — Muse Spark 1.3 Contributor): the ladder
-  leads with the two cheapest paid Go models and ends on the metered OpenRouter deepseek fallback
-  (the same model `max`/`free` already trust), so a Go-gateway outage degrades to OpenRouter
-  instead of dead-ending. Dropped `opencode-go/deepseek-v4-pro` ($0.66/$1.98) in the same change —
-  the expensive leftover flagged in the #1467 report, which made `plan`/`review` 4x+ costlier than
-  the other roles for no requested benefit. Length is exactly 5 rungs = `MAX_LADDER_ATTEMPTS`, so
-  every rung is reachable within one task's escalation budget.
-- `deepseek-openrouter` (`ladderRef` in `deepseek-openrouter.json`):
-  `openrouter/deepseek/deepseek-v4-flash-0731` → `openrouter/xiaomi/mimo-v2.6-flash`
-  (2026-09-26: `openrouter/z-ai/glm-5.3-flash` dropped — it was the most expensive rung of this
-  ladder and added nothing over the deepseek/mimo pair, per the owner: "glm дорогая и не очень
-  она классная. вместо glm поставим этот Mimo").
+Order per the owner (2026-09-27, #1589): the two cheapest paid Go models first («сначала давай две
+самые дешёвые платные go … и потом уже финально open router эта модель»), `deepseek-v4-pro`
+dropped as too expensive, 5 rungs = `MAX_LADDER_ATTEMPTS` so the OpenRouter rung stays reachable.
 
-Behaviour consequence: a failing rung now degrades **within the same gateway** first; the VM-wide
-toggle flip is reserved for a genuine account-wide Go quota hit (`noteFailure` classifies it as
-`quota` on an `opencode-go/*` model) or when the gateway's ladder itself has no usable rung left.
+How it degrades and comes back — no manual switch anywhere:
+
+- **A flaky Go rung** ("Bad Request", 5xx) — retried on the model's own backoff (15s → 30s → 60s …),
+  then the next Go rung. Each model keeps its own backoff counter.
+- **A Go key hits its limit / is rejected** — `src/opencode-go-keys.js` rotates `auth.json` to the
+  other key (two keys: `OPENCODE_GO_API_KEYS`) and the task retries on Go.
+- **Both keys parked** — the runner skips every `opencode-go/*` rung of the ladder until the
+  earliest key heals (≤15 min for a quota hit, 1 h for a rejected key), so the ladder serves its
+  OpenRouter last rung. When the skip lapses the Go rungs are picked again automatically.
+
+History: until 2026-09-27 `deepseek` was a "logical" profile resolved through a VM-wide
+go/openrouter toggle (`deepseek-go.json` / `deepseek-openrouter.json`, `/oc_go`, `/oc_openrouter`,
+`~/.config/opencode/go-mode.json`). A manual `/oc_openrouter` never expired — it was left on (and
+re-set by `npm test` runs on the VM, whose test hit the live toggle file) and drained the OpenRouter
+balance. The toggle, both halves and the pin commands were removed.
+
+| Command | Effect |
+|---------|--------|
+| `/oc_deepseek`, `/oc_ds`, `/oc_go`, `/oc_ds_go` | Select `deepseek` for *your* profile |
+| `/oc_openrouter`, `/oc_ds_or` | No switch any more — replies that OpenRouter is only the automatic last rung |
 
 ## Retired profiles
 

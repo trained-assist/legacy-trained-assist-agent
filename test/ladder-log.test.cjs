@@ -61,11 +61,11 @@ test('model-health: quota/config failures land in limits log; transient/force do
 });
 
 test('runner rung position: 1-based index in the profile role ladder', () => {
-  const pos = ladder.rungPosition('deepseek-openrouter', 'build', 'openrouter/xiaomi/mimo-v2.6-flash');
+  const pos = ladder.rungPosition('deepseek', 'build', 'opencode-go/gpt-6-luna');
   assert.ok(pos);
   assert.strictEqual(pos.rung, 2);
   assert.ok(pos.rungsTotal >= 2);
-  assert.strictEqual(pos.ladder, 'deepseek-openrouter');
+  assert.strictEqual(pos.ladder, 'deepseek');
 });
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
