@@ -112,7 +112,7 @@ module.exports = {
       },
       handler: async ({ task, context, output_schema }) => {
         const result = await withKeepalive(() =>
-          hermesRunWithTools({ username: USER_ID, task, context, outputSchema: output_schema }));
+          hermesRunWithTools({ username: USER_ID, task, context, outputSchema: output_schema, engine: process.env.HERMES_RESEARCH_ENGINE || 'opencode', ocProfile: 'research' }));
         const delivery = await persistAndDeliver({ task, result });
         return { result, ...delivery };
       },

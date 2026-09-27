@@ -215,7 +215,7 @@ function readOcAgentModels(ocProfileOverrides = null) {
 
 // Build the argv for the selected engine (claude/codex/opencode).
 // Returns [bin, args].
-function buildEngineCommand({ engine, prompt, systemPromptText, ocSystemPrompt, opencodeModel, mcpConfig, systemPromptFile, user = {}, cwd, resumeSessionId = null, ocRole = null }) {
+function buildEngineCommand({ engine, prompt, systemPromptText, ocSystemPrompt, opencodeModel, ocProfile = null, mcpConfig, systemPromptFile, user = {}, cwd, resumeSessionId = null, ocRole = null }) {
   const opencodeModelResolved = opencodeModel || process.env.OPENCODE_MODEL || null;
   // `cwd` is the runner-resolved code dir (see resolveEngineCwd); falling back to
   // user.cwd/user.workDir keeps callers that don't pass it (hermes, tests) working.

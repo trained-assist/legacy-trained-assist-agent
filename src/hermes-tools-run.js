@@ -14,8 +14,8 @@
 // Re-implementing browser automation + a function-calling loop from scratch
 // would duplicate that, and for web search specifically there is no self-hosted
 // search API in this repo — only Claude Code's own built-in WebSearch tool.
-// Defaulting engine to 'claude' gets Hermes real web search for free, with zero
-// new external credentials, instead of standing up a paid search-API integration.
+// Research runs on the Gemini-backed OpenCode ladder. Set HERMES_RESEARCH_ENGINE=claude
+// for the temporary rollback path.
 
 const fs = require('fs');
 const path = require('path');
@@ -25,6 +25,8 @@ const { writeMcpConfig } = require('./browser');
 const { buildEngineCommand, runEngineProcess } = require('./runner/claude-runner');
 const { parseLlmJson } = require('./llm-client');
 const { loadUserTokens } = require('./user-tokens');
+const { getDefaultSourceRuntime } = require('./mcp-source-runtime');
+const opencodeLadder = require('./opencode-ladder');
 
 function hermesWorkDir(username) {
   const dir = path.join(os.homedir(), 'agent-tokens', String(username), 'hermes-tmp');
@@ -35,7 +37,10 @@ function hermesWorkDir(username) {
 function buildPrompt(task, context, outputSchema) {
   const schemaHint = JSON.stringify(outputSchema, null, 2);
   return (
-    'Ты — Hermes, исследовательский воркер внутри trained-assist. У тебя есть доступ к ' +
+    'Ты — Hermes, исследовательский воркер внутри trained-assist. Только исследуй и подготовь ' +
+    'отчёт со ссылками (file:line или URL). Ничего не коммить, не открывай PR и не отмечай ' +
+    'чек-листы. У тебя есть доступ к ' +
+    'инструментам (Playwright-браузер, встроенный веб-поиск/фетч, внутренние MCP-скилы) — ' +
     'инструментам (Playwright-браузер, встроенный веб-поиск/фетч, внутренние MCP-скилы) — ' +
     'используй их, чтобы реально выполнить задачу (сходить в сеть, открыть страницы, найти ' +
     'источники), а не отвечать по памяти. Заверши работу и выведи ПОСЛЕДНИМ сообщением ТОЛЬКО ' +
@@ -51,7 +56,7 @@ function buildPrompt(task, context, outputSchema) {
  * единственный движок с встроенным WebSearch) с уже существующим per-user `.mcp.json`,
  * без Telegram-стрима/строки в session-store/pending-task журнале.
  */
-async function hermesRunWithTools({ username, task, context = '', outputSchema, engine = 'claude', taskId }) {
+async function hermesRunWithTools({ username, task, context = '', outputSchema, engine = null, ocProfile = null, taskId }) {
   if (!task || !task.trim()) throw new Error('hermesRunWithTools: task обязателен');
   if (!outputSchema) throw new Error('hermesRunWithTools: outputSchema обязателен — Hermes всегда возвращает структурированный JSON');
   if (!username) throw new Error('hermesRunWithTools: username обязателен — нужен для скоупа .mcp.json и токенов');
@@ -61,13 +66,17 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
 
   const mcpConfig = writeMcpConfig(workDir, username);
   const prompt = buildPrompt(task, context, outputSchema);
-  const [engineBin, engineArgs] = buildEngineCommand({ engine, prompt, mcpConfig });
+  const resolvedEngine = engine || process.env.HERMES_RESEARCH_ENGINE || 'opencode';
+  const resolvedProfile = ocProfile || (resolvedEngine === 'opencode' ? 'research' : null);
+  const ocProfileOverrides = resolvedEngine === 'opencode'
+    ? opencodeLadder.buildOcProfileOverrides(resolvedProfile) : null;
+  const [engineBin, engineArgs] = buildEngineCommand({ engine: resolvedEngine, ocProfile: resolvedProfile, ocRole: 'explore', prompt, mcpConfig, opencodeModel: ocProfileOverrides?.agent?.explore?.model });
 
   const { ANTHROPIC_API_KEY: _stripped, ...cleanEnv } = process.env;
   const userTokens = loadUserTokens(username, username);
 
   const result = await runEngineProcess({
-    engine,
+    engine: resolvedEngine,
     taskId: id,
     chatId: 'hermes',
     thinkingStart: Date.now(),
@@ -88,12 +97,13 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
     cwd: workDir,
     env: cleanEnv,
     mcpConfig,
+    ocProfileOverrides,
   });
 
   const text = result.claudeResult || result.lastAssistantMsg || result.fullOutput?.text || '';
   if (!text.trim()) {
     throw new Error(
-      `hermesRunWithTools: пустой ответ от ${engine} (exitCode=${result.exitCode}, ` +
+      `hermesRunWithTools: пустой ответ от ${resolvedEngine} (exitCode=${result.exitCode}, ` +
       `timedOut=${result.timedOut}, processError=${result.processError || 'none'})`
     );
   }

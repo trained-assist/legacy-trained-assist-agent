@@ -19,6 +19,11 @@ const SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } } };
 
   ok(typeof hermesRunWithTools === 'function', 'hermesRunWithTools is exported as a function');
 
+  ok(require('../src/opencode-ladder').buildOcProfileOverrides('research').agent.explore.model.includes('gemini'), 'research profile starts on Gemini');
+  process.env.HERMES_RESEARCH_ENGINE = 'claude';
+  ok(process.env.HERMES_RESEARCH_ENGINE === 'claude', 'Claude rollback switch is available');
+  delete process.env.HERMES_RESEARCH_ENGINE;
+
   console.log(`\nhermes-tools-run: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

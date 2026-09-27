@@ -37,6 +37,9 @@ const ROLE_TO_OC = Object.freeze({
   reviewer: 'review',
   verifier: 'review',
 });
+const DEFAULT_ROLE_MAP = Object.freeze({
+  researcher: { engine: 'opencode', ocProfile: 'research' },
+});
 
 function loadLevelMap() {
   const raw = process.env.PLAYBOOK_LEVEL_MAP;
@@ -56,6 +59,18 @@ function loadLevelMap() {
   return DEFAULT_LEVEL_MAP;
 }
 
+function loadRoleMap() {
+  const raw = process.env.PLAYBOOK_ROLE_MAP;
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (e) {
+    console.warn('[playbook-executor] bad PLAYBOOK_ROLE_MAP:', e.message);
+    return {};
+  }
+}
+
 /**
  * Resolve the engine/profile/role for one task item.
  *
@@ -67,7 +82,7 @@ function loadLevelMap() {
  * @param {object} [opts.levelMap] override the level→engine/profile table.
  * @returns {{executionKind,engine,ocProfile,ocRole,skipModels,modelLevel,reason}}
  */
-function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = null } = {}) {
+function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = null, roleMap = null } = {}) {
   const map = levelMap || loadLevelMap();
   const executionKind = item && item.execution_kind === 'programmatic' ? 'programmatic' : 'agent';
 
@@ -86,7 +101,13 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
     return { executionKind, engine: defaultEngine, ocProfile: null, ocRole: null, skipModels: [], modelLevel: level, reason: 'no-contract' };
   }
 
-  const mapped = map[level] || DEFAULT_LEVEL_MAP[level];
+  // A role override is intended for the normal rung only. Once durable recovery
+  // escalates current_model_level, the ordinary level map regains control.
+  const roleOverrides = { ...DEFAULT_ROLE_MAP, ...(roleMap || loadRoleMap()) };
+  const roleMapped = item.current_model_level === item.minimum_model_level
+    ? roleOverrides[role]
+    : null;
+  const mapped = roleMapped || map[level] || DEFAULT_LEVEL_MAP[level];
   const ocRole = mapped.engine === 'opencode' ? (ROLE_TO_OC[role] || 'build') : null;
   return {
     executionKind,
@@ -101,4 +122,4 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
   };
 }
 
-module.exports = { resolveStepExecution, DEFAULT_LEVEL_MAP, ROLE_TO_OC, LEVELS, ROLES };
+module.exports = { resolveStepExecution, DEFAULT_LEVEL_MAP, DEFAULT_ROLE_MAP, ROLE_TO_OC, LEVELS, ROLES, loadRoleMap };
