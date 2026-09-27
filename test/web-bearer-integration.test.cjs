@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-test('prepareWebTaskFiles materializes durable refs and prepends a real local file note', () => {
+test('prepareWebTaskFiles materializes durable refs and prepends a real local file note', async () => {
   const oldHome = process.env.HOME;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(),'web-bearer-files-'));
   process.env.HOME = tmp;
@@ -19,7 +19,7 @@ test('prepareWebTaskFiles materializes durable refs and prepends a real local fi
   fs.writeFileSync(path.join(store,'data'),'attachment-bytes');
   fs.writeFileSync(path.join(store,'meta.json'),JSON.stringify({name:'CV.pdf',mime:'application/pdf'}));
   const { prepareWebTaskFiles } = require('../src/web-routes');
-  const out = prepareWebTaskFiles('alice','analyse',[{id,name:'CV.pdf'}]);
+  const out = await prepareWebTaskFiles('alice','analyse',[{id,name:'CV.pdf'}]);
   assert.match(out.task,/Файл сохранён:/);
   assert.match(out.task,/analyse/);
   assert.equal(out.fileRefs[0].id,id);
@@ -38,13 +38,13 @@ test('session bearer readers expose projectId and summary metadata', () => {
 test('bearer run contract validates projectId and carries project/file metadata into streamWebTask', () => {
   const src = fs.readFileSync(path.join(__dirname,'../src/handlers/web.js'),'utf8');
   assert.match(src,/isValidProjectId\(projectId\)/);
-  assert.match(src,/prepareWebTaskFiles\(username, taskText, refs\)/);
+  assert.match(src,/await prepareWebTaskFiles\(username, taskText, refs, secrets\)/);
   assert.match(src,/projectId: projectId \|\| null, fileRefs: prepared\.fileRefs/);
   assert.match(src,/\/web\/intake-file-bearer/);
 });
 
 
-test('attachment-only effective task is valid after file materialization', () => {
+test('attachment-only effective task is valid after file materialization', async () => {
   const oldHome = process.env.HOME;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(),'web-bearer-attachment-only-'));
   process.env.HOME = tmp;
@@ -59,7 +59,7 @@ test('attachment-only effective task is valid after file materialization', () =>
   fs.writeFileSync(path.join(store,'data'),'only-file');
   fs.writeFileSync(path.join(store,'meta.json'),JSON.stringify({name:'only.pdf',mime:'application/pdf'}));
   const { prepareWebTaskFiles } = require('../src/web-routes');
-  const out = prepareWebTaskFiles('alice','',[{id,name:'only.pdf'}]);
+  const out = await prepareWebTaskFiles('alice','',[{id,name:'only.pdf'}]);
   assert.match(out.task,/Файл сохранён:/);
   assert.ok(out.task.trim().length > 0);
   process.env.HOME = oldHome;
