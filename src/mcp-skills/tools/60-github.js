@@ -293,6 +293,98 @@ module.exports = {
       },
     },
 
+    github_pr_checks: {
+      description: 'Get CI/check-runs status for a pull request. Reads the PR, then its head commit check-runs (the same path the GTD controller uses). Use this to answer "did CI pass / what PR status is" without opening the browser.',
+      inputSchema: {
+        type: 'object',
+        required: ['repo', 'pr_number'],
+        properties: {
+          repo: { type: 'string', description: 'owner/repo' },
+          pr_number: { type: 'number', description: 'Pull request number' },
+          head_sha: { type: 'string', description: 'Optional: query check-runs of this exact commit instead of the current PR head' },
+        },
+      },
+      handler: async ({ repo, pr_number, head_sha }) => {
+        const pr = await ghFetch(`/repos/${repo}/pulls/${pr_number}`);
+        const sha = head_sha || pr.head?.sha;
+        let runs = [];
+        let commitStatus = null;
+        if (sha) {
+          try {
+            const data = await ghFetch(`/repos/${repo}/commits/${sha}/check-runs?per_page=100`);
+            runs = data.check_runs || [];
+          } catch (e) {
+            if (!String(e.message).includes('404')) throw e;
+          }
+          if (!runs.length) {
+            try { commitStatus = await ghFetch(`/repos/${repo}/commits/${sha}/status`); }
+            catch (e) { if (!String(e.message).includes('404')) throw e; }
+          }
+        }
+        const summary = { total: runs.length, completed: 0, in_progress: 0, queued: 0, pending: 0 };
+        const byConclusion = {};
+        for (const r of runs) {
+          if (r.status === 'completed') summary.completed++;
+          else if (r.status === 'in_progress') { summary.in_progress++; summary.pending++; }
+          else if (r.status === 'queued') { summary.queued++; summary.pending++; }
+          byConclusion[r.conclusion || r.status] = (byConclusion[r.conclusion || r.status] || 0) + 1;
+        }
+        const failed = ['failure', 'action_required', 'timed_out', 'cancelled'].some(c => byConclusion[c]);
+        const pending = summary.pending > 0;
+        const nonBlocking = (byConclusion.skipped || 0) + (byConclusion.neutral || 0);
+        const meaningful = runs.length - nonBlocking;
+        let status;
+        if (!runs.length && commitStatus) {
+          if (!commitStatus.total_count || commitStatus.state === 'no-status') {
+            status = 'no-checks';
+          } else {
+            const cs = commitStatus.state;
+            status = cs === 'success' ? 'success' : (cs === 'pending' ? 'pending' : 'failure');
+          }
+        } else if (!runs.length) {
+          status = 'no-checks';
+        } else if (failed) {
+          status = 'failure';
+        } else if (pending) {
+          status = 'pending';
+        } else if (meaningful > 0 && (byConclusion.success || 0) === meaningful) {
+          status = 'success';
+        } else {
+          status = 'neutral';
+        }
+        return {
+          repo,
+          pr_number,
+          pr: {
+            number: pr.number,
+            title: pr.title,
+            state: pr.state,
+            draft: pr.draft,
+            merged: pr.merged,
+            mergeable: pr.mergeable,
+            head_sha: pr.head?.sha,
+            url: pr.html_url,
+          },
+          ci: {
+            status,
+            check_runs_total: runs.length,
+            check_runs_failed: failed ? Object.keys(byConclusion).filter(c => ['failure', 'action_required', 'timed_out', 'cancelled'].includes(c)).map(c => ({ conclusion: c, count: byConclusion[c] })) : [],
+            commit_status_state: commitStatus?.state,
+          },
+          summary,
+          check_runs: runs.map(r => ({
+            name: r.name,
+            workflow_name: r.app?.name,
+            status: r.status,
+            conclusion: r.conclusion,
+            started_at: r.started_at,
+            completed_at: r.completed_at,
+            details_url: r.html_url,
+          })),
+        };
+      },
+    },
+
     github_create_pr: {
       description: 'Create a pull request in a GitHub repository.',
       inputSchema: {
