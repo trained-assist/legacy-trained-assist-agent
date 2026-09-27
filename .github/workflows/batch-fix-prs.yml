@@ -99,7 +99,7 @@ jobs:
         if: steps.guard.outputs.skip == 'false'
         run: |
           curl -fsSL \
-            https://raw.githubusercontent.com/trained-assist/pr-autofix/v1.5.3/scripts/autofix.mjs \
+            https://raw.githubusercontent.com/trained-assist/pr-autofix/v1.6.0/scripts/autofix.mjs \
             -o /tmp/autofix-from-main.mjs
           echo "script lines: $(wc -l < /tmp/autofix-from-main.mjs)"
           node --check /tmp/autofix-from-main.mjs && echo "syntax OK"
@@ -117,8 +117,7 @@ jobs:
         if: steps.guard.outputs.skip == 'false'
         continue-on-error: true
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+          LLM_LADDER_TOKEN: ${{ secrets.LLM_LADDER_TOKEN }}
           GH_TOKEN: ${{ secrets.AUTOFIX_PAT || secrets.GITHUB_TOKEN }}
           RUN_ID: '0'
           REPO: ${{ github.repository }}
