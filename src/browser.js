@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { mergeAdapterServers } = require('./mcp-source-runtime');
+const skillsEnforce = require('./skills/enforce');
 
 // Services whose cookies we know how to inject into Playwright
 const COOKIE_DOMAINS = {
@@ -134,6 +135,12 @@ function writeMcpConfig(workDir, userId, { userName, userHandle, extraServers, s
     '--storage-state', stateFile,
   ];
 
+  // Profile skills (#1537 PR-B): null unless workDir/skills.json exists and resolves.
+  let skillsPlan = skillsEnforce.planFor(workDir);
+  const skillsFile = skillsPlan ? skillsEnforce.writeEffective(workDir, skillsPlan) : null;
+  if (skillsPlan && !skillsFile) skillsPlan = null;
+  if (!skillsPlan) { try { fs.rmSync(path.join(workDir, skillsEnforce.EFFECTIVE_FILE), { force: true }); } catch { /* stale file is inert: no env points at it */ } }
+
   const mcpToolEnv = {
     USER_ID: String(userId || ''),
     WORK_DIR: workDir,
@@ -152,6 +159,8 @@ function writeMcpConfig(workDir, userId, { userName, userHandle, extraServers, s
     ...(process.env.GCP_REGION      ? { GCP_REGION:      process.env.GCP_REGION }      : {}),
     ...(userName       ? { AGENT_USER_NAME:    userName }       : {}),
     ...(userHandle     ? { AGENT_USER_HANDLE: userHandle }     : {}),
+    // Registry (src/mcp-skills/registry.js) skips the catalog modules hidden by this file.
+    ...(skillsFile ? { SKILLS_RESOLVED: skillsFile } : {}),
     // NO AGENT_SESSION_FILE here: .mcp.json is ONE file per profile, rewritten by every run,
     // and config env overrides the engine's env — parallel sessions of a profile (different
     // chats) would read each other's session file and get_chat_history would answer for the
@@ -186,11 +195,23 @@ function writeMcpConfig(workDir, userId, { userName, userHandle, extraServers, s
     ...(siblingPaths || {}),
   };
   const sealedServerIds = new Set(Object.keys(extraServers || {}));
+  // Profile skills (#1537 PR-B): only with workDir/skills.json; a sibling whose catalog
+  // section is off is not mounted (sealed source for that id included). No skills.json
+  // or any error → plan null → legacy, nothing hidden.
+  const hiddenSiblings = new Set(skillsPlan ? skillsPlan.hidden.siblings : []);
   for (const [serverId, indexPath] of Object.entries(siblingIndexes)) {
     if (sealedServerIds.has(serverId)) continue;
+    if (hiddenSiblings.has(serverId)) continue;
     if (fs.existsSync(indexPath)) {
       config.mcpServers[serverId] = { command: 'node', args: [indexPath], env: mcpToolEnv };
     }
+  }
+
+  if (extraServers && hiddenSiblings.size > 0) {
+    extraServers = Object.fromEntries(Object.entries(extraServers).filter(([id]) => !hiddenSiblings.has(id)));
+  }
+  if (skillsPlan) {
+    console.log(`[skills] ${path.basename(workDir)}: sections=${skillsPlan.sections.join(',')} hidden sib=${skillsPlan.hidden.siblings.join('|') || '-'} mod=${skillsPlan.hidden.modules.length} dom=${skillsPlan.hidden.domains.length}`);
   }
 
   if (extraServers && Object.keys(extraServers).length > 0) {
