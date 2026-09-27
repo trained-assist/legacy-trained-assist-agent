@@ -740,8 +740,8 @@ async function detectIntent(task, { apiKey, timeoutMs = 12000 } = {}) {
   const t = String(task || '').trim();
   if (t.length < 8) return { wanted: false };
   if (!CONTROL_HINT.test(t)) return { wanted: false }; // pre-gate: не жжём LLM зря
-  const orKey = apiKey || process.env.OPENROUTER_API_KEY;
-  if (!orKey) return { wanted: false };
+  const serviceLlm = require('./service-llm');
+  if (!serviceLlm.available(apiKey)) return { wanted: false };
 
   const system = [
     'Ты классифицируешь: просит ли пользователь ДОВЕСТИ задачу до конца',
@@ -753,25 +753,8 @@ async function detectIntent(task, { apiKey, timeoutMs = 12000 } = {}) {
   ].join(' ');
 
   try {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { 'Authorization': `Bearer ${orKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: INTENT_MODEL,
-        temperature: 0,
-        max_tokens: 60,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: t.slice(0, 1500) },
-        ],
-      }),
-    });
-    if (!res.ok) return { wanted: false };
-    const data = await res.json();
-    const raw = data?.choices?.[0]?.message?.content || '';
-    const obj = JSON.parse(raw.replace(/^```json\s*|\s*```$/g, '').trim());
+    // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
+    const obj = await serviceLlm.serviceJson({ system, user: t.slice(0, 1500), maxTokens: 60, timeoutMs, apiKey, source: 'gtd-intent' });
     if (!obj || obj.wanted !== true) return { wanted: false };
     let eta = Number(obj.etaMinutes);
     if (!Number.isFinite(eta)) eta = DEFAULT_ETA_MIN;

@@ -103,35 +103,17 @@ function gatherSessions(profileRoot, opts = {}) {
   return readIndex(profileRoot).map(m => digestSession(profileRoot, m, opts));
 }
 
-// ── Cheap model call (OpenRouter, mirrors session-summary.js) ─────────────────
+// ── Cheap model call (service-LLM ladder, src/service-llm.js) ─────────────────
 
-async function callModel({ system, user, apiKey, model = DEFAULT_MODEL, timeoutMs = 60000 }) {
-  const orKey = apiKey || process.env.OPENROUTER_API_KEY;
-  if (!orKey) throw new Error('OPENROUTER_API_KEY not set — cheap-model classification unavailable');
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${orKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      }),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    const data = await res.json();
-    const text = data?.choices?.[0]?.message?.content || '';
-    return parseJsonLoose(text);
-  } finally {
-    clearTimeout(timer);
-  }
+async function callModel({ system, user, apiKey, timeoutMs = 60000 }) {
+  const serviceLlm = require('./service-llm');
+  if (!serviceLlm.available(apiKey)) throw new Error('no LLM key (OpenCode Go / OPENROUTER_API_KEY) — cheap-model classification unavailable');
+  const r = await serviceLlm.serviceChat({
+    messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+    json: true, maxTokens: 4000, timeoutMs, apiKey, source: 'reproject',
+  });
+  if (!r) throw new Error('reproject: no service-llm rung answered');
+  return r.value;
 }
 
 // Cheap models sometimes wrap JSON in prose/markdown — extract the first balanced object.

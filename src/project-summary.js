@@ -86,41 +86,19 @@ function coerceProjectSummary(obj) {
 
 // Generate {name, summary:{start,middle,end}, type} from a project's session metas.
 // Returns null on any failure (caller keeps the previous name/summary). Never throws.
-async function generateProjectSummary(sessionMetas, { apiKey, model = DEFAULT_MODEL, timeoutMs = 25000 } = {}) {
-  const orKey = apiKey || process.env.OPENROUTER_API_KEY;
-  if (!orKey) return null;
+// Runs on the service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
+async function generateProjectSummary(sessionMetas, { apiKey, timeoutMs = 25000 } = {}) {
+  const serviceLlm = require('./service-llm');
+  if (!serviceLlm.available(apiKey)) return null;
   const digest = buildProjectDigest(sessionMetas);
   if (!digest) return null;
   try {
-    const body = JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: `Диалоги проекта (хронология):\n\n${digest}\n\nВерни JSON: name + summary{start,middle,end} + type.` },
-      ],
-      response_format: { type: 'json_object' },
-      max_tokens: 500,
-      temperature: 0.2,
+    const parsed = await serviceLlm.serviceJson({
+      system: SYSTEM_PROMPT,
+      user: `Диалоги проекта (хронология):\n\n${digest}\n\nВерни JSON: name + summary{start,middle,end} + type.`,
+      maxTokens: 500, temperature: 0.2, timeoutMs, apiKey, source: 'project-summary',
     });
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${orKey}`, 'Content-Type': 'application/json' },
-      body,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!res.ok) { console.warn('[project-summary] http', res.status); return null; }
-    const data = await res.json();
-    let raw = data.choices?.[0]?.message?.content?.trim();
-    if (!raw) return null;
-    raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-    let parsed;
-    try { parsed = JSON.parse(raw); }
-    catch {
-      const m = raw.match(/\{[\s\S]*\}/);
-      if (!m) return null;
-      try { parsed = JSON.parse(m[0]); } catch { return null; }
-    }
-    return coerceProjectSummary(parsed);
+    return parsed ? coerceProjectSummary(parsed) : null;
   } catch (e) {
     console.warn('[project-summary] generate error:', e.message);
     return null;

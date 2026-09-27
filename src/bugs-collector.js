@@ -211,20 +211,9 @@ async function llmIssue({ entry, profile, input, apiKey, model = MODEL }) {
     input.transcript || '(пусто)',
   ].join('\n');
 
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      temperature: 0.2,
-      max_tokens: 2000,
-    }),
-    signal: AbortSignal.timeout(45_000),
-  });
-  if (!res.ok) throw new Error(`OpenRouter HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = await res.json();
-  const content = data?.choices?.[0]?.message?.content;
+  // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
+  const content = await require('./service-llm').serviceText({ system, user, maxTokens: 2000, temperature: 0.2, timeoutMs: 45_000, apiKey, source: 'bugs-collector' });
+  if (content == null) throw new Error('bugs-collector: no service-llm rung answered');
   const parsed = extractJson(content);
   if (!parsed || !parsed.title || !parsed.body) throw new Error('model returned no usable title/body');
   const kind = parsed.kind === 'feature' ? 'feature' : 'bug';
@@ -326,10 +315,10 @@ async function run({
 
       let issue;
       try {
-        if (apiKey) {
+        if (llm !== llmIssue || require('./service-llm').available(apiKey)) {
           issue = await llm({ entry, profile, input, apiKey, model });
         } else {
-          throw new Error('OPENROUTER_API_KEY not set');
+          throw new Error('no LLM key (OpenCode Go / OPENROUTER_API_KEY)');
         }
       } catch (e) {
         logger.warn(`[bugs-collector] LLM failed for ${profile}/${entry.id} (${e.message}); using template`);

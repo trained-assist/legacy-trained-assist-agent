@@ -54,43 +54,19 @@ function coerceSummary(obj) {
 
 // Generate a summary object for a session's messages. Returns null on any failure
 // (no key, network, unparseable) — caller keeps the previous summary / topic fallback.
-async function generateSummary(messages, { apiKey, model = DEFAULT_MODEL, timeoutMs = 20000 } = {}) {
-  const orKey = apiKey || process.env.OPENROUTER_API_KEY;
-  if (!orKey) return null;
+// Runs on the service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
+async function generateSummary(messages, { apiKey, timeoutMs = 20000 } = {}) {
+  const serviceLlm = require('./service-llm');
+  if (!serviceLlm.available(apiKey)) return null;
   const transcript = buildTranscript(messages);
   if (!transcript) return null;
-
   try {
-    const body = JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: `Диалог:\n\n${transcript}\n\nВерни JSON-резюме.` },
-      ],
-      response_format: { type: 'json_object' },
-      max_tokens: 600,
-      temperature: 0.2,
+    const parsed = await serviceLlm.serviceJson({
+      system: SYSTEM_PROMPT,
+      user: `Диалог:\n\n${transcript}\n\nВерни JSON-резюме.`,
+      maxTokens: 600, temperature: 0.2, timeoutMs, apiKey, source: 'session-summary',
     });
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${orKey}`, 'Content-Type': 'application/json' },
-      body,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!res.ok) { console.warn('[session-summary] http', res.status); return null; }
-    const data = await res.json();
-    let raw = data.choices?.[0]?.message?.content?.trim();
-    if (!raw) return null;
-    // Strip accidental ```json fences.
-    raw = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-    let parsed;
-    try { parsed = JSON.parse(raw); }
-    catch {
-      const m = raw.match(/\{[\s\S]*\}/);
-      if (!m) return null;
-      try { parsed = JSON.parse(m[0]); } catch { return null; }
-    }
-    return coerceSummary(parsed);
+    return parsed ? coerceSummary(parsed) : null;
   } catch (e) {
     console.warn('[session-summary] generate error:', e.message);
     return null;

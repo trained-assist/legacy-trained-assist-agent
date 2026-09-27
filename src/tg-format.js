@@ -167,35 +167,21 @@ async function formatForTelegram(text, opts = {}) {
   return { text: stripToPlainText(raw), parse_mode: undefined };
 }
 
-// Cheap LLM repair rung factory. Reuses OPENROUTER + GLM 5.3 Flash (same
-// model the rest of the runner uses for fast classification). Returns null
-// when no key is configured so the ladder skips straight to the floor.
+// Cheap LLM repair rung factory — runs on the service-LLM ladder (src/service-llm.js: Go rungs →
+// OpenRouter last). Returns null when no provider key is configured so the ladder skips straight
+// to the floor.
 function makeLlmFixer(orKey) {
-  const key = orKey || process.env.OPENROUTER_API_KEY;
-  if (!key) return null;
+  const serviceLlm = require('./service-llm');
+  if (!serviceLlm.available(orKey)) return null;
   return async (html, reason) => {
-    const body = JSON.stringify({
-      model: 'z-ai/glm-5.3-flash',
-      messages: [
-        {
-          role: 'system',
-          content: 'You repair Telegram-flavored HTML. Output ONLY the corrected HTML, no commentary, no code fences. '
-            + 'Allowed tags: b, i, u, s, a (with href), code, pre, blockquote, tg-spoiler. '
-            + 'Close every tag, drop any disallowed tag while keeping its text, and escape stray < > & as &lt; &gt; &amp;.',
-        },
-        { role: 'user', content: `Problem: ${reason}\n\nHTML to fix:\n${html}` },
-      ],
-      max_tokens: 2048,
-      temperature: 0,
+    let out = await serviceLlm.serviceText({
+      system: 'You repair Telegram-flavored HTML. Output ONLY the corrected HTML, no commentary, no code fences. '
+        + 'Allowed tags: b, i, u, s, a (with href), code, pre, blockquote, tg-spoiler. '
+        + 'Close every tag, drop any disallowed tag while keeping its text, and escape stray < > & as &lt; &gt; &amp;.',
+      user: `Problem: ${reason}\n\nHTML to fix:\n${html}`,
+      maxTokens: 2048, timeoutMs: 8000, apiKey: orKey, source: 'tg-format',
     });
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body,
-      signal: AbortSignal.timeout(6000),
-    });
-    const data = await res.json();
-    let out = (data.choices?.[0]?.message?.content || '').trim();
+    if (!out) return null;
     out = out.replace(/^```(?:html)?\s*\n?/i, '').replace(/\n?```$/i, '').trim();
     return out || null;
   };

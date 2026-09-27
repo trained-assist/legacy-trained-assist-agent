@@ -243,23 +243,15 @@ function extractJson(raw) {
   return JSON.parse(candidate);
 }
 
-async function openrouterClassify(issue, goalsContext, { model = GATE_MODEL, apiKey = process.env.OPENROUTER_API_KEY } = {}) {
-  if (!apiKey) throw new Error('OPENROUTER_API_KEY not set');
+// Issue triage gate on the service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
+// Name kept for callers/tests.
+async function openrouterClassify(issue, goalsContext, { apiKey = null } = {}) {
+  const serviceLlm = require('./service-llm');
+  if (!serviceLlm.available(apiKey)) throw new Error('no LLM key (OpenCode Go / OPENROUTER_API_KEY)');
   const { system, user } = buildGateMessages(issue, goalsContext);
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      temperature: 0,
-    }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) throw new Error(`OpenRouter HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = await res.json();
-  const raw = data?.choices?.[0]?.message?.content?.trim() || '';
-  return extractJson(raw);
+  const out = await serviceLlm.serviceText({ system, user, maxTokens: 800, timeoutMs: 30_000, apiKey, source: 'issue-fixer-gate' });
+  if (out == null) throw new Error('issue-fixer gate: no service-llm rung answered');
+  return extractJson(out.trim());
 }
 
 const VALID_SCOPE = ['in', 'out'];
