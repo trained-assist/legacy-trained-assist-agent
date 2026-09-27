@@ -20,8 +20,10 @@ function readiness(over = {}) {
   const r = { 'hh-skills': true, 'freelance-skills': true, 'engineering-skills': true, 'sales-skills': true };
   for (const m of localModules) r[`trained-skills/${m}`] = true;
   for (const m of ['80-getcourse.js', '81-gc-discovery.js', '10-nalog.js', '20-tilda.js',
-    '85-expo.js', '86-expo-flexi.js', '87-expo-pipeline.js', '88-expo-catalog.js', '89-expo-pipeline-run.js',
-    '92-flexi-sales.js', '95-illustrate.js', '96-label.js', '50-gdrive.js']) r[`trained-skills/${m}`] = false;
+    '95-illustrate.js', '96-label.js', '50-gdrive.js']) r[`trained-skills/${m}`] = false;
+  for (const m of ['85-expo.js', '86-expo-flexi.js', '87-expo-pipeline.js', '88-expo-catalog.js', '89-expo-pipeline-run.js',
+    '92-flexi-sales.js']) r[`sales-skills/${m}`] = false;
+  for (const m of ['40-company.js', '70-inn-enrichment.js', '71-dadata.js', '72-checko.js']) r[`sales-skills/${m}`] = true;
   Object.assign(r, { 'hh-skills/90-hh.js': true, 'hh-skills/92-hh-proactive.js': true,
     'freelance-skills/10-freelance-project.js': true, 'sales-skills/30-weeek.js': false,
     'engineering-skills/10-prepare-task.js': true, 'engineering-skills/20-workspace.js': true });
@@ -29,7 +31,8 @@ function readiness(over = {}) {
 }
 
 test('catalog covers every local MCP module, and only real ones', () => {
-  const listed = new Set(Object.values(catalog.sections).flatMap(s => s.modules || []));
+  const all = Object.values(catalog.sections).flatMap(s => s.modules || []);
+  const listed = new Set(all.filter(m => !m.includes('/')));
   const missing = localModules.filter(m => !listed.has(m));
   assert.deepStrictEqual(missing, [], `modules not in config/skill-catalog.json: ${missing.join(', ')}`);
   const ghost = [...listed].filter(m => !localModules.includes(m));
@@ -53,7 +56,8 @@ test('catalog is well-formed: parents exist, siblings declared, every prompt dom
   assert.deepStrictEqual(orphan, [], `prompt domains in no section: ${orphan.join(', ')}`);
   for (const [d, meta] of Object.entries(catalog.domains)) {
     const sec = catalog.sections[owners[d]];
-    const own = meta.server === 'trained-skills' ? (sec.modules || []).includes(meta.module) : (sec.siblings || []).includes(meta.server);
+    const own = meta.server === 'trained-skills' ? (sec.modules || []).includes(meta.module)
+      : (sec.siblings || []).includes(meta.server) || (sec.modules || []).includes(`${meta.server}/${meta.module}`);
     assert.ok(own, `${d}: gated by ${meta.server}/${meta.module}, which section ${owners[d]} doesn't own`);
   }
 });
@@ -88,7 +92,9 @@ test('legacy mode (no skills.json) = exactly what the current code exposes', () 
 test('enabled parent enables its children; other sections stay off; core always on', () => {
   const res = resolve(catalog, { enabled: ['recruiting'] }, readiness());
   assert.deepStrictEqual(res.sections, ['core', 'recruiting', 'recruiting/hh', 'recruiting/interview', 'recruiting/company']);
-  assert.deepStrictEqual(res.siblings, ['hh-skills']);
+  assert.deepStrictEqual(res.siblings, ['hh-skills', 'sales-skills']); // sales: company/INN modules
+  assert.ok(res.modules.includes('sales-skills/40-company.js'));
+  assert.ok(!res.modules.includes('sales-skills/85-expo.js'), 'flexi-expo is off');
   assert.ok(res.modules.includes('hh-skills/90-hh.js'));
   assert.ok(res.modules.includes('trained-skills/22-connect.js'));
   assert.ok(res.modules.includes('trained-skills/00-meta.js'));
@@ -102,10 +108,10 @@ test('explicitly disabled child is off, siblings of it stay on', () => {
   const res = resolve(catalog, { enabled: ['recruiting'], disabled: ['recruiting/company'] }, readiness());
   assert.ok(!res.sections.includes('recruiting/company'));
   assert.ok(res.sections.includes('recruiting/hh'));
-  assert.ok(!res.modules.includes('trained-skills/40-company.js'));
+  assert.ok(!res.modules.includes('sales-skills/40-company.js'));
   // shared module stays when another enabled section owns it
   const both = resolve(catalog, { enabled: ['recruiting', 'flexi-expo'], disabled: ['recruiting/company'] }, readiness());
-  assert.ok(both.modules.includes('trained-skills/40-company.js'));
+  assert.ok(both.modules.includes('sales-skills/40-company.js'));
 });
 
 test('disabled parent wins over an enabled child', () => {
@@ -164,7 +170,7 @@ test('shadow: legacy profile → diff=0, writes .skills-resolved.json, audience 
   assert.match(lines[0], /^\[skills-shadow\] user=u1 mode=legacy diff=0 /);
   const saved = JSON.parse(fs.readFileSync(path.join(dir, '.skills-resolved.json'), 'utf8'));
   assert.strictEqual(saved.resolved.mode, 'legacy');
-  assert.deepStrictEqual(saved.preview.hides.siblings, ['engineering-skills', 'freelance-skills', 'sales-skills']);
+  assert.deepStrictEqual(saved.preview.hides.siblings, ['engineering-skills', 'freelance-skills']);
   assert.ok(saved.preview.hides.promptDomains.includes('engineering'));
   assert.ok(!saved.preview.hides.promptDomains.some(d => d.startsWith('hh')));
 });

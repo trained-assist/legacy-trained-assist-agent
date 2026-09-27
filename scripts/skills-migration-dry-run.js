@@ -21,6 +21,15 @@ const PROJECTS = arg('--transcripts', path.join(os.homedir(), '.claude', 'projec
 const catalog = require('../config/skill-catalog.json');
 const TOOLS_DIR = path.join(__dirname, '..', 'src', 'mcp-skills', 'tools');
 
+// Catalog module entry → file: 'x.js' is a core module, '<server>/x.js' a sibling's (#1470).
+function moduleFile(m) {
+  if (!m.includes('/')) return path.join(TOOLS_DIR, m);
+  const [server, file] = m.split('/');
+  const { SKILL_SIBLINGS, siblingPaths } = require('../src/skill-siblings');
+  const sib = SKILL_SIBLINGS.find(s => s.mcpServerId === server);
+  return sib ? path.join(path.dirname(siblingPaths(sib).indexPath), 'tools', file) : null;
+}
+
 // tool name → section id
 function toolSectionMap() {
   const modSection = {};
@@ -30,16 +39,17 @@ function toolSectionMap() {
     for (const sib of s.siblings || []) sibSection[sib] = id;
   }
   const byTool = {};
-  for (const f of fs.readdirSync(TOOLS_DIR)) {
-    if (!f.endsWith('.js') || !modSection[f]) continue;
+  for (const m of Object.keys(modSection)) {
+    const file = moduleFile(m);
+    if (!file || !fs.existsSync(file)) continue;
     // Same discovery as src/mcp-skills/registry.js: tool names are the keys of mod.tools.
     let names = [];
-    try { names = Object.keys(require(path.join(TOOLS_DIR, f)).tools || {}); } catch { /* fall back to source scan */ }
+    try { names = Object.keys(require(file).tools || {}); } catch { /* fall back to source scan */ }
     if (!names.length) {
-      const src = fs.readFileSync(path.join(TOOLS_DIR, f), 'utf8');
-      names = [...src.matchAll(/^\s{2}([a-z][a-z0-9_]+):\s*\{/gm)].map(m => m[1]);
+      const src = fs.readFileSync(file, 'utf8');
+      names = [...src.matchAll(/^\s{2}([a-z][a-z0-9_]+):\s*\{/gm)].map(x => x[1]);
     }
-    for (const n of names) byTool[n] ||= modSection[f];
+    for (const n of names) byTool[n] ||= modSection[m];
   }
   return { byTool, sibSection };
 }

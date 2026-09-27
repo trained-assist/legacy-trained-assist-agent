@@ -121,7 +121,7 @@ test('catalog load failure → legacy (never silently cut tools)', () => {
 test('computePlan: disabled child, unknown sections, unlisted things never hidden', () => {
   const catalog = loadCatalog();
   const p = computePlan(catalog, { enabled: ['recruiting'], disabled: ['recruiting/hh'], });
-  assert.deepStrictEqual(p.hidden.siblings, ['engineering-skills', 'freelance-skills', 'hh-skills', 'sales-skills']);
+  assert.deepStrictEqual(p.hidden.siblings, ['engineering-skills', 'freelance-skills', 'hh-skills']); // sales stays: recruiting/company
   assert.ok(p.hidden.domains.includes('hh') && !p.hidden.domains.includes('cron'));
   const all = computePlan(catalog, { enabled: Object.keys(catalog.sections) });
   assert.deepStrictEqual(all.hidden, { siblings: [], modules: [], domains: [] });
@@ -156,4 +156,15 @@ test('registry tools/list: SKILLS_RESOLVED hides switched-off modules; unset/bro
   const b = listTools({ SKILLS_RESOLVED: broken });
   assert.deepStrictEqual(b.names, legacy);
   assert.ok(b.stderr.includes('[skills]'));
+});
+
+test('sibling modules are gated per section: recruiting keeps company/INN, hides expo (#1470)', () => {
+  const catalog = loadCatalog();
+  const p = computePlan(catalog, { enabled: ['recruiting'] });
+  assert.ok(p.hidden.modules.includes('sales-skills/85-expo.js'), 'flexi-expo is off → its sales module hidden');
+  assert.ok(p.hidden.modules.includes('sales-skills/30-weeek.js'), 'crm-weeek is off');
+  assert.ok(!p.hidden.modules.includes('sales-skills/40-company.js'), 'recruiting/company owns company');
+  assert.ok(!p.hidden.siblings.includes('sales-skills'), 'sales sibling mounted for company/INN');
+  const none = computePlan(catalog, { enabled: ['gdrive'] });
+  assert.ok(none.hidden.siblings.includes('sales-skills'), 'no section needs sales → sibling not mounted');
 });
