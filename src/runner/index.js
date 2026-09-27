@@ -937,7 +937,7 @@ function currentTimeSection(now = new Date()) {
     hour: '2-digit', minute: '2-digit',
   });
   const utc = `${now.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-  return `[Сейчас: ${msk} МСК (UTC+3) | ${utc}. Все времена в интерфейсе и дедлайны — московские; шелл работает в TZ=Europe/Moscow, поэтому обычный \`date\` уже даёт МСК. Не ставь московскую цель под \`date -u\` (UTC) — это разница +3ч. Ждать дольше ~2 минут — не через sleep/poll: заверши ход и вернись по планировщику (GTD/cron_create).]`;
+  return `[Сейчас: ${msk} МСК (UTC+3) | ${utc}. Все времена в интерфейсе и дедлайны — московские; шелл работает в TZ=Europe/Moscow, поэтому обычный \`date\` уже даёт МСК. Не ставь московскую цель под \`date -u\` (UTC) — это разница +3ч. Если ждать дольше ~2 минут (CI, деплой): короткие проверки до ~2 мин каждая ИЛИ сохрани состояние на диск и заверши ход — продолжение придёт само (deep: автопродолжение; GTD: следующая итерация). cron_create сейчас недоступен (#1489) — на него не рассчитывай.]`;
 }
 
 // Search-results files are named by date (search-results-2026-09-22.json), not by
@@ -1986,7 +1986,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     'Slug — короткий, через дефис. Например: candidate-review-ivanov, flexi-proposal-sept, analytics-week-36.',
     'Исключение: если пользователь явно просит «напиши сюда» или «отправь текстом» — отвечай текстом.',
   ].join('\n');
-  const timeoutSection = `[Системное ограничение: у тебя 40 минут на задачу. На 38-й минуте ты получишь SIGTERM — это сигнал «заверши текущий шаг и выведи итоги». При длинных задачах сохраняй промежуточные результаты в файлы, чтобы можно было продолжить позже.]`;
+  const timeoutSection = `[Ход не вечный: ~40 минут. Если время выйдет — процесс прервётся, но это не потеря: сохраняй промежуточные результаты в файлы, продолжение (авто до 10 раз / GTD) подхватит с места остановки.]`;
 
   // (Legacy /bugreport mode removed — bug reports now go through the `bugs-and-features`
   //  project + cross-profile collector; no in-session GitHub issue creation. See intent-engine
