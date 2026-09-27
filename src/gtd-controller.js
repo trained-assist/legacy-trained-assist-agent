@@ -126,6 +126,11 @@ function durableStore() {
   return _durableStore;
 }
 
+// Stable engineering-workspace label for a durable plan (see the step prompt).
+function planWorkspaceId(task) {
+  return `plan-${String(task.id).slice(0, 8)}`;
+}
+
 // Items left status='running' by a crash/restart would never be claimed again
 // (claimNextRunnable only selects pending/waiting) — the classic reboot gap.
 // Called once per tick before claiming: orphaned runs older than the fire
@@ -577,6 +582,10 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       'Настоятельно рекомендуется "programmatic+llm" (полная проверка) — особенно на дешёвых моделях: не пропускай проверку молча.',
       'Fast-pass — это ЗАПИСЫВАЕМЫЙ escape hatch, а не тихий обход. Только в режиме "programmatic+llm-fastpass" ты можешь пропустить проверку, если она слишком тяжёлая, ломает работу или нужен срочный фикс — добавь финальной строкой: VALIDATION: fastpass-skip: <причина>. Пропуск попадёт в audit trail с причиной.',
       'Каждый шаг — новый ран без памяти: следующий шаг увидит только твой итог. Перед финальной строкой DURABLE дай блок «ИТОГ ШАГА» (≤10 строк): что сделано, ссылки (issue/PR/файлы/ветка), принятые решения, что важно следующему шагу.',
+      // One workspace per PLAN, not per step: each step is a fresh run and used to
+      // invent its own root_task_id, so every step got a new worktree+branch and
+      // never saw the previous steps' files (found by the playbooks e2e).
+      `Рабочая копия репозитория — ОДНА на весь план: engineering_spawn_workspace(repository_url: <репо>, root_task_id: "${planWorkspaceId(task)}"). Повторный вызов с тем же root_task_id вернёт уже созданный workspace с файлами прошлых шагов — не придумывай другой root_task_id и не клонируй репо отдельно.`,
       'Выполни этот шаг. Если шаг выполнен и проверка прошла — ответь финальной строкой: DURABLE: done.',
       'Если шаг не удался — опиши ошибку и ответь финальной строкой: DURABLE: failed: <причина>.',
       'Если шагу нужно ДОЖДАТЬСЯ чего-то внешнего (деплой, CI, креды/ответ пользователя, повтор ошибки в логах, другой план, просто время) — НЕ жди внутри рана и не проваливай шаг:',
@@ -1485,7 +1494,7 @@ module.exports = {
   readChecklist, trackedChecklist, checklistSummary, computeMaxIterations,
   checklistCheapPrecheck, writeChecklistDone, mirrorGtdChecklist, CHECKLIST_API_BASE, checklistAutologinUrl,
   _ghToken, _ghFetch,
-  durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
+  durableStore, runDueDurable, reconcileOrphanedRunning, planWorkspaceId, claimNextDurableItem, retryFailedItem,
   tickHeartbeat, countOpenLegacy, durableItemCounts,
   DEFAULT_ETA_MIN, DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP, ETA_MAX_CLAMP,
   CHECKLIST_FILE, CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,

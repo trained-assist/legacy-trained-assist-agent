@@ -49,9 +49,10 @@ describe('runDueDurable with a plan level map', () => {
     });
     store.updateTask(r.task.id, 'u1', { status: 'active' });
     const calls = [];
+    const prompts = [];
     const tick = () => G.runDueDurable({
       secrets: {}, now: Date.now(), isTaskRunning: () => false, registry: {},
-      runTask: async (o) => { calls.push({ engine: o.engine, ocProfile: o.ocProfile, ocRole: o.ocRole }); return 'ИТОГ ШАГА: ok\nDURABLE: done'; },
+      runTask: async (o) => { calls.push({ engine: o.engine, ocProfile: o.ocProfile, ocRole: o.ocRole }); prompts.push(o.task); return 'ИТОГ ШАГА: ok\nDURABLE: done'; },
     });
     await tick(); await new Promise(res => setTimeout(res, 30));
     await tick(); await new Promise(res => setTimeout(res, 30));
@@ -59,6 +60,11 @@ describe('runDueDurable with a plan level map', () => {
       { engine: 'opencode', ocProfile: 'free', ocRole: 'build' },
       { engine: 'opencode', ocProfile: 'deepseek', ocRole: 'review' },
     ]);
+    // every step of the plan is told to use the same engineering workspace
+    const wsId = G.planWorkspaceId(store.getTask(r.task.id, 'u1'));
+    expect(wsId).toBe(`plan-${r.task.id.slice(0, 8)}`);
+    expect(prompts).toHaveLength(2);
+    for (const p of prompts) expect(p).toContain(`root_task_id: "${wsId}"`);
     const ex = store.db.prepare('SELECT engine, profile, model_level, executor_role FROM executions WHERE task_id = ? ORDER BY started_at').all(r.task.id);
     expect(ex).toEqual([
       { engine: 'opencode', profile: 'free', model_level: 'master', executor_role: 'developer' },
