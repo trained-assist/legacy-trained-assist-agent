@@ -1,6 +1,0 @@
-{
-  "node": [
-    "test/behavior.test.mjs"
-  ],
-  "vitest": []
-}
