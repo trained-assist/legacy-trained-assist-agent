@@ -35,8 +35,11 @@ describe('ENGINE_SWITCH_INTENT regex', () => {
 
 describe('profiles.getEngine / setEngine', () => {
   let workDir;
-  beforeEach(() => { workDir = mkdtempSync(join(tmpdir(), 'engine-switch-test-')); });
-  afterEach(() => { rmSync(workDir, { recursive: true, force: true }); });
+  // tests/setup-isolation.mjs pins AGENT_DEFAULT_ENGINE=claude for runner fixtures — unset it here
+  // so these assertions see the real production default.
+  let prevDefault;
+  beforeEach(() => { workDir = mkdtempSync(join(tmpdir(), 'engine-switch-test-')); prevDefault = process.env.AGENT_DEFAULT_ENGINE; delete process.env.AGENT_DEFAULT_ENGINE; });
+  afterEach(() => { rmSync(workDir, { recursive: true, force: true }); if (prevDefault !== undefined) process.env.AGENT_DEFAULT_ENGINE = prevDefault; });
 
   it('defaults to opencode (Go) with no profile.json since 2026-09-27', () => {
     expect(profiles.getEngine(workDir)).toBe('opencode');
