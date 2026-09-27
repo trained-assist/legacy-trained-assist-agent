@@ -2607,7 +2607,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         ? (opencodeGoToggle.isDeadKeyError(preLadderText)
           ? `⚠️ OpenCode Go (${failedModel}): ключ отклонён шлюзом (Invalid credential) — переключаюсь на резервный ключ Go, пробую снова.`
           : `⚠️ OpenCode Go (${failedModel}) исчерпал лимит ключа — переключаюсь на резервный ключ Go, пробую снова.`)
-        : `⚠️ OpenCode Go (${failedModel}) исчерпал лимит — общий тумблер на этой VM переключён на OpenRouter (профиль «deepseek» → ${newProfile}), пробую снова. Автовозврат на Go через ~5ч или вручную: /oc_go.`;
+        : `⚠️ OpenCode Go (${failedModel}) исчерпал лимит — общий тумблер на этой VM переключён на OpenRouter (профиль «deepseek» → ${newProfile}), пробую снова. Автовозврат на Go через ~15 мин или вручную: /oc_go.`;
       if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, switchMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, switchMsg, threadId));
       else await tgSend(BOT_TOKEN, chatId, switchMsg, threadId);
       if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, switchMsg);
@@ -2853,10 +2853,13 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // A transient per-model fault carries its own backoff (15s → 30s → 60s …): retry the same
     // model on that schedule. Everything else (bare crash, dropped connection) keeps the generic
     // crash backoff. TEST_MODE collapses both to milliseconds so retry tests stay fast.
-    const delayMs = (transientRetryDelayMs != null && !isTestMode())
-      ? transientRetryDelayMs
-      : (getRetryDelayMs(Math.min(nextAttempt, MAX_INCOMPLETE_RETRIES)) || 0);
     const escalate = engine === 'opencode' && nextAttempt > MAX_INCOMPLETE_RETRIES;
+    // The alternative rung is a fresh model: its backoff starts from the FIRST step of the schedule,
+    // not from where the failing rung's retries left off (owner 2026-09-27: "от каждого шага снова
+    // 1 2 4, а не мультипликация от первого"). Before, the sibling waited the 3rd-step 10 minutes.
+    const delayMs = (transientRetryDelayMs != null && !isTestMode() && !escalate)
+      ? transientRetryDelayMs
+      : (getRetryDelayMs(escalate ? 1 : Math.min(nextAttempt, MAX_INCOMPLETE_RETRIES)) || 0);
     const altNote = forceOpencodeAlternation({ engine, ocProfileName, ocProfileOverrides, ocProfileIsDeepseek, ocRole, escalate });
     const retryMsg = escalate
       ? `🔄 Не помогло и после ${MAX_INCOMPLETE_RETRIES} попыток — пробую на альтернативной модели${altNote ? ` (${altNote})` : ''}…`

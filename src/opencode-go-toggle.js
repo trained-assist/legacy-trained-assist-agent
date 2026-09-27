@@ -18,8 +18,16 @@ const os = require('os');
 const STATE_FILE = process.env.OPENCODE_GO_MODE_FILE ||
   path.join(os.homedir(), '.config', 'opencode', 'go-mode.json');
 
-// OpenCode Go's console reports a ~5h rate-limit reset window (opencode.ai/console/.../go).
-const AUTO_REVERT_MS = 5 * 60 * 60 * 1000;
+// How long ANY switch to OpenRouter lasts before the next task tries Go again. Deliberately short
+// (owner 2026-09-27): OpenRouter is metered and burned the whole balance while the toggle sat on it
+// for hours. Trying Go again is cheap — a still-exhausted Go key fails fast with a quota error,
+// noteFailure() rotates keys / flips back here, and the task retries — so a short window costs at
+// most a couple of fast failed Go calls per window, while a recovered Go is picked up within minutes
+// instead of the old ~5h (the Go console's full rate-limit window).
+const AUTO_REVERT_MS = Number(process.env.OPENCODE_GO_REVERT_MS) || 15 * 60 * 1000;
+// Floor for an automatic OpenRouter stint, so a key whose TTL is about to lapse doesn't bounce the
+// VM straight back onto a gateway that just failed.
+const MIN_OPENROUTER_MS = 60 * 1000;
 
 function _read() {
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return null; }
@@ -30,28 +38,49 @@ function _write(state) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
-// Returns 'go' | 'openrouter'. A switch triggered automatically (setMode(mode, {auto: true}))
-// reverts to 'go' on its own once AUTO_REVERT_MS has passed; a manual switch
-// (setMode(mode, {auto: false}), e.g. via /oc_go or /oc_openrouter) sticks until another manual
-// or auto call changes it — no silent revert of an operator's explicit choice.
+// Returns 'go' | 'openrouter'. EVERY switch to 'openrouter' is time-boxed and reverts to 'go' on
+// its own once autoRevertAt passes — manual ones included. Before 2026-09-27 a manual
+// /oc_openrouter stuck forever; one was left on and silently drained the whole OpenRouter balance.
+// State files written by older code (manual, autoRevertAt null) get a revert time on first read.
 function getMode() {
   const state = _read();
   if (!state || state.mode !== 'openrouter') return 'go';
-  if (state.switchedBy === 'auto' && state.autoRevertAt && Date.parse(state.autoRevertAt) <= Date.now()) {
+  if (!state.autoRevertAt) {
+    const base = Date.parse(state.switchedAt) || Date.now();
+    state.autoRevertAt = new Date(base + AUTO_REVERT_MS).toISOString();
+    _write(state);
+  }
+  if (Date.parse(state.autoRevertAt) <= Date.now()) {
     _write({ mode: 'go', switchedAt: new Date().toISOString(), switchedBy: 'auto-revert', autoRevertAt: null });
     return 'go';
   }
   return 'openrouter';
 }
 
+// When an automatic switch to OpenRouter should end: as soon as the first exhausted Go key heals
+// (its TTL follows the error class — a 429 or a 503 heals far sooner than a daily cap), capped at
+// AUTO_REVERT_MS. A manual switch always gets the full AUTO_REVERT_MS.
+function _revertAt(now, auto) {
+  let at = now + AUTO_REVERT_MS;
+  if (auto) {
+    try {
+      const next = require('./opencode-go-keys').nextUsableAt(now);
+      // next === 0 ⇒ no parked key on record (single-key pool: rotate() doesn't track it) — keep
+      // the cap rather than bouncing back to a gateway we know nothing about.
+      if (next) at = Math.min(at, Math.max(next, now + MIN_OPENROUTER_MS));
+    } catch { /* keep the cap */ }
+  }
+  return at;
+}
+
 function setMode(mode, { auto = false } = {}) {
   const clean = mode === 'openrouter' ? 'openrouter' : 'go';
-  const now = new Date();
+  const now = Date.now();
   _write({
     mode: clean,
-    switchedAt: now.toISOString(),
+    switchedAt: new Date(now).toISOString(),
     switchedBy: auto ? 'auto' : 'manual',
-    autoRevertAt: clean === 'openrouter' && auto ? new Date(now.getTime() + AUTO_REVERT_MS).toISOString() : null,
+    autoRevertAt: clean === 'openrouter' ? new Date(_revertAt(now, auto)).toISOString() : null,
   });
   return clean;
 }
@@ -70,7 +99,8 @@ function resolveProfileName() {
 // Two-stage degradation, both returning true = "retry this task":
 //   1. If another provisioned Go key exists, rotate auth.json onto it and STAY on the Go gateway
 //      (opencode-go-keys.js) — fresh quota beats a different gateway.
-//   2. Only once every key is exhausted, flip the VM-wide mode to 'openrouter' (auto-revert ~5h).
+//   2. Only once every key is exhausted, flip the VM-wide mode to 'openrouter' (auto-revert
+//      after AUTO_REVERT_MS, ~15 min).
 // Callers distinguish the two via getMode() (unchanged = key rotation).
 function noteFailure(model, errorText) {
   if (!/^opencode-go\//.test(model || '')) return false;
@@ -84,7 +114,12 @@ function noteFailure(model, errorText) {
   const dead = isDeadKeyError(errorText);
   const verdict = classifyError(errorText);
   if (!dead && (!verdict || verdict.class !== 'quota')) return false;
-  const rotated = keys.rotate(dead ? { ttlMs: keys.DEAD_KEY_TTL_MS } : undefined);
+  // Park the key only as long as the error class says it's burned (503/server error → 5min, others
+  // capped at EXHAUST_TTL_MS). A flat 5h for every quota-class error meant two
+  // passing 503s parked both keys and put the whole VM on paid OpenRouter for 5 hours.
+  const ttlMs = dead ? keys.DEAD_KEY_TTL_MS
+    : Math.min(Number.isFinite(verdict.ttlMs) ? verdict.ttlMs : keys.EXHAUST_TTL_MS, keys.EXHAUST_TTL_MS);
+  const rotated = keys.rotate({ ttlMs });
   if (rotated) {
     console.log(`[opencode-go-toggle] Go key ${rotated.fromIndex} ${dead ? 'REJECTED (invalid credential)' : 'exhausted'} — rotated to key ${rotated.toIndex}, staying on Go`);
     return true;
@@ -107,4 +142,4 @@ function forceFlip() {
   return setMode(next, { auto: true });
 }
 
-module.exports = { STATE_FILE, AUTO_REVERT_MS, getMode, setMode, resolveProfileName, noteFailure, forceFlip, isDeadKeyError };
+module.exports = { STATE_FILE, AUTO_REVERT_MS, MIN_OPENROUTER_MS, getMode, setMode, resolveProfileName, noteFailure, forceFlip, isDeadKeyError };

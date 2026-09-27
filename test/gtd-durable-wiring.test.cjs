@@ -59,8 +59,8 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     ok(fired === 1, `durable: one item fired (got ${fired})`);
     ok(/step one/.test(prompted) && /DURABLE: done/.test(prompted), 'durable: prompt carries step + completion marker');
     ok(firedOpts.stepTimeoutMs === 600 * 1000, `durable: step carries execution_timeout_seconds as the engine budget (got ${firedOpts && firedOpts.stepTimeoutMs})`);
-    ok(firedOpts.engine === 'opencode' && firedOpts.ocProfile === 'value',
-      `durable: bachelor contract item resolves to opencode/value (got ${firedOpts && firedOpts.engine}/${firedOpts && firedOpts.ocProfile})`);
+    ok(firedOpts.engine === 'opencode' && firedOpts.ocProfile === 'deepseek',
+      `durable: bachelor contract item resolves to opencode/deepseek (got ${firedOpts && firedOpts.engine}/${firedOpts && firedOpts.ocProfile})`);
     ok(firedOpts.user && /users[/\\]u1$/.test(firedOpts.user.workDir),
       `durable: step carries the profile workspace, not null (got ${firedOpts.user && firedOpts.user.workDir})`);
     ok(item.status === 'done', `durable: item completed (got ${item.status})`);
@@ -693,7 +693,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
       `p3c: QUOTA advances model level bachelor→master and re-pends (got ${item.status}/${item.current_model_level})`);
     ok(item.last_failure_class === 'QUOTA' && /^next_model_or_provider/.test(item.last_recovery_action || ''),
       `p3c: failure class + action recorded on the item (got ${item.last_failure_class}/${item.last_recovery_action})`);
-    ok(advanced.length === 1 && advanced[0][0] === 'value' && advanced[0][1] === 'build',
+    ok(advanced.length === 1 && advanced[0][0] === 'deepseek' && advanced[0][1] === 'build',
       `p3c: opencode ladder advanced for the step's role (got ${JSON.stringify(advanced)})`);
   }
 

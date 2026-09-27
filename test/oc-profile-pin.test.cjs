@@ -58,6 +58,7 @@ test('/oc_go and /oc_openrouter (VM-wide toggle) are not swallowed by the new al
   const wd = freshWorkDir();
   const reply = getQuickAnswer('/oc_openrouter', 'u1', wd);
   assert.match(reply, /Общий тумблер OpenCode Go\/OpenRouter/);
-  // The VM toggle never touches per-profile ocProfile.
-  assert.equal(profiles.getOcProfile(wd), 'max');
+  // The VM toggle never touches per-profile ocProfile (fresh workdir defaults to the standard
+  // Go deepseek profile since 2026-09-27, not the old 'max').
+  assert.equal(profiles.getOcProfile(wd), 'deepseek');
 });

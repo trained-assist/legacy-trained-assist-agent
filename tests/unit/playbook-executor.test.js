@@ -22,13 +22,13 @@ describe('resolveStepExecution', () => {
     expect(r).toMatchObject({ executionKind: 'agent', engine: 'claude', ocProfile: null, ocRole: null, reason: 'no-contract' });
   });
 
-  it('bachelor → cheapest opencode profile, role maps to an OC role', () => {
+  it('bachelor → standard Go deepseek profile (2026-09-27 default), role maps to an OC role', () => {
     expect(resolveStepExecution(agent({ executor_role: 'researcher', minimum_model_level: 'bachelor', current_model_level: 'bachelor' })))
-      .toMatchObject({ engine: 'opencode', ocProfile: 'value', ocRole: 'explore', modelLevel: 'bachelor' });
+      .toMatchObject({ engine: 'opencode', ocProfile: 'deepseek', ocRole: 'explore', modelLevel: 'bachelor' });
   });
 
-  it('master → opencode max; developer maps to build', () => {
-    expect(resolveStepExecution(agent())).toMatchObject({ engine: 'opencode', ocProfile: 'max', ocRole: 'build' });
+  it('master → opencode Go deepseek too (owner 2026-09-27: value/max leaked to OpenRouter); developer maps to build', () => {
+    expect(resolveStepExecution(agent())).toMatchObject({ engine: 'opencode', ocProfile: 'deepseek', ocRole: 'build' });
   });
 
   it('doctor → claude, no opencode override', () => {

@@ -681,7 +681,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     const opencodeGoToggle = require('../opencode-go-toggle');
     opencodeGoToggle.setMode(mode, { auto: false });
     const label = mode === 'go' ? 'Go (opencode-go/deepseek-v4.1-flash)' : 'OpenRouter (openrouter/deepseek/deepseek-v4-flash-0731)';
-    const stickyNote = mode === 'openrouter' ? ' Останется на OpenRouter, пока не переключишь обратно (/oc_go) — это ручное переключение, само не вернётся через 5ч (в отличие от авто-переключения при лимите).' : '';
+    const stickyNote = mode === 'openrouter' ? ` OpenRouter платный — через ~${Math.round(opencodeGoToggle.AUTO_REVERT_MS / 60000)} мин тумблер сам вернётся на Go (или раньше: /oc_go).` : '';
     return `✅ Общий тумблер OpenCode Go/OpenRouter (VM-wide) → ${label}\n\nВлияет на всех, кто использует профиль «deepseek» (/oc_deepseek), а не только на твой.${stickyNote}`;
   }
 
