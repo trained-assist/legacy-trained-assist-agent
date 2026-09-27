@@ -66,39 +66,14 @@ ${modeNote}
 Если напишешь текст: {"type":"text","content":"..."}
 Если нажмёшь кнопку: {"type":"button","callbackData":"...","buttonText":"..."}`;
 
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${openrouterKey}`,
-    },
-    body: JSON.stringify({
-      model: 'z-ai/glm-5.3-flash',
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 120,
-temperature: 0.4,
-    }),
-    signal: AbortSignal.timeout(20_000),
+  // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
+  const r = await require('../service-llm').serviceChat({
+    messages: [{ role: 'user', content: prompt }],
+    json: true, maxTokens: 120, temperature: 0.4, timeoutMs: 20_000, apiKey: openrouterKey, source: 'mainstream-decider',
   });
-
-  if (!res.ok) throw new Error(`OpenRouter error: ${res.status}`);
-
-  const data = await res.json();
-  const raw = (data.choices?.[0]?.message?.content || '').trim();
-
-// Parse JSON, stripping markdown fences if present
-  const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (match) {
-      try { return JSON.parse(match[0]); } catch {}
-    }
-
-// Fallback: send generic follow-up
-    return { type: 'text', content: 'расскажи подробнее' };
-  }
+  if (r && r.value && typeof r.value === 'object') return r.value;
+  // Fallback: send generic follow-up
+  return { type: 'text', content: 'расскажи подробнее' };
 }
 
 module.exports = { decideFirstAction, decideNextAction };

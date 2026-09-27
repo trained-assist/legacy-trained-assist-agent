@@ -141,12 +141,12 @@ describe('evaluateItemValidationsModeAware', () => {
   });
 });
 
-describe('default LLM validator (bounded OpenRouter call)', () => {
+describe('default LLM validator (bounded service-LLM call)', () => {
   it('without an API key returns inconclusive and makes no request', async () => {
     const fetchImpl = vi.fn();
     const fn = makeLlmValidate({ apiKey: '', fetchImpl });
     const r = await fn({ key: 'x', validation: true, mode: 'programmatic+llm' });
-    expect(r).toEqual({ status: 'inconclusive', reason: 'no-openrouter-key' });
+    expect(r).toEqual({ status: 'inconclusive', reason: 'no-llm-key' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -155,12 +155,13 @@ describe('default LLM validator (bounded OpenRouter call)', () => {
       apiKey: 'k',
       fetchImpl: async () => ({ ok: true, json: async () => ({ choices: [{ message: { content: 'not json' } }] }) }),
     });
-    expect(await fn({ key: 'x', validation: true })).toEqual({ status: 'inconclusive', reason: 'llm-bad-json' });
+    // Service-LLM ladder JSON guard: non-JSON fails every rung → inconclusive (never a pass).
+    expect(await fn({ key: 'x', validation: true })).toEqual({ status: 'inconclusive', reason: 'llm-unavailable' });
   });
 
   it('a non-ok response is inconclusive', async () => {
     const fn = makeLlmValidate({ apiKey: 'k', fetchImpl: async () => ({ ok: false, status: 429 }) });
-    expect(await fn({ key: 'x', validation: true })).toEqual({ status: 'inconclusive', reason: 'llm-http-429' });
+    expect(await fn({ key: 'x', validation: true })).toEqual({ status: 'inconclusive', reason: 'llm-unavailable' });
   });
 });
 

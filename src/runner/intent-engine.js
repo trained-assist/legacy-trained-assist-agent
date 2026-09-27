@@ -1266,35 +1266,19 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
 // Classify whether user wants to publish/generate the vacancy landing page.
 // Only called when regex misses AND a vacancy draft exists. Fast cheap-model call.
 async function classifyVacancyPublishIntent(task, workDir, openrouterKey) {
-  const orKey = openrouterKey || process.env.OPENROUTER_API_KEY;
-  if (!orKey) return false;
+  const orKey = openrouterKey || null;
+  if (!require('../service-llm').available(orKey)) return false;
   const vs = readVacancyState(workDir);
   if (!vs?.draft) return false; // no draft — nothing to publish
 
   try {
-    const body = JSON.stringify({
-      model: 'z-ai/glm-5.3-flash',
-      messages: [
-        {
-          role: 'system',
-          content: 'You classify recruiter bot messages. Answer with a single word: YES or NO.',
-        },
-        {
-          role: 'user',
-          content: `Does this message ask to publish, generate, create, or rebuild the vacancy landing page (страница вакансии / лендинг)?\n\nMessage: "${task}"\n\nYES or NO:`,
-        },
-      ],
-      max_tokens: 5,
-      temperature: 0,
+    // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
+    const out = await require('../service-llm').serviceText({
+      system: 'You classify recruiter bot messages. Answer with a single word: YES or NO.',
+      user: `Does this message ask to publish, generate, create, or rebuild the vacancy landing page (страница вакансии / лендинг)?\n\nMessage: "${task}"\n\nYES or NO:`,
+      maxTokens: 5, timeoutMs: 4000, totalTimeoutMs: 6000, apiKey: orKey, source: 'vacancy-publish-intent',
     });
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${orKey}`, 'Content-Type': 'application/json' },
-      body,
-      signal: AbortSignal.timeout(2500),
-    });
-    const data = await res.json();
-    const answer = data.choices?.[0]?.message?.content?.trim().toUpperCase() || '';
+    const answer = String(out || '').trim().toUpperCase();
     return answer.startsWith('YES');
   } catch (e) {
     console.warn('[classifyVacancyPublishIntent] error:', e.message);
@@ -1310,32 +1294,16 @@ async function classifyVacancyPublishIntent(task, workDir, openrouterKey) {
 // possible). Fails OPEN on missing key / timeout / error — a broken OpenRouter call
 // must not make quick answers less reliable than before this gate existed.
 async function verifyQuickAnswerIntent(task, answerPreview, openrouterKey) {
-  const orKey = openrouterKey || process.env.OPENROUTER_API_KEY;
-  if (!orKey || !answerPreview) return true;
+  const orKey = openrouterKey || null;
+  if (!require('../service-llm').available(orKey) || !answerPreview) return true;
   try {
-    const body = JSON.stringify({
-      model: 'z-ai/glm-5.3-flash',
-      messages: [
-        {
-          role: 'system',
-          content: 'You verify chatbot auto-replies before they are sent. Answer with a single word: YES or NO.',
-        },
-        {
-          role: 'user',
-          content: `A user sent this message to a chatbot:\n"${task}"\n\nThe bot is about to auto-reply with something like this:\n"${String(answerPreview).slice(0, 300)}"\n\nDoes the user's message actually request this kind of reply? If unsure, answer YES.\n\nYES or NO:`,
-        },
-      ],
-      max_tokens: 5,
-      temperature: 0,
+    // Service-LLM ladder (src/service-llm.js); fail-open on no answer.
+    const out = await require('../service-llm').serviceText({
+      system: 'You verify chatbot auto-replies before they are sent. Answer with a single word: YES or NO.',
+      user: `A user sent this message to a chatbot:\n"${task}"\n\nThe bot is about to auto-reply with something like this:\n"${String(answerPreview).slice(0, 300)}"\n\nDoes the user's message actually request this kind of reply? If unsure, answer YES.\n\nYES or NO:`,
+      maxTokens: 5, timeoutMs: 4000, totalTimeoutMs: 6000, apiKey: orKey, source: 'quick-answer-verify',
     });
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${orKey}`, 'Content-Type': 'application/json' },
-      body,
-      signal: AbortSignal.timeout(2500),
-    });
-    const data = await res.json();
-    const answer = data.choices?.[0]?.message?.content?.trim().toUpperCase() || '';
+    const answer = String(out || '').trim().toUpperCase();
     return !answer.startsWith('NO');
   } catch (e) {
     console.warn('[verifyQuickAnswerIntent] error (fail-open):', e.message);
