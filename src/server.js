@@ -24,6 +24,7 @@ const { handleWeb } = require('./handlers/web');
 const { runTask, generateConnectLink, getQuickAnswer, getPendingTasks, clearPendingTask, interruptForRestart, reconcileSoftContinuations, MAX_RESUME_ATTEMPTS } = require('./runner');
 const { runMcpTool } = require('./mcp-action');
 const { computeSkillsList } = require('./capabilities-skills');
+const { presentSiblings } = require('./skill-siblings');
 const { getAuthFlag, getAllAuthFlags, clearAuthFailedFlag } = require('./auth-flag');
 const { getAllEngineHealth } = require('./engine-health');
 const { isValidProjectId } = require('./valid-project-id');
@@ -840,15 +841,14 @@ async function main() {
       if (fs.existsSync(tokensDir)) {
         capabilities = fs.readdirSync(tokensDir).filter(f => !SKIP.has(f) && !f.startsWith('.'));
       }
-      // skills[] — MCP tool categories available on this agent
+      // skills[] — MCP tool categories available on this agent: core tools plus the
+      // tools of every sibling domain repo checked out on this host (#942, #1470).
       const toolsDir = path.join(__dirname, 'mcp-skills', 'tools');
-      const toolFilenames = fs.existsSync(toolsDir) ? fs.readdirSync(toolsDir) : [];
-      // hh skill was extracted (#942) — its MCP tools no longer live under toolsDir,
-      // so detect it the same way src/mcp-action.js does: sibling checkout present.
-      const HH_SKILL_SIBLING = path.join(__dirname, '..', '..', 'trained-assist-hh-skill', 'src', 'mcp-skills', 'index.js');
-      // freelance skill is also a sibling checkout (trained-assist-freelance-skill).
-      const FREELANCE_SKILL_SIBLING = path.join(__dirname, '..', '..', 'trained-assist-freelance-skill', 'src', 'mcp-skills', 'index.js');
-      const skills = computeSkillsList(toolFilenames, fs.existsSync(HH_SKILL_SIBLING), fs.existsSync(FREELANCE_SKILL_SIBLING));
+      const siblingsHere = presentSiblings();
+      const toolFilenames = [toolsDir, ...siblingsHere.map(sib => path.join(path.dirname(sib.indexPath), 'tools'))]
+        .flatMap(dir => (fs.existsSync(dir) ? fs.readdirSync(dir) : []));
+      const skills = computeSkillsList(toolFilenames,
+        siblingsHere.some(sib => sib.id === 'hh'), siblingsHere.some(sib => sib.id === 'freelance'));
       const upsell_text = process.env.AGENT_UPSELL_TEXT ||
         'За HH-рекрутингом, налогами, задачами Weeek и другим — обратитесь к @super_personal_assistant_bot';
       return json(res, 200, { capabilities, skills, upsell_text });

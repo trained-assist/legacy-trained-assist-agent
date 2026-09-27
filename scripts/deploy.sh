@@ -34,6 +34,7 @@ RELEASE_DIR="$RELEASES_DIR/$TARGET"
 HH_SKILL_DIR="${HH_SKILL_DIR:-$AGENT_HOME/trained-assist-hh-skill}"
 ENGINEERING_DIR="${ENGINEERING_DIR:-$AGENT_HOME/trained-assist-engineering}"
 FREELANCE_SKILL_DIR="${FREELANCE_SKILL_DIR:-$AGENT_HOME/trained-assist-freelance-skill}"
+SALES_SKILL_DIR="${SALES_SKILL_DIR:-$AGENT_HOME/trained-assist-sales-skill}"
 export REPO_DIR RELEASES_DIR CURRENT_LINK SERVICE
 
 if [ "${ASSIST_DEPLOY_LOCKED:-}" != 1 ]; then
@@ -124,45 +125,28 @@ sync_sibling_checked() {
   rm -rf "$probe"
 }
 
-echo "==> Ensuring trained-assist-hh-skill sibling checkout exists (feeds the HH skill fallback)..."
-if [ ! -d "$HH_SKILL_DIR/.git" ]; then
-  HH_SKILL_URL=$(git -C "$REPO_DIR" remote get-url origin | sed 's#/trained-assist-agent\(\.git\)\?$#/trained-assist-hh-skill.git#')
-  echo "  Cloning $HH_SKILL_DIR..."
-  git clone --quiet "$HH_SKILL_URL" "$HH_SKILL_DIR" || echo "  ⚠️  clone failed — hh skill fallback will be unavailable until fixed"
-else
-  sync_sibling_checked "$HH_SKILL_DIR"
-fi
-# Releases resolve the sibling as <release>/../../trained-assist-hh-skill, i.e.
-# <releases>/trained-assist-hh-skill — link that to the canonical checkout.
-$SUDO mkdir -p "$RELEASES_DIR"
-$SUDO ln -sfn "$HH_SKILL_DIR" "$RELEASES_DIR/trained-assist-hh-skill"
-
-echo "==> Ensuring trained-assist-engineering sibling checkout exists (feeds engineering_spawn_workspace, #1418)..."
-if [ ! -d "$ENGINEERING_DIR/.git" ]; then
-  ENGINEERING_URL=$(git -C "$REPO_DIR" remote get-url origin | sed 's#/trained-assist-agent\(\.git\)\?$#/trained-assist-engineering.git#')
-  echo "  Cloning $ENGINEERING_DIR..."
-  git clone --quiet "$ENGINEERING_URL" "$ENGINEERING_DIR" || echo "  ⚠️  clone failed — engineering_spawn_workspace will be unavailable until fixed"
-else
-  sync_sibling_checked "$ENGINEERING_DIR"
-fi
-# Same resolution depth as trained-assist-hh-skill above: both browser.js's
-# sibling mount (2 levels up from src/) and 61-dev.js's engineeringLibPath()
-# (4 levels up from src/mcp-skills/tools/) land on <releases>/, since a release
-# dir itself is one path segment (<releases>/<sha>/src/...).
-$SUDO ln -sfn "$ENGINEERING_DIR" "$RELEASES_DIR/trained-assist-engineering"
-
-# Freelance skill: same sibling pattern (server.js / browser.js resolve
-# <release>/../../trained-assist-freelance-skill). Was never synced nor linked for
-# releases, so live freelance lagged main and releases could not resolve it (#1481).
-echo "==> Ensuring trained-assist-freelance-skill sibling checkout exists..."
-if [ ! -d "$FREELANCE_SKILL_DIR/.git" ]; then
-  FREELANCE_SKILL_URL=$(git -C "$REPO_DIR" remote get-url origin | sed 's#/trained-assist-agent\(\.git\)\?$#/trained-assist-freelance-skill.git#')
-  echo "  Cloning $FREELANCE_SKILL_DIR..."
-  git clone --quiet "$FREELANCE_SKILL_URL" "$FREELANCE_SKILL_DIR" || echo "  ⚠️  clone failed — freelance skill will be unavailable until fixed"
-else
-  sync_sibling_checked "$FREELANCE_SKILL_DIR"
-fi
-$SUDO ln -sfn "$FREELANCE_SKILL_DIR" "$RELEASES_DIR/trained-assist-freelance-skill"
+# Domain skill repos (#1470): one checkout per sibling next to core, synced to main
+# behind the MCP contract check, and linked into <releases>/ — releases resolve a
+# sibling as <release>/../<repo> (browser.js / skill-siblings.js: 2 levels up from
+# src/; 61-dev.js engineeringLibPath: 4 levels up from src/mcp-skills/tools/).
+# Keep this list in sync with SKILL_SIBLINGS in src/skill-siblings.js.
+ensure_sibling() {
+  local repo="$1" dir="$2" url
+  echo "==> Ensuring $repo sibling checkout exists..."
+  if [ ! -d "$dir/.git" ]; then
+    url=$(git -C "$REPO_DIR" remote get-url origin | sed "s#/trained-assist-agent\(\.git\)\?\$#/$repo.git#")
+    echo "  Cloning $dir..."
+    git clone --quiet "$url" "$dir" || echo "  ⚠️  clone failed — $repo will be unavailable until fixed"
+  else
+    sync_sibling_checked "$dir"
+  fi
+  $SUDO mkdir -p "$RELEASES_DIR"
+  $SUDO ln -sfn "$dir" "$RELEASES_DIR/$repo"
+}
+ensure_sibling trained-assist-hh-skill "$HH_SKILL_DIR"
+ensure_sibling trained-assist-engineering "$ENGINEERING_DIR"
+ensure_sibling trained-assist-freelance-skill "$FREELANCE_SKILL_DIR"
+ensure_sibling trained-assist-sales-skill "$SALES_SKILL_DIR"
 
 echo "==> Validating and applying nginx config ($DEPLOY_ENV)..."
 REPO_DIR="$RELEASE_DIR" bash "$RELEASE_DIR/scripts/deploy-nginx.sh"

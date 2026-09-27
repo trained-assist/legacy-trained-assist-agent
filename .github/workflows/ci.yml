@@ -23,8 +23,11 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci --include=dev
-      - name: Check out trained-assist-hh-skill next to core (HH domain code, src/domains/hh/lib.js)
-        run: git clone --quiet --depth 1 https://github.com/trained-assist/trained-assist-hh-skill.git "$GITHUB_WORKSPACE/../trained-assist-hh-skill"
+      - name: Check out domain skill siblings next to core (hh, sales)
+        run: |
+          for repo in trained-assist-hh-skill trained-assist-sales-skill; do
+            git clone --quiet --depth 1 "https://github.com/trained-assist/$repo.git" "$GITHUB_WORKSPACE/../$repo"
+          done
       - name: Install Chromium for response review scenario
         run: npx playwright install --with-deps chromium
       - name: Replay mandatory user scenarios
@@ -51,8 +54,11 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
-      - name: Check out trained-assist-hh-skill next to core (HH domain code, src/domains/hh/lib.js)
-        run: git clone --quiet --depth 1 https://github.com/trained-assist/trained-assist-hh-skill.git "$GITHUB_WORKSPACE/../trained-assist-hh-skill"
+      - name: Check out domain skill siblings next to core (hh, sales)
+        run: |
+          for repo in trained-assist-hh-skill trained-assist-sales-skill; do
+            git clone --quiet --depth 1 "https://github.com/trained-assist/$repo.git" "$GITHUB_WORKSPACE/../$repo"
+          done
       - name: Syntax check
         run: npm run check
       - name: Testkit syntax check
