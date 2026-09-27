@@ -8,6 +8,10 @@
 // pruned to the newest KEEP files. Best-effort by contract: every failure here
 // must degrade to "no snapshot" (404 on the endpoint → gateway fallback), never
 // to a blocked run.
+//
+// The document IS the input, verbatim and nothing else — no header, stats or
+// per-engine commentary (that noise is what made the snapshot hard to read).
+// Provenance survives outside the file: taskId in the filename, time in mtime.
 const fs = require('fs');
 const path = require('path');
 
@@ -18,52 +22,9 @@ const KEEP = 30;
 
 const storeDir = workDir => path.join(workDir, '.run-inputs');
 
-// What each engine adds on top of what we hand it — the part the snapshot can't
-// reproduce verbatim, so it is named explicitly instead of a generic disclaimer.
-const ENGINE_NOTES = {
-  claude: [
-    'Claude Code: НАШ системный промпт ДОПИСЫВАЕТСЯ к встроенному системному промпту Claude Code',
-    '(--append-system-prompt-file) — встроенный (~десятки тысяч токенов: правила, описания Bash/Read/Edit…) здесь не показан.',
-    'MCP-инструменты подгружаются ОТЛОЖЕННО: модель видит только имена, схему тянет через ToolSearch по требованию.',
-    'resume: история прошлых ходов сессии передаётся движком целиком (обычно из кэша) — в «промпт» ниже она не входит.',
-  ],
-  opencode: [
-    'OpenCode: наш системный промпт склеен с промптом в ОДНО пользовательское сообщение (ниже — как есть);',
-    'поверх — собственный системный промпт OpenCode.',
-    'Схемы ВСЕХ инструментов подключённых MCP-серверов уходят в tools[] каждого шага целиком (без отложенной загрузки) —',
-    'это основная часть «вход всего» на opencode.',
-    'resume (--session): история сессии и результаты инструментов досылаются движком.',
-  ],
-  codex: [
-    'Codex: наш системный промпт склеен с промптом в одно сообщение; поверх — встроенные инструкции Codex.',
-    'Схемы MCP-инструментов передаются движком; вывод инструментов обрезается tool_output_token_limit.',
-    'resume (exec resume): история треда досылается движком.',
-  ],
-};
-
-function buildDocument({ taskId, engine, sessionId, systemPrompt, prompt, createdAt, mcpServers, resumed }) {
-  const sys = systemPrompt || '';
-  const pr = prompt || '';
-  const at = new Date(createdAt || Date.now()).toISOString();
-  return [
-    `Реальный input агента — ${taskId}`,
-    `Записан: ${at} · движок: ${engine || '?'} · сессия: ${sessionId || '(новая)'}`,
-    `Системный промпт: ${sys.length} символов · контекст+задача: ${pr.length} символов`,
-    '',
-    `MCP-серверы: ${Array.isArray(mcpServers) && mcpServers.length ? mcpServers.join(', ') : '—'} · продолжение сессии движка: ${resumed ? 'да' : 'нет'}`,
-    '',
-    'Ниже — всё, что агент передал движку: (1) системный промпт — роль/персона, правила проекта,',
-    'режим ответа; (2) промпт — контекстные секции, история сессии, задача.',
-    '',
-    '────────── 0. ЧТО ДОБАВЛЯЕТ ДВИЖОК (не показано ниже, но входит в «вход всего») ──────────',
-    ...(ENGINE_NOTES[engine] || ['Движок неизвестен: схемы инструментов и история добавляются им самим.']),
-    '',
-    '────────── 1. СИСТЕМНЫЙ ПРОМПТ ──────────',
-    sys,
-    '',
-    '────────── 2. ПРОМПТ (контекст + задача) ──────────',
-    pr,
-  ].join('\n');
+function buildDocument({ systemPrompt, prompt }) {
+  const parts = [systemPrompt, prompt].filter(s => typeof s === 'string' && s.length > 0);
+  return parts.join('\n\n');
 }
 
 function prune(dir) {
@@ -94,4 +55,4 @@ function readInput(workDir, taskId) {
   }
 }
 
-module.exports = { ENGINE_NOTES, buildDocument, writeInput, readInput, TASK_ID_RE, KEEP };
+module.exports = { buildDocument, writeInput, readInput, TASK_ID_RE, KEEP };

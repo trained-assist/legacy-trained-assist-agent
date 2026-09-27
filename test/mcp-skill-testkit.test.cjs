@@ -116,6 +116,8 @@ test('checkDomainSkillRepo passes a clean repo and flags missing artifacts', (t)
   fs.writeFileSync(path.join(repo, 'src', 'mcp-skills', 'index.js'), "'use strict';\n");
   fs.writeFileSync(path.join(repo, 'docs', 'user-scenarios', 'demo', '01.md'), '# demo\n');
   fs.writeFileSync(path.join(repo, 'staging', 'suites.json'), JSON.stringify({ node: ['test/behavior.test.cjs'] }));
+  fs.mkdirSync(path.join(repo, 'test'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'test', 'behavior.test.cjs'), "'use strict';\n");
   fs.writeFileSync(path.join(repo, '.github', 'workflows', 'ci.yml'), 'name: CI\n');
   fs.writeFileSync(path.join(repo, 'checklist.md'), '- [ ] CI green\n');
   fs.writeFileSync(path.join(repo, 'mcp.manifest.json'), JSON.stringify({

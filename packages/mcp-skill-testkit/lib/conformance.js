@@ -21,7 +21,6 @@ const REQUIRED_ARTIFACTS = [
   'docs/user-scenarios',
   'scenarios',
   'fixtures',
-  'staging/suites.json',
   '.github/workflows/ci.yml',
   'checklist.md',
 ];
@@ -36,9 +35,20 @@ function walk(dir, out = []) {
   return out;
 }
 
+// The mandatory suite set lives next to the replay runner: `staging/` in a
+// scaffolded repo, `scripts/staging/` in repos that vendored the Phase 1 runner
+// (core, hh-skill). Either layout is conformant; the first match wins.
+const SUITES_LOCATIONS = ['staging/suites.json', 'scripts/staging/suites.json'];
+
+function findSuites(repo) {
+  return SUITES_LOCATIONS.find((rel) => fs.existsSync(join(repo, rel))) || null;
+}
+
 function checkArtifacts(repo) {
   const missing = REQUIRED_ARTIFACTS.filter((rel) => !fs.existsSync(join(repo, rel)));
-  return { name: 'required-artifacts', ok: missing.length === 0, detail: missing.length ? `missing: ${missing.join(', ')}` : `${REQUIRED_ARTIFACTS.length} artifacts present` };
+  if (!findSuites(repo)) missing.push(SUITES_LOCATIONS.join(' | '));
+  const total = REQUIRED_ARTIFACTS.length + 1;
+  return { name: 'required-artifacts', ok: missing.length === 0, detail: missing.length ? `missing: ${missing.join(', ')}` : `${total} artifacts present` };
 }
 
 function checkManifest(repo, schemaPath) {
@@ -53,18 +63,23 @@ function checkManifest(repo, schemaPath) {
 }
 
 function checkSuites(repo) {
-  const suitesPath = join(repo, 'staging', 'suites.json');
-  if (!fs.existsSync(suitesPath)) return { name: 'mandatory-suites', ok: false, detail: 'staging/suites.json missing' };
+  const rel = findSuites(repo);
+  if (!rel) return { name: 'mandatory-suites', ok: false, detail: `${SUITES_LOCATIONS.join(' | ')} missing` };
   try {
-    const suites = JSON.parse(fs.readFileSync(suitesPath, 'utf8'));
-    const arrays = Object.values(suites).filter(Array.isArray);
-    const total = arrays.reduce((n, a) => n + a.length, 0);
-    if (!total) return { name: 'mandatory-suites', ok: false, detail: 'staging/suites.json has no mandatory scenarios (empty run cannot approve a release)' };
-    return { name: 'mandatory-suites', ok: true, detail: `${total} mandatory scenario command(s)` };
+    const suites = JSON.parse(fs.readFileSync(join(repo, rel), 'utf8'));
+    const entries = Object.values(suites).filter(Array.isArray).flat();
+    if (!entries.length) return { name: 'mandatory-suites', ok: false, detail: `${rel} has no mandatory scenarios (empty run cannot approve a release)` };
+    // A renamed/deleted test left in the set silently shrinks the gate or breaks
+    // it only at release time — catch stale paths here.
+    const stale = entries.filter((f) => typeof f !== 'string' || !fs.existsSync(join(repo, f)));
+    if (stale.length) return { name: 'mandatory-suites', ok: false, detail: `${rel} lists missing files: ${stale.join(', ')}` };
+    return { name: 'mandatory-suites', ok: true, detail: `${entries.length} mandatory scenario file(s) in ${rel}` };
   } catch (e) {
     return { name: 'mandatory-suites', ok: false, detail: `invalid suites.json: ${e.message}` };
   }
 }
+
+const BROWSER_FETCH_MARKER = /mcp-skill-conformance:\s*browser-fetch\b/;
 
 function checkGuards(repo) {
   const files = walk(join(repo, 'src'));
@@ -83,7 +98,9 @@ function checkGuards(repo) {
     }
 
     // L3.2 — every external HTTP call needs a timeout (file-level heuristic).
-    if (/\bfetch\s*\(/.test(src) && !/AbortSignal\.timeout|signal\s*:/.test(src)) {
+    // Files that only emit browser-side JS (HTML page generators) opt out with
+    // an explicit, reviewable marker: `mcp-skill-conformance: browser-fetch`.
+    if (/\bfetch\s*\(/.test(src) && !/AbortSignal\.timeout|signal\s*:/.test(src) && !BROWSER_FETCH_MARKER.test(src)) {
       violations.push(`${rel}: fetch() without AbortSignal.timeout / signal`);
     }
 

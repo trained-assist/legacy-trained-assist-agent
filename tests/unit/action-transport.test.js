@@ -15,10 +15,21 @@ describe('createMcpTransport', () => {
     const seen = [];
     const transport = createMcpTransport({ runTool: async payload => { seen.push(payload); return '{"ok":true}'; } });
     await transport({ action: 'read_items', arguments: { limit: 2 }, profileId: 'alice', projectId: 'vacancy-1' });
-    expect(seen[0]).toEqual({ tool: 'read_items', params: { limit: 2 }, username: 'alice', workDir: projectDir('alice', 'vacancy-1') });
+    expect(seen[0]).toEqual({
+      tool: 'read_items', params: { limit: 2 }, username: 'alice',
+      workDir: projectDir('alice', 'vacancy-1'), trigger: 'user', origin: 'api',
+    });
 
     await transport({ action: 'read_items', arguments: {}, profileId: 'alice', projectId: null });
     expect(seen[1].workDir).toBe(userWorkDir('alice'));
+  });
+
+  it('forwards the invocation trigger so an approved source sees the caller policy (cron)', async () => {
+    const seen = [];
+    const transport = createMcpTransport({ runTool: async payload => { seen.push(payload); return '{}'; } });
+    await transport({ action: 'a', arguments: {}, profileId: 'alice', projectId: null, trigger: 'cron' });
+    expect(seen[0].trigger).toBe('cron');
+    expect(seen[0].origin).toBe('cron-service');
   });
 
   it('parses JSON output and passes non-JSON text through', async () => {

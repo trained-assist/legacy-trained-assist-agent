@@ -2118,19 +2118,15 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
 
   // «Посмотреть инпут»: persist the REAL model input for this run (system prompt +
   // context/task, exactly what the engine receives) keyed by taskId, so the
-  // gateway's button can show it instead of the gateway-side task text. Best-effort:
-  // a write failure must never block the run — it degrades to a 404/fallback.
+  // gateway's button can show it instead of the gateway-side task text. The
+  // document is the raw input, verbatim — no wrapper/commentary (taskId lives in
+  // the filename, time in mtime). Best-effort: a write failure must never block
+  // the run — it degrades to a 404/fallback.
   try {
     const runInputStore = require('../run-input-store');
     runInputStore.writeInput(user.workDir, taskId, runInputStore.buildDocument({
-      taskId,
-      engine,
-      sessionId: activeSessionId || null,
       systemPrompt: ocSystemPrompt || systemPromptText,
       prompt,
-      createdAt: Date.now(),
-      mcpServers: (() => { try { return Object.keys(JSON.parse(fs.readFileSync(mcpConfig, 'utf8')).mcpServers || {}); } catch { return []; } })(),
-      resumed: !!resumeSessionId,
     }));
   } catch (e) { console.warn('[runner] run-input snapshot:', e.message); }
 
