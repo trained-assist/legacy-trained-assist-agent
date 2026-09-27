@@ -11,7 +11,7 @@
 #   4. Creates a branch + commit + PR in the target repo
 #
 # Required: gh CLI authenticated
-# Required secret in target repo: OPENROUTER_API_KEY (see output)
+# Required secret: LLM_LADDER_TOKEN (org-level in trained-assist, visibility all) — see output
 
 set -euo pipefail
 
@@ -104,14 +104,13 @@ else
     permissions:
       contents: write
       pull-requests: write
-    uses: trained-assist/pr-autofix/.github/workflows/autofix-callable.yml@v1.4.0
+    uses: trained-assist/pr-autofix/.github/workflows/autofix-callable.yml@v1.6.0
     with:
       pr_number: \${{ github.event.pull_request.number }}
       original_branch: \${{ github.head_ref }}
       run_id: \${{ github.run_id }}
     secrets:
-      openrouter_api_key: \${{ secrets.OPENROUTER_API_KEY }}
-      opencode_go_api_key: \${{ secrets.OPENCODE_GO_API_KEY }}
+      llm_ladder_token: \${{ secrets.LLM_LADDER_TOKEN }}
       gh_token: \${{ secrets.AUTOFIX_PAT || github.token }}
 AUTOFIXJOB
 fi
@@ -131,7 +130,7 @@ Uses trained-assist/pr-autofix@v1 (https://github.com/trained-assist/pr-autofix)
 On CI failure: diagnoses root cause, patches with free OpenRouter models,
 creates fix/ci-* branch + PR that auto-merges when CI passes.
 
-Requires OPENROUTER_API_KEY secret in repo settings."
+Requires LLM_LADDER_TOKEN (org secret in trained-assist; model calls go to the llm-ladder worker)."
 
 git push origin "$INSTALL_BRANCH"
 
@@ -159,7 +158,7 @@ Connects [trained-assist/pr-autofix](https://github.com/trained-assist/pr-autofi
 
 | Secret | Value |
 |--------|-------|
-| `OPENROUTER_API_KEY` | Free key from [openrouter.ai](https://openrouter.ai) |
+| `LLM_LADDER_TOKEN` | trained-assist-llm-ladder worker token (org secret in trained-assist; GCP SM `LLM_LADDER_TOKEN`) |
 | `OPENCODE_GO_API_KEY` | Optional — OpenCode Go key; primary provider when set, OpenRouter becomes fallback |
 
 Optionally add `AUTOFIX_PAT` (Fine-Grained PAT with contents+pull_requests write) if your org restricts workflow write permissions.
@@ -172,6 +171,6 @@ echo ""
 echo "✅ Done! PR created: $PR_URL"
 echo ""
 echo "⚠️  Required step:"
-echo "   Add OPENROUTER_API_KEY to $TARGET_REPO repo secrets:"
+echo "   LLM_LADDER_TOKEN is an org secret in trained-assist (visibility all); outside the org add it to $TARGET_REPO secrets:"
 echo "   https://github.com/$TARGET_REPO/settings/secrets/actions"
-echo "   Get a free key at: https://openrouter.ai"
+echo "   Value: GCP Secret Manager LLM_LADDER_TOKEN (project alesa-personal-assistent)"

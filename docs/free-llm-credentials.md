@@ -1,3 +1,5 @@
+> **2026-09-27:** the free/cheap ladder now lives in the [trained-assist-llm-ladder](https://github.com/trained-assist/trained-assist-llm-ladder) worker (`https://llm-ladder.trainedassist.store`, model `free-ladder`). pr-autofix ≥ v1.6.0 and trained-assist-agent call it with `LLM_LADDER_TOKEN`; the provider keys below live in the worker's secrets. The rest of this page is history.
+
 # Free/cheap LLM credentials — how to call them
 
 Context: issue #584 (multi-step PR auto-triage pipeline — analyze failed CI,
