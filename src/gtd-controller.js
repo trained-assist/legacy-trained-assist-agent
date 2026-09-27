@@ -499,7 +499,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     // legacy (non-contract) durable items keep the pre-P3b default engine. A plan's
     // execution_policy.level_map overrides the level→engine table for that plan only.
     const step = task.acceptance_criteria_json
-      ? resolveStepExecution(item, { levelMap: planLevelMap(parsePolicy(task)) })
+      ? resolveStepExecution(item, { levelMap: planLevelMap(parsePolicy(task)), useRoleMap: !parsePolicy(task)?.level_map })
       : { executionKind: 'agent', engine: 'claude', ocProfile: null, ocRole: null, skipModels: [] };
     // Record WHICH engine/profile/level actually ran the step — without it there is
     // no way to see (or test) that different levels really run on different engines.
