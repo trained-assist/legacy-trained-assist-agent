@@ -266,7 +266,7 @@ test('recordFailure gives a transient Bad Request a SHORT shared per-model backo
   assert.equal(mod.resolveModel({ ladder: { build: ['flaky-model', 'sibling'] } }, 'p', 'build'), 'flaky-model');
 });
 
-test('deepseek profile: one config-driven ladder — mimo → deepseek-v4.1-flash (owner 2026-09-27, muse-spark dropped), paid OpenRouter only as the LAST rung', () => {
+test('deepseek profile: one config-driven ladder — Go mimo → Go deepseek-v4.1-flash → paid OpenRouter tail of three vendors (owner 2026-09-27)', () => {
   const routing = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'model-routing.json'), 'utf8'));
   const profile = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'deepseek.json'), 'utf8'));
   assert.equal(profile.ladderRef, 'deepseek', 'profile must be config-driven (ladderRef), not hardcode the model list');
@@ -274,12 +274,14 @@ test('deepseek profile: one config-driven ladder — mimo → deepseek-v4.1-flas
   assert.equal(routing.ladders['deepseek-openrouter'], undefined, 'the toggle halves are gone (2026-09-27)');
   const ladder = routing.ladders.deepseek;
   assert.deepEqual(ladder.build, ['opencode-go/mimo-v2.6-flash', 'opencode-go/deepseek-v4.1-flash',
-    'openrouter/deepseek/deepseek-v4-flash-0731'], 'order set by the owner');
-  assert.equal(ladder.build[ladder.build.length - 1], 'openrouter/deepseek/deepseek-v4-flash-0731', 'OpenRouter is the final rung');
-  for (const rung of ladder.build.slice(0, -1)) assert.ok(rung.startsWith('opencode-go/'), `rung ${rung} must be on Go`);
+    'openrouter/deepseek/deepseek-v4-flash-0731', 'openrouter/google/gemini-2.5-flash-lite', 'openrouter/xiaomi/mimo-v2.6-flash'],
+    'order set by the owner: Go first, then a paid OpenRouter tail of three vendors');
+  const firstOr = ladder.build.findIndex(m => m.startsWith('openrouter/'));
+  for (const rung of ladder.build.slice(0, firstOr)) assert.ok(rung.startsWith('opencode-go/'), `rung ${rung} must be on Go`);
+  for (const rung of ladder.build.slice(firstOr)) assert.ok(rung.startsWith('openrouter/'), `paid rung ${rung} only in the tail`);
   for (const rung of ladder.build) assert.notEqual(rung, 'opencode-go/deepseek-v4-pro', 'expensive -pro rung removed (#1589)');
   for (const role of ['plan', 'explore', 'general', 'review']) assert.deepEqual(ladder[role], ladder.build, role);
-  assert.ok(ladder.build.length <= 5, 'must fit MAX_LADDER_ATTEMPTS (5) or the OpenRouter rung is unreachable');
+  assert.ok(ladder.build.length <= 5, 'must fit MAX_LADDER_ATTEMPTS (5) or the last OpenRouter rung is unreachable');
 });
 
 test('buildOcProfileOverrides resolves a ladderRef from config/model-routing.json (issue #1467)', () => {
