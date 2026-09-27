@@ -33,6 +33,40 @@ const { criterionIdForItem } = require('./durable-task-plan');
 const { durableTaskDbPath, userWorkDir, projectDir: projectDirPath } = require('./data-paths');
 const { resolveStepExecution, planLevelMap } = require('./playbook-executor');
 
+// Engines this step already failed on with credentials/config — retrying them is
+// pointless, the fallback ladder skips them.
+const HARD_ENGINE_FAILURES = new Set(['AUTH', 'CONFIG']);
+
+// Pick the first usable rung of [primary, ...fallbacks]: engine not 'unavailable' in
+// engine health and not already failed on by this step with AUTH/CONFIG. When the
+// primary is unusable the step runs on a fallback rung (claude → codex → opencode
+// master for doctor). Nothing usable → primary (it fails and recovery decides).
+function pickUsableTarget(store, item, step, engineHealth) {
+  const candidates = [
+    { engine: step.engine, ocProfile: step.ocProfile, ocRole: step.ocRole },
+    ...(Array.isArray(step.fallbacks) ? step.fallbacks : []),
+  ];
+  if (candidates.length < 2) return step;
+  const hardFailed = new Set(store.db.prepare(`SELECT engine FROM executions
+      WHERE task_item_id = ? AND engine IS NOT NULL AND error_class IN ('AUTH','CONFIG')`)
+    .all(item.id).map(r => r.engine));
+  const usable = c => {
+    if (hardFailed.has(c.engine)) return false;
+    try { return (engineHealth(c.engine) || {}).status !== 'unavailable'; } catch { return true; }
+  };
+  const idx = candidates.findIndex(usable);
+  if (idx <= 0) return step;
+  const why = hardFailed.has(step.engine) ? `${step.engine} failed on credentials/config` : `${step.engine} unavailable`;
+  return { ...step, ...candidates[idx], degradedFrom: step.engine, degradeReason: why };
+}
+
+// Previous failed attempts of this step, oldest first — the next attempt must see
+// why they failed (owner: «инфа о провале мега важна»).
+function priorFailures(store, item) {
+  return store.db.prepare(`SELECT engine, profile, model_level, error_class, error_text FROM executions
+      WHERE task_item_id = ? AND status = 'failed' ORDER BY started_at`).all(item.id);
+}
+
 // Workspace label shared by every step of a plan (engineering_spawn_workspace is
 // idempotent per root_task_id): without it each step invented its own label, so
 // every step got its own worktree/branch and earlier steps' files were lost.
@@ -446,7 +480,8 @@ function lastDurableMarker(said) {
   return all.length ? all[all.length - 1][1].toLowerCase() : null;
 }
 
-async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now(), maxFires = MAX_FIRES_PER_TICK, registry = null, llmValidate = null, classifier = null, ladder = null, hookSinks = null, approveHooks = null }) {
+async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now(), maxFires = MAX_FIRES_PER_TICK, registry = null, llmValidate = null, classifier = null, ladder = null, hookSinks = null, approveHooks = null, engineHealth = null }) {
+  const healthOf = engineHealth || (engine => require('./engine-health').getEngineHealth(engine));
   const store = durableStore();
   const validators = registry || getDefaultRegistry();
   // A programmatic step that fails is retried synchronously inside this pass
@@ -500,15 +535,18 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     // P3b: contract plans resolve the step's contract to a concrete engine/profile;
     // legacy (non-contract) durable items keep the pre-P3b default engine. A plan's
     // execution_policy.level_map overrides the level→engine table for that plan only.
-    const step = task.acceptance_criteria_json
+    let step = task.acceptance_criteria_json
       ? resolveStepExecution(item, { levelMap: planLevelMap(parsePolicy(task)), useRoleMap: !parsePolicy(task)?.level_map })
       : { executionKind: 'agent', engine: 'claude', ocProfile: null, ocRole: null, skipModels: [] };
+    if (step.executionKind === 'agent') step = pickUsableTarget(store, item, step, healthOf);
+    if (step.degradedFrom) console.log(`[gtd-durable] ${item.id.slice(0, 8)} runs on fallback ${step.engine}${step.ocProfile ? `/${step.ocProfile}` : ''}: ${step.degradeReason}`);
     // Record WHICH engine/profile/level actually ran the step — without it there is
     // no way to see (or test) that different levels really run on different engines.
     store.startExecution({
       id: executionId, task_id: task.id, task_item_id: item.id, session_id: sessionRow?.session_id || null, tier: item.current_tier,
       engine: step.engine || null, profile: step.ocProfile || null, model_level: step.modelLevel || null,
       executor_role: item.executor_role || null,
+      provider: step.degradedFrom ? `fallback-from-${step.degradedFrom}` : null,
     });
 
     // P4: stage entry — fire stage.on_enter (carried by the stage's first item).
@@ -577,6 +615,13 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       digest ? `\n${digest}\n` : '',
       `Step (${item.position + 1}/${store.progressSummary(task.id, task.profile_id).total}): ${item.title}`,
       `Step id: ${item.id}`,
+      ...(() => {
+        const fails = priorFailures(store, item);
+        if (!fails.length) return [];
+        return ['\nПРОШЛЫЕ ПОПЫТКИ ЭТОГО ШАГА НЕ ПРОШЛИ — не повторяй их ошибок:',
+          ...fails.map((f, i) => `${i + 1}. [${f.model_level || '?'} ${f.engine || '?'}${f.profile ? `/${f.profile}` : ''}${f.error_class ? ` ${f.error_class}` : ''}] ${String(f.error_text || '').replace(/\s+/g, ' ').slice(0, 300)}`)];
+      })(),
+      step.degradedFrom ? `\nЭтот шаг рассчитан на уровень ${item.current_model_level || item.minimum_model_level}, но выполняется на запасном движке (${step.degradeReason}). Будь особенно внимателен к проверке результата.` : '',
       item.instructions ? `\nInstructions: ${item.instructions}` : '',
       item.validation_json
         ? `\nValidation (must pass before completion): ${item.validation_json}` : '',
@@ -696,7 +741,7 @@ async function settleDurableReply(ctx, reply) {
     await fireItemHooks(store, task, itemSnap, 'stage_exit', hookVars(), sinks, hooksApproved);
   } else if (/DURABLE:\s*failed/i.test(said)) {
     store.failItem(itemSnap.id, task.profile_id, { executionId, error: said.slice(0, 500) });
-    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: said, classifier, ladder });
+    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: said, classifier, ladder, quality: true });
     store.finishExecution(executionId, {
       status: 'failed', error_class: rec.failureClass,
       error_text: `${rec.action || 'terminal'}: ${said}`.slice(0, 500),
@@ -709,9 +754,11 @@ async function settleDurableReply(ctx, reply) {
     }
   } else {
     // no terminal marker — treat as failure, bounded by the item's own max_attempts
-    const errText = 'no DURABLE terminal marker in reply';
-    store.failItem(itemSnap.id, task.profile_id, { executionId, error: errText });
-    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier, ladder });
+    // The reply itself is the error text: an engine that printed "Not logged in"
+    // must classify as AUTH (fallback ladder), not as a quality miss.
+    const errText = `no DURABLE terminal marker in reply: ${said.slice(-300)}`;
+    store.failItem(itemSnap.id, task.profile_id, { executionId, error: errText.slice(0, 500) });
+    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier, ladder, quality: true });
     store.finishExecution(executionId, {
       status: 'failed', error_class: rec.failureClass,
       error_text: `${rec.action || 'terminal'}: no marker`.slice(0, 500),

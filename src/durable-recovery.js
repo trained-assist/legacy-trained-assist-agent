@@ -20,7 +20,13 @@
 const { classifyDeterministic } = require('./failure-classifier');
 const { nextAction, DEFAULT_RECOVERY_BUDGET } = require('./recovery-policy');
 const { getRetryDelayMs } = require('./retry-policy');
-const { resolveStepExecution } = require('./playbook-executor');
+const { resolveStepExecution, planLevelMap, nextDistinctLevel } = require('./playbook-executor');
+
+// Failure classes that mean "the model did not manage the task" (as opposed to the
+// provider/credentials/infra failing): only these drive quality escalation.
+const QUALITY_CLASSES = new Set(['UNKNOWN', 'TOOL_ERROR']);
+const HARD_ENGINE_CLASSES = new Set(['AUTH', 'CONFIG']);
+const QUALITY_MAX_ATTEMPTS = 3;
 
 // Which policy action re-pends the same target (the pre-P3c path).
 const RETRY_ACTIONS = new Set(['retry_same', 'conservative_retry', 'execution_retry', 'tool_specific_retry']);
@@ -47,9 +53,21 @@ function retryFailedItem(store, itemId, profileId, { retryDelayMs = 0, escalate 
   return { retried: true, attempts, maxAttempts };
 }
 
+function _policy(task) {
+  try { return task && task.execution_policy_json ? JSON.parse(task.execution_policy_json) : null; }
+  catch { return null; }
+}
+
+function _planMap(task) {
+  return planLevelMap(_policy(task));
+}
+
+// Resolve through the PLAN's level map — otherwise a rung advance would move the
+// ladder of the default profile, not the one the step actually ran on.
 function _step(item, task) {
   return task && task.acceptance_criteria_json
-    ? resolveStepExecution(item)
+    // same routing as the executor: a plan with its own level map ignores the role map
+    ? resolveStepExecution(item, { levelMap: _planMap(task), useRoleMap: !(_policy(task) || {}).level_map })
     : { engine: 'claude', ocProfile: null, ocRole: null };
 }
 
@@ -102,7 +120,7 @@ function _switchProvider(item, task, ladder) {
 async function recoverDurableItem({
   store, task, itemId, errorText = '',
   classifier = classifyDeterministic, budget = DEFAULT_RECOVERY_BUDGET,
-  ladder = null, escalate = true, retryDelayMs = 0,
+  ladder = null, escalate = true, retryDelayMs = 0, quality = false,
 } = {}) {
   const profileId = task.profile_id;
   const item = store.getTaskItem(itemId) || { id: itemId, attempt_count: 0, max_attempts: 1 };
@@ -111,7 +129,10 @@ async function recoverDurableItem({
 
   let failureClass = 'UNKNOWN';
   try {
-    const verdict = await classifier(errorText, {});
+    // runDueDurable forwards its own `classifier = null` default: null must mean the
+    // deterministic classifier, not "throw and fall back to UNKNOWN" (which silently
+    // disabled the whole class → action table for every prod durable failure).
+    const verdict = await (classifier || classifyDeterministic)(errorText, {});
     if (verdict && verdict.class) failureClass = verdict.class;
   } catch (e) {
     console.warn('[durable-recovery] classifier:', e.message);
@@ -133,6 +154,38 @@ async function recoverDurableItem({
   // already returns null past `budget`, at 'terminal', or when the class's own
   // action list is used up.
   if (attempts >= maxAttempts) return terminal('attempts-exhausted');
+
+  // Quality failure (the model did not manage the task: DURABLE failed / no marker):
+  // attempt 1 and 2 run at the step's level (2 with the failure reasons in its input),
+  // attempt 3 runs one distinct level up. Provider/infra failures keep the class policy.
+  if (quality && QUALITY_CLASSES.has(failureClass) && task && task.acceptance_criteria_json) {
+    // Three attempts, whatever max_attempts says: the same level twice, then one up.
+    if (attempts >= QUALITY_MAX_ATTEMPTS) return terminal('quality-attempts-exhausted');
+    let move = 'retry_same_with_reasons';
+    if (attempts >= 2) {
+      const next = nextDistinctLevel(item, _planMap(task));
+      if (next) {
+        store.updateTaskItem(itemId, { current_model_level: next }, profileId);
+        move = `escalate:${item.current_model_level || item.minimum_model_level}→${next}`;
+      }
+    }
+    const r = retryFailedItem(store, itemId, profileId, { retryDelayMs, escalate: false });
+    if (!r.retried) return terminal('attempts-exhausted');
+    store.updateTaskItem(itemId, { last_failure_class: failureClass, last_recovery_action: move }, profileId);
+    return { recovered: true, failureClass, action: move, attempts: r.attempts, maxAttempts: r.maxAttempts, reason: 'repended' };
+  }
+  // Credentials/config failure on an engine that still has fallback rungs
+  // (doctor: claude → codex → opencode master): re-pend; the executor skips the
+  // engine this step already failed on and runs the next rung.
+  if (HARD_ENGINE_CLASSES.has(failureClass)) {
+    const step = _step(item, task);
+    if (Array.isArray(step.fallbacks) && step.fallbacks.length) {
+      const r = retryFailedItem(store, itemId, profileId, { retryDelayMs, escalate: false });
+      if (!r.retried) return terminal('attempts-exhausted');
+      store.updateTaskItem(itemId, { last_failure_class: failureClass, last_recovery_action: 'fallback_rung' }, profileId);
+      return { recovered: true, failureClass, action: 'fallback_rung', attempts: r.attempts, maxAttempts: r.maxAttempts, reason: 'repended' };
+    }
+  }
   if (action == null) return terminal('terminal');
 
   let move = action;
