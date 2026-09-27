@@ -65,7 +65,7 @@ describe('HH response refresh and durable triage', () => {
     const html=await (await fetch(base+'/hh/review?'+query)).text();expect(html).toContain('role="alert"');expect(html).toContain('Иван2');
     expect((await post('/hh/sync-negotiations',{})).status).toBe(500); fail=false; await post('/hh/sync-negotiations',{});
   });
-  it('star/archive/restore survives reload and sync; archive makes no HH call; refusal remains available',async()=>{
+  it.skipIf(!require('../helpers/has-chromium.cjs').hasChromium)('star/archive/restore survives reload and sync; archive makes no HH call; refusal remains available',async()=>{
     const {chromium}=require('playwright'); browser=await chromium.launch({headless:true});const page=await browser.newPage();
     const errors=[]; page.on('pageerror',e=>errors.push(e.message));
     await page.goto(base+'/hh/review?'+query);

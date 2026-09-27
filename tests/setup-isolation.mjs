@@ -25,3 +25,6 @@ process.env.LLM_LADDER_TOKEN = 'test-ladder-token';
 process.once('exit', () => rmSync(root, { recursive: true, force: true }));
 // Runner fixtures fake the `claude` binary; production's default engine is opencode (2026-09-27).
 if (!process.env.AGENT_DEFAULT_ENGINE) process.env.AGENT_DEFAULT_ENGINE = 'claude';
+// The runner's RAM watchdog waits up to 60s when os.freemem() < 512MB — on macOS (page
+// cache not counted as free) that made runner tests hang/time out locally but not in CI.
+if (process.env.MIN_FREE_RAM_MB === undefined) process.env.MIN_FREE_RAM_MB = '0';
