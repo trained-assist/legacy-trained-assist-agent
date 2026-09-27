@@ -43,11 +43,18 @@ function staticCatalog(reg) {
 }
 
 // Effective catalog: core + every present sibling domain repo.
+const warnedShadow = new Set();
 function buildCatalogForProfile({ siblingList = siblings } = {}) {
-  return buildToolCatalog({
+  const catalog = buildToolCatalog({
     coreTools: staticCatalog(registry),
     siblings: siblingList.map(s => ({ id: s.id, mcpServerId: s.mcpServerId, tools: staticCatalog(s.registry) })),
   });
+  for (const { name, by } of catalog.shadowed) {
+    if (warnedShadow.has(name)) continue;
+    warnedShadow.add(name);
+    console.warn(`[mcp-action] core tool ${name} is also served by the ${by} sibling — using the sibling; delete the core copy (#1470)`);
+  }
+  return catalog;
 }
 
 // Safe in-process: tool metadata only, no user-scoped execution. profileId is
