@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { keepaliveFilePath, lastKeepaliveAt } = require('../mcp-keepalive');
+const { prepareEngineSpawn } = require('./engine-isolation');
 
 const STREAM_INTERVAL_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 3000;
@@ -344,6 +345,7 @@ async function runEngineProcess(opts) {
     cleanEnv, userTokens, sessionFilePath, sessionId, restartShutdown, activeTimers, consumePendingStop = null,
     tgEdit, tgSend, outputCallback, engineBin, engineArgs, cwd, env, mcpConfig,
     ocProfileOverrides, onHeartbeat, onEngineSessionId, onProgress, timeoutMs = null,
+    bridgedServers = null,
   } = opts;
   const { hardTimeoutMs, warnTimeoutMs } = computeEngineTimeoutMs(timeoutMs);
   // Forum topics (#255): fresh progress/warning sends stay in the originating topic.
@@ -387,19 +389,34 @@ async function runEngineProcess(opts) {
       // writeOpencodeMcpConfig for why it must never land in the git worktree.
       ...(engine === 'opencode' && mcpConfig ? { OPENCODE_CONFIG: writeOpencodeMcpConfig(user.workDir || os.tmpdir(), mcpConfig, ocProfileOverrides) } : {}),
   };
-  const spawnArgs = engine === 'codex' && mcpConfig
-    ? withCodexMcpEnvForwarding(engineArgs, mcpConfig, Object.keys(engineEnv))
-    : engineArgs;
-  reportProgress('Думаю…');
-  const proc = spawn(engineBin, spawnArgs, {
-    cwd,
-    env: engineEnv,
-    // codex exec and opencode run both block on open stdin — close it explicitly.
-    // claude doesn't read stdin in --print mode.
-    // opencode waits 3s for stdin data before proceeding — use 'pipe' + immediate .end()
-    // so it sees EOF instantly rather than waiting the full 3-second timeout.
-    ...(engine === 'codex' || engine === 'opencode' ? { stdio: ['pipe', 'pipe', 'pipe'] } : {}),
+  // T0 hardening (issue #1649): with AGENT_ENV_ALLOWLIST / AGENT_RUN_AS_USERS the engine
+  // gets an allowlisted env (no server secrets), MCP goes through the run-token bridge,
+  // and the process may run as a leased unprivileged slot user. Off → unchanged inputs.
+  // Fails closed: a configured isolation that cannot be set up throws, never falls back
+  // to running as the service user.
+  const isolation = await prepareEngineSpawn({
+    engine, taskId, user, cwd, engineEnv, userTokens, bridgedServers, mcpConfig,
   });
+  const spawnEnv = isolation.env;
+  const spawnArgs = engine === 'codex' && mcpConfig
+    ? withCodexMcpEnvForwarding(engineArgs, mcpConfig, Object.keys(spawnEnv))
+    : engineArgs;
+  const [spawnBin, spawnArgv] = isolation.wrap(engineBin, spawnArgs);
+  if (isolation.runAs) console.log(`[${taskId}] engine runs as ${isolation.runAs}`);
+  reportProgress('Думаю…');
+  let proc;
+  try {
+    proc = spawn(spawnBin, spawnArgv, {
+      cwd,
+      env: spawnEnv,
+      // codex exec and opencode run both block on open stdin — close it explicitly.
+      // claude doesn't read stdin in --print mode.
+      // opencode waits 3s for stdin data before proceeding — use 'pipe' + immediate .end()
+      // so it sees EOF instantly rather than waiting the full 3-second timeout.
+      ...(engine === 'codex' || engine === 'opencode' ? { stdio: ['pipe', 'pipe', 'pipe'] } : {}),
+    });
+  } catch (e) { isolation.release(); throw e; }
+  proc.once('close', () => isolation.release());
   if (engine === 'codex' || engine === 'opencode') proc.stdin.end();
 
   let streamTimer = null;
@@ -965,6 +982,7 @@ async function runEngineProcess(opts) {
     await stopProgress();
     console.error(`[${taskId}] claude process error:`, err.message);
   } finally {
+    isolation.release(); // idempotent; also covers the stalled-close path
     activeTimers.delete(taskId);
     await stopProgress();
     heartbeatTimer = null;

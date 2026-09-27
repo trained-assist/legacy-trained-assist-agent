@@ -563,9 +563,13 @@ function defaultCloneAndBranch(number, repo, token, workRoot = WORK_ROOT) {
 }
 
 function defaultRunEngine({ cwd, prompt, model = EXECUTE_MODEL }) {
+  // T0 hardening (issue #1649): with the env allowlist on, the engine never sees the
+  // cron's service env (server secrets, the fixer's own GitHub token).
+  const { isolationConfig, buildAgentEnv } = require('./agent-isolation');
+  const env = isolationConfig().envAllowlist ? buildAgentEnv(process.env) : process.env;
   try {
     const out = execSync(`${process.env.OPENCODE_BIN || 'opencode'} run --format json --auto -m ${model}`, {
-      cwd, input: prompt, stdio: ['pipe', 'pipe', 'pipe'], timeout: 15 * 60_000, maxBuffer: 20 * 1024 * 1024,
+      cwd, input: prompt, env, stdio: ['pipe', 'pipe', 'pipe'], timeout: 15 * 60_000, maxBuffer: 20 * 1024 * 1024,
     });
     return { ok: true, log: out.toString() };
   } catch (e) {

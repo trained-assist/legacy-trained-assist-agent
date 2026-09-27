@@ -19,15 +19,18 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
-const { writeMcpConfig } = require('./browser');
+const { writeRunMcpConfig } = require('./browser');
+const { isolationConfig } = require('./agent-isolation');
+const { userWorkDir } = require('./data-paths');
 const { buildEngineCommand, runEngineProcess } = require('./runner/claude-runner');
 const { parseLlmJson } = require('./llm-client');
 const { loadUserTokens } = require('./user-tokens');
 
+// Inside the profile workspace, not the tokens dir (issue #1649): the engine's cwd
+// must never be a place that holds the profile's credential files.
 function hermesWorkDir(username) {
-  const dir = path.join(os.homedir(), 'agent-tokens', String(username), 'hermes-tmp');
+  const dir = path.join(userWorkDir(username), 'hermes-tmp');
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -59,7 +62,7 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
   const workDir = hermesWorkDir(username);
   const id = taskId || `hermes-tools-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-  const mcpConfig = writeMcpConfig(workDir, username);
+  const { mcpConfig, servers: bridgedServers } = writeRunMcpConfig(workDir, username, {}, { bridged: isolationConfig().envAllowlist });
   const prompt = buildPrompt(task, context, outputSchema);
   const [engineBin, engineArgs] = buildEngineCommand({ engine, prompt, mcpConfig });
 
@@ -74,7 +77,8 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
     msgId: null, // no Telegram message to edit — keeps this fully headless
     BOT_TOKEN: '',
     secrets: {},
-    user: { username, id: username, name: username, cwd: workDir, workDir },
+    // The profile workspace is the isolation gate; hermes-tmp is only the cwd inside it.
+    user: { username, id: username, name: username, cwd: workDir, workDir: userWorkDir(username) },
     cleanEnv,
     userTokens,
     sessionFilePath: null,
@@ -88,6 +92,7 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
     cwd: workDir,
     env: cleanEnv,
     mcpConfig,
+    bridgedServers,
   });
 
   const text = result.claudeResult || result.lastAssistantMsg || result.fullOutput?.text || '';
