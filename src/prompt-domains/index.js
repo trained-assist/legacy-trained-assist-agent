@@ -82,7 +82,10 @@ function buildDomainBlock(mcpConfigPath, opts = {}) {
   let servers = {};
   try { servers = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf8')).mcpServers || {}; }
   catch (e) { console.warn('[prompt-domains] read mcp config:', e.message); return ''; }
-  const picked = selectDomains(loadDomains(opts.dir), opts.probe || probeServers(servers));
+  const probe = opts.probe || probeServers(servers);
+  const picked = selectDomains(loadDomains(opts.dir), probe);
+  // opts.report: caller-owned object filled with what was decided (skills shadow, #1537).
+  if (opts.report && typeof opts.report === 'object') Object.assign(opts.report, { probe, picked: picked.map(d => d.name) });
   if (!picked.length) return '';
   return '# ПОДКЛЮЧЁННЫЕ СКИЛЫ — правила работы\n\n' + picked.map(d => d.body).join('\n\n') + '\n';
 }
