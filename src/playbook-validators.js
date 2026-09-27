@@ -117,10 +117,21 @@ function makeCiValidator({ ghToken, ghFetch, staging = false }) {
     let checks;
     try { checks = await ghFetch(`https://api.github.com/repos/${ref.owner}/${ref.repo}/commits/${pr.head.sha}/check-runs`, token); }
     catch (e) { return inconclusive('github-unreachable', { error: e.message, pr: ref.url }); }
-    const runs = (checks && checks.check_runs) || [];
+    let runs = (checks && checks.check_runs) || [];
+    let source = 'check-runs';
+    // The Checks API is closed to fine-grained PATs (403 → ghFetch null), so a repo
+    // whose token is a fine-grained PAT never shows check-runs even with green CI.
+    // GitHub Actions runs for the same head SHA are readable with Actions:read.
+    if (!runs.length) {
+      let actions = null;
+      try { actions = await ghFetch(`https://api.github.com/repos/${ref.owner}/${ref.repo}/actions/runs?head_sha=${pr.head.sha}&per_page=50`, token); }
+      catch { /* keep the check-runs verdict below */ }
+      runs = ((actions && actions.workflow_runs) || []).map(r => ({ name: r.name, status: r.status, conclusion: r.conclusion }));
+      source = 'actions-runs';
+    }
     if (!runs.length) return inconclusive('no-check-runs', { pr: ref.url, sha: pr.head.sha });
     const subject = { pr: ref.url, sha: pr.head.sha, staging };
-    const evidence = { checks: runs.map(r => ({ name: r.name, status: r.status, conclusion: r.conclusion })) };
+    const evidence = { source, checks: runs.map(r => ({ name: r.name, status: r.status, conclusion: r.conclusion })) };
     const failing = runs.filter(r => !(r.status === 'completed' && r.conclusion === 'success'));
     // `final` marks a verdict that more waiting cannot change: every run finished
     // and at least one is red. A durable wait wakes on it instead of polling a red

@@ -262,9 +262,14 @@ function scheduleGtdController(secrets) {
     canRunSession: (_username, _sessionId) => true,
   }).catch(err => console.error('[gtd] tick error:', err.message));
   };
+  gtdTickNow = run;
   setTimeout(run, 2 * 60 * 1000);      // first tick 2 min after start
   setInterval(run, 5 * 60 * 1000);     // then every 5 min
 }
+
+// Set by scheduleGtdController: POST /internal/gtd/tick runs the same tick now
+// (the playbook e2e drives plans step to step instead of waiting 5 min).
+let gtdTickNow = null;
 
 // A restart is instant and silent: tasks it cuts off stay in the pending-task journal and
 // the new process re-runs them with no status messages. The user hears from us only when a
@@ -930,6 +935,14 @@ async function main() {
     // firing, open records would sit forever with no external signal. `stale` flips once we've
     // missed 3 ticks' worth of time AND there's backlog waiting on it — cheap enough to poll from
     // a cron-skill job without spawning Claude.
+    // POST /internal/gtd/tick — run one GTD/durable tick right now (same code path and
+    // re-entrancy guard as the 5-min timer). Used by scripts/e2e/playbooks-e2e.js.
+    if (req.method === 'POST' && url.pathname === '/internal/gtd/tick') {
+      if (!gtdTickNow) return json(res, 409, { ok: false, error: 'gtd tick not scheduled on this process' });
+      await gtdTickNow();
+      return json(res, 200, { ok: true, heartbeat: require('./gtd-controller').tickHeartbeat() });
+    }
+
     if (req.method === 'GET' && url.pathname === '/internal/gtd-status') {
       const gtd = require('./gtd-controller');
       const heartbeat = gtd.tickHeartbeat();

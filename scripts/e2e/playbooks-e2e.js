@@ -17,10 +17,17 @@
 //   node scripts/e2e/playbooks-e2e.js report <taskId> [--profile …] [--json]
 //   node scripts/e2e/playbooks-e2e.js list [--profile …]
 //   node scripts/e2e/playbooks-e2e.js cancel <taskId> [--profile …]
+//   node scripts/e2e/playbooks-e2e.js kick                      — run one server tick now
+//   node scripts/e2e/playbooks-e2e.js run <taskId> [--every 20] [--stall-min 15]
+//        drive the plan: kick the tick in a loop, make this plan's waiting steps poll
+//        now (their condition is still checked for real), print step transitions,
+//        stop on done / failed / stall, then print the report.
 //
 // Quality of what the agents build is NOT the point — the point is that the process
 // runs end to end and every failure is visible in the report.
 
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -186,7 +193,65 @@ function cancel(args) {
   console.log(`cancelled ${task.id}`);
 }
 
-const COMMANDS = { start, status, report, list, cancel };
+function agentSecret() {
+  if (process.env.AGENT_SECRET) return process.env.AGENT_SECRET;
+  try {
+    const m = fs.readFileSync(path.join(os.homedir(), 'secrets.env'), 'utf8').match(/^AGENT_SECRET=(.*)$/m);
+    return m ? m[1].trim().replace(/^['"]|['"]$/g, '') : null;
+  } catch { return null; }
+}
+
+async function kickOnce() {
+  const port = process.env.PORT || 8080;
+  const secret = agentSecret();
+  if (!secret) throw new Error('AGENT_SECRET not in env or ~/secrets.env');
+  const res = await fetch(`http://127.0.0.1:${port}/internal/gtd/tick`, {
+    method: 'POST', headers: { Authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) throw new Error(`tick HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  return res.json();
+}
+
+async function kick() {
+  const r = await kickOnce();
+  console.log(`tick ok, last finish ${r.heartbeat && r.heartbeat.lastFinishAt ? new Date(r.heartbeat.lastFinishAt).toISOString() : '—'}`);
+}
+
+function snapshot(rows) {
+  return rows.map(r => `${r.n}:${r.status}`).join(' ');
+}
+
+async function run(args) {
+  const profile = args.profile || DEFAULT_PROFILE;
+  const every = Number(args.every || 20) * 1000;
+  const stallMs = Number(args['stall-min'] || 15) * 60 * 1000;
+  const store = durableStore();
+  const task = findTask(store, args._[1], profile);
+  let last = ''; let lastChange = Date.now();
+  const started = Date.now();
+  for (;;) {
+    // e2e acceleration: this plan's parked steps poll on the next tick instead of in
+    // poll_every_sec. Their wait condition is still evaluated for real.
+    store.db.prepare(`UPDATE task_items SET due_at = ? WHERE task_id = ? AND status = 'waiting'`).run(Date.now(), task.id);
+    try { await kickOnce(); } catch (e) { console.log(`kick failed: ${e.message}`); }
+    const t = store.getTask(task.id, profile);
+    const rows = collect(store, t);
+    const snap = snapshot(rows);
+    if (snap !== last) {
+      const cur = rows.find(r => !['done', 'skipped'].includes(r.status));
+      const mins = ((Date.now() - started) / 60000).toFixed(1);
+      console.log(`[+${mins}m] ${t.status} | ${cur ? `${cur.n}. ${cur.title} [${cur.status}] ${cur.engines.join(', ')}${cur.last_error ? ` — ${String(cur.last_error).slice(0, 140)}` : ''}` : 'all steps finished'}`);
+      last = snap; lastChange = Date.now();
+    }
+    if (['done', 'failed', 'cancelled'].includes(t.status)) break;
+    if (rows.some(r => r.status === 'failed')) { console.log('a step failed'); break; }
+    if (Date.now() - lastChange > stallMs) { console.log(`stalled ${args['stall-min'] || 15} min`); break; }
+    await new Promise(res => setTimeout(res, every));
+  }
+  report({ ...args, verbose: true });
+}
+
+const COMMANDS = { start, status, report, list, cancel, kick, run };
 
 if (require.main === module) {
   const args = parseArgs(process.argv.slice(2));
@@ -195,7 +260,7 @@ if (require.main === module) {
     console.error('usage: playbooks-e2e.js start|status|report|list|cancel … (see header)');
     process.exit(2);
   }
-  try { cmd(args); process.exit(0); } catch (e) { console.error(e.message); process.exit(1); }
+  Promise.resolve().then(() => cmd(args)).then(() => process.exit(0), e => { console.error(e.message); process.exit(1); });
 }
 
 module.exports = { DEFAULT_LEVEL_MAP, E2E_PREAMBLE, collect };
