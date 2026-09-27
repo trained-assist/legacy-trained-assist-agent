@@ -1,4 +1,9 @@
 'use strict';
+// service-llm → llm-ladder worker: pin tests to an unroutable host + dummy token so they are
+// self-contained (staging runs this file directly, outside scripts/run-cjs-tests.js) and can
+// never reach the live worker via the VM's token file.
+process.env.LLM_LADDER_URL = 'http://llm-ladder.invalid';
+process.env.LLM_LADDER_TOKEN = 'test-ladder-token';
 // Pinned chat + task confidently about ANOTHER project → 'ask' (owner 2026-09-24).
 //   X1  confident verdict for another project → ask, suggested first, pinned second, mismatch meta
 //   X2  low confidence → stays auto into the pin
