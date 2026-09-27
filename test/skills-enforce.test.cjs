@@ -78,7 +78,7 @@ test("skills.json {enabled:['recruiting']} → no engineering/freelance sibling,
   assert.strictEqual(cfg.mcpServers['hh-skills'].env.SKILLS_RESOLVED, file);
   const eff = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.ok(eff.hidden.modules.includes('60-github.js'));
-  assert.ok(!eff.hidden.modules.includes('97b-candidate-client-report.js'));
+  assert.ok(!eff.hidden.modules.includes('hh-skills/97-candidate-client-report.js'));
   assert.ok(!eff.hidden.modules.includes('04-cron.js'), 'core is always on');
   assert.ok(!eff.hidden.modules.includes('40-company.js'), 'shared module on via recruiting/company');
 
@@ -121,7 +121,10 @@ test('catalog load failure → legacy (never silently cut tools)', () => {
 test('computePlan: disabled child, unknown sections, unlisted things never hidden', () => {
   const catalog = loadCatalog();
   const p = computePlan(catalog, { enabled: ['recruiting'], disabled: ['recruiting/hh'], });
-  assert.deepStrictEqual(p.hidden.siblings, ['engineering-skills', 'freelance-skills', 'hh-skills']); // sales stays: recruiting/company
+  // hh-skills stays mounted for the recruiting-level candidate report; the HH modules
+  // of the disabled recruiting/hh are hidden one by one. sales stays: recruiting/company.
+  assert.deepStrictEqual(p.hidden.siblings, ['engineering-skills', 'freelance-skills']);
+  assert.ok(p.hidden.modules.includes('hh-skills/90-hh.js') && !p.hidden.modules.includes('hh-skills/97-candidate-client-report.js'));
   assert.ok(p.hidden.domains.includes('hh') && !p.hidden.domains.includes('cron'));
   const all = computePlan(catalog, { enabled: Object.keys(catalog.sections) });
   assert.deepStrictEqual(all.hidden, { siblings: [], modules: [], domains: [] });
@@ -144,11 +147,11 @@ test('registry tools/list: SKILLS_RESOLVED hides switched-off modules; unset/bro
   const file = cfg.mcpServers['trained-skills'].env.SKILLS_RESOLVED;
   const base = { SKILLS_RESOLVED: '' };
   const legacy = listTools(base).names;
-  assert.ok(legacy.includes('github_status') && legacy.includes('candidate_report_context'));
+  assert.ok(legacy.includes('github_status') && legacy.includes('interview_analyze'));
 
   const filtered = listTools({ SKILLS_RESOLVED: file }).names;
   assert.ok(!filtered.includes('github_status'), 'software-engineering module hidden');
-  assert.ok(filtered.includes('candidate_report_context'), 'recruiting module kept');
+  assert.ok(filtered.includes('interview_analyze'), 'recruiting module kept');
   assert.ok(filtered.includes('connect'), 'core kept');
 
   const broken = path.join(wd, 'broken.json');

@@ -12,7 +12,8 @@ const path = require('path');
 // `mcpServerId` is the MCP server name this sibling mounts as in the engine's
 // `.mcp.json` (src/browser.js) and in the headless transport (src/mcp-action.js).
 const SKILL_SIBLINGS = [
-  { id: 'hh', repo: 'trained-assist-hh-skill', mcpServerId: 'hh-skills' },
+  // dirEnv: optional override of the checkout location (same var src/domains/hh/lib.js honours).
+  { id: 'hh', repo: 'trained-assist-hh-skill', mcpServerId: 'hh-skills', dirEnv: 'HH_SKILL_DIR' },
   { id: 'freelance', repo: 'trained-assist-freelance-skill', mcpServerId: 'freelance-skills' },
   { id: 'engineering', repo: 'trained-assist-engineering', mcpServerId: 'engineering-skills' },
   { id: 'sales', repo: 'trained-assist-sales-skill', mcpServerId: 'sales-skills' },
@@ -21,7 +22,7 @@ const SKILL_SIBLINGS = [
 const DEFAULT_ROOT = path.join(__dirname, '..', '..');
 
 function siblingPaths(sibling, root = DEFAULT_ROOT) {
-  const dir = path.join(root, sibling.repo);
+  const dir = (sibling.dirEnv && process.env[sibling.dirEnv]) || path.join(root, sibling.repo);
   return {
     ...sibling,
     dir,
