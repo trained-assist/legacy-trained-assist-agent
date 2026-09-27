@@ -361,13 +361,18 @@ class DurableTaskStore {
                      // P3d-1c: per-step validation_mode override (nullable; DB CHECK enforces the enum)
                      'validation_mode',
                      // P3c: recovery observability (set by durable-recovery.js)
-                     'last_failure_class', 'last_recovery_action'];
+                     'last_failure_class', 'last_recovery_action',
+                     // quality escalation (durable-recovery): the level the next attempt runs at
+                     'current_model_level'];
     const sets = [];
     const args = [];
     for (const k of allowed) {
       if (k in patch) {
         if (k === 'status' && !ITEM_STATUSES.includes(patch.status)) {
           throw new Error(`invalid item status: ${patch.status}`);
+        }
+        if (k === 'current_model_level' && !['bachelor', 'master', 'doctor'].includes(patch.current_model_level)) {
+          throw new Error(`invalid model level: ${patch.current_model_level}`);
         }
         if (k === 'current_tier' && !TIERS.includes(patch.current_tier)) {
           throw new Error(`invalid tier: ${patch.current_tier}`);
@@ -756,7 +761,7 @@ class DurableTaskStore {
    */
   startExecution({ id, task_id, task_item_id = null, session_id = null,
                    engine = null, model = null, tier = null,
-                   profile = null, model_level = null, executor_role = null }) {
+                   profile = null, model_level = null, executor_role = null, provider = null }) {
     return this.db.transaction(() => {
       if (task_item_id) {
         this._prep(`UPDATE task_items SET attempt_count = attempt_count + 1, updated_at = ?
@@ -764,10 +769,10 @@ class DurableTaskStore {
       }
       this._prep(`INSERT INTO executions
           (id, task_id, task_item_id, session_id, engine, model, tier, status, started_at,
-           profile, model_level, executor_role)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
+           profile, model_level, executor_role, provider)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`)
         .run(id, task_id, task_item_id, session_id, engine, model, tier, nowMs(),
-          profile, model_level, executor_role);
+          profile, model_level, executor_role, provider);
       return this.getExecution(id);
     })();
   }
