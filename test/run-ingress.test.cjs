@@ -3,13 +3,31 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');const os=require('node:os');const path=require('node:path');const vm=require('node:vm');
 const {atomicJson}=require('../src/atomic-json');
 const profiles=require('../src/profiles');
+// The /run handler is evaluated in a vm sandbox with the test's own `require`; relative
+// specifiers would otherwise resolve against test/ instead of src/. Resolve them against
+// src/server.js, and expose the shared materializer wrapped so tests can inject a fake
+// r2 module (the handler no longer requires ./r2-media directly).
+const srcRequire=require('node:module').createRequire(path.join(__dirname,'../src/server.js'));
+const realMaterializer=require('../src/intake-materializer');
+function sandboxRequire(overrides={}) {
+ const req=name=>{
+  if (Object.prototype.hasOwnProperty.call(overrides,name)) return overrides[name];
+  if (name==='./restart-execution') return {currentExecution:()=>null};
+  if (name==='./intake-materializer') return {
+   buildFileNote:realMaterializer.buildFileNote,
+   materializeFileRefs:opts=>realMaterializer.materializeFileRefs({...opts,r2:req('./r2-media')}),
+  };
+  return srcRequire(name);
+ };
+ return req;
+}
 function fixture(t) {
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'run-ingress-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const source=fs.readFileSync(require.resolve('../src/server'),'utf8');
  const start=source.indexOf("    if (req.method === 'POST' && url.pathname === '/run') {");
  const end=source.indexOf('    // POST /action',start);
  const runs=[];const pending=new Map();
- const sandbox={deliverySecrets:require('../src/bot-delivery').deliverySecrets,withDedupLock:require('../src/request-dedup-lock').withDedupLock,fs,path,os,Buffer,require:name=>name==='./restart-execution'?{currentExecution:()=>null}:require(name),console,process:{env:{AGENT_DATA_DIR:root}},BASE_USERS_DIR:path.join(root,'users'),secrets:{},
+  const sandbox={deliverySecrets:require('../src/bot-delivery').deliverySecrets,withDedupLock:require('../src/request-dedup-lock').withDedupLock,fs,path,os,Buffer,require:sandboxRequire(),console,process:{env:{AGENT_DATA_DIR:root}},BASE_USERS_DIR:path.join(root,'users'),secrets:{},
   isValidProjectId:()=>true,trackChat:()=>{},getPendingTasks:()=>[...pending.values()],atomicJson,profiles,
   readBody:async req=>JSON.stringify(req.body),json:(res,status,data)=>Object.assign(res,{status,data}),
   runTask:opts=>{pending.set(opts.taskId,{...opts,audience:opts.user.audience});runs.push(opts);return Promise.resolve();},
@@ -78,9 +96,9 @@ test('R2 refs are fetched and verified before run acceptance, without a legacy s
  const materialize=require('../src/r2-media').materializeR2;
  let reads=0;
  f.sandbox.process.env.MEDIA_GATEWAY_URL='https://gateway.example';f.sandbox.secrets.AGENT_SECRET='secret';
- f.sandbox.require=name=>name==='./r2-media'?{materializeR2:opts=>materialize({...opts,fetchImpl:async url=>{
+ f.sandbox.require=sandboxRequire({'./r2-media':{materializeR2:opts=>materialize({...opts,fetchImpl:async url=>{
   reads++;assert.equal(url.searchParams.get('username'),'alice');return new Response(bytes);
- }})}:name==='./restart-execution'?{currentExecution:()=>null}:require(name);
+ }})}});
  const response=await f.send({fileRefs:[ref]});assert.equal(response.status,202);assert.equal(reads,1);
  const file=path.join(f.root,'users','alice','media','intake',ref.id+'-voice.ogg');assert.deepEqual(fs.readFileSync(file),bytes);
  assert.ok(f.runs[0].task.includes(file));
@@ -99,7 +117,7 @@ test('chatId takes priority over userId when both are sent', async t => {
 test('a failed R2 integrity check prevents acknowledgement or text-only launch', async t => {
  const f=fixture(t);f.sandbox.process.env.MEDIA_GATEWAY_URL='https://gateway.example';f.sandbox.secrets.AGENT_SECRET='secret';
  const materialize=require('../src/r2-media').materializeR2;
- f.sandbox.require=name=>name==='./r2-media'?{materializeR2:opts=>materialize({...opts,fetchImpl:async()=>new Response('bad')})}:name==='./restart-execution'?{currentExecution:()=>null}:require(name);
+ f.sandbox.require=sandboxRequire({'./r2-media':{materializeR2:opts=>materialize({...opts,fetchImpl:async()=>new Response('bad')})}});
  const ref={storage:'r2',version:1,id:'d'.repeat(64),name:'doc.pdf',size:3,sha256:'0'.repeat(64)};
  const response=await f.send({fileRefs:[ref]});assert.equal(response.status,503);assert.equal(f.runs.length,0);
  assert.equal(fs.existsSync(path.join(f.root,'accepted-requests','request-1.json')),false);
@@ -147,9 +165,9 @@ test('a concurrent duplicate POST for the same requestId runs admission exactly 
  const materialize=require('../src/r2-media').materializeR2;
  f.sandbox.process.env.MEDIA_GATEWAY_URL='https://gateway.example';f.sandbox.secrets.AGENT_SECRET='secret';
  let releaseFirst;const gate=new Promise(r=>{releaseFirst=r;});let fetches=0;
- f.sandbox.require=name=>name==='./r2-media'?{materializeR2:opts=>materialize({...opts,fetchImpl:async url=>{
+ f.sandbox.require=sandboxRequire({'./r2-media':{materializeR2:opts=>materialize({...opts,fetchImpl:async url=>{
   fetches++;await gate;return new Response(bytes);
- }})}:name==='./restart-execution'?{currentExecution:()=>null}:require(name);
+ }})}});
  // First POST starts admission and blocks mid-flight (inside the mutex, awaiting media
  // materialization) until releaseFirst() is called below.
  const first=f.send({fileRefs:[ref]});
