@@ -315,13 +315,17 @@ async function runEngineProcess(opts) {
     engine, taskId, chatId, thinkingStart, msgId, BOT_TOKEN, secrets, user, threadId,
     cleanEnv, userTokens, sessionFilePath, sessionId, restartShutdown, activeTimers, consumePendingStop = null,
     tgEdit, tgSend, outputCallback, engineBin, engineArgs, cwd, env, mcpConfig,
-    ocProfileOverrides, onHeartbeat, onEngineSessionId, timeoutMs = null,
+    ocProfileOverrides, onHeartbeat, onEngineSessionId, onProgress, timeoutMs = null,
   } = opts;
   const { hardTimeoutMs, warnTimeoutMs } = computeEngineTimeoutMs(timeoutMs);
   // Forum topics (#255): fresh progress/warning sends stay in the originating topic.
   // Only new messages need it; edits target an existing message already in the topic.
   const runThreadId = Number.isInteger(threadId) && threadId > 0 ? threadId : null;
   const sendT = (token, chat, text, extra = {}) => tgSend(token, chat, text, extra, runThreadId);
+  // Live progress for non-Telegram consumers (the web SSE stream). Same label the
+  // Telegram heartbeat shows; emitted on every activity change with no chat/message
+  // dependency, so web runs get real progress instead of a frozen "waiting" state.
+  const reportProgress = (label) => { if (onProgress) try { onProgress(label); } catch {} };
 
   const engineEnv = {
       ...cleanEnv,
@@ -352,6 +356,7 @@ async function runEngineProcess(opts) {
   const spawnArgs = engine === 'codex' && mcpConfig
     ? withCodexMcpEnvForwarding(engineArgs, mcpConfig, Object.keys(engineEnv))
     : engineArgs;
+  reportProgress('Думаю…');
   const proc = spawn(engineBin, spawnArgs, {
     cwd,
     env: engineEnv,
@@ -595,6 +600,7 @@ async function runEngineProcess(opts) {
             const ocInput = event.part.state?.input || {};
             const ocLabel = formatToolActivity(ocTool === 'bash' ? 'Bash' : ocTool === 'read' ? 'Read' : ocTool === 'write' ? 'Write' : ocTool === 'edit' ? 'Edit' : ocTool === 'glob' || ocTool === 'grep' ? 'WebSearch' : ocTool, ocInput);
             lastActivity = ocLabel;
+            reportProgress(ocLabel);
             lastOutputAt = Date.now();
             if (!outputStarted && msgId) {
               const secs = Math.round((Date.now() - thinkingStart) / 1000);
@@ -605,6 +611,7 @@ async function runEngineProcess(opts) {
           } else if (event.type === 'step_start') {
             lastOutputAt = Date.now();
             if (!lastActivity) lastActivity = 'Думаю…';
+            reportProgress(lastActivity);
             scheduleStream();
           } else if (event.type === 'agent') {
             // Track which agent is about to run so we can label its step_finish
@@ -660,6 +667,7 @@ async function runEngineProcess(opts) {
           } else if (event.type === 'item.started' && event.item?.type === 'command_execution') {
             lastAssistantMsg = '';
             lastActivity = formatToolActivity('Bash', { command: event.item.command });
+            reportProgress(lastActivity);
             if (!outputStarted && msgId) {
               const secs = Math.round((Date.now() - thinkingStart) / 1000);
               if (secs >= STOP_BUTTON_AFTER_SECS) stopButtonShown = true;
@@ -713,6 +721,7 @@ async function runEngineProcess(opts) {
               if (outputCallback) try { outputCallback(block.text); } catch {}
             } else if (block.type === 'tool_use') {
               lastActivity = formatToolActivity(block.name, block.input);
+              reportProgress(lastActivity);
               if (!outputStarted && msgId) {
                 const secs = Math.round((Date.now() - thinkingStart) / 1000);
                 if (secs >= STOP_BUTTON_AFTER_SECS) stopButtonShown = true;
