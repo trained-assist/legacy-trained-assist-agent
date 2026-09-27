@@ -28,6 +28,10 @@ StartLimitBurst=10
 TimeoutStopSec=15
 EnvironmentFile=-/home/vova/secrets.env
 Environment=NODE_ENV=production
+# Agent engines (claude/opencode/codex) inherit this PATH. ~/.local/bin holds `gh`,
+# which the engineering playbooks rely on (issue/PR/CI steps); without it every
+# GitHub step of a durable plan fails with "gh: command not found".
+Environment=PATH=/home/vova/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
 Environment=MEDIA_GATEWAY_URL=https://trained-assist-tg-bot.skillset-apply.workers.dev
 Environment=PORT=8080
 Environment=AGENT_DATA_DIR=/home/vova/agent-data
