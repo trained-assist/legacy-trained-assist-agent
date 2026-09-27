@@ -25,3 +25,10 @@ test('playbook bachelor/master run on the deepseek (Go) profile, not value/max',
     assert.equal(r.ocProfile, 'deepseek');
   }
 });
+
+test('playbook doctor: claude → codex → opencode `doctor` profile, not the cheapest deepseek tier (#1687)', () => {
+  const { resolveStepExecution } = require('../src/playbook-executor');
+  const r = resolveStepExecution({ executor_role: 'developer', minimum_model_level: 'doctor' });
+  assert.equal(r.engine, 'claude');
+  assert.deepEqual(r.fallbacks.map(fb => [fb.engine, fb.ocProfile]), [['codex', null], ['opencode', 'doctor']]);
+});
