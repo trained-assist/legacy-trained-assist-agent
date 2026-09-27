@@ -70,10 +70,16 @@ test('end-to-end: probe runs module isReady() under the server env', () => {
   assert.doesNotMatch(notReady, /A rules/);
 });
 
-test('real trained-skills: no-secret user gets setup lines, not connected-skill workflows', () => {
+test('real trained-skills + sales sibling: no-secret user gets setup lines, not connected-skill workflows', () => {
   const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pd-')), 'mcp.json');
-  fs.writeFileSync(f, JSON.stringify({ mcpServers: { 'trained-skills': { command: 'node',
-    args: [path.join(ROOT, 'src', 'mcp-skills', 'index.js')], env: { USER_ID: '', HOME: os.tmpdir() } } } }));
+  // Weeek lives in the sales-skills sibling (#1470) — attach it like browser.js does.
+  const sales = require('../src/skill-siblings').SKILL_SIBLINGS.find(s => s.id === 'sales');
+  const salesIndex = require('../src/skill-siblings').siblingPaths(sales).indexPath;
+  const env = { USER_ID: '', HOME: os.tmpdir() };
+  fs.writeFileSync(f, JSON.stringify({ mcpServers: {
+    'trained-skills': { command: 'node', args: [path.join(ROOT, 'src', 'mcp-skills', 'index.js')], env },
+    'sales-skills': { command: 'node', args: [salesIndex], env },
+  } }));
   const block = pd.buildDomainBlock(f);
   assert.match(block, /Weeek CRM — not connected/);
   assert.doesNotMatch(block, /AmVtckIKTfluL0od/);   // Weeek funnel id only for connected Weeek

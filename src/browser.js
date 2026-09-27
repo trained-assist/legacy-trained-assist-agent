@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const skillsEnforce = require('./skills/enforce');
+const { SKILL_SIBLINGS, siblingPaths: siblingPathsOf } = require('./skill-siblings');
 
 // Services whose cookies we know how to inject into Playwright
 const COOKIE_DOMAINS = {
@@ -177,9 +178,7 @@ function writeMcpConfig(workDir, userId, { userName, userHandle, siblingPaths } 
   // checked out next to this one (deploy.sh syncs them and links them next to
   // every release). They are the single source of each domain's tools (#1470).
   const siblingIndexes = {
-    'hh-skills': path.join(__dirname, '..', '..', 'trained-assist-hh-skill', 'src', 'mcp-skills', 'index.js'),
-    'freelance-skills': path.join(__dirname, '..', '..', 'trained-assist-freelance-skill', 'src', 'mcp-skills', 'index.js'),
-    'engineering-skills': path.join(__dirname, '..', '..', 'trained-assist-engineering', 'src', 'mcp-skills', 'index.js'),
+    ...Object.fromEntries(SKILL_SIBLINGS.map(sib => [sib.mcpServerId, siblingPathsOf(sib).indexPath])),
     ...(siblingPaths || {}),
   };
   // Profile skills (#1537 PR-B): only with workDir/skills.json; a sibling whose catalog

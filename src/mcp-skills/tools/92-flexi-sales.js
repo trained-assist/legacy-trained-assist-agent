@@ -4,7 +4,7 @@
 //
 // Connects to the flexi-telegram-deal-bot Cloudflare Worker (/api/site-predeal-notes).
 // Auth: none needed for server-to-server (no Origin header = allowed by CORS policy).
-// Deals: delegate to 30-weeek.js weeek_create_deal.
+// Deals: delegate to weeek_create_deal (sales-skill 30-weeek.js).
 //
 // Context store:
 //   flexi/active_exhibition → { event_key, name }

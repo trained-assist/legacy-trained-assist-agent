@@ -38,9 +38,12 @@ revision and hid current tools from it.
 - [ ] `97b-candidate-client-report` + `src/candidate-report.js`, `99-interview-analysis` + `95-video-analysis` (in-process coupling), `97b` also needs a publish API for domain repos; `98-demo` stays in core — its own catalog section, enabled per profile (vova, vova-recruiter) independently of recruiting
 - Stays in core on purpose: HH OAuth (`/connect/hh/*`, `/hh-callback`, `connect-forms/hh.js`) — platform credential collection shared with other services
 
-### sales-crm — planned `trained-assist-sales-skill`
+### sales-crm — `trained-assist-sales-skill`
 
-- [ ] `30-weeek`, `85-expo`…`89-expo-pipeline-run`, `92-flexi-sales`, `40-company`, `70-inn-enrichment`, `71-dadata`, `72-checko` (+ `src/inn-pipeline/`)
+- [x] repo created (lightweight CI: tools load, unit tests, core MCP-contract deploy gate); mounted as the `sales-skills` sibling (`src/skill-siblings.js`, `deploy.sh ensure_sibling`)
+- [x] Weeek CRM `30-weeek` + prompt domains `weeek`, `weeek.setup` (catalog section `crm-weeek` mounts `sales-skills`)
+- [ ] expo / Flexi: `85-expo`…`89-expo-pipeline-run`, `92-flexi-sales` — `89` calls core `04-cron` in-process, needs the host cron path first
+- [ ] company / INN: `40-company`, `70-inn-enrichment` (+ `src/inn-pipeline/`), `71-dadata`, `72-checko` — shared by `recruiting/company` and `flexi-expo`
 
 ### freelance — `trained-assist-freelance-skill` (repo exists)
 
