@@ -75,7 +75,7 @@ ${sessionDescriptions}
   // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
   const serviceLlm = require('./service-llm');
   if (!serviceLlm.available(openrouterKey)) {
-    throw new Error('No LLM key configured for classify (OpenCode Go or OPENROUTER_API_KEY required)');
+    throw new Error('No API key configured for classify (OpenCode Go or OPENROUTER_API_KEY required)');
   }
   const out = await serviceLlm.serviceText({ user: prompt, maxTokens: 64, timeoutMs: 8000, apiKey: openrouterKey, source: 'classify' });
   if (out == null) throw new Error('classify: no service-llm rung answered');
