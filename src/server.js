@@ -699,6 +699,22 @@ ${recent || '(пока нет)'}
       return;
     }
 
+    // GET /internal/run-input?username=X&taskId=Y — the REAL model input of a run
+    // (system prompt + context/task), written by the runner at spawn time
+    // (src/run-input-store.js). Powers the gateway's «Посмотреть input» button.
+    // 404 for unknown/old runs: the gateway falls back to its own snapshot view,
+    // so a miss is a degraded view, never an error surfaced to the user.
+    if (req.method === 'GET' && url.pathname === '/internal/run-input') {
+      const username = url.searchParams.get('username') || '';
+      const taskId = url.searchParams.get('taskId') || '';
+      if (!/^[a-zA-Z0-9_-]{1,32}$/.test(username)) return json(res, 400, { error: 'invalid username' });
+      const doc = require('./run-input-store').readInput(path.join(BASE_USERS_DIR, username), taskId);
+      if (!doc) return json(res, 404, { error: 'not found' });
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(doc);
+      return;
+    }
+
     // POST /cleanup-flood — delete the text messages this agent sent to a chat.
     // Called by the gateway's /clean_up_flood command (which separately deletes the
     // messages it sent itself). Body: { chatId, audience }. Files/artifacts are never
