@@ -1,4 +1,5 @@
 const { taskDelivery } = require('../bot-delivery');
+const { startShadow: startInputRouterShadow } = require('../input-router');
 const { atomicJson } = require('../atomic-json');
 let restartShutdown = false;
 const fs = require('fs');
@@ -7,6 +8,7 @@ const os = require('os');
 const { writeMcpConfig } = require('../browser');
 const { getDefaultSourceRuntime } = require('../mcp-source-runtime');
 const sessions = require('../session-store');
+const answerActions = require('../answer-actions');
 const { getCurrentSessionId, setCurrentSessionId } = require('../session-store');
 const projects = require('../projects');
 const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag } = require('../auth-flag');
@@ -1781,7 +1783,15 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // restart-resume), but NOT for slash commands — a command is unambiguous and must never be
   // replayed to the LLM. See shouldAttemptQuickAnswer (intent-engine).
   const dispatchQuick = () => runQuickAnswer(task, user.username, user.workDir, secrets.OPENROUTER_API_KEY, sessionExists, chatId, user.telegramUserId, activeSessionId, audience, threadId);
-  const quickReply = shouldAttemptQuickAnswer(forceClaude, task) ? await dispatchQuick() : null;
+  // #1542 P1: input router in SHADOW mode — started concurrently, never awaited,
+  // only logged next to the legacy quick-intent decision (src/input-router.js).
+  const routerShadow = startInputRouterShadow({
+    text: task, source: 'quick', user: user.username, sessionId: activeSessionId || null,
+    openrouterKey: secrets.OPENROUTER_API_KEY, ctx: { sessionExists },
+  });
+  const quickAttempted = shouldAttemptQuickAnswer(forceClaude, task);
+  const quickReply = quickAttempted ? await dispatchQuick() : null;
+  routerShadow.record({ quick: !!quickReply, attempted: quickAttempted, slash: /^\//.test(String(task || '').trim()), forceClaude: !!forceClaude });
   if (quickReply) {
     console.log('[%s] quick-answer len=%d', taskId, quickReply.length);
     const isUtility = PING_INTENT.test(task) || HELP_INTENT.test(task) ||
@@ -2837,6 +2847,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   const gtdFooter = (!internalGtd && !incomplete && user.workDir)
     ? (() => { try { return require('../gtd-controller').listGtd(user.workDir).filter(r => r.status === 'open').length > 0 ? '\n\n📋 Чеклист активен — /show_active_cheklist · /checklist_turn_off' : ''; } catch { return ''; } })()
     : '';
+  // #1542 P3: a wall of text is re-split into paragraphs (word-coverage guarded, fail-soft).
+  if (!internalGtd && !incomplete && process.env.ANSWER_FORMAT !== '0') {
+    result = await answerActions.paragraphize(result, secrets.OPENROUTER_API_KEY);
+  }
   const final = (result + costFooter).slice(-MAX_MSG_LEN) + gtdFooter;
 
   // Terminal record for every chain that reaches here without an earlier branch already
@@ -2889,7 +2903,17 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   let finalMarkup = null;
   let buttonReason = internalGtd ? 'internalGtd-suppressed' : 'no-session';
   if (!internalGtd && !incomplete) {
-    if (activeSessionId) {
+    // #1542 P3: one extraction call → concrete action buttons (act|sid|n) named after
+    // what the answer actually proposes. null = LLM unavailable → legacy plan/menu path.
+    const extracted = activeSessionId && process.env.ANSWER_ACTIONS !== '0'
+      ? await answerActions.extractAnswerActions(result, secrets.OPENROUTER_API_KEY)
+      : null;
+    if (extracted) {
+      finalMarkup = extracted.actions.length
+        ? answerActions.actionsMarkup(activeSessionId, extracted.actions)
+        : actionButtons(activeSessionId, { deep: finalDeep });
+      buttonReason = extracted.actions.length ? `actions:${extracted.kind}` : 'none';
+    } else if (activeSessionId) {
       const hasPlan = await detectPlanInAnswer(result, secrets.OPENROUTER_API_KEY);
       if (hasPlan) {
         finalMarkup = { inline_keyboard: [[{ text: '▶️ Действуй дальше по плану', callback_data: `plan|${activeSessionId}` }]] };

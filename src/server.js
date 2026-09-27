@@ -35,7 +35,6 @@ const { processMishaUpdate } = require('./misha-bot');
 const { createHhNegotiations } = require('./hh-negotiations');
 
 const profiles = require('./profiles');
-const mediaVision = require('./media-vision');
 const dataPaths = require('./data-paths');
 
 const PORT = process.env.PORT || 3001;
@@ -109,6 +108,7 @@ try { RUNTIME_REVISION = require('./release-info').getReleaseSha(); if (RUNTIME_
 
 const { classifyMessage, CLASSIFY_MAX_AGE_MS } = require('./classify-message');
 const { checkCompleteness } = require('./intake-gate');
+const { startShadow: startInputRouterShadow } = require('./input-router');
 
 function readChatId(username) {
   try { return fs.readFileSync(path.join(dataPaths.TOKENS_ROOT, String(username), '.chatid'), 'utf8').trim() || null; }
@@ -307,6 +307,22 @@ async function resumePendingTasks(secrets) {
       ? tgCall(token, 'editMessageText', { chat_id: p.userId, message_id: p.initialMsgId, text })
       : tgCall(token, 'sendMessage', { chat_id: p.userId, text });
   };
+  // Every resume path that ends WITHOUT handing off to a run must release the
+  // gateway's busy hold for that chat. The original run's push was lost with the
+  // dying process, and `resumePendingTasks` is the only component that knows the
+  // task is never coming back — otherwise the chat stays `busy` until the
+  // gateway's slow safety nets catch up, and «▶️ Запустить агента» looks broken
+  // after every deploy. Delivery is fire-and-forget; the gateway no-ops on an
+  // unknown/already-released chat.
+  const { notifyRunFinished } = require('./gateway-callback');
+  const releaseChat = (p) => {
+    if (p.internalGtd || !p.userId) return Promise.resolve();
+    return notifyRunFinished({
+      chatId: p.userId, threadId: p.threadId || null,
+      requestId: p.requestId || null, taskId: p.taskId, outcome: 'error',
+      secret: secrets.AGENT_SECRET,
+    }).catch(() => {});
+  };
 
   for (const p of pending) {
     const now = Date.now();
@@ -316,6 +332,7 @@ async function resumePendingTasks(secrets) {
     // symptom. Drop it silently (a ping needs no apology, and re-pinging is trivial).
     if (isNonTaskMessage(p.task)) {
       clearPendingTask(p.taskId);
+      await releaseChat(p);
       console.log(`[resume] dropped non-task ${p.taskId} (user=${p.username}): "${String(p.task).slice(0, 40)}"`);
       continue;
     }
@@ -323,6 +340,7 @@ async function resumePendingTasks(secrets) {
     if (!resumable) {
       // Stale entries would otherwise block GTD indefinitely: isTaskRunning() reads this journal.
       clearPendingTask(p.taskId);
+      await releaseChat(p);
       console.log(`[resume] cleared stale task ${p.taskId} (user=${p.username}, age=${Math.round(age / 60000)}min)`);
       // A web task is never resumable (no Telegram audience), so every restart
       // lands here with its mutation receipt stuck in 'accepted' — which then
@@ -374,6 +392,7 @@ async function resumePendingTasks(secrets) {
       // repeatable break, not restart noise. Stop retrying and say so plainly.
       await notifyFailure(p, `⚠️ Не удалось восстановить сессию после ${MAX_RESUME_ATTEMPTS} попыток через перезапуски сервера. Это сбой сервера, не твоей задачи — напиши запрос заново.`);
       clearPendingTask(p.taskId);
+      await releaseChat(p);
       console.warn(`[resume] user=${p.username} session=${p.sessionId} gave up after ${MAX_RESUME_ATTEMPTS} attempts`);
       continue;
     }
@@ -410,6 +429,7 @@ async function resumePendingTasks(secrets) {
         if (p.internalGtd && p.sessionId) require('./gtd-controller').settleResumedGtd(workDir, p.sessionId, reply);
       } catch (err) {
         console.error(`[resume] user=${p.username} error:`, err.message);
+        await releaseChat(p);
         if (!p.internalGtd) await notifyFailure(p, '⚠️ Не удалось продолжить задачу после перезапуска. Повтори запрос.');
       }
     };
@@ -1395,21 +1415,13 @@ ${recent || '(пока нет)'}
         const user = { id: chatId, name: username, username, profileId, workDir, cwd, telegramUserId: telegramUserId || null, audience: audience || 'default' };
         trackChat(chatId);
 
+        // One media pipeline for every ingress: the external web bearer flow and /run
+        // both copy durable refs + fsync + fold image OCR notes via intake-materializer.
         // OpenCode's models (minimax/GigaChat/DeepSeek) have no vision input, unlike Claude
-        // Code whose own Read tool hands images to the model natively — so a photo attachment
-        // is otherwise invisible to that engine (just an opaque path in the note below). Run it
-        // through vision OCR up front and fold the extracted text into the note. Claude/Codex are
-        // left alone: no known gap, and no point paying for a call the model doesn't need.
+        // Code whose own Read tool hands images to the model natively — Claude/Codex are left
+        // alone: no known gap, and no point paying for a call the model doesn't need.
         const runEngine = profiles.getEngine(workDir, chatId);
-        async function buildFileNote(filePath, mimeType) {
-          const typeNote = mimeType ? ` (${mimeType})` : '';
-          let note = `[Файл сохранён: ${filePath}${typeNote}. Временное медиа: TTL 48 часов. Если файл нужен проекту надолго, сохрани его в артефакты проекта.]`;
-          if (runEngine === 'opencode' && mimeType && mimeType.startsWith('image/') && secrets.OPENROUTER_API_KEY) {
-            const vision = await mediaVision.extractImageText({ filePath, mimeType, openrouterKey: secrets.OPENROUTER_API_KEY });
-            if (vision.ok) note += `\n[Распознано на изображении:\n${vision.text}]`;
-          }
-          return note;
-        }
+        const { buildFileNote, materializeFileRefs } = require('./intake-materializer');
 
         // Save attached file (base64) to workDir and prepend path info to the task.
         let effectiveTask = task || '';
@@ -1423,7 +1435,10 @@ ${recent || '(пока нет)'}
             try { fs.writeFileSync(fd, Buffer.from(fileBase64, 'base64')); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
             const dirFd = fs.openSync(uploadsDir, 'r');
             try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
-            const fileNote = await buildFileNote(filePath, fileMimeType);
+            const fileNote = await buildFileNote({
+              filePath, mimeType: fileMimeType, engine: runEngine,
+              openrouterKey: secrets.OPENROUTER_API_KEY,
+            });
             effectiveTask = effectiveTask ? `${fileNote}\n\n${effectiveTask}` : fileNote;
           } catch (e) {
             console.error('[/run] file save error:', e.message);
@@ -1431,45 +1446,29 @@ ${recent || '(пока нет)'}
           }
         }
 
-        // Copy durably-stored intake files (photos/voice/docs referenced by id,
-        // written via PUT /intake-files) into the task's media dir — same
-        // path/notice as the fileBase64 branch, just sourced from disk not the body.
-        if (Array.isArray(fileRefs)) {
-          const uploadsDir = path.join(workDir, 'media', 'intake');
-          for (const ref of fileRefs) {
-            if (!ref?.id || !/^[a-f0-9]{16,64}$/.test(ref.id)) return reject(400, { error: 'invalid fileRef' });
-            const src = path.join(BASE_USERS_DIR, username, 'media', 'intake-store', ref.id, 'data');
-            try {
-              const safeName = path.basename(ref.name || 'file').replace(/[^a-zA-Z0-9._\-() ]/g, '_').slice(0, 200);
-              fs.mkdirSync(uploadsDir, { recursive: true });
-              const filePath = path.join(uploadsDir, `${ref.id}-${safeName}`);
-              if (ref.storage === 'r2') {
-                await require('./r2-media').materializeR2({ ref, username, destination: filePath,
-                  gatewayUrl: process.env.MEDIA_GATEWAY_URL, secret: secrets.AGENT_SECRET });
-              } else {
-                if (ref.storage) throw new Error('Unknown media storage');
-                fs.copyFileSync(src, filePath);
-              }
-              const fd = fs.openSync(filePath, 'r');
-              try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-              const dirFd = fs.openSync(uploadsDir, 'r');
-              try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
-              // Compressor (gateway marks it): a transcribed voice/audio ref is pure noise
-              // for the model (no audio input), so skip the "[Файл сохранён: ...]" note.
-              // The file is still copied and its pin released — only the model doesn't see it.
-              if (ref.note !== false) {
-                const fileNote = await buildFileNote(filePath, ref.mime);
-                effectiveTask = effectiveTask ? `${fileNote}\n\n${effectiveTask}` : fileNote;
-              }
-            } catch (e) {
-              console.error('[/run] fileRef copy error:', e.message);
-              return json(res, 503, { error: 'attachment not persisted; retry with the same requestId' });
-            }
+        // Durably-stored refs (photos/voice/docs referenced by id, written via
+        // PUT /intake-files) use the same materialization/OCR implementation as the
+        // external web bearer ingress. `fileRefs` is a destructured const, so
+        // normalize into a fresh binding instead of reassigning it.
+        let effectiveFileRefs = fileRefs;
+        if (Array.isArray(fileRefs) && fileRefs.length) {
+          try {
+            const prepared = await materializeFileRefs({
+              workDir, username, fileRefs, task: effectiveTask, engine: runEngine,
+              openrouterKey: secrets.OPENROUTER_API_KEY,
+              gatewayUrl: process.env.MEDIA_GATEWAY_URL, agentSecret: secrets.AGENT_SECRET,
+            });
+            effectiveTask = prepared.task;
+            effectiveFileRefs = prepared.fileRefs;
+          } catch (e) {
+            if (e.statusCode === 400) return reject(400, { error: e.message });
+            console.error('[/run] fileRef materialize error:', e.cause?.message || e.message);
+            return json(res, 503, { error: 'attachment not persisted; retry with the same requestId' });
           }
         }
 
         // runTask journals synchronously, before any await or acknowledgement.
-        const completion = runTask({ taskId, requestId: requestId || null, user, threadId, ...(Object.hasOwn(payload, 'initiatedAt') ? { initiatedAt } : {}), task: effectiveTask, context, sessionId: sessionId || null, contextFromSession: contextFromSession || null, forceClaude: !!forceClaude, forceNew: !!forceNew, initialMsgId: initialMsgId || null, pinnedMsgId: pinnedMsgId || null, secrets, fileRefs, mode: mode || null, projectId: projectId || null, projectPicked: projectPicked === true, newProjectName: newProjectName || null });
+        const completion = runTask({ taskId, requestId: requestId || null, user, threadId, ...(Object.hasOwn(payload, 'initiatedAt') ? { initiatedAt } : {}), task: effectiveTask, context, sessionId: sessionId || null, contextFromSession: contextFromSession || null, forceClaude: !!forceClaude, forceNew: !!forceNew, initialMsgId: initialMsgId || null, pinnedMsgId: pinnedMsgId || null, secrets, fileRefs: effectiveFileRefs, mode: mode || null, projectId: projectId || null, projectPicked: projectPicked === true, newProjectName: newProjectName || null });
         completion.catch(err => console.error(`[${taskId}] runTask error:`, err.message));
         if (requestId) atomicJson(receipt, { taskId, audience: audience || 'default', acceptedAt: Date.now() });
         json(res, 202, { taskId, requestId, durable: true });
@@ -1764,11 +1763,18 @@ ${recent || '(пока нет)'}
       try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid json' }); }
       const { text } = payload;
       if (typeof text !== 'string') return json(res, 400, { error: 'missing text' });
+      // #1542 P1: router SHADOW next to the legacy completeness gate — never awaited.
+      const routerShadow = startInputRouterShadow({
+        text, source: 'intake-gate', user: typeof payload.userId === 'string' || typeof payload.userId === 'number' ? String(payload.userId) : null,
+        openrouterKey: secrets.OPENROUTER_API_KEY,
+      });
       try {
         const result = await checkCompleteness(text, secrets.OPENROUTER_API_KEY);
+        routerShadow.record({ completeness: result?.level || null, complete: !!result?.complete });
         return json(res, 200, result);
       } catch (e) {
         console.error('[intake-gate] error:', e.message);
+        routerShadow.record({ completeness: 'error', complete: false });
         return json(res, 200, { level: 'insufficient', complete: false }); // preserve intake; manual launch remains available
       }
     }
@@ -2046,7 +2052,18 @@ ${recent || '(пока нет)'}
     shuttingDown = true;
     interruptForRestart();
     server.close();
-    process.exit(0);
+    // `interruptForRestart()` settles every running task's promise, which fires
+    // the fire-and-forget run-finished push — and `process.exit(0)` immediately
+    // after would drop it mid-flight. The push is the ONLY way the gateway
+    // learns a restart released a chat, so a restart must deliver it before
+    // dying, otherwise every in-flight group chat stays `busy` until the
+    // gateway's slow safety nets catch up (see gateway-callback.js). Bounded
+    // by the fetches' own 5s timeout, so a restart stays quick.
+    const flushed = require('./gateway-callback').flushRunFinished();
+    // Never block the restart on a hung request: exit on whichever comes first.
+    const exit = () => process.exit(0);
+    setTimeout(exit, 6000).unref?.();
+    flushed.then(exit, exit);
   };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT',  shutdown);
