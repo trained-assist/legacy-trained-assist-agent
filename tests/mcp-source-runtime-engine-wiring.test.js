@@ -15,7 +15,7 @@ const require = createRequire(import.meta.url);
 const { createSourceRuntime } = require('../src/mcp-source-runtime');
 const { ActionExecutions } = require('../src/action-executions');
 const { writeMcpConfig } = require('../src/browser');
-const { codexMcpArgs, writeOpencodeMcpConfig } = require('../src/runner/claude-runner');
+const { codexMcpArgs, writeOpencodeMcpConfig, _const } = require('../src/runner/claude-runner');
 const { stableStringify, digest } = require('../src/mcp-skill-generation');
 
 const cleanups = [];
@@ -104,6 +104,7 @@ describe('PR2b host wiring reaches every engine config translator', () => {
     expect(ocConfig.mcp['fake-skills']).toEqual({
       type: 'local',
       command: [process.execPath, ...config.mcpServers['fake-skills'].args],
+      timeout: _const.MCP_TOOL_TIMEOUT_MS, // long-tool ceiling (hermes_research, #1582)
     });
 
     run.release();
