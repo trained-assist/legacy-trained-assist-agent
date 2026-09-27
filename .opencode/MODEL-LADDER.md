@@ -132,8 +132,8 @@ Every chat without an explicit choice runs on `deepseek` (`src/profiles.js`). It
 ladder (`.opencode/profiles/deepseek.json` → `ladderRef: deepseek` in `config/model-routing.json`):
 
 `opencode-go/mimo-v2.6-flash` → `opencode-go/deepseek-v4.1-flash` ($0.15/$0.60)
-→ paid OpenRouter tail: **`deepseek/deepseek-v4-flash-0731`** → **`google/gemini-2.5-flash-lite`** →
-**`xiaomi/mimo-v2.6-flash`** (three vendors; gemini-lite ~0.5s, mimo 8–11s via OpenRouter so last).
+→ paid OpenRouter tail: **`deepseek/deepseek-v4-flash-0731`** → **`inclusionai/ling-3.0-flash`** →
+**`xiaomi/mimo-v2.6-flash`** (three vendors; ling-3.0-flash $0.021/$0.063, mimo 8–11s via OpenRouter so last).
 Same ladder for every role.
 
 Order set by the owner 2026-09-27: «MiMo-V2.6-Flash → DeepSeek V4.1 Flash → … → далее openrouter»
