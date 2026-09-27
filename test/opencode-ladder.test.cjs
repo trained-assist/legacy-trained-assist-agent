@@ -284,6 +284,19 @@ test('deepseek profile: one config-driven ladder — Go mimo → Go deepseek-v4.
   assert.ok(ladder.build.length <= 5, 'must fit MAX_LADDER_ATTEMPTS (5) or the last OpenRouter rung is unreachable');
 });
 
+test('doctor profile: config-driven ladder — Go MiMo first, then stronger Go models, OpenRouter MiMo last (#1689)', () => {
+  const routing = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'model-routing.json'), 'utf8'));
+  const profile = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'doctor.json'), 'utf8'));
+  assert.equal(profile.ladderRef, 'doctor', 'profile must be config-driven (ladderRef), not hardcode the model list');
+  const ladder = routing.ladders.doctor;
+  assert.deepEqual(ladder.build, ['opencode-go/mimo-v2.6-flash', 'opencode-go/qwen3.7-plus',
+    'opencode-go/deepseek-v4-pro', 'openrouter/xiaomi/mimo-v2.6-flash'],
+    'order set by the owner (2026-09-28); interim copy of trained-assist-llm-ladder#8 — keep in sync until #1687');
+  assert.ok(!ladder.build.includes('opencode-go/qwen3.8-max'), 'qwen3.8-max removed — far too expensive (owner 2026-09-28)');
+  for (const role of ['plan', 'explore', 'general', 'review']) assert.deepEqual(ladder[role], ladder.build, role);
+  assert.ok(ladder.build.length <= 5, 'must fit MAX_LADDER_ATTEMPTS (5) or the last OpenRouter rung is unreachable');
+});
+
 test('buildOcProfileOverrides resolves a ladderRef from config/model-routing.json (issue #1467)', () => {
   const { mod, dir } = freshModule();
   writeProfile(dir, 'by-ref', { ladderRef: 'max' });

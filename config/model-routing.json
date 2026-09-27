@@ -48,6 +48,13 @@
       "explore": ["openrouter/google/gemini-2.5-flash", "openrouter/google/gemini-2.5-pro", "opencode-go/deepseek-v4.1-flash"],
       "general": ["openrouter/google/gemini-2.5-flash", "openrouter/google/gemini-2.5-pro", "opencode-go/deepseek-v4.1-flash"],
       "review":  ["openrouter/google/gemini-2.5-flash", "openrouter/google/gemini-2.5-pro", "opencode-go/deepseek-v4.1-flash"]
+    },
+    "doctor": {
+      "build":   ["opencode-go/mimo-v2.6-flash", "opencode-go/qwen3.7-plus", "opencode-go/deepseek-v4-pro", "openrouter/xiaomi/mimo-v2.6-flash"],
+      "plan":    ["opencode-go/mimo-v2.6-flash", "opencode-go/qwen3.7-plus", "opencode-go/deepseek-v4-pro", "openrouter/xiaomi/mimo-v2.6-flash"],
+      "explore": ["opencode-go/mimo-v2.6-flash", "opencode-go/qwen3.7-plus", "opencode-go/deepseek-v4-pro", "openrouter/xiaomi/mimo-v2.6-flash"],
+      "general": ["opencode-go/mimo-v2.6-flash", "opencode-go/qwen3.7-plus", "opencode-go/deepseek-v4-pro", "openrouter/xiaomi/mimo-v2.6-flash"],
+      "review":  ["opencode-go/mimo-v2.6-flash", "opencode-go/qwen3.7-plus", "opencode-go/deepseek-v4-pro", "openrouter/xiaomi/mimo-v2.6-flash"]
     }
   }
 }

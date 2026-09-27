@@ -29,11 +29,13 @@ const DEFAULT_LEVEL_MAP = Object.freeze({
   master: { engine: 'opencode', ocProfile: 'deepseek' },
   // Claude has no model ladder of its own. When an engine is unavailable (engine
   // health) or this step already failed on it with AUTH/CONFIG, the step runs on the
-  // next rung of `fallback` instead of failing: claude → codex → opencode master
-  // (owner 2026-09-28). Default behaviour, overridable per plan / env like the rest.
+  // next rung of `fallback` instead of failing: claude → codex → opencode `doctor`
+  // profile (owner 2026-09-28, #1689: Go MiMo first, then stronger models — not the
+  // cheapest `deepseek` tier; interim local copy of the llm-ladder worker's `doctor`
+  // ladder, keep in sync until #1687 lands). Default behaviour, overridable per plan / env.
   doctor: { engine: 'claude', ocProfile: null, fallback: [
     { engine: 'codex', ocProfile: null },
-    { engine: 'opencode', ocProfile: 'deepseek' },
+    { engine: 'opencode', ocProfile: 'doctor' },
   ] },
 });
 
