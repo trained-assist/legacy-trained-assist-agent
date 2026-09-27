@@ -17,9 +17,10 @@ const { runQuickAnswer } = require('../../src/runner');
 const TEST_UID = 'quick-gate-test-0001';
 let workDir;
 
+// service-llm → llm-ladder worker (tests point LLM_LADDER_URL at http://llm-ladder.invalid).
 function mockOr(content) {
-  return nock('https://openrouter.ai')
-    .post('/api/v1/chat/completions')
+  return nock(process.env.LLM_LADDER_URL || 'http://llm-ladder.invalid')
+    .post('/v1/chat/completions')
     .reply(200, { choices: [{ message: { content } }] });
 }
 
@@ -50,21 +51,21 @@ describe('quick-answer intent gate', () => {
   });
 
   it('LLM call errors → fails open, still returns the matched quick-answer', async () => {
-    nock('https://openrouter.ai').post('/api/v1/chat/completions').replyWithError('network down');
+    nock(process.env.LLM_LADDER_URL || 'http://llm-ladder.invalid').post('/v1/chat/completions').replyWithError('network down');
     const reply = await runQuickAnswer('ты живой', TEST_UID, workDir, 'fake-key');
     expect(reply).toBe('🟢 Онлайн. Готов к работе.');
   });
 
-  it('no OpenRouter key anywhere → skips the check with no network call, still returns the quick-answer', async () => {
-    const saved = process.env.OPENROUTER_API_KEY;
-    delete process.env.OPENROUTER_API_KEY;
+  it('no ladder token anywhere → skips the check with no network call, still returns the quick-answer', async () => {
+    const saved = process.env.LLM_LADDER_TOKEN;
+    delete process.env.LLM_LADDER_TOKEN;
     const scope = mockOr('NO'); // if called, would reject — but must not be called
     try {
       const reply = await runQuickAnswer('ты живой', TEST_UID, workDir, null);
       expect(reply).toBe('🟢 Онлайн. Готов к работе.');
       expect(scope.isDone()).toBe(false);
     } finally {
-      if (saved !== undefined) process.env.OPENROUTER_API_KEY = saved;
+      if (saved !== undefined) process.env.LLM_LADDER_TOKEN = saved;
     }
   });
 
