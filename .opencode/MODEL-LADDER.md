@@ -173,13 +173,15 @@ text (`sessions.buildContext` folded into `baseContext`/`sessionContext` in
 doesn't apply to how this system actually works — no further spike needed there.
 
 What *was* a real gap: the ladder resolver (`opencodeLadder.buildOcProfileOverrides`) re-resolves
-the `build`-role model fresh on every turn, so if a rung became exhausted between two messages of
-the same Telegram conversation (a different task burned it in the meantime), the model would
-silently change with no trace — unlike the intra-task retry loop below, which already sends a
-"pробую следующую ступень" message. Fixed: `session-store.js` now records the resolved `build`
-model per session (`getLastOcModel`/`setLastOcModel`), and `runner/index.js` compares it against
-the newly resolved model each turn, sending an explicit "ℹ️ Модель сменилась: X → Y" message (and
-logging it into the session transcript) when it differs.
+the role model fresh on every turn, so if a rung became exhausted between two messages of the
+same Telegram conversation (a different task burned it in the meantime), the model would silently
+change with no trace — unlike the intra-task retry loop below, which already sends a "пробую
+следующую ступень" message. Fixed: `session-store.js` records the resolved model per session/role
+(`getLastOcModel`/`setLastOcModel`), and `runner/index.js` compares it against the newly resolved
+model each turn. The swap is now logged internally only (`[runner] oc model changed mid-session…`):
+the explicit "ℹ️ Модель сменилась: X → Y" Telegram message it originally sent was debug noise and
+was removed on owner request (2026-09-27) — it is no longer sent to the chat nor appended to the
+session transcript.
 
 ## Updating this file
 

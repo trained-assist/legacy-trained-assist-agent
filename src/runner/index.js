@@ -2188,14 +2188,14 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       // Фаза 4 (issue #1061): the ladder can degrade between two turns of the SAME
       // session (a different task exhausted a rung in the meantime) — that's not the
       // intra-task retry loop below (which already messages via degradeMsg), it's a
-      // silent swap the user would otherwise never see. Compare against the model
-      // recorded for this session's last turn and say so explicitly if it moved.
+      // silent swap. Compare against the model recorded for this session's last turn.
+      // This is internals traceability only: the earlier user-facing «Модель сменилась»
+      // chat message was debug noise and was removed on owner request (2026-09-27) — log
+      // it internally, never message the chat or append it to the session transcript.
       if (activeSessionId && ocActiveModel) {
         const prevModel = sessions.getLastOcModel(user.workDir, activeSessionId, ocRole);
         if (prevModel && prevModel !== ocActiveModel) {
-          const switchMsg = `ℹ️ Модель сменилась: ${prevModel} → ${ocActiveModel} (лестница профиля «${ocProfileName}» деградировала между сообщениями).`;
-          await tgSend(BOT_TOKEN, chatId, switchMsg, threadId).catch(() => {});
-          sessions.appendReply(user.workDir, activeSessionId, switchMsg);
+          console.log(`[runner] oc model changed mid-session (role ${ocRole}, session ${activeSessionId}, profile «${ocProfileName}»): ${prevModel} → ${ocActiveModel}`);
         }
         sessions.setLastOcModel(user.workDir, activeSessionId, ocRole, ocActiveModel);
       }
