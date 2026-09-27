@@ -29,7 +29,8 @@ const {
   generateConnectLink,
 } = require('../user-tokens');
 const { initLog, readLog } = require('../requirements-log');
-const { readVacancyState, writeVacancyState } = require('../hh-vacancy');
+const { hhLib } = require('../domains/hh/lib');
+const { readVacancyState, writeVacancyState } = hhLib('hh-vacancy');
 const persona = require('../persona');
 const profiles = require('../profiles');
 const { TOKENS_ROOT } = require('../data-paths');

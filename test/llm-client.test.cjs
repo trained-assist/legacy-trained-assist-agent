@@ -1,6 +1,5 @@
 // Epic #1470 P1.3-hermes-scoring: platform LLM client extracted from hh-scoring.js.
-// Hermes must reach OpenRouter/GigaChat without importing HH domain code; the
-// legacy core hh-scoring.js reuses the same functions (no third copy to drift).
+// Hermes must reach OpenRouter/GigaChat without importing HH domain code.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -31,13 +30,6 @@ test('parseLlmJson strips code fences and rejects empty', () => {
   assert.deepStrictEqual(llm.parseLlmJson('```json\n{"a":1}\n```'), { a: 1 });
   assert.deepStrictEqual(llm.parseLlmJson(' {"b":2} '), { b: 2 });
   assert.throws(() => llm.parseLlmJson(''), /empty/);
-});
-
-test('legacy core hh-scoring re-exports the platform functions (single copy)', () => {
-  const hh = require('../src/hh-scoring');
-  for (const k of ['llmCall', 'gcCall', 'parseLlmJson', 'readOrKey', 'readGigachatKey']) {
-    assert.strictEqual(hh[k], llm[k], `hh-scoring.${k} must be llm-client.${k}`);
-  }
 });
 
 test('hermes platform workers do not import HH domain modules', () => {

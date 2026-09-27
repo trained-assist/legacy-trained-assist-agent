@@ -549,6 +549,7 @@ Enforced in CI (`ci.yml` → "Recruiter/HH tools must call OpenRouter, not spawn
 | Module / path | Description |
 |---------------|-------------|
 | `src/ru-edge.js` | The RU-IP edge service (issue #1288) — a separate entry point (`node src/ru-edge.js`, `systemd/ru-edge.service`), not part of `server.js`'s request handler. No Claude/runner/task-queue/MCP. Runs on the RU VM only. |
+| `src/domains/hh/lib.js` | Core's only path to HH domain code: `hhLib('hh-utils')` loads the module from the `trained-assist-hh-skill` sibling checkout (override `HH_SKILL_DIR`), which is the single source of truth — core keeps no `src/hh-*.js` copies (ratchet: `test/ratchet-hh-core.test.cjs`). A missing sibling only fails HH calls with a clear error; core still starts. |
 | `src/nalog-login.js` | Headless Playwright login to lknpd.nalog.ru via Госуслуги (ESIA). Now only required by `src/ru-edge.js` — pushes the resulting token to GCP via `NALOG_TOKEN_SINK_URL` (`POST /nalog/token-store`) since that's where it's actually read from. |
 | `src/connect-forms/` | HTML templates for `/connect/*` endpoints (nalog, gdrive, hh, getcourse, weeek, generic site). Each file exports a function that returns an HTML string. |
 | `src/hooks/post-tool-use-artifacts.js` | Global `PostToolUse` Claude Code hook. Registered in `~/.claude/settings.json` via `runner.js`. Intercepts every tool-use response and stores extractable artifacts via `artifacts-store.js`. Skips sessions where `AGENT_USER_ID` is not set. |

@@ -2,7 +2,7 @@ import { it, expect } from 'vitest';
 import { chromium } from 'playwright';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const { generateProactivePageHtml } = require('../src/hh-proactive-page');
+const { generateProactivePageHtml } = require('../src/domains/hh/lib').hhLib('hh-proactive-page');
 it('browser switches vacancies and persists monitor/archive actions with the displayed vacancy ID', async () => {
   const browser = await chromium.launch({ headless: true });
   try {

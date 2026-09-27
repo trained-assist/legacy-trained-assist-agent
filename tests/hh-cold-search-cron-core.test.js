@@ -54,7 +54,7 @@ it('monitor disable/archive stop the cron job via the provider; star never touch
   expect(r.body.state).toMatchObject({ archived: true, enabled: true, status: 'succeeded', next_run: '2026-09-27T05:23:00.000Z' });
   calls = []; await vacancyState('star');
   expect(calls.map(c => c.params.action)).toEqual(['status']);
-  const legacy = require('../src/hh-proactive-search').loadSchedule('u1');
+  const legacy = require('../src/domains/hh/lib').hhLib('hh-proactive-search').loadSchedule('u1');
   expect(legacy.vacancies.A).toMatchObject({ starred: true, archived: true });
   expect(legacy.vacancies.A.enabled).toBeUndefined(); // schedule is not kept in the legacy file
 });
@@ -76,8 +76,9 @@ it('"выключи автопоиск" disables through the provider and report
 });
 
 it('core has no cold-search timer left', () => {
+  const { hhModulePath } = require('../src/domains/hh/lib');
   const src = f => fs.readFileSync(path.join(__dirname, '..', 'src', f), 'utf8');
+  const hh = m => fs.readFileSync(hhModulePath(m) + '.js', 'utf8');
   expect(src('server.js')).not.toMatch(/scheduleProactiveSearchRuns/);
-  expect(src('hh-negotiations.js')).not.toMatch(/scheduleProactiveSearchRuns|runDueSearches/);
-  expect(src('hh-cold-search-schedule.js')).not.toMatch(/runDueSearches/);
+  expect(hh('hh-negotiations')).not.toMatch(/scheduleProactiveSearchRuns|runDueSearches/);
 });

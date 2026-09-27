@@ -12,13 +12,14 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { userWorkDir } = require('../data-paths');
+const { hhLib } = require('../domains/hh/lib');
 
-const { sendRejection, REJECT_REASON_ACTION } = require('../hh-rejection');
-const { hydrateResume, buildResumeText, resumeNotice } = require('../hh-resume');
-const { hhFetch, hhPut, hhPostForm, readHhToken, refreshHhToken, readActiveVacancies } = require('../hh-utils');
-const { bullshitGuard } = require('../hh-bullshit-guard');
-const { buildAvailabilityBlock, buildRecruiterIdentity, buildMessageSystemPrompt, buildRejectionSystemPrompt, loadBaseOverride, DEFAULT_MESSAGE_BASE, BASE_PROMPT_FILENAME } = require('../hh-message-prompts');
-const { hhInterviewConfigAllowsTime } = require('../hh-negotiations');
+const { sendRejection, REJECT_REASON_ACTION } = hhLib('hh-rejection');
+const { hydrateResume, buildResumeText, resumeNotice } = hhLib('hh-resume');
+const { hhFetch, hhPut, hhPostForm, readHhToken, refreshHhToken, readActiveVacancies } = hhLib('hh-utils');
+const { bullshitGuard } = hhLib('hh-bullshit-guard');
+const { buildAvailabilityBlock, buildRecruiterIdentity, buildMessageSystemPrompt, buildRejectionSystemPrompt, loadBaseOverride, DEFAULT_MESSAGE_BASE, BASE_PROMPT_FILENAME } = hhLib('hh-message-prompts');
+const { hhInterviewConfigAllowsTime } = hhLib('hh-negotiations');
 
 // Cold-search schedule lives in the generic cron (#1489 S7.1); core reaches it only
 // through the provider's hh_proactive_schedule tool, never through cron tables.
@@ -29,7 +30,7 @@ async function coldSearchSchedule(username, workDir, params) {
   } catch (e) { return { error: e.message }; }
 }
 async function coldSearchMonitoring(username, workDir, vacancyId) {
-  const legacy = require('../hh-cold-search-schedule').getSchedules(username, workDir)[vacancyId] || {};
+  const legacy = hhLib('hh-cold-search-schedule').getSchedules(username, workDir)[vacancyId] || {};
   const flags = { starred: !!legacy.starred, archived: !!legacy.archived };
   if (!vacancyId) return flags;
   const st = await coldSearchSchedule(username, workDir, { action: 'status', vacancy_id: String(vacancyId) });
@@ -38,10 +39,10 @@ async function coldSearchMonitoring(username, workDir, vacancyId) {
     last_success: st.last_status === 'succeeded' ? st.last_run : null,
     status: st.last_status || null, next_run: st.next_run || null };
 }
-const { generateProactivePageHtml } = require('../hh-proactive-page');
-const { runProactiveSearch, scoreUnscoredProactiveCandidates } = require('../hh-proactive-search');
-const { hhStylePageHtml } = require('../hh-style-html');
-const { generateReviewPageHtml } = require('../hh-review-page-html');
+const { generateProactivePageHtml } = hhLib('hh-proactive-page');
+const { runProactiveSearch, scoreUnscoredProactiveCandidates } = hhLib('hh-proactive-search');
+const { hhStylePageHtml } = hhLib('hh-style-html');
+const { generateReviewPageHtml } = hhLib('hh-review-page-html');
 
 function json(res, status, data) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -82,7 +83,7 @@ function proactiveUrl(username, vacancyId) {
   return `${base}/hh/proactive?username=${encodeURIComponent(username)}&token=${token}${vacancyParam}`;
 }
 
-const { latestProactiveFile } = require('../hh-cold-search-snapshots');
+const { latestProactiveFile } = hhLib('hh-cold-search-snapshots');
 
 function appendGuardBlock(username, negId, reason, checks, blocked = true) {
   try {
@@ -348,7 +349,7 @@ if (req.method === 'POST' && url.pathname === '/hh/response-state') {
   try {
     const cache = JSON.parse(fs.readFileSync(hhCacheFile(dataDir, username, vacancy_id), 'utf8'));
     if (!cache.negotiations.some(n => String(n.id) === String(negotiation_id))) return json(res, 404, { error: 'Unknown response' });
-    require('../hh-response-state').setResponseState(dataDir, username, vacancy_id, negotiation_id, status);
+    hhLib('hh-response-state').setResponseState(dataDir, username, vacancy_id, negotiation_id, status);
     return json(res, 200, { ok: true, status });
   } catch (e) { return json(res, 400, { error: e.message }); }
 }
@@ -472,7 +473,7 @@ if (req.method === 'GET' && url.pathname === '/hh/candidate') {
   }
 
   const callbackBase = '';
-  const reviewUrl = require('../hh-quick').hhReviewUrl(username, url.searchParams.get('vacancy_id') || neg?.vacancy?.id);
+  const reviewUrl = hhLib('hh-quick').hhReviewUrl(username, url.searchParams.get('vacancy_id') || neg?.vacancy?.id);
 
   const html = generateCandidateProfileHtml(neg, history, username, callbackBase, reviewUrl);
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -549,8 +550,8 @@ if (req.method === 'GET' && url.pathname === '/hh/ats-editor') {
       return res.end('<!doctype html><html><body style="font-family:system-ui;padding:48px;text-align:center"><h2>Ссылка недействительна. Запроси новую у бота.</h2></body></html>');
     }
   }
-  const { atsEditorHtml } = require('../hh-ats-editor-html.js');
-  const { readAtsConfig, readAtsDraft } = require('../hh-scoring');
+  const { atsEditorHtml } = hhLib('hh-ats-editor-html');
+  const { readAtsConfig, readAtsDraft } = hhLib('hh-scoring');
   // Must match BASE_USERS_DIR — Claude writes contexts here via cwd
   const workDir = path.join(BASE_USERS_DIR, username);
   const contextBase = path.join(workDir, 'contexts');
@@ -1058,7 +1059,7 @@ if (req.method === 'GET' && url.pathname === '/hh/proactive') {
     try { results = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return proactiveErrPage('Ошибка чтения данных.'); }
   }
   const callbackBase = (process.env.HH_COLD_SEARCH_PUBLIC_URL || 'https://recruiter-assistant.ru').replace(/\/$/, '');
-  const { loadCandidateComments, loadAllCandidates, candidateMatchesVacancy, candidateStatusOf } = require('../hh-proactive-search');
+  const { loadCandidateComments, loadAllCandidates, candidateMatchesVacancy, candidateStatusOf } = hhLib('hh-proactive-search');
   const pageComments = loadCandidateComments(username, vacancyId);
   // Render from the unified all-candidates store (search + manual, accumulated
   // across runs) rather than only the latest search-results snapshot — keeps the
@@ -1094,7 +1095,7 @@ if (req.method === 'GET' && url.pathname === '/api/hh/proactive/candidates') {
   const username = url.searchParams.get('username') || '';
   const given = url.searchParams.get('token') || '';
   if (process.env.AGENT_SECRET && given !== proactiveHmac(username)) return json(res, 403, { error: 'invalid token' });
-  const { loadAllCandidates } = require('../hh-proactive-search');
+  const { loadAllCandidates } = hhLib('hh-proactive-search');
   const all = Object.values(loadAllCandidates(username, url.searchParams.get('vacancy_id')))
     .sort((a, b) => new Date(b.found_at || b.added_at || 0) - new Date(a.found_at || a.added_at || 0));
   return json(res, 200, { total: all.length, candidates: all });
@@ -1105,13 +1106,13 @@ if (req.method === 'POST' && url.pathname === '/api/hh/proactive/ai-score') {
   try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
   const { username = '', candidate_id = '', token: givenToken = '' } = body || {};
   if (process.env.AGENT_SECRET && givenToken !== proactiveHmac(username)) return json(res, 403, { error: 'invalid token' });
-  const vacancyId = body.vacancy_id || require('../hh-cold-search-context').readSearchContext(path.join(BASE_USERS_DIR, username), 'active_vacancy')?.id;
+  const vacancyId = body.vacancy_id || hhLib('hh-cold-search-context').readSearchContext(path.join(BASE_USERS_DIR, username), 'active_vacancy')?.id;
   if (!vacancyId) return json(res, 400, { error: 'vacancy_id required' });
   const file = latestProactiveFile(username, vacancyId);
   if (!file) return json(res, 404, { error: 'no results yet' });
   let results;
   try { results = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return json(res, 500, { error: 'read error' }); }
-  const candidate = require('../hh-proactive-search').loadAllCandidates(username, vacancyId)[candidate_id]
+  const candidate = hhLib('hh-proactive-search').loadAllCandidates(username, vacancyId)[candidate_id]
     || (results.candidates || []).find(c => c.id === candidate_id);
   if (!candidate) return json(res, 404, { error: 'candidate not found' });
   const cfg = results.ats_config || {};
@@ -1200,7 +1201,7 @@ if (req.method === 'POST' && url.pathname === '/api/hh/proactive/comment') {
   if (process.env.AGENT_SECRET && givenToken !== proactiveHmac(username)) return json(res, 403, { error: 'invalid token' });
   if (!candidate_id) return json(res, 400, { error: 'candidate_id required' });
   try {
-    const { saveCandidateComment } = require('../hh-proactive-search');
+    const { saveCandidateComment } = hhLib('hh-proactive-search');
     saveCandidateComment(username, candidate_id, { text: String(text).slice(0, 1000) }, body.vacancy_id);
     return json(res, 200, { ok: true });
   } catch (e) {
@@ -1222,12 +1223,12 @@ if (req.method === 'POST' && url.pathname === '/api/hh/proactive/vacancy-state')
   const cronOp = { enable: 'enable', disable: 'disable', archive: 'disable' }[action];
   if (!patches[action]) return json(res, 400, { error: 'invalid action' });
   try {
-    if (action === 'enable') require('../hh-cold-search-context').resolveSearchContext(workDir, vacancy_id);
+    if (action === 'enable') hhLib('hh-cold-search-context').resolveSearchContext(workDir, vacancy_id);
     if (cronOp) {
       const out = await coldSearchSchedule(username, workDir, { action: cronOp, vacancy_id: String(vacancy_id) });
       if (out.error) return json(res, 502, { error: out.error });
     }
-    const state = require('../hh-cold-search-schedule').updateSchedule(username, workDir, vacancy_id, patches[action]);
+    const state = hhLib('hh-cold-search-schedule').updateSchedule(username, workDir, vacancy_id, patches[action]);
     return json(res, 200, { ok: true, state: { ...state, ...(await coldSearchMonitoring(username, workDir, vacancy_id)) } });
   } catch (e) { return json(res, 400, { error: e.message }); }
 }
@@ -1239,7 +1240,7 @@ if (req.method === 'POST' && url.pathname === '/api/hh/proactive/set-status') {
   if (process.env.AGENT_SECRET && givenToken !== proactiveHmac(username)) return json(res, 403, { error: 'invalid token' });
   if (!candidate_id) return json(res, 400, { error: 'candidate_id required' });
   try {
-    const { setCandidateStatus } = require('../hh-proactive-search');
+    const { setCandidateStatus } = hhLib('hh-proactive-search');
     const rec = setCandidateStatus(username, candidate_id, status, body.vacancy_id);
     return json(res, 200, { ok: true, status: rec.status, status_changed_at: rec.status_changed_at });
   } catch (e) {
@@ -1254,7 +1255,7 @@ if (req.method === 'POST' && url.pathname === '/api/hh/proactive/import-seen') {
   if (process.env.AGENT_SECRET && givenToken !== proactiveHmac(username)) return json(res, 403, { error: 'invalid token' });
   if (!Array.isArray(ids) || !ids.length) return json(res, 400, { error: 'ids array required' });
   try {
-    const { loadSeenIds, saveSeenIds } = require('../hh-proactive-search');
+    const { loadSeenIds, saveSeenIds } = hhLib('hh-proactive-search');
     // Resolve vacancy key the same way runProactiveSearch does — from the ATS
     // config / active vacancy, NOT from the latest results file. Results files
     // don't exist before the first search run, and the recruiter legitimately
@@ -1307,7 +1308,7 @@ if (req.method === 'POST' && url.pathname === '/api/hh/proactive/add-manual') {
   if (process.env.AGENT_SECRET && givenToken !== proactiveHmac(username)) return json(res, 403, { error: 'invalid token' });
   if (!resume_url_or_id) return json(res, 400, { error: 'resume_url_or_id required' });
   try {
-    const { parseResumeId, addManualCandidate } = require('../hh-proactive-search');
+    const { parseResumeId, addManualCandidate } = hhLib('hh-proactive-search');
     const resumeId = parseResumeId(resume_url_or_id);
     if (!resumeId) return json(res, 400, { error: 'could not parse resume id from input' });
     const hhToken = readHhToken(username);
@@ -1356,7 +1357,7 @@ if (req.method === 'GET' && url.pathname === '/hh/ats-config') {
   // Must match BASE_USERS_DIR so runHhScoringForUser can find the file
   const workDir = username ? path.join(BASE_USERS_DIR, username) : process.cwd();
   const stagesFile = path.join(workDir, 'contexts', 'hh', 'ats_stages.json');
-  const { readAtsConfig } = require('../hh-scoring');
+  const { readAtsConfig } = hhLib('hh-scoring');
   const config = readAtsConfig(workDir, vacancyId);
   let stages = null;
   try {

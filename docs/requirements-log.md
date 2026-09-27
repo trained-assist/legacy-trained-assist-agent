@@ -4,6 +4,7 @@
 
 | Статус | Требование | Описание |
 |--------|-----------|----------|
+| ✅ реализовано | **HH-код в одном месте — hh-skill** (#1470 P1.3, 2026-09-27) | 21 копия `src/hh-*.js` и 16 дублирующих тестов удалены из ядра. Ядро берёт HH-модули из соседнего `trained-assist-hh-skill` через `src/domains/hh/lib.js` (`hhLib('hh-utils')`, override `HH_SKILL_DIR`), как `61-dev.js` → engineering. Нет sibling → только HH-вызовы падают с понятной ошибкой, ядро стартует. CI клонирует hh-skill рядом. Ratchet-baseline пустой. Отклонено: «ядро → домен только через MCP-провайдер/ActionBroker» как предусловие удаления дубля — это блокировало перенос; граница-протокол при необходимости добавляется позже. |
 | ✅ реализовано | **ATS scoring pipeline fix** (PRs #560, #562, #565) | `buildAtsPrompt` читал `config.required || []` — пустой массив truthy → LLM скорил вслепую. Исправлен чек на `.length`. Добавлен тест с monkey-patch LLM. ATS config tes-recruiter: Private Banking Sales, 3 knockout, thresholds {strong:7, consider:5}. |
 | ✅ реализовано | **needs_reply — HH API как источник правды** (PR #565) | `needs_reply` смотрел на локальную историю, 27 кандидатов ложно помечались "отвеченными". Исправлено: `counters.unread_messages>0 || has_updates || counters.messages<=1`. |
 | ✅ реализовано | **Переписка — синк сообщений из HH** (PR #567) | Локальная история хранила только наши исходящие. Добавлен `syncHhMessagesToHistory` — при каждом открытии /hh/review тянет сообщения из HH API и сохраняет в candidates/*.json. |

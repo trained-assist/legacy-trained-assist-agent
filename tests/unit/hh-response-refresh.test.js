@@ -31,7 +31,7 @@ beforeAll(async () => {
     res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({items,pages:1}));
   });
   await listen(mock); process.env.HH_API_BASE_URL=`http://127.0.0.1:${mock.address().port}`;
-  cache = require('../../src/hh-negotiations').createHhNegotiations({refreshHhToken:async()=>null,readChatId:()=>null,getSecretsCache:()=>({})});
+  cache = require('../../src/domains/hh/lib').hhLib('hh-negotiations').createHhNegotiations({refreshHhToken:async()=>null,readChatId:()=>null,getSecretsCache:()=>({})});
   const {handleHhPublic} = require('../../src/handlers/hh');
   server = http.createServer(async (req,res) => {
     try { const result=await handleHhPublic(req,new URL(req.url,'http://localhost'),res,{...cache,BASE_USERS_DIR:users,PORT:0,getSecretsCache:()=>({}),secrets:{},readChatId:()=>null}); if(result===false){res.writeHead(404);res.end();} }
@@ -82,12 +82,12 @@ describe('HH response refresh and durable triage', () => {
     await post('/hh/sync-negotiations',{});await page.evaluate(()=>checkResponseUpdates());await expect.poll(()=>page.locator('#responseUpdates').textContent()).toContain('Данные HH обновились');await page.reload();expect(await page.locator('#tab-all .card').count()).toBe(1);
     await Promise.all([page.waitForNavigation(),page.locator('#tab-all [data-testid=response-restore]').click()]);
     await page.getByRole('link',{name:'Активные (1)',exact:true}).click();expect(await page.locator('#tab-all .card').count()).toBe(1);
-    const {readResponseState}=require('../../src/hh-response-state');expect(readResponseState(data,username,'v2','n1')).toBe('active');
+    const {readResponseState}=require('../../src/domains/hh/lib').hhLib('hh-response-state');expect(readResponseState(data,username,'v2','n1')).toBe('active');
     expect(errors).toEqual([]);await page.close();
   });
   it('refreshes expired HH tokens once with the real HH API error format',async()=>{
     let refreshes=0;
-    const refreshed=require('../../src/hh-negotiations').createHhNegotiations({refreshHhToken:async()=>{refreshes++;return 'fixture';},getSecretsCache:()=>({})});
+    const refreshed=require('../../src/domains/hh/lib').hhLib('hh-negotiations').createHhNegotiations({refreshHhToken:async()=>{refreshes++;return 'fixture';},getSecretsCache:()=>({})});
     const result=await refreshed.getHhNegotiationsWithCache(data,username,vacancy,'expired',{force:true});
     expect(result.negotiations).toHaveLength(1);expect(refreshes).toBe(1);
   });
@@ -101,7 +101,7 @@ describe('HH response refresh and durable triage', () => {
     expect(await runQuickAnswer('работа с откликами с хх отстала от жизни нужно прокачать. диалог: покажи кандидатов',username,path.join(users,username))).toBeNull();
   });
   it('review links ignore infrastructure URL and complaint cannot qualify for HH quick reply',()=>{
-    const {hhReviewUrl}=require('../../src/hh-quick');expect(hhReviewUrl(username,vacancy)).toContain('https://recruiter-assistant.ru/hh/review?');
+    const {hhReviewUrl}=require('../../src/domains/hh/lib').hhLib('hh-quick');expect(hhReviewUrl(username,vacancy)).toContain('https://recruiter-assistant.ru/hh/review?');
     const {HH_SERVICE_CHANGE_INTENT}=require('../../src/domains/hh/intents');
     expect(HH_SERVICE_CHANGE_INTENT.test('работа с откликами с хх отстала от жизни нужно прокачать. диалог: покажи кандидатов')).toBe(true);
     expect(HH_SERVICE_CHANGE_INTENT.test('покажи кандидатов')).toBe(false);

@@ -209,7 +209,7 @@ describe('quick answers', () => {
   it('vacancy collecting mode keeps priority over the requirements command', () => {
     report.addNote(wd, 'a', 'Писать от первого лица');
     mkdirSync(join(wd, 'contexts', 'hh'), { recursive: true });
-    const { initVacancyState } = require('../../src/hh-vacancy.js');
+    const { initVacancyState } = require('../../src/domains/hh/lib').hhLib('hh-vacancy');
     initVacancyState(wd);
     expect(qa('добавь в требования: знание английского')).toMatch(/Принял/);
     expect(report.readNotes(wd, 'a').exclude).toHaveLength(1);

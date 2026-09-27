@@ -26,7 +26,7 @@ test('no new hh-*.js in core and no new core imports of hh-* modules',()=>{
  for(const f of now.files)if(!BASE.files.includes(f))grown.push(`new HH file in core: ${f}`);
  for(const[f,mods]of Object.entries(now.edges))for(const m of mods)
   if(!BASE.edges[f]?.modules.includes(m))grown.push(`new import: ${f} → ${m}`);
- assert.deepEqual(grown,[],'HH logic belongs in trained-assist-hh-skill; core reaches it via the provider (MCP tools / action manifest), not require (epic #1470).');
+ assert.deepEqual(grown,[],'HH logic belongs in trained-assist-hh-skill; core reaches it via src/domains/hh/lib.js hhLib(), never a copied/required core file (epic #1470).');
 });
 test('baseline is tight: deleted files/imports must be removed from the fixture',()=>{
  const now=scan();const stale=[];

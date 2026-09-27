@@ -5,7 +5,7 @@ it('routes standalone stop without credentials or vacancy, and delegates complai
  const fs=require('fs'), os=require('os'),path=require('path'),assert=require('assert/strict');
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'notify-route-'));os.homedir=()=>root;
  process.env.AGENT_DATA_DIR=path.join(root,'data');process.env.AGENT_TOKENS_DIR=path.join(root,'tokens');process.env.AGENT_TOKENS_ROOT=process.env.AGENT_TOKENS_DIR;
- const {runQuickAnswer}=require('./src/runner/intent-engine');const api=require('./src/hh-proactive-search');
+ const {runQuickAnswer}=require('./src/runner/intent-engine');const api=require('./src/domains/hh/lib').hhLib('hh-proactive-search');
  (async()=>{try{
  for(const text of ['/hh_notify_off','[Сообщение 1]\n/hh_notify_off@TestBot','выключи уведомления о новых кандидатах','отключи уведомления холодного поиска']){
  api.saveSchedule('alice',{enabled:true});assert.match(await runQuickAnswer(text,'alice',root),/выключены/);assert.equal(api.loadSchedule('alice').enabled,true);assert.equal(api.loadSchedule('alice').notifications_enabled,undefined);

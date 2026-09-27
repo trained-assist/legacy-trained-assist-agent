@@ -21,7 +21,7 @@ function tokenBase() {
 }
 
 function readHhToken() {
-  const { readHhToken: read } = require('../../hh-utils');
+  const { readHhToken: read } = require('../../domains/hh/lib').hhLib('hh-utils');
   return read(USER_ID);
 }
 
