@@ -34,7 +34,10 @@ function getEngine(workDir, chatId) {
   if (raw === 'claude') return 'claude';
   // Default is OpenCode on the Go subscription (owner 2026-09-27: "все чаты на opencode go") — an
   // unset engine used to mean Claude, so every chat nobody had explicitly switched ran on Claude.
-  return 'opencode';
+  // AGENT_DEFAULT_ENGINE overrides it (the vitest isolation setup pins claude for the fake-claude
+  // runner fixtures).
+  const fallback = process.env.AGENT_DEFAULT_ENGINE;
+  return fallback === 'claude' || fallback === 'codex' ? fallback : 'opencode';
 }
 
 function setEngine(workDir, engine, chatId) {

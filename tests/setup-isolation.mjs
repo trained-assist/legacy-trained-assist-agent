@@ -10,3 +10,5 @@ for (const [key, child] of Object.entries({ AGENT_DATA_DIR: 'data', USERS_DIR: '
   process.env[key] = directory;
 }
 process.once('exit', () => rmSync(root, { recursive: true, force: true }));
+// Runner fixtures fake the `claude` binary; production's default engine is opencode (2026-09-27).
+if (!process.env.AGENT_DEFAULT_ENGINE) process.env.AGENT_DEFAULT_ENGINE = 'claude';
