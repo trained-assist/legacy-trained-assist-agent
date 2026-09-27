@@ -645,7 +645,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
       value:    'VALUE — DeepSeek V4 Flash → GLM → Qwen',
       free:     'FREE — только бесплатный inference (MiMo/Nemotron)',
       russian:  'RUSSIAN — GigaChat Pro/Ultra/Max',
-      deepseek: 'DEEPSEEK (дефолт) — Go: mimo-v2.6-flash → deepseek-v4.1-flash; OpenRouter только последней ступенью, когда все ключи Go на лимите, Go возвращается сам',
+      deepseek: 'DEEPSEEK (дефолт) — Go: mimo-v2.6-flash → deepseek-v4.1-flash; платный хвост OpenRouter (deepseek → gemini-lite → mimo), когда все ключи Go на лимите, Go возвращается сам',
     };
     const label = PROFILE_LABELS[raw] || raw;
     return `✅ OpenCode профиль → ${label}\n\nПрименён только для твоего профиля (другие юзеры VM не затронуты). Следующая задача в OpenCode подхватит новые модели.${engineNote}`;
