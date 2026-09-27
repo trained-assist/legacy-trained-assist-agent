@@ -98,7 +98,7 @@ test('enabled parent enables its children; other sections stay off; core always 
   assert.ok(res.modules.includes('hh-skills/90-hh.js'));
   assert.ok(res.modules.includes('trained-skills/22-connect.js'));
   assert.ok(res.modules.includes('trained-skills/00-meta.js'));
-  assert.ok(!res.modules.includes('trained-skills/60-github.js'));
+  assert.ok(!res.modules.includes('engineering-skills/60-github.js'));
   assert.ok(!res.promptDomains.includes('engineering'));
   assert.ok(!res.promptDomains.includes('github.setup'));
   assert.deepStrictEqual(res.pinned, {});

@@ -52,9 +52,9 @@ revision and hid current tools from it.
 - [x] `94-outsource-project` removed from core — its successor `freelance_*` tools live in freelance-skill; the only profile with legacy `outsource-projects/` data was migrated by `scripts/migrate-outsource.js` (dry-run on prod: 3/3 already in index)
 - stays in core: `62-business-analyst` (depends on the platform `playbook-store`)
 
-### engineering — `trained-assist-engineering` (repo exists)
+### engineering — `trained-assist/software-engineering-playbooks` (sibling dir `trained-assist-engineering`)
 
-- [ ] `60-github`, `61-dev`, `63-ci-cd`
+- [x] `60-github`, `61-dev`, `63-ci-cd` (+ prompt domains `github.setup`, `engineering`) — served by the `engineering-skills` sibling (#1631); catalog section `software-engineering` addresses them as `engineering-skills/<file>`. `dev_workspace_setup` calls the workspace library in-repo — core no longer reaches into the sibling by path
 
 ### optional, by demand
 

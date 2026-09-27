@@ -44,7 +44,7 @@
     "software-engineering": {
       "title": "Разработка ПО",
       "siblings": ["engineering-skills"],
-      "modules": ["60-github.js", "61-dev.js", "63-ci-cd.js"],
+      "modules": ["engineering-skills/60-github.js", "engineering-skills/61-dev.js", "engineering-skills/63-ci-cd.js"],
       "promptDomains": ["github.setup", "engineering"],
       "pinned": { "engineering-skills": ["engineering_spawn_workspace", "engineering_release_workspace"] }
     },
