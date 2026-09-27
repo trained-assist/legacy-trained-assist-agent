@@ -3,10 +3,9 @@
 Last updated: 2026-09-26
 
 > **Migration status moved.** Where each domain skill is *served* (core vs
-> domain repo) and how to switch it is now owned by the migration control plane:
+> domain repo) is tracked in:
 > [`docs/migration/domain-skill-migration.md`](migration/domain-skill-migration.md)
-> (machine-readable: [`domain-skill-migration.json`](migration/domain-skill-migration.json),
-> tracked by [#1511](https://github.com/trained-assist/trained-assist-agent/issues/1511)).
+> (tracked by [#1470](https://github.com/trained-assist/trained-assist-agent/issues/1470)).
 > This page remains the feature/auth/inventory roadmap; it must not contradict
 > the matrix.
 

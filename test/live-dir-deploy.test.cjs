@@ -189,7 +189,7 @@ test('cron install tolerates a root-owned release dir', () => {
 test('disk-hygiene crons use the stable agent-master path, not the per-release path', () => {
   const body = fs.readFileSync(path.resolve(__dirname, '../ops/cron/install.sh'), 'utf8');
   assert.match(body, /CRON_BASE=\$\{AGENT_CURRENT:-\$AGENT_HOME\/agent-master\}/, 'crons must resolve via the stable symlink');
-  for (const script of ['ops/cron/disk-guard.sh', 'ops/cron/dead-tenant-sweep.sh', 'scripts/bugs-collector-cron.sh', 'scripts/issue-fixer-cron.sh', 'ops/cron/mcp-source-canary.sh']) {
+  for (const script of ['ops/cron/disk-guard.sh', 'ops/cron/dead-tenant-sweep.sh', 'scripts/bugs-collector-cron.sh', 'scripts/issue-fixer-cron.sh']) {
     assert.match(body, new RegExp(`\\$CRON_BASE/${script.replace(/[.]/g, '\\.')}`), `${script} cron must run via $CRON_BASE`);
   }
   assert.doesNotMatch(body, /echo ".*\$REPO_DIR\/scripts\/(bugs-collector|issue-fixer)-cron\.sh"/, 'cron entries must not point at the per-release dir');

@@ -15,13 +15,9 @@
 // cross-tenant data leak, not a race condition you can paper over. Do not
 // "optimize" this into an in-process registry.callTool() call.
 //
-// Source resolution (issue #1533) goes through the SAME rule as the session
-// path (src/browser.js): an approved external source that is enabled +
-// eligible for the profile + has an available artifact wins over the sibling
-// with the same mcpServerId and is executed through the core adapter/broker,
-// not a direct sibling spawn. With the source disabled/ineligible/unavailable
-// the sibling is the fallback, then core. Duplicate names across any two
-// active sources are a CONFLICT (src/action-tool-catalog.js).
+// Source resolution (issue #1533): core tools + the sibling domain repos present
+// on this host (same set the session path mounts in src/browser.js). Duplicate
+// names across any two sources are a CONFLICT (src/action-tool-catalog.js).
 
 const path = require('path');
 const crypto = require('crypto');
@@ -29,7 +25,6 @@ const { spawn } = require('child_process');
 const registry = require('./mcp-skills/registry');
 const { buildToolCatalog } = require('./action-tool-catalog');
 const { presentSiblings } = require('./skill-siblings');
-const { getDefaultSourceRuntime } = require('./mcp-source-runtime');
 
 const INDEX_PATH = path.join(__dirname, 'mcp-skills', 'index.js');
 const DEFAULT_TIMEOUT_MS = 45_000;
@@ -47,44 +42,18 @@ function staticCatalog(reg) {
   return typeof reg.listAllTools === 'function' ? reg.listAllTools() : reg.listTools();
 }
 
-// The approved sources that may serve this profile right now. Mirrors
-// planSessionMcp: a source only mounts (and only suppresses a sibling) when it
-// is enabled, allowlisted for the profile, and its artifact verifies. Reads the
-// generation snapshot only — no broker, no child, no rehash cost.
-function approvedSourcesForProfile(profileId, runtime) {
-  const generation = runtime && runtime.enabled ? runtime.generation : null;
-  const sources = generation?.snapshot?.sources || [];
-  return sources
-    .filter(s => s && s.enabled && Array.isArray(s.profiles) && s.profiles.includes(profileId)
-      && s.artifactStatus === 'available')
-    .map(s => ({
-      id: s.id,
-      providerId: s.providerId,
-      mcpServerId: s.mcpServerId,
-      actions: (s.approvedManifest?.actions || []).map(a =>
-        a.description ? { name: a.name, description: a.description } : { name: a.name }),
-    }));
-}
-
-function resolveRuntime(option) {
-  return option !== undefined ? option : getDefaultSourceRuntime();
-}
-
-// Effective catalog for one profile: core + non-suppressed siblings + approved.
-function buildCatalogForProfile({ profileId, runtime, siblingList = siblings }) {
+// Effective catalog: core + every present sibling domain repo.
+function buildCatalogForProfile({ siblingList = siblings } = {}) {
   return buildToolCatalog({
     coreTools: staticCatalog(registry),
     siblings: siblingList.map(s => ({ id: s.id, mcpServerId: s.mcpServerId, tools: staticCatalog(s.registry) })),
-    approvedSources: profileId ? approvedSourcesForProfile(profileId, runtime) : [],
   });
 }
 
 // Safe in-process: tool metadata only, no user-scoped execution. profileId is
-// optional for back-compat (core+siblings only); pass it on the transport path
-// so approved-manifest actions are part of the gate too.
+// accepted for call-site compatibility; the catalog is the same for every profile.
 function listActionTools(profileId, options = {}) {
-  const runtime = profileId ? resolveRuntime(options.sourceRuntime) : null;
-  return buildCatalogForProfile({ profileId, runtime, siblingList: options.siblings || siblings }).tools;
+  return buildCatalogForProfile({ siblingList: options.siblings || siblings }).tools;
 }
 
 // siblingNames: { [siblingId]: Set<toolName> } for the siblings present on this host.
@@ -100,63 +69,22 @@ function resolveToolSource(tool, localNames, siblingNames = {}) {
 
 async function runMcpTool({
   tool, params, username, workDir, timeoutMs = DEFAULT_TIMEOUT_MS,
-  trigger = 'user', origin = 'api', sourceRuntime, siblings: siblingList,
+  siblings: siblingList,
 }) {
   if (!tool || typeof tool !== 'string') throw Object.assign(new Error('tool required'), { code: 'bad_request' });
   const list = siblingList || siblings;
-  const runtime = resolveRuntime(sourceRuntime);
 
   // A duplicate name across active sources throws CONFLICT here — never resolved implicitly.
-  const catalog = buildCatalogForProfile({ profileId: username, runtime, siblingList: list });
+  const catalog = buildCatalogForProfile({ siblingList: list });
 
   const owner = catalog.owners.get(tool);
   if (!owner) throw Object.assign(new Error(`Unknown tool: ${tool}`), { code: 'bad_request' });
-
-  if (owner.kind === 'approved') {
-    return runApprovedTool({ owner, tool, params, username, workDir, timeoutMs, runtime, trigger, origin });
-  }
 
   // MCP_HOST_ACTION is forced off: /action and the action transport never reach host-only actions.
   const indexPath = owner.kind === 'local'
     ? INDEX_PATH
     : list.find(s => s.id === owner.id).indexPath;
   return spawnToolCall({ indexPath, tool, params, username, workDir, timeoutMs, hostAction: false });
-}
-
-// Execute an approved-source action through the core adapter — the same
-// process the engine spawns from .mcp.json (adapter -> broker -> invokeAction ->
-// provider). The host materializes one revocable run for this call and releases
-// it as soon as the child exits.
-async function runApprovedTool({ owner, tool, params, username, workDir, timeoutMs, runtime, trigger, origin }) {
-  if (!runtime || !runtime.enabled) {
-    throw Object.assign(new Error(`Provider unavailable: ${tool}`), { code: 'PROVIDER_UNAVAILABLE' });
-  }
-  const taskId = `action-${username || 'anon'}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-  const runtimeDir = path.join(workDir || process.cwd(), '.mcp-runs', taskId);
-  let run;
-  try {
-    run = await runtime.prepareRun({
-      hostRunBinding: {
-        engineRunId: taskId, rootTaskId: taskId, profileId: username,
-        trigger, origin, resourceBindingVersion: 'v1',
-      },
-      runtimeDir,
-    });
-  } catch (e) {
-    throw Object.assign(e, { code: e.code || 'PROVIDER_UNAVAILABLE' });
-  }
-  try {
-    const descriptor = run?.servers?.[owner.source.mcpServerId];
-    if (!descriptor) {
-      throw Object.assign(new Error(`Provider unavailable: ${tool}`), { code: 'PROVIDER_UNAVAILABLE' });
-    }
-    return await spawnToolCall({
-      command: descriptor.command, args: descriptor.args,
-      tool, params, username, workDir, timeoutMs, hostAction: false,
-    });
-  } finally {
-    if (run) run.release();
-  }
 }
 
 // Host-only actions (epic #1470 P1.3, HH first): deterministic quick answers the
@@ -184,8 +112,8 @@ function runHostAction({ tool, params, username, workDir, timeoutMs = DEFAULT_TI
   return spawnToolCall({ indexPath: owners[0].sibling.indexPath, tool, params, username, workDir, timeoutMs, hostAction: true });
 }
 
-// Either an `indexPath` (core/sibling MCP server) or a `command`+`args` adapter
-// descriptor (approved source). Both speak the same single-call stdio protocol.
+// `indexPath` of a core/sibling MCP server (or a `command`+`args` descriptor);
+// single-call stdio protocol.
 function spawnToolCall({ indexPath, command, args, tool, params, username, workDir, timeoutMs, hostAction }) {
   return new Promise((resolve, reject) => {
     const fail = (code, message) => reject(Object.assign(new Error(message), { code }));
@@ -247,5 +175,5 @@ function spawnToolCall({ indexPath, command, args, tool, params, username, workD
 
 module.exports = {
   runMcpTool, runHostAction, listHostActions, listActionTools, resolveToolSource,
-  buildCatalogForProfile, approvedSourcesForProfile,
+  buildCatalogForProfile,
 };
