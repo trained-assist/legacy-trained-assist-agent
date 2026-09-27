@@ -236,6 +236,29 @@ const passAll = { command_exit_zero: async () => ({ status: 'pass', subject: {},
     ok(store.listTaskItems(taskId, 'u1')[0].status === 'done', 'woken step can repair and finish');
   }
 
+  // 5c. continuity: a step sees the ИТОГ ШАГА of the steps before it
+  {
+    const { G, store } = fresh('5c');
+    const taskId = activePlan(store, [agentItem('Define use case'), agentItem('Open PR')]);
+    const prompts = [];
+    const run = async (opts) => {
+      prompts.push(opts.task);
+      return prompts.length === 1
+        ? 'долгий разбор...\nИТОГ ШАГА\n- issue: https://github.com/o/r/issues/5\n- решение: без новых ролей\nDURABLE: done'
+        : 'DURABLE: done';
+    };
+    await G.runDueDurable({ secrets: {}, now: Date.now(), isTaskRunning: () => false, registry: passAll, runTask: run, maxFires: 1 });
+    await drain(); await drain();
+    await G.runDueDurable({ secrets: {}, now: Date.now() + 1000, isTaskRunning: () => false, registry: passAll, runTask: run, maxFires: 1 });
+    await drain(); await drain();
+    ok(!/ИТОГИ ПРЕДЫДУЩИХ/.test(prompts[0]) && /Plan id: /.test(prompts[0]), 'the first step has no digest but knows its plan id');
+    ok(/ИТОГИ ПРЕДЫДУЩИХ ШАГОВ/.test(prompts[1]) && /issues\/5/.test(prompts[1]) && /без новых ролей/.test(prompts[1]),
+      'the next step receives the previous step summary');
+    ok(!/долгий разбор/.test(prompts[1]) && !/DURABLE: done/.test(prompts[1].split('[ИТОГИ')[1].split('Step (')[0]),
+      'the digest keeps only the summary block, not the whole reply or its marker');
+    ok(store.getTask(taskId, 'u1').status === 'done', 'plan finishes');
+  }
+
   // 6. DURABLE: waiting without task_item_wait → bounded failure, not a silent park
   {
     const { G, store } = fresh('6');

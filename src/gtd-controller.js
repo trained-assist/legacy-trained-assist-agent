@@ -334,6 +334,37 @@ function planEvidenceText(store, task, item) {
   } catch { return ''; }
 }
 
+// Every step is a fresh run with no memory of the plan. Hand it a compact digest
+// of what earlier steps reported (their replies end with an ИТОГ ШАГА block), the
+// most recent steps first-class, so step 9 knows the issue/PR/decisions of 1–8.
+const DIGEST_PER_STEP_CHARS = 900;
+const DIGEST_TOTAL_CHARS = 7000;
+function priorStepsDigest(store, task, item) {
+  let rows;
+  try {
+    rows = store.listTaskItems(task.id, task.profile_id)
+      .filter(i => i.position < item.position && (i.status === 'done' || i.status === 'skipped'));
+  } catch { return ''; }
+  if (!rows.length) return '';
+  const parts = [];
+  let total = 0;
+  for (const i of rows.slice().reverse()) {
+    let text = '';
+    try {
+      const ev = JSON.parse(i.evidence_json || '{}');
+      if (typeof ev.reply === 'string') text = ev.reply;
+      else if (Array.isArray(ev.validations)) text = ev.validations.map(v => `${v.key}=${v.status}`).join(', ');
+    } catch { text = ''; }
+    const marker = text.lastIndexOf('ИТОГ ШАГА');
+    text = (marker >= 0 ? text.slice(marker) : text.slice(-DIGEST_PER_STEP_CHARS)).replace(/DURABLE:\s*\w+.*$/gim, '').trim();
+    const line = `${i.position + 1}. ${i.title}${text ? `\n${text.slice(0, DIGEST_PER_STEP_CHARS)}` : ''}`;
+    if (total + line.length > DIGEST_TOTAL_CHARS) { parts.push(`… (ещё ${rows.length - parts.length} шаг(ов) раньше — task_get)`); break; }
+    parts.push(line);
+    total += line.length;
+  }
+  return ['[ИТОГИ ПРЕДЫДУЩИХ ШАГОВ ПЛАНА — от последнего к первому]', ...parts].join('\n\n');
+}
+
 // Durable wait poll (src/durable-wait.js). Runs BEFORE an execution is started,
 // so a poll never counts as an attempt or a fire. Returns:
 //   'parked' — still waiting, the item is back to `waiting` with its next due_at;
@@ -507,10 +538,13 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
 
     const freshForPrompt = store.getTaskItem(item.id) || item;
     const resumed = resumeNote(parseWait(freshForPrompt), now);
+    const digest = task.acceptance_criteria_json ? priorStepsDigest(store, task, item) : '';
     const prompt = [
       '[DURABLE TASK — auto-execution]',
       resumed,
       `Task: ${task.goal}`,
+      `Plan id: ${task.id}`,
+      digest ? `\n${digest}\n` : '',
       `Step (${item.position + 1}/${store.progressSummary(task.id, task.profile_id).total}): ${item.title}`,
       `Step id: ${item.id}`,
       item.instructions ? `\nInstructions: ${item.instructions}` : '',
@@ -521,6 +555,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       'Режимы: "programmatic" — только детерминированные проверки; "programmatic+llm" — детерминированные + дешёвый LLM-судья; "programmatic+llm-fastpass" — самый мягкий.',
       'Настоятельно рекомендуется "programmatic+llm" (полная проверка) — особенно на дешёвых моделях: не пропускай проверку молча.',
       'Fast-pass — это ЗАПИСЫВАЕМЫЙ escape hatch, а не тихий обход. Только в режиме "programmatic+llm-fastpass" ты можешь пропустить проверку, если она слишком тяжёлая, ломает работу или нужен срочный фикс — добавь финальной строкой: VALIDATION: fastpass-skip: <причина>. Пропуск попадёт в audit trail с причиной.',
+      'Каждый шаг — новый ран без памяти: следующий шаг увидит только твой итог. Перед финальной строкой DURABLE дай блок «ИТОГ ШАГА» (≤10 строк): что сделано, ссылки (issue/PR/файлы/ветка), принятые решения, что важно следующему шагу.',
       'Выполни этот шаг. Если шаг выполнен и проверка прошла — ответь финальной строкой: DURABLE: done.',
       'Если шаг не удался — опиши ошибку и ответь финальной строкой: DURABLE: failed: <причина>.',
       'Если шагу нужно ДОЖДАТЬСЯ чего-то внешнего (деплой, CI, креды/ответ пользователя, повтор ошибки в логах, другой план, просто время) — НЕ жди внутри рана и не проваливай шаг:',
