@@ -75,14 +75,17 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     const store = G2.durableStore();
     await G2.runDueDurable({ secrets: {}, now: Date.now(), isTaskRunning: () => false,
       runTask: async () => 'nope. DURABLE: failed: exploded' });
+    await drain();
     let item = store.listTaskItems(taskId, 'u1')[0];
-    ok(item.status === 'pending' && item.current_tier === 'standard' && item.escalation_count === 1,
-      `durable: failure escalates free→standard and re-pends (got ${item.status}/${item.current_tier})`);
+    // Contract plan, quality failure: attempt 2 runs at the SAME level with the failure
+    // reasons in its input (level escalation is attempt 3 — see playbooks-offline-e2e).
+    ok(item.status === 'pending' && item.last_recovery_action === 'retry_same_with_reasons',
+      `durable: quality failure re-pends at the same level with reasons (got ${item.status}/${item.last_recovery_action})`);
     await G2.runDueDurable({ secrets: {}, now: Date.now(), isTaskRunning: () => false,
       runTask: async () => 'fixed. DURABLE: done' });
     await drain();
     item = store.listTaskItems(taskId, 'u1')[0];
-    ok(item.status === 'done' && item.current_tier === 'standard', 'durable: retried item completes at escalated tier');
+    ok(item.status === 'done', 'durable: retried item completes');
   }
 
   // 3. crash recovery: stale running item re-claimable, fresh running untouched
@@ -144,11 +147,11 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     const failRun = () => G6.runDueDurable({ secrets: {}, now: Date.now(), isTaskRunning: () => false,
       runTask: async () => 'nope. DURABLE: failed: exploded' });
 
-    await failRun();
+    await failRun(); await drain();
     let item = store.listTaskItems(r.task.id, 'u1')[0];
     ok(item.status === 'pending' && item.attempt_count === 1,
       `durable: first failure re-pends within budget (got ${item.status}/attempts=${item.attempt_count})`);
-    await failRun();
+    await failRun(); await drain();
     item = store.listTaskItems(r.task.id, 'u1')[0];
     ok(item.status === 'failed' && item.attempt_count === 2,
       `durable: exhausted budget leaves item failed (got ${item.status}/attempts=${item.attempt_count})`);
