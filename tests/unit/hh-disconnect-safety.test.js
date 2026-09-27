@@ -17,7 +17,7 @@ it('disconnect routing mutates only explicitly requested credentials and reports
     let calls = 0, simulateNull = false;
     tokens.revokeService = (...args) => { calls++; return simulateNull ? null : realRevoke(...args); };
     const { runQuickAnswer } = require('./src/runner/intent-engine');
-    const { HH_DISCONNECT_INTENT } = require('./src/domains/hh/intents');
+    const { HH_DISCONNECT_INTENT } = require('./src/domains/hh/lib').hhLib('hh-intents');
     const uid = 'isolated-hh-disconnect-test';
     const file = path.join(root, uid, 'hh');
     fs.mkdirSync(path.dirname(file), { recursive: true });

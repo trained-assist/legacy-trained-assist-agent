@@ -80,10 +80,10 @@ jobs:
             echo "❌ recruiter-quick-action MCP tools must call OpenRouter (DeepSeek/Gemini) via their own llmCall()-style helper, never open a Claude Code session — see README.md 'Recruiter/quick-action MCP tools must use cheap LLMs, never Claude Code'"
             exit 1
           fi
-      - name: HH intent regexes must live in src/domains/hh/intents.js, not runner/intent-engine.js
+      - name: HH intent regexes must live in hh-skill src/hh-intents.js, not runner/intent-engine.js
         run: |
           if grep -nE "^const\s+\S*HH_\S*_INTENT\s*=" src/runner/intent-engine.js; then
-            echo "❌ HH_*_INTENT definition found in src/runner/intent-engine.js — HH intents belong in src/domains/hh/intents.js, loaded via loadDomainIntents('hh') (issue #942 P2.1/P2.2)"
+            echo "❌ HH_*_INTENT definition found in src/runner/intent-engine.js — HH intents belong in trained-assist-hh-skill src/hh-intents.js, loaded via hhLib('hh-intents') (issue #942, #1470)"
             exit 1
           fi
       - name: server.js must not define inline HH functions (issue #942 P3.2)

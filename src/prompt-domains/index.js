@@ -36,9 +36,32 @@ function parseDomainFile(file) {
   return { name: path.basename(file, '.md'), ...meta, body: m[2].trim() };
 }
 
-function loadDomains(dir = DOMAINS_DIR) {
-  return fs.readdirSync(dir).filter(f => f.endsWith('.md')).sort()
-    .map(f => parseDomainFile(path.join(dir, f)));
+// Domain skill repos ship their own prompt domains in <repo>/src/prompt-domains/*.md
+// (#1470) — read from the sibling checkouts listed in config/skill-catalog.json.
+function siblingDomainDirs() {
+  let servers = {};
+  try { servers = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'config', 'skill-catalog.json'), 'utf8')).servers || {}; }
+  catch { return []; }
+  const { siblingRepoDir } = require('../skills/catalog');
+  return Object.values(servers).filter(s => s.kind === 'sibling' && s.repo)
+    .map(s => path.join(siblingRepoDir(s.repo), 'src', 'prompt-domains'))
+    .filter(d => fs.existsSync(d));
+}
+
+// dir given → that dir only; default → core domains + every sibling's. First name wins.
+function loadDomains(dir) {
+  const dirs = dir ? [dir] : [DOMAINS_DIR, ...siblingDomainDirs()];
+  const seen = new Set();
+  const out = [];
+  for (const d of dirs) {
+    for (const f of fs.readdirSync(d).filter(x => x.endsWith('.md')).sort()) {
+      const domain = parseDomainFile(path.join(d, f));
+      if (seen.has(domain.name)) continue;
+      seen.add(domain.name);
+      out.push(domain);
+    }
+  }
+  return out;
 }
 
 // tools dir of a registry-style server (…/mcp-skills/index.js → …/mcp-skills/tools)

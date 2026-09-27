@@ -30,25 +30,30 @@ async function hhQuickAnswer({ intent, task, username, workDir, timeoutMs }) {
   const text = await runHostAction({ tool: 'hh_quick_answer', params: { intent, task }, username, workDir, timeoutMs });
   return text || '';
 }
-const { hhLib } = require('../domains/hh/lib');
-const { readVacancyState, initVacancyState, appendVacancyMessage, writeVacancyState, generateVacancyFromMessages, publishVacancyPage, publishToHH, getMissingFields } = hhLib('hh-vacancy');
+const { hhLib, hhAvailable } = require('../domains/hh/lib');
+const { initVacancyState, appendVacancyMessage, writeVacancyState, generateVacancyFromMessages, publishVacancyPage, publishToHH, getMissingFields } = hhLib('hh-vacancy');
+// Read on every message (vacancy collecting mode) — no hh-skill checkout → no vacancy state.
+const readVacancyState = (workDir) => (hhAvailable('hh-vacancy') ? hhLib('hh-vacancy').readVacancyState(workDir) : null);
 const { loadUserSiteIntents } = require('../user-sites');
 const { deleteServiceAccount: deleteGdriveSA } = require('../mcp-skills/tools/50-gdrive');
 const persona = require('../persona');
 const profiles = require('../profiles');
 const { savePassword: saveWebPassword, generatePassword: genWebPassword, generateMagicToken } = require('../web-auth');
 const { getUsageTotals } = require('../usage-store');
-const { loadDomainIntents } = require('../domains/load-intents');
 const candidateReport = require('../candidate-report');
 
-// HH domain intent patterns — regexes live in src/domains/hh/intents.js (issue #942 P2.1).
+// HH domain intent patterns — regexes live in trained-assist-hh-skill src/hh-intents.js
+// (issue #942 P2.1, #1470). Without the hh-skill checkout every HH intent is a
+// never-matching regex, so quick answers keep working for everything else.
+const NEVER_MATCH = /(?!)/;
+const hhIntentRegexes = new Proxy(hhLib('hh-intents'), { get: (t, k) => (t[k] instanceof RegExp ? t[k] : NEVER_MATCH) });
 const {
   HH_STATUS_INTENT, HH_MY_VACANCIES_INTENT, HH_FUNNEL_INTENT, HH_RESPONSES_INTENT,
   HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT, HH_WHERE_PROMPT_INTENT, HH_SHOW_ATS_CONFIG_INTENT,
   HH_STYLE_INTENT, HH_EVALUATE_INTENT, HH_SEND_INTENT, HH_SEND_CONFIRM_INTENT, HH_SEND_CANCEL_INTENT,
   HH_REJECT_INTENT, HH_REJECT_CONFIRM_INTENT, HH_REJECT_CANCEL_INTENT, HH_SCAN_INTENT, HH_DISCONNECT_INTENT,
   VACANCY_HH_PUBLISH_INTENT, VACANCY_PREP_DRAFT_INTENT,
-} = loadDomainIntents('hh');
+} = hhIntentRegexes;
 
 // ── Quick answers — bypass Claude for known setup/secrets patterns ───────────
 // Returns a string if the task matches, null otherwise.
@@ -1318,7 +1323,7 @@ async function verifyQuickAnswerIntent(task, answerPreview, openrouterKey) {
 // the session it creates is the SAME one the gateway's lastSessionId now points at,
 // instead of an orphan the next buffered message can never find its way back to.
 async function runQuickAnswerUnchecked(task, userId, workDir, openrouterKey = null, sessionExists = false, chatId = null, telegramUserId = null, sessionId = null, audience = 'default', threadId = null) {
-  const notificationIntents = require('../domains/hh/intents');
+  const notificationIntents = hhIntentRegexes;
   if (userId && workDir && (notificationIntents.HH_NOTIFY_OFF_INTENT.test(task) || notificationIntents.HH_NOTIFY_ON_INTENT.test(task))) {
     return 'Уведомления холодного поиска выключены: функция удалена для всех пользователей. Настройки автопоиска не изменены.';
   }
@@ -1335,7 +1340,7 @@ async function runQuickAnswerUnchecked(task, userId, workDir, openrouterKey = nu
   // Never mistake notification settings or a quoted complaint for new responses.
   if (notificationIntents.HH_NOTIFICATION_REQUEST.test(task)) return null;
   // Engineering complaints containing quoted recruiter commands are full tasks.
-  if (require('../domains/hh/intents').HH_SERVICE_CHANGE_INTENT.test(task) && /hh|хх|отклик|кандидат/i.test(task)) return null;
+  if (hhIntentRegexes.HH_SERVICE_CHANGE_INTENT.test(task) && /hh|хх|отклик|кандидат/i.test(task)) return null;
   // Handle complete credential-disconnect requests before broad connect/status patterns.
   if (userId && HH_DISCONNECT_INTENT.test(task)) {
     const revoked = revokeService(userId, 'hh');
@@ -1595,7 +1600,7 @@ async function runQuickAnswerUnchecked(task, userId, workDir, openrouterKey = nu
 
   if (userId && workDir && hhConnected) {
     // Product changes and quoted broken bot replies must reach the full agent.
-    if (require('../domains/hh/intents').HH_SERVICE_CHANGE_INTENT.test(task)) return null;
+    if (hhIntentRegexes.HH_SERVICE_CHANGE_INTENT.test(task)) return null;
     const hhIntents = [HH_STATUS_INTENT, HH_MY_VACANCIES_INTENT, HH_FUNNEL_INTENT,
       HH_RESPONSES_INTENT, HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT,
       HH_WHERE_PROMPT_INTENT, HH_SHOW_ATS_CONFIG_INTENT, HH_STYLE_INTENT,

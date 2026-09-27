@@ -29,8 +29,10 @@ const {
   generateConnectLink,
 } = require('../user-tokens');
 const { initLog, readLog } = require('../requirements-log');
-const { hhLib } = require('../domains/hh/lib');
-const { readVacancyState, writeVacancyState } = hhLib('hh-vacancy');
+const { hhLib, hhAvailable } = require('../domains/hh/lib');
+const { writeVacancyState } = hhLib('hh-vacancy');
+// Read on every run — no hh-skill checkout → no vacancy state (core keeps working).
+const readVacancyState = (workDir) => (hhAvailable('hh-vacancy') ? hhLib('hh-vacancy').readVacancyState(workDir) : null);
 const persona = require('../persona');
 const profiles = require('../profiles');
 const { TOKENS_ROOT } = require('../data-paths');

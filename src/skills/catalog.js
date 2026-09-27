@@ -17,11 +17,17 @@ function loadCatalog({ file = CATALOG_PATH, domainsDir } = {}) {
   return catalog;
 }
 
+// Checkout dir of a sibling domain repo (next to core; hh honours HH_SKILL_DIR like hhLib).
+function siblingRepoDir(repo) {
+  if (repo === 'trained-assist-hh-skill') return require('../domains/hh/lib').hhSkillDir();
+  return path.join(ROOT, '..', repo);
+}
+
 // Host path of a sibling server's MCP entry (same layout browser.js writeMcpConfig uses).
 function siblingIndexPath(catalog, serverId) {
   const s = catalog.servers && catalog.servers[serverId];
   if (!s || s.kind !== 'sibling' || !s.repo) return null;
-  return path.join(ROOT, '..', s.repo, 'src', 'mcp-skills', 'index.js');
+  return path.join(siblingRepoDir(s.repo), 'src', 'mcp-skills', 'index.js');
 }
 
 // workDir/skills.json → {enabled, disabled} | null (missing/unreadable → legacy).
@@ -33,4 +39,4 @@ function readProfileSkills(workDir) {
   return { enabled: list(raw.enabled), disabled: list(raw.disabled) };
 }
 
-module.exports = { loadCatalog, siblingIndexPath, readProfileSkills, CATALOG_PATH };
+module.exports = { loadCatalog, siblingIndexPath, siblingRepoDir, readProfileSkills, CATALOG_PATH };
