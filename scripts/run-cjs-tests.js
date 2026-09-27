@@ -29,6 +29,8 @@ const isoEnv = {
   OPENCODE_GO_KEYS_STATE_FILE: path.join(isoDir, 'go-keys-state.json'),
   OPENCODE_GO_AUTH_FILE: path.join(isoDir, 'auth.json'),
   OPENCODE_MODEL_HEALTH_FILE: path.join(isoDir, 'model-health.json'),
+  // Runner RAM watchdog off in tests (see tests/setup-isolation.mjs).
+  MIN_FREE_RAM_MB: '0',
 };
 // A test file may still point these at its own temp dir; it just can't fall through to $HOME.
 const childEnv = { ...isoEnv, ...process.env };

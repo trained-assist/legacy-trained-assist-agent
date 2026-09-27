@@ -1,9 +1,12 @@
-const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+// scripts/deploy-nginx.sh runs on the Linux VMs and uses GNU coreutils (`mv -T`).
+// On macOS (BSD mv) it can't run — skip there instead of failing (CI is Linux).
+const GNU_MV = /GNU/.test(spawnSync('mv', ['--version'], { encoding: 'utf8' }).stdout || '');
+const test = GNU_MV ? require('node:test') : (name, fn) => require('node:test')(name, { skip: 'needs GNU coreutils (mv -T) — Linux only' }, fn);
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nginx-deploy-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
