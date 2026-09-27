@@ -108,6 +108,7 @@ try { RUNTIME_REVISION = require('./release-info').getReleaseSha(); if (RUNTIME_
 
 const { classifyMessage, CLASSIFY_MAX_AGE_MS } = require('./classify-message');
 const { checkCompleteness } = require('./intake-gate');
+const { startShadow: startInputRouterShadow } = require('./input-router');
 
 function readChatId(username) {
   try { return fs.readFileSync(path.join(dataPaths.TOKENS_ROOT, String(username), '.chatid'), 'utf8').trim() || null; }
@@ -1726,11 +1727,18 @@ ${recent || '(пока нет)'}
       try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid json' }); }
       const { text } = payload;
       if (typeof text !== 'string') return json(res, 400, { error: 'missing text' });
+      // #1542 P1: router SHADOW next to the legacy completeness gate — never awaited.
+      const routerShadow = startInputRouterShadow({
+        text, source: 'intake-gate', user: typeof payload.userId === 'string' || typeof payload.userId === 'number' ? String(payload.userId) : null,
+        openrouterKey: secrets.OPENROUTER_API_KEY,
+      });
       try {
         const result = await checkCompleteness(text, secrets.OPENROUTER_API_KEY);
+        routerShadow.record({ completeness: result?.level || null, complete: !!result?.complete });
         return json(res, 200, result);
       } catch (e) {
         console.error('[intake-gate] error:', e.message);
+        routerShadow.record({ completeness: 'error', complete: false });
         return json(res, 200, { level: 'insufficient', complete: false }); // preserve intake; manual launch remains available
       }
     }
