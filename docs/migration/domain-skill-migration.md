@@ -26,6 +26,8 @@ machinery (per-profile allowlists, pinned artifacts, canaries, the migration
 matrix) was removed — it pinned the owner's working profile to a month-old HH
 revision and hid current tools from it.
 
+How to move one more tool: [`docs/how-to-move-a-tool-to-a-domain-repo.md`](../how-to-move-a-tool-to-a-domain-repo.md) — the domain PR and the core-deletion PR are independent since #1648.
+
 ## Status
 
 ### recruiting — `trained-assist-hh-skill`
