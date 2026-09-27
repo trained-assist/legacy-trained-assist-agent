@@ -310,4 +310,26 @@ echo '{"type":"result","result":"ok","usage":{"input_tokens":1,"output_tokens":1
   assert.ok(hardFellBackAt >= 3, `hardfail: fallback must not fire before MAX_PROGRESS_HARD_FAILS (fired after ${hardFellBackAt})`);
   fs.rmSync(tmp6, { recursive: true, force: true });
   console.log('V2e PASS: hard progress-edit failures are logged + fall back to sendMessage (no silent freeze)');
+
+  // (11) onProgress (2026-09-27): live activity for the web SSE stream. The
+  // runner must emit the initial "Думаю…" at spawn and the tool label the moment
+  // a tool_use arrives — even with msgId=null (chatless web run, no heartbeat).
+  const tmp7 = fs.mkdtempSync(path.join(os.tmpdir(), 'p13-smoke-progress-'));
+  const toolBin = path.join(tmp7, 'fake-claude-tool');
+  writeFake(toolBin, `#!/usr/bin/env sh
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}}]}}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Готово"}]}}'
+echo '{"type":"result","result":"Готово","usage":{"input_tokens":1,"output_tokens":1}}'
+`);
+  const progressLabels = [];
+  const rP = await runEngineProcess({
+    ...baseOpts, engineBin: toolBin, cwd: tmp7, taskId: 't-progress',
+    onProgress: (label) => progressLabels.push(label),
+  });
+  assert.equal(rP.terminalSuccess, true, 'tool_use + result still completes normally');
+  assert.equal(progressLabels[0], 'Думаю…', 'initial progress emitted at spawn');
+  assert.ok(progressLabels.some(l => l === '💻 ls -la'), `tool label surfaced to onProgress, got ${JSON.stringify(progressLabels)}`);
+  assert.ok(progressLabels.length >= 2, `expected spawn + tool events, got ${progressLabels.length}`);
+  fs.rmSync(tmp7, { recursive: true, force: true });
+  console.log('V2f PASS: onProgress surfaces spawn + tool activity without a Telegram message');
 })();

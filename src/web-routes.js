@@ -405,6 +405,7 @@ async function streamWebTask({ req, res, secrets, username, task, sessionId, new
   emitter.on('chunk', text => send({ type: 'chunk', text }));
   emitter.on('done', sessionId => send({ type: 'done', sessionId }));
   emitter.on('error', err => send({ type: 'error', error: err }));
+  emitter.on('progress', label => send({ type: 'progress', message: label }));
 
   req.on('close', () => {
     clearInterval(ping);
@@ -451,6 +452,7 @@ async function streamWebTask({ req, res, secrets, username, task, sessionId, new
     projectId: projectId || null,
     fileRefs,
     outputCallback: (text) => { streamed = true; emitter.emit('chunk', text); },
+    onProgress: (label) => emitter.emit('progress', label),
   }).then((result) => {
     if (!streamed && typeof result === 'string' && result.trim()) {
       streamed = true;
