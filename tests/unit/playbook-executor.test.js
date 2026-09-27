@@ -22,9 +22,9 @@ describe('resolveStepExecution', () => {
     expect(r).toMatchObject({ executionKind: 'agent', engine: 'claude', ocProfile: null, ocRole: null, reason: 'no-contract' });
   });
 
-  it('bachelor → standard Go deepseek profile (2026-09-27 default), role maps to an OC role', () => {
+  it('researcher uses the Gemini-backed research profile', () => {
     expect(resolveStepExecution(agent({ executor_role: 'researcher', minimum_model_level: 'bachelor', current_model_level: 'bachelor' })))
-      .toMatchObject({ engine: 'opencode', ocProfile: 'deepseek', ocRole: 'explore', modelLevel: 'bachelor' });
+      .toMatchObject({ engine: 'opencode', ocProfile: 'research', ocRole: 'explore', modelLevel: 'bachelor' });
   });
 
   it('master → opencode Go deepseek too (owner 2026-09-27: value/max leaked to OpenRouter); developer maps to build', () => {
@@ -50,6 +50,16 @@ describe('resolveStepExecution', () => {
       levelMap: { ...DEFAULT_LEVEL_MAP, bachelor: { engine: 'opencode', ocProfile: 'free' } },
     });
     expect(r.ocProfile).toBe('free');
+  });
+
+  it('researcher uses the research profile and role map can override it', () => {
+    expect(resolveStepExecution(agent({ executor_role: 'researcher', minimum_model_level: 'master', current_model_level: 'master' })))
+      .toMatchObject({ engine: 'opencode', ocProfile: 'research', ocRole: 'explore' });
+    expect(resolveStepExecution(agent({ executor_role: 'researcher' }), {
+      roleMap: { researcher: { engine: 'opencode', ocProfile: 'free' } },
+    })).toMatchObject({ engine: 'opencode', ocProfile: 'free' });
+    expect(resolveStepExecution(agent({ executor_role: 'researcher', minimum_model_level: 'master', current_model_level: 'doctor' })))
+      .toMatchObject({ engine: 'claude', ocProfile: null });
   });
 
   it('exposes the mapping tables', () => {
