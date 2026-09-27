@@ -32,7 +32,7 @@ beforeAll(async () => {
   });
   await listen(mock); process.env.HH_API_BASE_URL=`http://127.0.0.1:${mock.address().port}`;
   cache = require('../../src/domains/hh/lib').hhLib('hh-negotiations').createHhNegotiations({refreshHhToken:async()=>null,readChatId:()=>null,getSecretsCache:()=>({})});
-  const {handleHhPublic} = require('../../src/handlers/hh');
+  const {handleHhPublic} = require('../../src/domains/hh/lib').hhLib('hh-routes');
   server = http.createServer(async (req,res) => {
     try { const result=await handleHhPublic(req,new URL(req.url,'http://localhost'),res,{...cache,BASE_USERS_DIR:users,PORT:0,getSecretsCache:()=>({}),secrets:{},readChatId:()=>null}); if(result===false){res.writeHead(404);res.end();} }
     catch(e){res.writeHead(500);res.end(e.message);}

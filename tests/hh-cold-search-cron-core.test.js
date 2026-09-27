@@ -38,9 +38,9 @@ beforeEach(() => {
 afterEach(() => { restore(); for (const [k, v] of Object.entries(old)) v === undefined ? delete process.env[k] : process.env[k] = v; fs.rmSync(root, { recursive: true, force: true }); });
 
 async function vacancyState(action) {
-  const { handleHhPublic } = require('../src/handlers/hh');
+  const { handleHhPublic } = require('../src/domains/hh/lib').hhLib('hh-routes');
   const res = fakeRes(); const req = post('/api/hh/proactive/vacancy-state', { username: 'u1', vacancy_id: 'A', action });
-  await handleHhPublic(req, new URL('http://x/api/hh/proactive/vacancy-state'), res, { BASE_USERS_DIR: path.join(root, 'users'), getSecretsCache: () => ({}) });
+  await handleHhPublic(req, new URL('http://x/api/hh/proactive/vacancy-state'), res, { BASE_USERS_DIR: path.join(root, 'users'), getSecretsCache: () => ({}), runMcpTool: (o) => require('../src/mcp-action').runMcpTool(o) });
   return { status: res.status, body: JSON.parse(res.body) };
 }
 

@@ -1,7 +1,7 @@
 // Connect handler — all /connect/* OAuth + token-collection routes + /hh-callback
 // (issue #942 P3.3). server.js is the router; connect business logic lives here.
 //
-// Dispatcher pattern (same as src/handlers/hh.js, #1030): returns `false` when no
+// Dispatcher pattern (same as hh-skill src/hh-routes.js, #1030): returns `false` when no
 // route matched so server.js can continue to the next handler; any route match
 // ends the request itself (the `return;` statements are the original handler
 // returns — undefined !== false, so server.js stops after we return truthy).
