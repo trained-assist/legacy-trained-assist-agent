@@ -142,10 +142,11 @@ module.exports = {
       handler: async () => {
         const taskId = process.env.AGENT_TASK_ID;
         const port   = process.env.PORT || '3000';
-        const secret = process.env.AGENT_SECRET || '';
+        // Run-scoped token first (issue #1649) — valid only for this run's own task.
+        const secret = process.env.AGENT_RUN_TOKEN || process.env.AGENT_SECRET || '';
 
         if (!taskId) return { ok: false, error: 'AGENT_TASK_ID not set — not running inside agent session' };
-        if (!secret) return { ok: false, error: 'AGENT_SECRET not available' };
+        if (!secret) return { ok: false, error: 'no run token / AGENT_SECRET available' };
 
         try {
           const res = await fetch(`http://localhost:${port}/tasks/${encodeURIComponent(taskId)}/extend-timeout`, {
