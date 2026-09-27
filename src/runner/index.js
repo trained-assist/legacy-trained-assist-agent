@@ -7,6 +7,7 @@ const os = require('os');
 const { writeMcpConfig } = require('../browser');
 const { getDefaultSourceRuntime } = require('../mcp-source-runtime');
 const sessions = require('../session-store');
+const answerActions = require('../answer-actions');
 const { getCurrentSessionId, setCurrentSessionId } = require('../session-store');
 const projects = require('../projects');
 const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag } = require('../auth-flag');
@@ -32,6 +33,7 @@ const profiles = require('../profiles');
 const { TOKENS_ROOT } = require('../data-paths');
 const answerRouter = require('../answer-router');
 const promptDomains = require('../prompt-domains');
+const skillsShadow = require('../skills/shadow');
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
 // tg-stream.js (issue #942 P1.4). The module owns the format/send/edit
 // primitives; runner.js keeps orchestration (queueing, retries around them).
@@ -2033,8 +2035,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
 
   // Domain skill rules (src/prompt-domains): only for skills this user actually has —
   // gated by the same isReady() as the tools in .mcp.json (system-prompt diet).
+  const domainReport = {};
   try {
-    const domainBlock = promptDomains.buildDomainBlock(mcpConfig);
+    const domainBlock = promptDomains.buildDomainBlock(mcpConfig, { report: domainReport });
     if (domainBlock) {
       const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
       const out = path.join(user.workDir, '.system-prompt.txt');
@@ -2042,6 +2045,13 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       systemPromptFile = out;
     }
   } catch (e) { console.warn('[runner] prompt domains:', e.message); }
+
+  // Skills shadow (#1537 PR-A): resolve the skill catalog and log its diff against what
+  // was just exposed above. Observation only — runShadow never throws, changes nothing.
+  try {
+    skillsShadow.runShadow({ workDir: user.workDir, username: user.username, audience: user.audience,
+      mcpConfigPath: mcpConfig, domainReport, extraServers: sourceRun?.servers });
+  } catch { /* never affects the run */ }
 
   // Answer router: вставить блок режима в системный промпт для этого хода.
   //  • clarify (транзиентно, этот ход) → блок вопросов, приоритетнее deep.
@@ -2812,6 +2822,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   const gtdFooter = (!internalGtd && !incomplete && user.workDir)
     ? (() => { try { return require('../gtd-controller').listGtd(user.workDir).filter(r => r.status === 'open').length > 0 ? '\n\n📋 Чеклист активен — /show_active_cheklist · /checklist_turn_off' : ''; } catch { return ''; } })()
     : '';
+  // #1542 P3: a wall of text is re-split into paragraphs (word-coverage guarded, fail-soft).
+  if (!internalGtd && !incomplete && process.env.ANSWER_FORMAT !== '0') {
+    result = await answerActions.paragraphize(result, secrets.OPENROUTER_API_KEY);
+  }
   const final = (result + costFooter).slice(-MAX_MSG_LEN) + gtdFooter;
 
   // Terminal record for every chain that reaches here without an earlier branch already
@@ -2864,7 +2878,17 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   let finalMarkup = null;
   let buttonReason = internalGtd ? 'internalGtd-suppressed' : 'no-session';
   if (!internalGtd && !incomplete) {
-    if (activeSessionId) {
+    // #1542 P3: one extraction call → concrete action buttons (act|sid|n) named after
+    // what the answer actually proposes. null = LLM unavailable → legacy plan/menu path.
+    const extracted = activeSessionId && process.env.ANSWER_ACTIONS !== '0'
+      ? await answerActions.extractAnswerActions(result, secrets.OPENROUTER_API_KEY)
+      : null;
+    if (extracted) {
+      finalMarkup = extracted.actions.length
+        ? answerActions.actionsMarkup(activeSessionId, extracted.actions)
+        : actionButtons(activeSessionId, { deep: finalDeep });
+      buttonReason = extracted.actions.length ? `actions:${extracted.kind}` : 'none';
+    } else if (activeSessionId) {
       const hasPlan = await detectPlanInAnswer(result, secrets.OPENROUTER_API_KEY);
       if (hasPlan) {
         finalMarkup = { inline_keyboard: [[{ text: '▶️ Действуй дальше по плану', callback_data: `plan|${activeSessionId}` }]] };

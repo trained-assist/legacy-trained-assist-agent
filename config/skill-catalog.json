@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "_doc": "Skill sections × attributes (issue #1537). Single catalog: section tree → local MCP modules (src/mcp-skills/tools), sibling MCP servers, prompt-domain files (src/prompt-domains/<name>.md). Section ids are paths: 'recruiting/hh' is a child of 'recruiting'. An enabled parent enables its children unless a child is listed in skills.json 'disabled'; a disabled parent disables its whole subtree. A module may be listed in several sections — it is exposed when ANY of them is enabled. Resolver: src/skills/resolve.js. PR-A is shadow-only: nothing reads this to decide exposure yet.",
+  "servers": {
+    "trained-skills": { "kind": "local" },
+    "hh-skills": { "kind": "sibling", "repo": "trained-assist-hh-skill" },
+    "freelance-skills": { "kind": "sibling", "repo": "trained-assist-freelance-skill" },
+    "engineering-skills": { "kind": "sibling", "repo": "trained-assist-engineering" }
+  },
+  "audienceDefaults": {
+    "recruiter": { "enabled": ["recruiting"] }
+  },
+  "sections": {
+    "core": {
+      "title": "Ядро (всегда)",
+      "always": true,
+      "modules": [
+        "00-meta.js", "01-session-history.js", "02-chat-history.js", "03-context-store.js",
+        "04-cron.js", "05-session.js", "06-reproject.js", "21-browser-session.js",
+        "22-connect.js", "22-ru-browser.js", "23-credentials-form.js", "84-artifacts.js",
+        "94-tg-send.js", "97-publish.js", "100-hermes.js", "101-durable-tasks.js", "102-playbooks.js"
+      ],
+      "promptDomains": ["cron"]
+    },
+    "recruiting": {
+      "title": "Рекрутинг",
+      "modules": ["96-recruiter-tools.js", "97b-candidate-client-report.js"]
+    },
+    "recruiting/hh": {
+      "title": "HeadHunter",
+      "siblings": ["hh-skills"],
+      "modules": ["93-calltips.js"],
+      "promptDomains": ["hh", "hh.setup", "hh-notify"]
+    },
+    "recruiting/applylink": {
+      "title": "ApplyLink",
+      "modules": ["41-applylink.js"]
+    },
+    "recruiting/interview": {
+      "title": "Интервью и видео",
+      "modules": ["99-interview-analysis.js", "95-video-analysis.js"]
+    },
+    "recruiting/company": {
+      "title": "Компании (ИНН, DaData, Checko)",
+      "modules": ["40-company.js", "70-inn-enrichment.js", "71-dadata.js", "72-checko.js"]
+    },
+    "software-engineering": {
+      "title": "Разработка ПО",
+      "siblings": ["engineering-skills"],
+      "modules": ["60-github.js", "61-dev.js", "63-ci-cd.js"],
+      "promptDomains": ["github.setup", "engineering"],
+      "pinned": { "engineering-skills": ["engineering_spawn_workspace", "engineering_release_workspace"] }
+    },
+    "freelance": {
+      "title": "Фриланс / аутсорс",
+      "siblings": ["freelance-skills"],
+      "modules": ["94-outsource-project.js", "62-business-analyst.js"]
+    },
+    "flexi-expo": {
+      "title": "Выставки Flexi",
+      "modules": [
+        "85-expo.js", "86-expo-flexi.js", "87-expo-pipeline.js", "88-expo-catalog.js",
+        "89-expo-pipeline-run.js", "92-flexi-sales.js",
+        "40-company.js", "70-inn-enrichment.js", "71-dadata.js", "72-checko.js"
+      ],
+      "promptDomains": ["expo", "flexi-sales"]
+    },
+    "crm-weeek": { "title": "Weeek CRM", "modules": ["30-weeek.js"], "promptDomains": ["weeek", "weeek.setup"] },
+    "getcourse": { "title": "GetCourse", "modules": ["80-getcourse.js", "81-gc-discovery.js"], "promptDomains": ["getcourse", "getcourse.setup"] },
+    "nalog": { "title": "Самозанятый НПД", "modules": ["10-nalog.js"], "promptDomains": ["nalog.setup"] },
+    "tilda": { "title": "Tilda", "modules": ["20-tilda.js"], "promptDomains": ["tilda.setup"] },
+    "gdrive": { "title": "Google Drive", "modules": ["50-gdrive.js"], "promptDomains": ["gdrive"] },
+    "illustrate": { "title": "Иллюстрации", "modules": ["95-illustrate.js", "96-label.js"] },
+    "demo": { "title": "Демо-режим рекрутинга", "modules": ["98-demo.js"] },
+    "website-api": { "title": "API из сайта (черновик)", "modules": ["98-api-from-website.js"] }
+  }
+}
