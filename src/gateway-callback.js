@@ -10,7 +10,34 @@
 //
 // Delivery is fire-and-forget: a failed callback must never fail the run —
 // the gateway self-heals via its safety nets.
+//
+// BUT a server restart is exactly the case this push exists for: `shutdown()`
+// calls `process.exit(0)` right after `interruptForRestart()`, which settles
+// every running task's promise and fires this fetch — with no chance to flush.
+// The restart therefore dropped the release for every in-flight run, and each
+// chat stayed `busy` until the gateway's own poll/hard cap caught up. Every
+// notification is tracked here so shutdown can await the in-flight ones
+// (`flushRunFinished`) before exiting — see `drainRunFinished` in server.js.
 const MEDIA_GATEWAY_URL = (process.env.MEDIA_GATEWAY_URL || '').replace(/\/+$/, '');
+const inflight = new Set();
+
+/**
+ * Await every run-finished notification still in flight. Called on shutdown
+ * (server.js) before process.exit so a restart releases its chats promptly
+ * instead of relying on the gateway's slow safety nets.
+ * Never throws and never waits longer than the fetches' own 5s timeout.
+ * @returns {Promise<void>}
+ */
+function flushRunFinished() {
+  if (!inflight.size) return Promise.resolve();
+  return Promise.allSettled([...inflight]).then(() => undefined);
+}
+
+/** @returns {number} notifications currently in flight (diagnostics/tests). */
+function pendingRunFinished() {
+  return inflight.size;
+}
+
 
 /**
  * Notify the Telegram gateway that a run for this chat has finished.
@@ -35,28 +62,39 @@ async function notifyRunFinished({ chatId, threadId = null, requestId = null, ta
   // including NEGATIVE group/supergroup ids.
   if (!Number.isSafeInteger(numericChatId) || numericChatId === 0) return false;
   if (!secret) return false;
-  try {
-    const res = await fetch(`${MEDIA_GATEWAY_URL}/internal/run-finished`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` },
-      body: JSON.stringify({
-        chatId: numericChatId,
-        threadId: Number.isSafeInteger(Number(threadId)) && Number(threadId) > 0 ? Number(threadId) : null,
-        requestId: requestId || null,
-        taskId: taskId || null,
-        outcome,
-      }),
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) {
-      console.warn(`[gateway-callback] run-finished HTTP ${res.status} chat=${numericChatId} taskId=${taskId || '-'}`);
+  // Track the request so a shutdown that races it can still await delivery.
+  // The caller (runTask's side chain) does not hold this promise, so nothing
+  // else would keep the event loop alive for it.
+  const request = (async () => {
+    try {
+      const res = await fetch(`${MEDIA_GATEWAY_URL}/internal/run-finished`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` },
+        body: JSON.stringify({
+          chatId: numericChatId,
+          threadId: Number.isSafeInteger(Number(threadId)) && Number(threadId) > 0 ? Number(threadId) : null,
+          requestId: requestId || null,
+          taskId: taskId || null,
+          outcome,
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) {
+        console.warn(`[gateway-callback] run-finished HTTP ${res.status} chat=${numericChatId} taskId=${taskId || '-'}`);
+        return false;
+      }
+      return true;
+    } catch (e) {
+      console.warn(`[gateway-callback] run-finished failed chat=${numericChatId} taskId=${taskId || '-'}: ${e.message}`);
       return false;
     }
-    return true;
-  } catch (e) {
-    console.warn(`[gateway-callback] run-finished failed chat=${numericChatId} taskId=${taskId || '-'}: ${e.message}`);
-    return false;
+  })();
+  inflight.add(request);
+  try {
+    return await request;
+  } finally {
+    inflight.delete(request);
   }
 }
 
-module.exports = { notifyRunFinished };
+module.exports = { notifyRunFinished, flushRunFinished, pendingRunFinished };
