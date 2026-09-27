@@ -1,0 +1,8 @@
+name = "llm-edge"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+routes = [{ pattern = "llm.trainedassist.store", custom_domain = true }]
+
+[vars]
+ORIGIN = "https://136-65-7-197.sslip.io/agent"
