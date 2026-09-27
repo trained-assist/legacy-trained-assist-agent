@@ -34,6 +34,10 @@ const profiles = require('../profiles');
 const { TOKENS_ROOT } = require('../data-paths');
 const answerRouter = require('../answer-router');
 const promptDomains = require('../prompt-domains');
+// Slice C of #1573: offer the audience-default playbook at the start of a
+// development-like task. Returns '' unless a playbook is actually available, so
+// profiles without one get a byte-identical prompt.
+const { buildDevPlaybookSuggestion } = require('../dev-task-playbook-suggestion');
 const skillsShadow = require('../skills/shadow');
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
 // tg-stream.js (issue #942 P1.4). The module owns the format/send/edit
@@ -1992,7 +1996,16 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   //  project + cross-profile collector; no in-session GitHub issue creation. See intent-engine
   //  BUG_OR_FEATURE_INTENT and src/bugs-collector.js.)
 
-  let baseContext = [currentTimeSection(), timeoutSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, artifactsSection].filter(Boolean).join('\n\n');
+  // Slice C (#1573): if this is a development-like user task and the profile can
+  // actually see the audience-default playbook, inject a short offer so the agent
+  // proposes the process scaffold. Never for durable playbook steps themselves
+  // (internalGtd) — that would be recursive — and '' for anything else, so the
+  // prompt is unchanged when no playbook is available (opt-in-safe).
+  const playbookSuggestionSection = (!internalGtd && user?.username)
+    ? buildDevPlaybookSuggestion({ task, profileId: user.username, audience: user.audience || 'default' })
+    : '';
+
+  let baseContext = [currentTimeSection(), timeoutSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, playbookSuggestionSection, artifactsSection].filter(Boolean).join('\n\n');
   if (sessionContext) baseContext = baseContext ? `${baseContext}\n\n${sessionContext}` : sessionContext;
   const currentTask = sessionContext ? `Пользователь: ${task}` : task;
   let prompt = baseContext ? `${baseContext}\n\n${currentTask}` : currentTask;

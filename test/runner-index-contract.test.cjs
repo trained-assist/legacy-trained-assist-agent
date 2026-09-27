@@ -58,5 +58,19 @@ ok(runner.isSessionRunning('s-other-queued') === false, 'isSessionRunning: queue
 runner._queuedSessions.delete('s-queued');
 ok(runner.isSessionRunning('s-queued') === false, 'isSessionRunning: false again once the queued entry clears');
 
+// Slice C of #1573: the runner must wire the audience-default playbook offer
+// into the dev-task context, and it must stay out of durable playbook steps
+// (internalGtd) — a step offering to run a playbook would be recursive.
+const fs = require('fs');
+const runnerSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'runner', 'index.js'), 'utf8');
+ok(/require\('\.\.\/dev-task-playbook-suggestion'\)/.test(runnerSrc),
+  'runner must import buildDevPlaybookSuggestion');
+ok(/buildDevPlaybookSuggestion\(\{ task, profileId: user\.username/.test(runnerSrc),
+  'runner must call buildDevPlaybookSuggestion with the profile + task');
+ok(/\(!internalGtd && user\?\.username\)/.test(runnerSrc),
+  'playbook suggestion must be gated off for durable steps (internalGtd)');
+ok(/playbookSuggestionSection, artifactsSection\]/.test(runnerSrc),
+  'playbook suggestion must be part of baseContext');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);
