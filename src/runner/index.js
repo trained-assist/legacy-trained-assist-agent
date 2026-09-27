@@ -1480,6 +1480,27 @@ function forceOpencodeAlternation({ engine, ocProfileName, ocProfileOverrides, o
 // and stays opt-in via failure-classifier.classify() for callers who need it.
 // Never throws: classifyDeterministic is pure, and execution-history's own recordAttempt already
 // catches+warns internally rather than letting a history-write failure take down the retry itself.
+// Ladder call log (src/ladder-log.js): one line per OpenCode run — which rung of the profile's
+// role ladder ran (1-based), its billing tier, whether it was a paid rung. Never throws.
+function _logOcLadderCall(ocProfileName, ocRole, model, outcome, errorText) {
+  try {
+    const pos = opencodeLadder.rungPosition(ocProfileName, ocRole, model);
+    require('../ladder-log').logCall({
+      source: `runner:${ocProfileName}`,
+      ladder: pos?.ladder || ocProfileName,
+      rungsTotal: pos?.rungsTotal ?? null,
+      outcome,
+      attempts: [{
+        model, rung: pos?.rung ?? null, outcome,
+        ...(errorText ? { error: String(errorText).slice(0, 200) } : {}),
+      }],
+      extra: { role: ocRole },
+    });
+  } catch (e) {
+    console.warn('[runner] ladder call log failed:', e.message);
+  }
+}
+
 function _recordFailureAttempt(executionId, { taskId, projectId, sessionId, engine, provider, model, exitCode, errorText, action }) {
   try {
     const cls = classifyFailureDeterministic(errorText);
@@ -2492,9 +2513,22 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // because both profile files were single-uniform-model — with no ladder to degrade through, the
   // only option was the toggle flip. Both files carry a real ladder now (2026-09-26), so a dead
   // top rung degrades in place instead of dragging the whole team's gateway across to OpenRouter.
+  // Call log for every failed OpenCode run, before any branch below can return early.
+  if (engine === 'opencode' && ocProfileName && ocActiveModel) {
+    _logOcLadderCall(ocProfileName, ocRole, ocActiveModel, 'error', preLadderText);
+  }
   if (engine === 'opencode' && ocProfileIsDeepseek) {
     const failedModel = ocActiveModel;
     const flipped = opencodeGoToggle.noteFailure(failedModel, preLadderText);
+    if (flipped) {
+      // Go key quota / dead key — a limit hit that bypasses model-health, so log it explicitly.
+      try {
+        require('../ladder-log').logLimit({
+          source: `runner:${ocProfileName}`, model: failedModel, class: 'go_key',
+          errorText: preLadderText,
+        });
+      } catch { /* never break the failure path */ }
+    }
     if (flipped && ladderAttempt < opencodeLadder.MAX_LADDER_ATTEMPTS) {
       // Still on Go ⇒ noteFailure rotated to a spare key (service-account key pool); otherwise it
       // gave up on the gateway and flipped to OpenRouter. Message must match which one happened.
@@ -2843,6 +2877,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     if (engine === 'opencode' && ocActiveModel) {
       try {
         opencodeLadder.recordSuccess(ocActiveModel);
+        _logOcLadderCall(ocProfileName, ocRole, ocActiveModel, 'ok');
       } catch (e) {
         console.warn('[runner] model-health success reset failed:', e.message);
       }
