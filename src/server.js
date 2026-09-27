@@ -289,6 +289,13 @@ const ABANDONED_NOTICE_MS = 6 * 60 * 60 * 1000; // older but not ancient: tell t
 const CONTINUATION_PROMPT = '[ПРОДОЛЖЕНИЕ] Сервер перезапустился и прервал тебя. Продолжи с того места, где остановился.';
 
 async function resumePendingTasks(secrets) {
+  // Durable plan steps are not in the resumable journal (no chat to resume into):
+  // put every step the previous process was running straight back in the queue.
+  try {
+    const { reconcileOrphanedRunning } = require('./gtd-controller');
+    const n = reconcileOrphanedRunning(undefined, { graceMs: 0 });
+    if (n) console.log(`[resume] re-queued ${n} durable step(s) interrupted by the restart`);
+  } catch (e) { console.error('[resume] durable re-queue failed:', e.message); }
   if (!secrets?.BOT_TOKEN) return;
 
   const pending = getPendingTasks();
