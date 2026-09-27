@@ -204,11 +204,13 @@ describe('missing openrouterKey', () => {
   it('throws an error', async () => {
     const session = makeSession();
     global.fetch = vi.fn();
-
-    await expect(classifyMessage('test', [session], null)).rejects.toThrow(
-      'No API key configured'
-    );
-    expect(global.fetch).not.toHaveBeenCalled();
+    const saved = process.env.LLM_LADDER_TOKEN; delete process.env.LLM_LADDER_TOKEN; // no ladder token
+    try {
+      await expect(classifyMessage('test', [session], null)).rejects.toThrow(
+        'No API key configured'
+      );
+      expect(global.fetch).not.toHaveBeenCalled();
+    } finally { if (saved !== undefined) process.env.LLM_LADDER_TOKEN = saved; }
   });
 });
 
