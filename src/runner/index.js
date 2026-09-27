@@ -33,6 +33,7 @@ const profiles = require('../profiles');
 const { TOKENS_ROOT } = require('../data-paths');
 const answerRouter = require('../answer-router');
 const promptDomains = require('../prompt-domains');
+const skillsShadow = require('../skills/shadow');
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
 // tg-stream.js (issue #942 P1.4). The module owns the format/send/edit
 // primitives; runner.js keeps orchestration (queueing, retries around them).
@@ -2042,8 +2043,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
 
   // Domain skill rules (src/prompt-domains): only for skills this user actually has —
   // gated by the same isReady() as the tools in .mcp.json (system-prompt diet).
+  const domainReport = {};
   try {
-    const domainBlock = promptDomains.buildDomainBlock(mcpConfig);
+    const domainBlock = promptDomains.buildDomainBlock(mcpConfig, { report: domainReport });
     if (domainBlock) {
       const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
       const out = path.join(user.workDir, '.system-prompt.txt');
@@ -2051,6 +2053,13 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       systemPromptFile = out;
     }
   } catch (e) { console.warn('[runner] prompt domains:', e.message); }
+
+  // Skills shadow (#1537 PR-A): resolve the skill catalog and log its diff against what
+  // was just exposed above. Observation only — runShadow never throws, changes nothing.
+  try {
+    skillsShadow.runShadow({ workDir: user.workDir, username: user.username, audience: user.audience,
+      mcpConfigPath: mcpConfig, domainReport, extraServers: sourceRun?.servers });
+  } catch { /* never affects the run */ }
 
   // Answer router: вставить блок режима в системный промпт для этого хода.
   //  • clarify (транзиентно, этот ход) → блок вопросов, приоритетнее deep.
