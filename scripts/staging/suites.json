@@ -32,6 +32,7 @@
     "test/reproject-sandbox.test.cjs",
     "test/chat-pinned-project.test.cjs",
     "test/published-page-password.test.cjs",
-    "test/mcp-source-canary.test.cjs"
+    "test/mcp-source-canary.test.cjs",
+    "test/mcp-action-approved-sources.test.cjs"
   ]
 }

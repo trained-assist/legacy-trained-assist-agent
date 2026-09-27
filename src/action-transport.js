@@ -20,12 +20,18 @@ function resolveWorkDir(profileId, projectId) {
 }
 
 // runTool is injectable so the mapping/parsing can be unit-tested without
-// spawning a child; production uses runMcpTool.
+// spawning a child; production uses runMcpTool. `trigger`/`origin` come from the
+// invokeAction invocation and are forwarded so an approved source executed
+// through the adapter/broker sees the same trigger policy as the caller (#1533).
 function createMcpTransport({ runTool = runMcpTool } = {}) {
-  return async function transport({ action, arguments: args, profileId, projectId }) {
+  return async function transport({ action, arguments: args, profileId, projectId, trigger }) {
     const username = String(profileId);
     const workDir = resolveWorkDir(profileId, projectId);
-    const text = await runTool({ tool: action, params: args || {}, username, workDir });
+    const text = await runTool({
+      tool: action, params: args || {}, username, workDir,
+      trigger: trigger || 'user',
+      origin: trigger === 'cron' ? 'cron-service' : 'api',
+    });
     if (text === undefined || text === null || text === '') return null;
     // MCP tools return text; structured actions return JSON. Parse when we can,
     // otherwise pass the raw text through (the provider owns its output shape).
