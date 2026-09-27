@@ -30,7 +30,7 @@ function ok(c, m) { c ? (pass++) : (fail++, console.log('FAIL:', m)); }
   // 4. reopen message carries GTD semantics: markers + attempt count
   const msg = G.buildReopenMessage({ iterations: 2, maxIterations: 3, originalTask: 'деплой' });
   ok(/GTD:\s*done/.test(msg) && /GTD:\s*continue/.test(msg), 'reopen has GTD markers (not FOLLOWUP)');
-  ok(/Попытка 2 из 3/.test(msg), 'reopen shows attempt count');
+  ok(/итерация 2 из 3/.test(msg), 'reopen shows iteration count');
   ok(!/FOLLOWUP/i.test(msg), 'no legacy FOLLOWUP marker');
 
   // 5. runDue terminal: injected runTask replies "GTD: done" → closes done
