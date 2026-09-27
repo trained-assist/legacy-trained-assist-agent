@@ -31,8 +31,14 @@ function getEngine(workDir, chatId) {
   const override = chatId != null ? p.engineByChat?.[String(chatId)] : null;
   const raw = override || p.engine;
   if (raw === 'codex') return 'codex';
+  if (raw === 'claude') return 'claude';
   if (raw === 'opencode') return 'opencode';
-  return 'claude';
+  // Default is OpenCode on the Go subscription (owner 2026-09-27: "все чаты на opencode go") — an
+  // unset engine used to mean Claude, so every chat nobody had explicitly switched ran on Claude.
+  // AGENT_DEFAULT_ENGINE overrides it (the vitest isolation setup pins claude for the fake-claude
+  // runner fixtures).
+  const fallback = process.env.AGENT_DEFAULT_ENGINE;
+  return fallback === 'claude' || fallback === 'codex' ? fallback : 'opencode';
 }
 
 function setEngine(workDir, engine, chatId) {
@@ -55,7 +61,13 @@ function setEngine(workDir, engine, chatId) {
 // instead of via a shared file.
 function getOcProfile(workDir) {
   const p = load(workDir);
-  return p.ocProfile || 'max';
+  // Default: the logical "deepseek" profile → opencode-go/deepseek-v4.1-flash (owner 2026-09-27:
+  // "стандартный опенкод на дипсик 4.1 флеш"). `max` was the old default; its paid OpenRouter
+  // last rung is what burned the OpenRouter balance.
+  // deepseek-go / deepseek-openrouter were the two halves of the removed VM-wide toggle
+  // (2026-09-27) — both now mean the single deepseek ladder (Go first, OpenRouter last rung).
+  if (!p.ocProfile || p.ocProfile === 'deepseek-go' || p.ocProfile === 'deepseek-openrouter') return 'deepseek';
+  return p.ocProfile;
 }
 
 function setOcProfile(workDir, ocProfile) {

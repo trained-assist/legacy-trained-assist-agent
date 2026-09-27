@@ -27,34 +27,39 @@ sets the machine-wide baseline (first rung of each role) — actual per-task inv
 the full ladder via `src/opencode-ladder.js` and override this per-invocation. `/oc_<profile>`
 in Telegram switches per-profile instead (see `src/runner/intent-engine.js`).
 
-## `deepseek` — shared uniform profile + Go/OpenRouter toggle (issue #1096)
+## `deepseek` — the default profile: one ladder, Go first (2026-09-27)
 
-`max`/`value`/`russian`/`free` are per-role ladders scoped to a single trained-assist profile
-(each is one VM user's own `ocProfile` choice). `deepseek` is different on both axes:
+Every chat without an explicit choice runs on `deepseek` (`src/profiles.js`). It is ONE per-role
+ladder (`.opencode/profiles/deepseek.json` → `ladderRef: deepseek` in `config/model-routing.json`):
 
-- **Uniform, not laddered.** `deepseek-go.json` and `deepseek-openrouter.json` each set one flat
-  `model` — the same model on every role, deliberately, because the 3-person team sharing the
-  OpenCode Go subscription wanted one dead-simple daily driver, not a per-role waterfall.
-- **Global, not per-profile.** The team confirmed empirically that the Go subscription's rate
-  limit is account-wide, not per-model (heavy `grok-4.7` use exhausted a completely unrelated Go
-  model too) — so which gateway backs `deepseek` is ONE piece of state for the whole VM
-  (`src/opencode-go-toggle.js`, `~/.config/opencode/go-mode.json`), not per trained-assist
-  profile like `ocProfile` is. Every profile that has selected `deepseek` (`/oc_deepseek`) reads
-  the same toggle.
+`opencode-go/mimo-v2.6-flash` → `opencode-go/deepseek-v4.1-flash` ($0.15/$0.60)
+→ `opencode-go/muse-spark-1.3-contributor` ($0.10/$0.20)
+→ **`openrouter/deepseek/deepseek-v4-flash-0731`** (paid, last). Same ladder for every role.
+
+Order set by the owner 2026-09-27: «MiMo-V2.6-Flash → DeepSeek V4.1 Flash → Muse Spark 1.3
+Contributor → далее openrouter» (supersedes #1589's cheapest-first order; `gpt-6-luna` dropped,
+`deepseek-v4-pro` stays out).
+
+How it degrades and comes back — no manual switch anywhere:
+
+- **A flaky Go rung** ("Bad Request", 5xx) — retried on the model's own backoff (15s → 30s → 60s …),
+  then the next Go rung. Each model keeps its own backoff counter.
+- **A Go key hits its limit / is rejected** — `src/opencode-go-keys.js` rotates `auth.json` to the
+  other key (two keys: `OPENCODE_GO_API_KEYS`) and the task retries on Go.
+- **Both keys parked** — the runner skips every `opencode-go/*` rung of the ladder until the
+  earliest key heals (≤15 min for a quota hit, 1 h for a rejected key), so the ladder serves its
+  OpenRouter last rung. When the skip lapses the Go rungs are picked again automatically.
+
+History: until 2026-09-27 `deepseek` was a "logical" profile resolved through a VM-wide
+go/openrouter toggle (`deepseek-go.json` / `deepseek-openrouter.json`, `/oc_go`, `/oc_openrouter`,
+`~/.config/opencode/go-mode.json`). A manual `/oc_openrouter` never expired — it was left on (and
+re-set by `npm test` runs on the VM, whose test hit the live toggle file) and drained the OpenRouter
+balance. The toggle, both halves and the pin commands were removed.
 
 | Command | Effect |
 |---------|--------|
-| `/oc_deepseek` | Select the shared `deepseek` logical profile for *your* trained-assist profile (like any other `/oc_*`) — follows the VM-wide toggle below |
-| `/oc_go` | Manually point the VM-wide toggle at `opencode-go/deepseek-v4.1-flash` — sticks until changed again, affects everyone on `deepseek` |
-| `/oc_openrouter` | Manually point it at `openrouter/deepseek/deepseek-v4-flash-0731` — sticks until changed again, affects everyone on `deepseek` |
-| `/oc_ds_go` (`/oc_deepseek_go`) | Pin *your* profile straight to the `deepseek-go` file — ignores the VM-wide toggle, unaffected by `/oc_go`/`/oc_openrouter` |
-| `/oc_ds_or` (`/oc_deepseek_openrouter`) | Pin *your* profile straight to the `deepseek-openrouter` file — ignores the VM-wide toggle, unaffected by `/oc_go`/`/oc_openrouter` |
-
-On a Go usage-limit error (`opencode-ladder.js`'s `classifyError` catching e.g. "Go usage limit
-exceeded") while running on `opencode-go/*` under the `deepseek` profile, the toggle **auto**-flips
-to `openrouter` and the task retries immediately; an auto-flip reverts to `go` on its own after
-~5h (the Go console's reported reset window) unless a human already flipped it manually in the
-meantime. A manual `/oc_go`/`/oc_openrouter` never auto-reverts.
+| `/oc_deepseek`, `/oc_ds`, `/oc_go`, `/oc_ds_go` | Select `deepseek` for *your* profile |
+| `/oc_openrouter`, `/oc_ds_or` | No switch any more — replies that OpenRouter is only the automatic last rung |
 
 ## OpenCode Go credential (max profile)
 

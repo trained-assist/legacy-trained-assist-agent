@@ -9,7 +9,6 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 // Never touch the VM-wide OpenCode toggle from a test.
-process.env.OPENCODE_GO_MODE_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'qa-go-')), 'go-mode.json');
 
 const { isEmptyQuickReply, nonEmptyQuickReply, recordQuickExchange, quickExchangeSessionId, escalateRows } = require('../src/quick-reply');
 const { isEmptyToolResult, toolResultText } = require('../src/mcp-tool-result');

@@ -192,11 +192,17 @@ function writeOpencodeMcpConfig(configDir, mcpConfig, ocProfileOverrides) {
 }
 
 // Reads opencode.json and returns agent-name -> shortened model-id map (for footer breakdown).
-function readOcAgentModels() {
+// ocProfileOverrides (optional): the per-invocation {model, agent} this run actually got via
+// OPENCODE_CONFIG. It wins over the global opencode.json — without it every step/error log line
+// named the global profile's model (opencode-go/gpt-6-luna) even when the run was on OpenRouter,
+// which hid a whole day of metered OpenRouter spend behind a Go label (2026-09-27).
+function readOcAgentModels(ocProfileOverrides = null) {
   try {
     const cfgPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-    if (!fs.existsSync(cfgPath)) return {};
-    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const globalCfg = fs.existsSync(cfgPath) ? JSON.parse(fs.readFileSync(cfgPath, 'utf8')) : {};
+    const cfg = ocProfileOverrides?.model || ocProfileOverrides?.agent
+      ? { model: ocProfileOverrides.model || globalCfg.model, agent: { ...globalCfg.agent, ...ocProfileOverrides.agent } }
+      : globalCfg;
     const shorten = m => (m || '').replace(/^openrouter\//, '').replace(/^gigachat\//, '');
     const defaultModel = shorten(cfg.model);
     const result = { _default: defaultModel };
@@ -698,7 +704,7 @@ async function runEngineProcess(opts) {
             claudeResult = fullOutput.text.trim() || null;
             const usage = event.part?.tokens;
             if (usage) {
-              if (!ocAgentModels || !Object.keys(ocAgentModels).length) ocAgentModels = readOcAgentModels();
+              if (!ocAgentModels || !Object.keys(ocAgentModels).length) ocAgentModels = readOcAgentModels(ocProfileOverrides);
               const agentModel = ocAgentModels[currentOcAgent] || ocAgentModels._default || null;
               const stepIn = usage.input || 0;
               const stepOut = usage.output || 0;
@@ -716,7 +722,7 @@ async function runEngineProcess(opts) {
             const errMsg = event.error?.data?.message || event.error?.message || JSON.stringify(event.error);
             // Model + Go key fingerprint on the SAME line: "Invalid credential" vs quota vs a
             // model-specific fault is otherwise undiagnosable from journalctl (2026-09-26).
-            try { if (!ocAgentModels || !Object.keys(ocAgentModels).length) ocAgentModels = readOcAgentModels(); } catch {}
+            try { if (!ocAgentModels || !Object.keys(ocAgentModels).length) ocAgentModels = readOcAgentModels(ocProfileOverrides); } catch {}
             const errModel = (ocAgentModels && (ocAgentModels[currentOcAgent] || ocAgentModels._default)) || null;
             let keyTag = '';
             if (/^opencode-go\//.test(errModel || '')) {

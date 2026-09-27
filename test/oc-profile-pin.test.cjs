@@ -4,62 +4,40 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-// /oc_ds_or, /oc_ds_go (aka /oc_deepseek_openrouter, /oc_deepseek_go) — pin THIS profile to a
-// concrete deepseek-* gateway file directly, bypassing the shared VM-wide go/openrouter toggle
-// (src/opencode-go-toggle.js) that /oc_deepseek follows. Added because there was no per-profile
-// way to force OpenRouter without flipping the toggle for every "deepseek" user on the VM.
+// /oc_* commands for the deepseek profile after the VM-wide go/openrouter toggle was removed
+// (2026-09-27): deepseek is ONE ladder (Go first, OpenRouter only as the automatic last rung).
+// /oc_go, /oc_deepseek, /oc_ds, /oc_ds_go all select it; pinning to OpenRouter is gone.
 const { getQuickAnswer } = require('../src/runner/intent-engine');
 const profiles = require('../src/profiles');
-const opencodeLadder = require('../src/opencode-ladder');
 
 function freshWorkDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'oc-profile-pin-test-'));
 }
 
-test('/oc_ds_or pins ocProfile to the literal deepseek-openrouter file', () => {
-  const wd = freshWorkDir();
-  const reply = getQuickAnswer('/oc_ds_or', 'u1', wd);
-  assert.match(reply, /OpenRouter/);
-  assert.match(reply, /Закреплено намертво/);
-  assert.equal(profiles.getOcProfile(wd), 'deepseek-openrouter');
-  const overrides = opencodeLadder.buildOcProfileOverrides(profiles.getOcProfile(wd));
-  assert.equal(overrides.model, 'openrouter/deepseek/deepseek-v4-flash-0731');
-});
+for (const cmd of ['/oc_deepseek', '/oc_ds', '/oc_ds_go', '/oc_deepseek_go', '/oc_go']) {
+  test(`${cmd} selects the deepseek profile (Go first)`, () => {
+    const wd = freshWorkDir();
+    profiles.setOcProfile(wd, 'max');
+    const reply = getQuickAnswer(cmd, 'u1', wd);
+    assert.match(reply, /DEEPSEEK/);
+    assert.equal(profiles.getOcProfile(wd), 'deepseek');
+  });
+}
 
-test('/oc_deepseek_openrouter is a full-word alias for /oc_ds_or', () => {
-  const wd = freshWorkDir();
-  getQuickAnswer('/oc_deepseek_openrouter', 'u1', wd);
-  assert.equal(profiles.getOcProfile(wd), 'deepseek-openrouter');
-});
+for (const cmd of ['/oc_openrouter', '/oc_ds_or', '/oc_deepseek_openrouter']) {
+  test(`${cmd} no longer switches anything — explains OpenRouter is the automatic last rung`, () => {
+    const wd = freshWorkDir();
+    profiles.setOcProfile(wd, 'max');
+    const reply = getQuickAnswer(cmd, 'u1', wd);
+    assert.match(reply, /Ручного переключения на OpenRouter больше нет/);
+    assert.equal(profiles.getOcProfile(wd), 'max', 'profile untouched');
+  });
+}
 
-test('/oc_ds_go pins ocProfile to the literal deepseek-go file', () => {
-  const wd = freshWorkDir();
-  const reply = getQuickAnswer('/oc_ds_go', 'u1', wd);
-  assert.match(reply, /закреплено на Go/);
-  assert.equal(profiles.getOcProfile(wd), 'deepseek-go');
-  const overrides = opencodeLadder.buildOcProfileOverrides(profiles.getOcProfile(wd));
-  // The pin contract is the PROFILE file (deepseek-go), not the model: the ladder's top rung
-  // changed 2026-09-27 (owner, issue #1589) to the cheapest paid Go model muse-spark-1.3-contributor.
-  assert.equal(overrides.model, 'opencode-go/muse-spark-1.3-contributor');
-});
-
-test('/oc_deepseek_go is a full-word alias for /oc_ds_go', () => {
-  const wd = freshWorkDir();
-  getQuickAnswer('/oc_deepseek_go', 'u1', wd);
-  assert.equal(profiles.getOcProfile(wd), 'deepseek-go');
-});
-
-test('/oc_deepseek (logical) is unaffected — still stores the bare "deepseek" marker', () => {
-  const wd = freshWorkDir();
-  const reply = getQuickAnswer('/oc_deepseek', 'u1', wd);
-  assert.match(reply, /общий, единая модель/);
-  assert.equal(profiles.getOcProfile(wd), 'deepseek');
-});
-
-test('/oc_go and /oc_openrouter (VM-wide toggle) are not swallowed by the new aliases', () => {
-  const wd = freshWorkDir();
-  const reply = getQuickAnswer('/oc_openrouter', 'u1', wd);
-  assert.match(reply, /Общий тумблер OpenCode Go\/OpenRouter/);
-  // The VM toggle never touches per-profile ocProfile.
-  assert.equal(profiles.getOcProfile(wd), 'max');
+test('legacy stored deepseek-go / deepseek-openrouter read back as the single deepseek ladder', () => {
+  for (const legacy of ['deepseek-go', 'deepseek-openrouter']) {
+    const wd = freshWorkDir();
+    fs.writeFileSync(path.join(wd, 'profile.json'), JSON.stringify({ ocProfile: legacy }));
+    assert.equal(profiles.getOcProfile(wd), 'deepseek');
+  }
 });

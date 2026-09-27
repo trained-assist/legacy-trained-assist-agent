@@ -8,7 +8,6 @@
 // already exist —
 //   • re-pend + tier escalation          → retryFailedItem (here)
 //   • the OpenCode model ladder          → opencode-ladder.forceAdvance
-//   • the go↔openrouter provider toggle  → opencode-go-toggle.forceFlip
 //   • the per-step engine/level resolver → playbook-executor.resolveStepExecution
 //     (bumping current_model_level walks bachelor→master→doctor and, at doctor,
 //      crosses to the Claude engine — that IS the existing engine-fallback path)
@@ -75,20 +74,10 @@ function _advanceRung(item, task, ladder) {
   }
 }
 
-// Provider switch for a step: the deepseek logical profile is a single-model pair
-// whose only lever is the VM-wide go↔openrouter flip; any other OpenCode profile
-// carries a per-role ladder, so switching upstream = advancing a rung. Claude is
-// the strongest tier — no alternative provider exists (real scope boundary, see
-// SESSION-CRASH-RETRY-SPEC.md §2.4), so it just re-pends.
-function _switchProvider(item, task, ladder, toggle) {
-  const step = _step(item, task);
-  if (step.engine !== 'opencode' || !step.ocProfile) return null;
-  if (/deepseek/.test(step.ocProfile)) {
-    const lib = toggle || require('./opencode-go-toggle');
-    const from = lib.getMode();
-    const to = lib.forceFlip();
-    return to !== from ? `${from}->${to}` : null;
-  }
+// Provider switch for a step = advancing a rung: every OpenCode profile (deepseek included,
+// whose ladder ends on OpenRouter) carries a per-role ladder. Claude is the strongest tier — no
+// alternative provider exists (SESSION-CRASH-RETRY-SPEC.md §2.4), so it just re-pends.
+function _switchProvider(item, task, ladder) {
   return _advanceRung(item, task, ladder);
 }
 
@@ -105,7 +94,6 @@ function _switchProvider(item, task, ladder, toggle) {
  * @param {Function} [o.classifier]   sync/async (text, opts) → {class}
  * @param {number}   [o.budget]       recovery-step budget (default DEFAULT_RECOVERY_BUDGET)
  * @param {object}   [o.ladder]       injectable opencode-ladder (tests)
- * @param {object}   [o.toggle]       injectable opencode-go-toggle (tests)
  * @param {boolean}  [o.escalate=true]
  * @param {number}   [o.retryDelayMs=0]
  * @returns {Promise<{recovered:boolean,failureClass:string,action:string|null,
@@ -114,7 +102,7 @@ function _switchProvider(item, task, ladder, toggle) {
 async function recoverDurableItem({
   store, task, itemId, errorText = '',
   classifier = classifyDeterministic, budget = DEFAULT_RECOVERY_BUDGET,
-  ladder = null, toggle = null, escalate = true, retryDelayMs = 0,
+  ladder = null, escalate = true, retryDelayMs = 0,
 } = {}) {
   const profileId = task.profile_id;
   const item = store.getTaskItem(itemId) || { id: itemId, attempt_count: 0, max_attempts: 1 };
@@ -155,7 +143,7 @@ async function recoverDurableItem({
     const advanced = _advanceRung(item, task, ladder);
     if (advanced) move = `${action}:${advanced}`;
   } else if (PROVIDER_ACTIONS.has(action)) {
-    const switched = _switchProvider(item, task, ladder, toggle);
+    const switched = _switchProvider(item, task, ladder);
     if (switched) move = `${action}:${switched}`;
   } else if (action === 'backoff_retry_same') {
     const d = getRetryDelayMs(spent + 1);

@@ -130,6 +130,8 @@ function withFakeConnectedService(username) {
   const wd = fs.mkdtempSync(path.join(os.tmpdir(), 'pin-card-'));
   const prev = process.env.ANTHROPIC_MODEL;
   process.env.ANTHROPIC_MODEL = 'claude-opus-5-5';
+  // Default engine is OpenCode since 2026-09-27 — pin Claude explicitly for this block.
+  profiles.setEngine(wd, 'claude', 1);
   const card = buildContextCard(username, wd, 1, 'claude-sonnet-4-5-20250929');
   ok(/⚙️ Claude · sonnet-4-5/.test(card), `card shows the real run model, got: ${card}`);
   ok(!/opus-5-5/.test(card), 'card must not advertise the static env model when the run model is known');

@@ -153,13 +153,12 @@ const SETTINGS_INTENT       = /^\/(?:settings|config|настройки|конф
 // (?=\s|$) instead (same fix as PERSONA_INTENT above).
 const ENGINE_SWITCH_INTENT  = /^\/?switch\s*2\s*(klod|codex|opencode|клод|кодекс)(?:@\S+)?(?=\s|$)|(?:переключ\S*|switch)\s+(?:меня\s+)?(?:на|to)\s+(klod|claude|codex|opencode|клод|кодекс)(?=\s|$)/i;
 const OC_PROFILE_INTENT = /^\/oc_(max|value|free|russian-recruiter|russian|recruiter|rr|ru|quality|mimo|lavish-luna|ll|q|x|deepseek_openrouter|deepseek_go|ds_or|ds_go|deepseek|ds)(?:@\S+)?\b|^\/oc\s+(max|value|free|russian-recruiter|russian|recruiter|rr|ru|quality|mimo|lavish-luna|ll|q|x|deepseek_openrouter|deepseek_go|ds_or|ds_go|deepseek|ds)\b/i;
-// /oc_go, /oc_openrouter — manual override for the shared "deepseek" profile's VM-wide
-// go/openrouter toggle (issue #1096). Deliberately separate from OC_PROFILE_INTENT above: that
-// sets THIS profile's own ocProfile choice (profiles.setOcProfile, per trained-assist profile),
-// while the go/openrouter toggle is one piece of state for the whole VM — see
-// src/opencode-go-toggle.js for why (the OpenCode Go subscription's rate limit is account-wide,
-// shared by the whole team, not per trained-assist profile).
+// /oc_go, /oc_openrouter — used to flip a VM-wide go/openrouter toggle; removed 2026-09-27 (a
+// sticky manual /oc_openrouter drained the OpenRouter balance). /oc_go now just selects the
+// deepseek profile (Go first); /oc_openrouter only explains that OpenRouter is the ladder's
+// automatic last rung.
 const OC_GO_TOGGLE_INTENT = /^\/oc_(go|openrouter)(?:@\S+)?\b/i;
+const OPENROUTER_RETIRED_MSG = 'ℹ️ Ручного переключения на OpenRouter больше нет. Профиль deepseek всегда идёт через OpenCode Go (два ключа с ротацией); OpenRouter — только последняя запасная ступень лестницы: включается сам, когда оба ключа Go на лимите, и Go возвращается автоматически, как только ключ оживёт.';
 const AGENT_INFO_INTENT = /^\/(?:get_agent_info|agent_info|info)(?:@\S+)?(?=\s|$)/i;
 // Natural-language "what model/agent are you?" — «на какой модели ты сейчас работаешь?»,
 // «какая у тебя модель», «какой моделью пользуешься», «какой ты агент». Maps to the same
@@ -181,9 +180,9 @@ const MODEL_INFO_INTENT = /(?:на\s+какой\s+(?:модел|нейросет
 // task in this chat, so applying it immediately is safe. Was missing from this whitelist
 // (2026-09-24 bug report: /switch2codex sat behind "Ожидаю завершения предыдущей работы"
 // instead of answering instantly like /ping does).
-// OC_GO_TOGGLE_INTENT (/oc_go, /oc_openrouter) — same class, missed in that fix: it's a sync
-// write of one VM-wide toggle file (src/opencode-go-toggle.js), no Claude/session/network, so a
-// quick command must never queue behind a running task. (2026-09-26 bug report: "/oc_go вернул
+// OC_GO_TOGGLE_INTENT (/oc_go, /oc_openrouter) — same class, missed in that fix: a sync
+// profile.json write or a canned reply, no Claude/session/network, so a quick command must
+// never queue behind a running task. (2026-09-26 bug report: "/oc_go вернул
 // «Ожидаю завершения предыдущей работы»").
 // OC_PROFILE_INTENT (/oc_max, /oc_deepseek, …) — same class again: getQuickAnswer handles it as
 // a sync profiles.json write (it also pins this chat's engine), so it rides the same whitelist.
@@ -596,10 +595,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     let ocModel = process.env.OPENCODE_MODEL || '(из профиля)';
     let ocProfile = workDir ? profiles.getOcProfile(workDir) : 'не задан';
     try {
-      // "deepseek" (issue #1096) has no literal .opencode/profiles file — resolve through the
-      // shared VM-wide go/openrouter toggle to find which one actually applies right now.
-      const ocProfileResolved = ocProfile === 'deepseek' ? require('../opencode-go-toggle').resolveProfileName() : ocProfile;
-      const ocProfilePath = path.join(__dirname, '..', '..', '.opencode', 'profiles', `${ocProfileResolved}.json`);
+      const ocProfilePath = path.join(__dirname, '..', '..', '.opencode', 'profiles', `${ocProfile}.json`);
       if (fs.existsSync(ocProfilePath)) {
         const ocCfg = JSON.parse(fs.readFileSync(ocProfilePath, 'utf8'));
         if (ocCfg.model) ocModel = ocCfg.model;
@@ -632,24 +628,12 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     }
     const ALIASES = {
       ru: 'russian', recruiter: 'russian', rr: 'russian', 'russian-recruiter': 'russian', x: 'max', ds: 'deepseek',
-      // /oc_ds_or, /oc_deepseek_openrouter — pin THIS profile to the concrete OpenRouter file
-      // (deepseek-openrouter.json), bypassing the shared VM-wide go/openrouter toggle below.
-      // Distinct from /oc_deepseek (logical profile that follows the toggle) and from
-      // /oc_openrouter (OC_GO_TOGGLE_INTENT, flips the toggle for everyone on "deepseek").
-      ds_or: 'deepseek-openrouter', deepseek_openrouter: 'deepseek-openrouter',
-      ds_go: 'deepseek-go', deepseek_go: 'deepseek-go',
+      ds_go: 'deepseek', deepseek_go: 'deepseek',
     };
+    // Pinning a profile to OpenRouter is gone (2026-09-27) — OpenRouter is only the deepseek
+    // ladder's automatic last rung.
+    if (rawAlias === 'ds_or' || rawAlias === 'deepseek_openrouter') return OPENROUTER_RETIRED_MSG;
     const raw = ALIASES[rawAlias] || rawAlias;
-    // "deepseek" (issue #1096) is a logical/virtual profile — it has no .opencode/profiles/
-    // file of its own, it resolves to deepseek-go or deepseek-openrouter via the shared VM-wide
-    // toggle (src/opencode-go-toggle.js), so it skips the file-existence check below.
-    if (raw === 'deepseek') {
-      profiles.setOcProfile(workDir, 'deepseek');
-      const engineNote = switchChatEngineToOpencode(workDir, chatId);
-      const opencodeGoToggle = require('../opencode-go-toggle');
-      const modeLabel = opencodeGoToggle.getMode() === 'go' ? 'Go (opencode-go/deepseek-v4.1-flash)' : 'OpenRouter (openrouter/deepseek/deepseek-v4-flash-0731)';
-      return `✅ OpenCode профиль → DEEPSEEK — общий, единая модель на всех ролях\n\nПрименён только для твоего профиля. Реальный шлюз (Go или OpenRouter) переключается общим VM-тумблером — сейчас: ${modeLabel}. Ручное переключение: /oc_go, /oc_openrouter. Авто-переключение на OpenRouter при упоре в лимит Go, авто-возврат через ~5ч.${engineNote}`;
-    }
     const profileFile = path.join(__dirname, '..', '..', '.opencode', 'profiles', `${raw}.json`);
     if (!fs.existsSync(profileFile)) return `⚠️ Профиль '${raw}' не найден (.opencode/profiles/${raw}.json)`;
     profiles.setOcProfile(workDir, raw);
@@ -659,30 +643,21 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
       value:    'VALUE — DeepSeek V4 Flash → GLM → Qwen',
       free:     'FREE — только бесплатный inference (MiMo/Nemotron)',
       russian:  'RUSSIAN — GigaChat Pro/Ultra/Max',
-      'deepseek-openrouter': 'DEEPSEEK, закреплено на OpenRouter — openrouter/deepseek/deepseek-v4-flash-0731',
-      'deepseek-go':         'DEEPSEEK, закреплено на Go — opencode-go/muse-spark-1.3-contributor',
+      deepseek: 'DEEPSEEK (дефолт) — Go: mimo-v2.6-flash → deepseek-v4.1-flash → muse-spark-1.3-contributor; OpenRouter только последней ступенью, когда все ключи Go на лимите, Go возвращается сам',
     };
     const label = PROFILE_LABELS[raw] || raw;
-    // deepseek-openrouter/deepseek-go are a pin for THIS profile only — unlike /oc_deepseek,
-    // this ignores the shared VM-wide go/openrouter toggle (src/opencode-go-toggle.js), so it
-    // needs its own note to avoid the two being confused (issue that prompted this command).
-    const pinNote = (raw === 'deepseek-openrouter' || raw === 'deepseek-go')
-      ? ' Закреплено намертво за твоим профилем — в отличие от /oc_deepseek (следует общему VM-тумблеру /oc_go, /oc_openrouter), сюда переключиться и остаться можно только явно через /oc_ds_or или /oc_ds_go.'
-      : '';
-    return `✅ OpenCode профиль → ${label}\n\nПрименён только для твоего профиля (другие юзеры VM не затронуты). Следующая задача в OpenCode подхватит новые модели.${pinNote}${engineNote}`;
+    return `✅ OpenCode профиль → ${label}\n\nПрименён только для твоего профиля (другие юзеры VM не затронуты). Следующая задача в OpenCode подхватит новые модели.${engineNote}`;
   }
 
-  // /oc_go, /oc_openrouter — manual override for the shared "deepseek" profile's VM-wide
-  // go/openrouter toggle. See OC_GO_TOGGLE_INTENT above for why this is separate from the
-  // per-profile /oc_* switch just above.
+  // /oc_go → the deepseek profile (Go first); /oc_openrouter → explanation only. See
+  // OC_GO_TOGGLE_INTENT above.
   const ocGoToggleM = task.trim().match(OC_GO_TOGGLE_INTENT);
   if (ocGoToggleM) {
-    const mode = ocGoToggleM[1].toLowerCase();
-    const opencodeGoToggle = require('../opencode-go-toggle');
-    opencodeGoToggle.setMode(mode, { auto: false });
-    const label = mode === 'go' ? 'Go (opencode-go/deepseek-v4.1-flash)' : 'OpenRouter (openrouter/deepseek/deepseek-v4-flash-0731)';
-    const stickyNote = mode === 'openrouter' ? ' Останется на OpenRouter, пока не переключишь обратно (/oc_go) — это ручное переключение, само не вернётся через 5ч (в отличие от авто-переключения при лимите).' : '';
-    return `✅ Общий тумблер OpenCode Go/OpenRouter (VM-wide) → ${label}\n\nВлияет на всех, кто использует профиль «deepseek» (/oc_deepseek), а не только на твой.${stickyNote}`;
+    if (ocGoToggleM[1].toLowerCase() === 'openrouter') return OPENROUTER_RETIRED_MSG;
+    if (!workDir) return null;
+    profiles.setOcProfile(workDir, 'deepseek');
+    const engineNote = switchChatEngineToOpencode(workDir, chatId);
+    return `✅ OpenCode профиль → DEEPSEEK на Go (mimo-v2.6-flash → deepseek-v4.1-flash → muse-spark).${engineNote}`;
   }
 
   // Developer intent — if GitHub not connected, ask to connect before doing anything

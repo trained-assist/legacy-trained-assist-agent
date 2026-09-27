@@ -2,7 +2,7 @@
 # opencode-switch-profile.sh — merge base + profile → ~/.config/opencode/opencode.json
 #
 # Usage:
-#   ./infra/opencode-switch-profile.sh [max|value|free|russian]
+#   ./infra/opencode-switch-profile.sh [deepseek|max|value|free|russian]
 #
 # Reads OPENCODE_PROFILE from secrets.env if no arg given.
 # Writes result to ~/.config/opencode/opencode.json on this machine.
@@ -29,13 +29,14 @@ else
   if [[ -f "$SECRETS" ]]; then
     PROFILE=$(grep '^OPENCODE_PROFILE=' "$SECRETS" 2>/dev/null | cut -d= -f2 | tr -d '"' || true)
   fi
-  PROFILE="${PROFILE:-max}"
+  PROFILE="${PROFILE:-deepseek}"
 fi
 
 # Normalize aliases
 case "$PROFILE" in
   ru|recruiter|rr|russian-recruiter) PROFILE="russian" ;;
   m|q|ll|mimo|quality|lavish-luna) echo "opencode-switch-profile: '$PROFILE' was retired in #1061 Фаза 1 (merged into max/value ladders) — pick max|value|free|russian" >&2; exit 1 ;;
+  ds|deepseek-go|deepseek-openrouter) PROFILE="deepseek" ;;  # toggle halves, removed 2026-09-27
   v)  PROFILE="value" ;;
   f)  PROFILE="free" ;;
   x)  PROFILE="max" ;;

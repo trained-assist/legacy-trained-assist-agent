@@ -30,6 +30,6 @@ test('runner wiring: fallback skipped on provider fault, retry keeps the engine 
   const src = fs.readFileSync(path.join(__dirname, '../src/runner/index.js'), 'utf8');
   assert.match(src, /if \(resumeSessionId && !resumeFallbackDone && !restartShutdown && !providerFault\)/);
   assert.match(src, /resumeSessionId: providerFault \? resumeSessionId : null/);
-  assert.match(src, /opencodeGoToggle\.noteFailure\(ocActiveModel, resumeErrText\)/);
+  assert.match(src, /opencodeGoKeys\.noteFailure\(ocActiveModel, resumeErrText\)/);
   assert.doesNotMatch(src, /попытка \$\{resumeAttempts \+ 1\}\/\$\{MAX_RESUME_ATTEMPTS\}/, 'no "4/3" counter');
 });
