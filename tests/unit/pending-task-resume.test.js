@@ -61,3 +61,33 @@ describe('isTaskResumable', () => {
     expect(isTaskResumable(null, START + 5_000, 2 * HOUR)).toBe(false);
   });
 });
+
+// #1671: resume is not Telegram-only — the journal says where the result goes.
+import { resumeSinkOf } from '../../src/pending-task-resume.js';
+
+describe('resume sinks (#1671)', () => {
+  const now = START + 5_000;
+  it('telegram: a legacy chat entry (userId) resumes', () => {
+    expect(resumeSinkOf(baseTask)).toEqual({ kind: 'telegram', chatId: 1 });
+    expect(isTaskResumable(baseTask, now, 2 * HOUR)).toBe(true);
+  });
+  it('web: a web task (user.id = 0) resumes — explicit sink or legacy taskId pattern', () => {
+    const explicit = { startedAt: START, username: 'ann', userId: 0, task: 't', resumeSink: { kind: 'web', username: 'ann', requestId: 'r1' } };
+    expect(resumeSinkOf(explicit)).toEqual({ kind: 'web', username: 'ann', requestId: 'r1' });
+    expect(isTaskResumable(explicit, now, 2 * HOUR)).toBe(true);
+    const legacy = { startedAt: START, username: 'ann', userId: 0, task: 't', taskId: 'ann-web-abc123' };
+    expect(resumeSinkOf(legacy)).toEqual({ kind: 'web', username: 'ann', requestId: 'abc123' });
+    expect(isTaskResumable(legacy, now, 2 * HOUR)).toBe(true);
+  });
+  it('durable: a playbook plan step (no chat) resumes', () => {
+    const d = { startedAt: START, username: 'p', userId: null, task: 'step', internalGtd: true,
+      resumeSink: { kind: 'durable', taskId: 't1', itemId: 'i1', executionId: 'e1', profileId: 'p' } };
+    expect(resumeSinkOf(d).kind).toBe('durable');
+    expect(isTaskResumable(d, now, 2 * HOUR)).toBe(true);
+  });
+  it('no sink → not resumable (nowhere to deliver the result)', () => {
+    const none = { startedAt: START, username: 'p', userId: null, task: 'x' };
+    expect(resumeSinkOf(none)).toBe(null);
+    expect(isTaskResumable(none, now, 2 * HOUR)).toBe(false);
+  });
+});
