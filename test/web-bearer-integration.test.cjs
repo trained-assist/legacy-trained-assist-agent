@@ -8,6 +8,8 @@ test('prepareWebTaskFiles materializes durable refs and prepends a real local fi
   const oldHome = process.env.HOME;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(),'web-bearer-files-'));
   process.env.HOME = tmp;
+  process.env.AGENT_DATA_DIR = tmp;
+  process.env.USERS_DIR = tmp;
   for (const key of Object.keys(require.cache)) {
     if (key.includes('/src/data-paths.js') || key.includes('/src/web-routes.js')) delete require.cache[key];
   }
@@ -48,6 +50,8 @@ test('attachment-only effective task is valid after file materialization', async
   const oldHome = process.env.HOME;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(),'web-bearer-attachment-only-'));
   process.env.HOME = tmp;
+  process.env.AGENT_DATA_DIR = tmp;
+  process.env.USERS_DIR = tmp;
   for (const key of Object.keys(require.cache)) {
     if (key.includes('/src/data-paths.js') || key.includes('/src/web-routes.js')) delete require.cache[key];
   }
@@ -69,6 +73,8 @@ test('web mutation receipt is durable and duplicate claim does not re-accept', (
   const oldHome = process.env.HOME;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(),'web-bearer-idempotency-'));
   process.env.HOME = tmp;
+  process.env.AGENT_DATA_DIR = tmp;
+  process.env.USERS_DIR = tmp;
   for (const key of Object.keys(require.cache)) {
     if (key.includes('/src/data-paths.js') || key.includes('/src/web-routes.js')) delete require.cache[key];
   }
