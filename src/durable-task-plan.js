@@ -16,6 +16,13 @@ const itemSchema = {
     delay_after_sec: { type: 'integer', minimum: 0 },
     max_attempts: { type: 'integer', minimum: 1 },
     execution_timeout_seconds: { type: 'integer', minimum: 1 },
+    wait: {
+      type: 'object',
+      description: 'Programmatic steps only: instead of failing, re-poll the validations every poll_sec (no model, ' +
+        'survives restarts) until they pass or timeout_sec elapses. E.g. {"validation":{"task_done":"<id>"},' +
+        '"wait":{"poll_sec":600,"timeout_sec":259200}} waits up to 3 days for another plan.',
+      properties: { poll_sec: { type: 'integer', minimum: 60 }, timeout_sec: { type: 'integer', minimum: 60 } },
+    },
   },
 };
 function validateItem(item) {
@@ -28,6 +35,14 @@ function validateItem(item) {
   if (!item.validation || typeof item.validation !== 'object' || Array.isArray(item.validation) || !Object.keys(item.validation).length) throw new Error('item validation required');
   for (const key of ['delay_after_sec', 'max_attempts', 'execution_timeout_seconds']) {
     if (item[key] != null && (!Number.isSafeInteger(item[key]) || item[key] < (key === 'delay_after_sec' ? 0 : 1))) throw new Error(`invalid ${key}`);
+  }
+  if (item.wait != null) {
+    // A wait re-polls validators without a model, so only a programmatic step can wait.
+    if (typeof item.wait !== 'object' || Array.isArray(item.wait)) throw new Error('invalid wait');
+    if (item.execution_kind !== 'programmatic') throw new Error('wait requires execution_kind programmatic');
+    for (const key of ['poll_sec', 'timeout_sec']) {
+      if (item.wait[key] != null && (!Number.isSafeInteger(item.wait[key]) || item.wait[key] < 60)) throw new Error(`invalid wait.${key}`);
+    }
   }
 }
 

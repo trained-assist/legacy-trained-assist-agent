@@ -60,7 +60,7 @@ module.exports = {
         'catalog, engineering. Read-only: it only reports the suggestion and whether the profile can actually see ' +
         'that playbook; it never compiles, runs or activates a plan (the explicit draft→active step stays with the ' +
         'caller). Resolution: env AUDIENCE_DEFAULT_PLAYBOOK → config/audience-default-playbooks.json → built-ins, ' +
-        'falling back to "development".',
+        'falling back to "feature".',
       inputSchema: {
         type: 'object',
         properties: { audience: { type: 'string', description: 'Bot/surface audience; omit for the default map' } },
@@ -79,7 +79,7 @@ module.exports = {
       inputSchema: {
         type: 'object',
         properties: {
-          id: { type: 'string', description: 'Playbook id, e.g. "development"' },
+          id: { type: 'string', description: 'Playbook id, e.g. "feature"' },
           version: { type: 'integer', minimum: 1, description: 'Pin an exact version; omit for the resolved one' },
           draft: { type: 'boolean', description: 'Read the unsaved draft of this id (authoring), not the saved playbook' },
           vars: { type: 'object', description: 'Optional template values for {goal}, {error}, ... used only in the render' },
@@ -162,12 +162,14 @@ module.exports = {
         '{playbook_id, playbook_version} and persist one draft plan through the same atomic task_create path ' +
         '(user_value rendered from the template; acceptance_criteria derived from the step validations when omitted). ' +
         'The result is a DRAFT plan — stored, not executed; editing the playbook later never mutates a plan already pinned ' +
-        'to its version. Repo/draft playbooks must be saved first (resolution sees saved playbooks only).',
+        'to its version. Repo/draft playbooks must be saved first (resolution sees saved playbooks only). ' +
+        'Returns run_notebook — the plan\'s shared journal: write the chat intake (user story, value, sandbox ' +
+        'access, answers) there before task_update status=active, because durable steps run without a chat.',
       inputSchema: {
         type: 'object',
         required: ['playbook_id', 'goal'],
         properties: {
-          playbook_id: { type: 'string', description: 'Saved playbook id, e.g. "development"' },
+          playbook_id: { type: 'string', description: 'Saved playbook id, e.g. "feature"' },
           goal: { type: 'string', description: 'Concrete goal for this run (substituted into {goal}/{input})' },
           version: { type: 'integer', minimum: 1, description: 'Pin an exact version; omit for the resolved one' },
           user_value: { type: 'string', description: 'Override the rendered user_value_template' },
@@ -209,6 +211,10 @@ module.exports = {
           projection_warning: persisted.projection_warning,
           playbook: { id: playbook.id, version: playbook.version, scope: playbook.scope, source: playbook.source },
           summary: { stages: playbook.stages.length, items: compiled.items.length },
+          // Shared lab journal of this run: every step reads it first and appends its
+          // outcome. Write the chat intake (user story, value level, sandbox access,
+          // answers) here BEFORE activating the plan — steps have no chat of their own.
+          run_notebook: persisted.task ? require('../../gtd-controller').runNotebookPath(persisted.task) : null,
           render: renderPlaybook(playbook, { ...(vars || {}), input: goal, goal }),
         };
       }),

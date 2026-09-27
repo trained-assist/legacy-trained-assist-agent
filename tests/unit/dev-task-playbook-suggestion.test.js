@@ -13,7 +13,7 @@ const {
 } = require('../../src/dev-task-playbook-suggestion');
 
 const availableStore = {
-  resolve: id => (id === 'development' ? { id, version: 1, scope: 'system', source: 'sibling' } : null),
+  resolve: id => (id === 'feature' ? { id, version: 1, scope: 'system', source: 'sibling' } : null),
 };
 const unavailableStore = { resolve: () => null };
 
@@ -57,8 +57,7 @@ describe('buildDevPlaybookSuggestion boundaries', () => {
       task: 'поставь изменение X', profileId: 'alice', audience: 'default',
       store: availableStore, env: {},
     });
-    expect(section).toContain('development');
-    expect(section).toContain('ba_development_playbook');
+    expect(section).toContain('`feature`');
     expect(section).toContain('playbook_run');
     expect(section).toMatch(/НЕ запускай|не запускай/);
     expect(section).toContain('task_update status=active');
@@ -92,7 +91,7 @@ describe('buildDevPlaybookSuggestion boundaries', () => {
       store, env: {},
     });
     expect(section).toContain('freelance-project-spec');
-    expect(section).not.toContain('ba_development_playbook');
+    expect(section).not.toContain('Инженерные плейбуки');
   });
 
   it('never throws when store.resolve throws', () => {
@@ -103,5 +102,30 @@ describe('buildDevPlaybookSuggestion boundaries', () => {
     expect(buildDevPlaybookSuggestion({
       task: 'поставь изменение X', profileId: 'alice', audience: 'default', store, env: {},
     })).toBe('');
+  });
+});
+
+describe('engineering playbook choice by task wording', () => {
+  const all = { resolve: id => (['feature', 'debugging', 'new-software'].includes(id) ? { id, version: 1 } : null) };
+  const opts = { profileId: 'alice', audience: 'default', env: {} };
+
+  it('a bug report offers the debugging playbook', () => {
+    const section = buildDevPlaybookSuggestion({ ...opts, task: 'почини баг — бот не отправляет уведомление', store: all });
+    expect(section).toContain('playbook_run(playbook_id: "debugging"');
+  });
+
+  it('a from-scratch service offers new-software', () => {
+    const section = buildDevPlaybookSuggestion({ ...opts, task: 'разработай новый сервис с нуля для транскрибации', store: all });
+    expect(section).toContain('playbook_run(playbook_id: "new-software"');
+  });
+
+  it('a plain change offers feature', () => {
+    const section = buildDevPlaybookSuggestion({ ...opts, task: 'реализуй экспорт в CSV', store: all });
+    expect(section).toContain('playbook_run(playbook_id: "feature"');
+  });
+
+  it('falls back to feature when the specific playbook is not available', () => {
+    const section = buildDevPlaybookSuggestion({ ...opts, task: 'почини баг в экспорте', store: availableStore });
+    expect(section).toContain('playbook_run(playbook_id: "feature"');
   });
 });

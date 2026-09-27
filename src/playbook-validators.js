@@ -66,12 +66,18 @@ function inconclusive(reason, extra = {}) {
 
 // The PR URL may live anywhere the step carries text: title, instructions, or
 // evidence persisted by an earlier run.
+// A playbook-compiled step carries no PR URL of its own — the PR is opened by an
+// earlier step and recorded in the run notebook / that step's evidence. So when
+// the step itself has none, fall back to the LATEST PR URL in `ctx.runText`.
 function extractPrRef(ctx) {
   const item = ctx.item || {};
   const raw = [item.title, item.instructions, item.evidence_json, ctx.task && ctx.task.goal]
     .filter(Boolean).join('\n');
   const m = raw.match(PR_REF_RE);
-  return m ? { owner: m[1], repo: m[2], number: m[3], url: m[0] } : null;
+  if (m) return { owner: m[1], repo: m[2], number: m[3], url: m[0] };
+  const all = typeof ctx.runText === 'string' ? [...ctx.runText.matchAll(new RegExp(PR_REF_RE, 'g'))] : [];
+  const last = all[all.length - 1];
+  return last ? { owner: last[1], repo: last[2], number: last[3], url: last[0] } : null;
 }
 
 // Default GitHub helpers delegate to gtd-controller (the checklist pre-check
@@ -444,11 +450,121 @@ function softenLlmVerdict(key, result, ctx) {
   };
 }
 
+// ── durable-wait conditions ─────────────────────────────────────────────────
+// Cheap, model-free probes meant for `wait` steps: they are re-polled until they
+// pass, so a "not yet" answer is `fail` (keep waiting), never a crash.
+
+// http_ok: "https://…/health" or {url, contains?, status?}. Pass when the response
+// status matches (default: any 2xx) and the body contains `contains` if given —
+// e.g. a deploy is live once /health reports the merged commit.
+function makeHttpOkValidator({ fetchImpl = (...a) => fetch(...a) } = {}) {
+  return async function httpOk(ctx) {
+    const spec = typeof ctx.validation === 'string' ? { url: ctx.validation } : (ctx.validation || {});
+    if (!spec.url || !/^https?:\/\//.test(String(spec.url))) return inconclusive('no-url');
+    const subject = { url: spec.url };
+    let res; let body = '';
+    try {
+      res = await fetchImpl(spec.url, { signal: AbortSignal.timeout(15_000) });
+      body = await res.text();
+    } catch (e) {
+      return { status: 'fail', subject, evidence: { reason: 'unreachable', error: e.message } };
+    }
+    const statusOk = spec.status != null ? res.status === Number(spec.status) : res.ok;
+    const containsOk = spec.contains == null || body.includes(String(spec.contains));
+    const evidence = { http_status: res.status, body: body.slice(0, 300) };
+    return { status: statusOk && containsOk ? 'pass' : 'fail', subject, evidence };
+  };
+}
+
+// token_present: "github" — the profile has a non-empty credential file for that
+// service (ZeroCreds/connect flows write TOKENS_ROOT/<profile>/<service>). This is
+// how a plan waits for the user to hand over credentials, even days later.
+function tokenPresent(ctx) {
+  const service = typeof ctx.validation === 'string' ? ctx.validation : ctx.validation && ctx.validation.service;
+  if (!service || !/^[\w.-]+$/.test(service)) return inconclusive('no-service');
+  if (!ctx.profileId) return inconclusive('no-profile');
+  const { tokenPath } = require('./data-paths');
+  const file = tokenPath(ctx.profileId, service);
+  let size = 0;
+  try { size = fs.statSync(file).size; } catch { /* absent */ }
+  return { status: size > 0 ? 'pass' : 'fail', subject: { service }, evidence: { present: size > 0 } };
+}
+
+// task_done: "<durable task id>" — another durable plan of the SAME profile has
+// finished. Lets one plan wait for another. Lazy require: gtd-controller requires
+// this module at load time.
+function makeTaskDoneValidator({ taskStatus = defaultTaskStatus } = {}) {
+  return function taskDone(ctx) {
+    const taskId = typeof ctx.validation === 'string' ? ctx.validation : ctx.validation && ctx.validation.task_id;
+    if (!taskId) return inconclusive('no-task-id');
+    const status = taskStatus(taskId, ctx.profileId);
+    if (status == null) return inconclusive('task-not-found', { task_id: taskId });
+    return { status: status === 'done' ? 'pass' : 'fail', subject: { task_id: taskId }, evidence: { task_status: status } };
+  };
+}
+
+function defaultTaskStatus(taskId, profileId) {
+  const { durableStore } = require('./gtd-controller');
+  const task = durableStore().getTask(taskId, profileId);
+  return task ? task.status : null;
+}
+
+// ── run-time probes (declared in the run notebook) ──────────────────────────
+// A playbook TEMPLATE cannot know the concrete deploy URL or log command of a
+// run. An earlier agent step declares them in the run notebook, one per line:
+//   PROBE deploy_live: http_ok https://host/health contains 3f2a9c1
+//   PROBE error_gone: command ! journalctl -u app --since -30min | grep -q 'TypeError'
+//   PROBE staging_ok: skip no staging for this repo
+// and a later (typically waiting) programmatic step checks it by name with
+// {"probe": "deploy_live"} — no model involved. The LAST declaration wins, so a
+// step may re-declare a probe after learning more.
+const PROBE_LINE_RE = /^\s*[-*]?\s*`?PROBE\s+([\w.-]+)\s*:\s*(http_ok|command|skip)\b\s*(.*?)`?\s*$/gim;
+
+function parseProbes(text) {
+  const probes = {};
+  for (const m of String(text || '').matchAll(PROBE_LINE_RE)) {
+    probes[m[1]] = { kind: m[2].toLowerCase(), arg: m[3].trim() };
+  }
+  return probes;
+}
+
+function makeProbeValidator({ httpOk = makeHttpOkValidator() } = {}) {
+  return async function probe(ctx) {
+    const name = typeof ctx.validation === 'string' ? ctx.validation : ctx.validation && ctx.validation.name;
+    if (!name) return inconclusive('no-probe-name');
+    const spec = parseProbes(ctx.runText)[name];
+    // Not declared (yet) is a "not met", not a pass: a wait keeps polling and an
+    // unwaited step fails visibly, pointing at the missing declaration.
+    if (!spec) return { status: 'fail', subject: { probe: name }, evidence: { reason: 'probe-not-declared' } };
+    if (spec.kind === 'skip') return { status: 'pass', subject: { probe: name }, evidence: { skipped: true, reason: spec.arg || 'unspecified' } };
+    if (spec.kind === 'http_ok') {
+      const m = spec.arg.match(/^(\S+)(?:\s+contains\s+(.+))?$/i);
+      if (!m) return inconclusive('bad-probe', { probe: name });
+      const res = await httpOk({ ...ctx, validation: { url: m[1], contains: m[2] ? m[2].trim() : undefined } });
+      return { ...res, subject: { probe: name, ...(res.subject || {}) } };
+    }
+    if (!spec.arg) return inconclusive('bad-probe', { probe: name });
+    const res = await commandExitZero({ ...ctx, validation: { command: spec.arg } });
+    return { ...res, subject: { probe: name, ...(res.subject || {}) } };
+  };
+}
+
+// probes_declared: ["deploy_live", …] — the step that plans the run declared every
+// named probe in the notebook (deterministic check for the declaring step).
+function probesDeclared(ctx) {
+  const names = Array.isArray(ctx.validation) ? ctx.validation
+    : (typeof ctx.validation === 'string' ? [ctx.validation] : []);
+  if (!names.length) return inconclusive('no-probe-names');
+  const probes = parseProbes(ctx.runText);
+  const missing = names.filter(n => !probes[n]);
+  return { status: missing.length ? 'fail' : 'pass', subject: { probes: names }, evidence: { missing } };
+}
+
 /**
  * Build a registry of the initial validation keys. `ghToken` / `ghFetch` are
  * overridable so tests drive the GitHub validators with fakes.
  */
-function createDefaultRegistry({ ghToken = defaultGhToken, ghFetch = defaultGhFetch, gitInfo = defaultGitInfo } = {}) {
+function createDefaultRegistry({ ghToken = defaultGhToken, ghFetch = defaultGhFetch, gitInfo = defaultGitInfo, fetchImpl, taskStatus } = {}) {
   return {
     ci_green: makeCiValidator({ ghToken, ghFetch, staging: false }),
     ci_and_staging_green: makeCiValidator({ ghToken, ghFetch, staging: true }),
@@ -458,6 +574,11 @@ function createDefaultRegistry({ ghToken = defaultGhToken, ghFetch = defaultGhFe
     pr_opened: makePrOpenedValidator({ ghToken, ghFetch, gitInfo }),
     file_exists: fileExists,
     command_exit_zero: commandExitZero,
+    http_ok: makeHttpOkValidator(fetchImpl ? { fetchImpl } : {}),
+    token_present: tokenPresent,
+    task_done: makeTaskDoneValidator(taskStatus ? { taskStatus } : {}),
+    probe: makeProbeValidator(fetchImpl ? { httpOk: makeHttpOkValidator({ fetchImpl }) } : {}),
+    probes_declared: probesDeclared,
   };
 }
 
@@ -489,14 +610,14 @@ function parseValidation(value) {
  * Evaluate every key declared by an item's `validation` object.
  * @returns {Promise<Array<{key,status,subject,evidence}>>}
  */
-async function evaluateItemValidations(item, { task = null, profileId = null, projectDir = null, registry = null } = {}) {
+async function evaluateItemValidations(item, { task = null, profileId = null, projectDir = null, registry = null, runText = null } = {}) {
   // task_items stores the contract as `validation_json`; accept a raw `validation`
   // object too so unit tests can pass items without a DB round-trip.
   const raw = item && item.validation_json != null ? item.validation_json : item && item.validation;
   const validation = parseValidation(raw);
   const results = [];
   for (const [key, value] of Object.entries(validation)) {
-    const ctx = { task, item, profileId, projectDir, validation: value, key };
+    const ctx = { task, item, profileId, projectDir, validation: value, key, runText };
     const res = await evaluateValidation(key, ctx, registry);
     results.push({ key, ...res });
   }
@@ -510,7 +631,7 @@ async function evaluateItemValidations(item, { task = null, profileId = null, pr
  */
 async function evaluateItemValidationsModeAware(item, {
   task = null, profileId = null, projectDir = null, registry = null,
-  mode = DEFAULT_VALIDATION_MODE, llmValidate = null,
+  mode = DEFAULT_VALIDATION_MODE, llmValidate = null, runText = null,
 } = {}) {
   const raw = item && item.validation_json != null ? item.validation_json : item && item.validation;
   const validation = parseValidation(raw);
@@ -519,7 +640,7 @@ async function evaluateItemValidationsModeAware(item, {
   let excerpts = null;
   const results = [];
   for (const [key, value] of entries) {
-    const ctx = { task, item, profileId, projectDir, validation: value, key };
+    const ctx = { task, item, profileId, projectDir, validation: value, key, runText };
     let res = await evaluateValidation(key, ctx, registry);
     if (useLlm && res.status === 'inconclusive') {
       if (excerpts === null) excerpts = collectDocExcerpts(projectDir);
@@ -537,6 +658,8 @@ module.exports = {
   evaluateItemValidationsModeAware, resolveValidationMode,
   parseValidation, collectDocExcerpts, buildLlmValidatorPrompt, makeLlmValidate, getDefaultLlmValidate,
   makePrOpenedValidator, defaultGitInfo, gitRemoteRepo,
+  makeHttpOkValidator, tokenPresent, makeTaskDoneValidator, extractPrRef,
+  parseProbes, makeProbeValidator, probesDeclared,
   PR_REF_RE, DEFAULT_COMMAND_TIMEOUT_MS,
   VALIDATION_MODES, DEFAULT_VALIDATION_MODE, DEFAULT_VALIDATION_MODEL, LLM_VALIDATOR_TIMEOUT_MS,
   FASTPASS_SKIP_MODE, FASTPASS_SKIP_RE, parseFastpassSkip,

@@ -212,6 +212,24 @@ module.exports = {
       },
     },
 
+    task_item_resume: {
+      description:
+        'Put a failed or blocked step back into play with a fresh attempt budget (and a fresh wait window). ' +
+        'Use after the user answered the question a step stopped on (append the answer to the plan\'s run ' +
+        'notebook first) or handed over the credentials it waited for. Done steps are left unchanged.',
+      inputSchema: {
+        type: 'object',
+        required: ['item_id'],
+        properties: { item_id: { type: 'string' } },
+      },
+      handler: async ({ item_id }, ctx) => {
+        const profileId = requireProfile(ctx);
+        const item = store().resumeItem(item_id, profileId);
+        if (!item) return { error: 'item not found (or not owned by this profile)' };
+        return { item };
+      },
+    },
+
     task_item_complete: {
       description:
         'Mark a task item done (or failed, with an error). On success this arms the next ' +

@@ -159,6 +159,37 @@ const FRESH_CLAIM_GRACE_MS = 30 * 1000; // just-claimed items: let the claiming 
 // mechanism (re-pend / model-ladder / provider flip / engine fallback), bounded
 // by max_attempts and DEFAULT_RECOVERY_BUDGET.
 
+// ── Run notebook ────────────────────────────────────────────────────────────
+// Every durable step is a fresh process with no memory of earlier steps. The
+// run notebook is the plan's shared lab journal: each agent step reads it first
+// and appends its outcome (decisions, links, PR/issue URLs), so a later step — or
+// a human after a crash — can pick the work up. It is a derived path, never stored.
+function runNotebookPath(task) {
+  return path.join(userWorkDir(task.profile_id), 'playbook-runs', `${task.id}.md`);
+}
+
+// Text a validator may mine for references the step itself lacks (e.g. the PR an
+// earlier step opened): prior steps' evidence, then the notebook (newest last).
+function readRunText(store, task) {
+  let evidence = '';
+  try {
+    evidence = store.listTaskItems(task.id, task.profile_id).map(i => i.evidence_json).filter(Boolean).join('\n');
+  } catch { /* no items readable → notebook only */ }
+  let notebook = '';
+  try { notebook = fs.readFileSync(runNotebookPath(task), 'utf8').slice(-50_000); } catch { /* not written yet */ }
+  return `${evidence}\n${notebook}`;
+}
+
+// Durable wait config of a programmatic step, or null. See holdWaitingItem.
+function parseItemWait(item) {
+  if (!item || !item.wait_json) return null;
+  try {
+    const w = JSON.parse(item.wait_json);
+    if (!w || typeof w !== 'object') return null;
+    return { poll_sec: w.poll_sec || 300, timeout_sec: w.timeout_sec || 24 * 60 * 60 };
+  } catch { return null; }
+}
+
 // Evaluate an item's declared validations through the registry and persist each
 // verdict as a task_validation_results row (profile-scoped). Returns the raw
 // results so the caller can decide complete vs fail. A validator that throws is
@@ -170,6 +201,7 @@ async function recordItemValidations(store, { task, item, executionId, registry,
   try {
     results = await evaluateItemValidationsModeAware(item, {
       task, profileId: task.profile_id, projectDir, registry, mode: validationMode, llmValidate,
+      runText: readRunText(store, task),
     });
   } catch (e) {
     results = [{ key: '*', status: 'inconclusive', subject: null, evidence: { reason: 'evaluator-error', error: e.message } }];
@@ -277,6 +309,27 @@ function resolveOwnerTarget(store, task) {
 // create_issue / publish only run when a caller injects a sink (this slice does
 // not reimplement GitHub/publish orchestration — no transport configured means
 // the hook is recorded skipped, never faked).
+// A step that cannot continue without the human ends its reply with
+//   DURABLE: failed: BLOCKED-ON-USER: <question / what is needed>
+const BLOCKED_ON_USER_RE = /BLOCKED-ON-USER:\s*([\s\S]*)$/i;
+
+// Ask the plan owner directly. This is the owner's own plan asking its owner, so
+// it does not go through the external-effect hook consent (hooks dedupe per
+// boundary, and a resumed step must be able to ask again).
+async function notifyBlockedOnUser(sinks, task, item, question) {
+  if (!sinks || typeof sinks.notify !== 'function') return;
+  const text = [
+    `⏸ План ждёт тебя: «${String(task.goal).slice(0, 120)}»`,
+    `Шаг ${item.position + 1}: ${item.title}`,
+    '',
+    question,
+    '',
+    `Ответь в чат: «план ${task.id.slice(0, 8)}: <ответ>» — я допишу ответ в журнал плана и продолжу (task_item_resume ${item.id}).`,
+  ].join('\n');
+  try { await sinks.notify({ text }); }
+  catch (e) { console.error(`[gtd-durable] blocked-on-user notify ${task.id.slice(0, 8)}:`, e.message); }
+}
+
 function defaultHookSinks({ secrets = {}, store, task }) {
   return {
     notify: async ({ text }) => {
@@ -380,8 +433,12 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     // an agent prompt. Its `validation` keys are evaluated by the registry, each
     // verdict recorded, and the step completes only when every check passes.
     if (step.executionKind === 'programmatic') {
+      const wait = parseItemWait(item);
+      // A waiting step is re-polled for hours/days: an LLM judge there would both
+      // cost per poll and risk "passing" a condition that has not happened yet.
       const results = await recordItemValidations(store, {
-        task, item, executionId, registry: validators, projectDir: itemProjectDir, validationMode, llmValidate,
+        task, item, executionId, registry: validators, projectDir: itemProjectDir,
+        validationMode: wait ? 'programmatic' : validationMode, llmValidate,
       });
       const allPass = results.length > 0 && results.every(r => r.status === 'pass');
       store.setItemEvidence(item.id, task.profile_id, {
@@ -395,6 +452,34 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
         // P4: step completed → on_complete, and stage_exit on the stage's last item.
         await fireItemHooks(store, task, item, 'on_complete', hookVars(), sinks, hooksApproved);
         await fireItemHooks(store, task, item, 'stage_exit', hookVars(), sinks, hooksApproved);
+      } else if (wait && Math.max(Date.now(), now) < (item.wait_started_at || Math.max(Date.now(), now)) + wait.timeout_sec * 1000) {
+        // Durable wait: condition not met yet → sleep until the next poll (no model,
+        // no attempt spent, survives restarts). The final poll lands on the deadline.
+        // Clock = the tick's `now` (never behind it), so the parked item is never
+        // immediately re-claimable within this same pass.
+        const pollNow = Math.max(Date.now(), now);
+        const startedAt = item.wait_started_at || pollNow;
+        const deadline = startedAt + wait.timeout_sec * 1000;
+        store.holdWaitingItem(item.id, task.profile_id, {
+          dueAt: Math.min(pollNow + wait.poll_sec * 1000, deadline),
+          waitStartedAt: startedAt,
+          backstopAt: deadline + wait.poll_sec * 1000 + 30 * 60 * 1000,
+        });
+        store.finishExecution(executionId, { status: 'waiting' });
+        const pending = results.filter(r => r.status !== 'pass').map(r => r.key).join(', ');
+        console.log(`[gtd-durable] waiting ${item.id.slice(0, 8)} on ${pending}; next poll in ${wait.poll_sec}s`);
+        fired -= 1; // a cheap poll must not starve real fires in this tick
+      } else if (wait) {
+        // The awaited condition never happened within timeout_sec. Retrying would
+        // just restart the same wait, so this is terminal for the step (P3c recovery
+        // is about engines/models, which a wait does not use).
+        const failedKeys = results.filter(r => r.status !== 'pass').map(r => r.key).join(', ');
+        const errText = `wait timeout after ${wait.timeout_sec}s: ${failedKeys}`;
+        store.failItem(item.id, task.profile_id, { executionId, error: errText });
+        store.finishExecution(executionId, { status: 'failed', error_class: 'wait_timeout', error_text: errText.slice(0, 500) });
+        console.log(`[gtd-durable] wait timeout ${item.id.slice(0, 8)}: ${failedKeys}`);
+        await fireItemHooks(store, task, item, 'on_fail', hookVars({ error: errText }), sinks, hooksApproved);
+        await fireTaskHooks(store, task, 'task_failed', hookVars({ error: errText }), sinks, hooksApproved);
       } else {
         const failedKeys = results.filter(r => r.status !== 'pass').map(r => r.key).join(', ');
         const errText = `programmatic validation not passed: ${failedKeys || 'no validations'}`;
@@ -421,11 +506,18 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       continue;
     }
 
+    const notebookFile = runNotebookPath(task);
+    try { fs.mkdirSync(path.dirname(notebookFile), { recursive: true }); } catch { /* agent can still create it */ }
     const prompt = [
       '[DURABLE TASK — auto-execution]',
       `Task: ${task.goal}`,
       `Step (${item.position + 1}/${store.progressSummary(task.id, task.profile_id).total}): ${item.title}`,
       `Step id: ${item.id}`,
+      `Plan (task) id: ${task.id}`,
+      `\nЖурнал запуска (run notebook): ${notebookFile}`,
+      'Это общий журнал всех шагов плана. Каждый шаг выполняет отдельный процесс без памяти о прошлых шагах.',
+      'ПЕРЕД работой прочитай журнал (решения, ссылки на issue/PR, результаты прошлых шагов).',
+      `ПОСЛЕ — допиши в конец раздел "## ${item.position + 1}. ${item.title}": что сделано, решения, ссылки (issue/PR/файлы), что осталось. Ссылку на PR пиши полным URL — по ней следующие шаги проверяют CI и merge.`,
       item.instructions ? `\nInstructions: ${item.instructions}` : '',
       item.validation_json
         ? `\nValidation (must pass before completion): ${item.validation_json}` : '',
@@ -436,6 +528,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       'Fast-pass — это ЗАПИСЫВАЕМЫЙ escape hatch, а не тихий обход. Только в режиме "programmatic+llm-fastpass" ты можешь пропустить проверку, если она слишком тяжёлая, ломает работу или нужен срочный фикс — добавь финальной строкой: VALIDATION: fastpass-skip: <причина>. Пропуск попадёт в audit trail с причиной.',
       'Выполни этот шаг. Если шаг выполнен и проверка прошла — ответь финальной строкой: DURABLE: done.',
       'Если шаг не удался — опиши ошибку и ответь финальной строкой: DURABLE: failed: <причина>.',
+      'Если без человека дальше нельзя (нужен ответ, решение или доступ) — сначала запиши вопрос в журнал, затем ответь финальной строкой: DURABLE: failed: BLOCKED-ON-USER: <конкретный вопрос или что нужно>. Владельцу придёт сообщение, шаг продолжится после ответа.',
     ].filter(Boolean).join('\n');
 
     const itemSnap = { ...item };
@@ -489,6 +582,16 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
         // P4: step completed → on_complete, and stage_exit on the stage's last item.
         await fireItemHooks(store, task, itemSnap, 'on_complete', hookVars(), sinks, hooksApproved);
         await fireItemHooks(store, task, itemSnap, 'stage_exit', hookVars(), sinks, hooksApproved);
+      } else if (BLOCKED_ON_USER_RE.test(said)) {
+        // The step needs the human (an answer, a decision, credentials). Retrying or
+        // escalating the model cannot help, so no recovery: park it as failed, ask
+        // the owner directly, and let task_item_resume put it back once answered.
+        const question = said.match(BLOCKED_ON_USER_RE)[1].trim().slice(0, 1500) || 'нужен ответ пользователя';
+        store.failItem(itemSnap.id, task.profile_id, { executionId, error: `BLOCKED-ON-USER: ${question}`.slice(0, 500) });
+        store.updateTaskItem(itemSnap.id, { last_failure_class: 'USER_STOP', last_recovery_action: 'await-user' }, task.profile_id);
+        store.finishExecution(executionId, { status: 'blocked', error_class: 'USER_STOP', error_text: question.slice(0, 500) });
+        console.log(`[gtd-durable] blocked on user ${itemSnap.id.slice(0, 8)}`);
+        await notifyBlockedOnUser(sinks, task, itemSnap, question);
       } else if (/DURABLE:\s*failed/i.test(said)) {
         store.failItem(itemSnap.id, task.profile_id, { executionId, error: said.slice(0, 500) });
         const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: said, classifier, ladder });
@@ -1310,6 +1413,7 @@ module.exports = {
   checklistCheapPrecheck, writeChecklistDone, mirrorGtdChecklist, CHECKLIST_API_BASE, checklistAutologinUrl,
   _ghToken, _ghFetch,
   durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
+  runNotebookPath, readRunText, parseItemWait,
   tickHeartbeat, countOpenLegacy, durableItemCounts,
   DEFAULT_ETA_MIN, DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP, ETA_MAX_CLAMP,
   CHECKLIST_FILE, CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,

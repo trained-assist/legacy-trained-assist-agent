@@ -36,6 +36,9 @@ module.exports = function migratePlan(db) {
           // P3c: observability of the last recovery decision (failure-classifier class
           // + recovery-policy action) so a stuck step can be diagnosed without replaying logs.
           last_failure_class: 'TEXT', last_recovery_action: 'TEXT',
+          // Durable wait: {poll_sec, timeout_sec} + when the first unmet poll began
+          // (the timeout window is measured from it, not from each re-poll).
+          wait_json: 'TEXT', wait_started_at: 'INTEGER',
         },
         executions: { executor_role: 'TEXT', model_level: 'TEXT', context_budget: 'TEXT', profile: 'TEXT', provider: 'TEXT', attempt_number: 'INTEGER', result_json: 'TEXT' },
       };

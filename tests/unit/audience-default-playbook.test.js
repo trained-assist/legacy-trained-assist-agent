@@ -13,12 +13,12 @@ describe('audience default playbook resolver', () => {
   it('built-in map resolves known audiences', () => {
     expect(resolveAudienceDefaultPlaybookId('freelance', { env: {} })).toBe('freelance-project-spec');
     expect(resolveAudienceDefaultPlaybookId('exhibition', { env: {} })).toBe('exhibition-catalog-to-sales-site');
-    expect(resolveAudienceDefaultPlaybookId('development', { env: {} })).toBe('development');
+    expect(resolveAudienceDefaultPlaybookId('development', { env: {} })).toBe('feature');
   });
 
-  it('unknown audience falls back to the default entry, then to development', () => {
-    expect(resolveAudienceDefaultPlaybookId('nope', { env: {} })).toBe('development');
-    expect(resolveAudienceDefaultPlaybookId(null, { env: {} })).toBe('development');
+  it('unknown audience falls back to the default entry, then to feature', () => {
+    expect(resolveAudienceDefaultPlaybookId('nope', { env: {} })).toBe('feature');
+    expect(resolveAudienceDefaultPlaybookId(null, { env: {} })).toBe('feature');
   });
 
   it('env AUDIENCE_DEFAULT_PLAYBOOK wins over the built-in map', () => {
@@ -36,7 +36,7 @@ describe('audience default playbook resolver', () => {
     const hit = suggestPlaybookForAudience('freelance', { store, env: {} });
     expect(hit).toMatchObject({ audience: 'freelance', playbook_id: 'freelance-project-spec', fallback: false, available: true });
     const miss = suggestPlaybookForAudience('mystery', { store, env: {} });
-    expect(miss).toMatchObject({ playbook_id: 'development', fallback: true, available: false });
+    expect(miss).toMatchObject({ playbook_id: 'feature', fallback: true, available: false });
   });
 
   it('loadAudiencePlaybookMap tags entries with their source', () => {

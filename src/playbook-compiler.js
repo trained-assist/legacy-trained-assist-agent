@@ -24,6 +24,9 @@ const { substitute } = _internal;
 
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_TIMEOUT_SECONDS = 600;
+// Durable wait defaults: poll every 5 min (the durable tick cadence), give up after 24 h.
+const DEFAULT_WAIT_POLL_SEC = 300;
+const DEFAULT_WAIT_TIMEOUT_SEC = 24 * 60 * 60;
 
 // Resolve one step's boundary hooks. Step hooks stay on their own item; a stage
 // boundary is carried by the stage's first/last item (items are strictly ordered,
@@ -108,6 +111,12 @@ function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null
         execution_timeout_seconds:
           step.execution_timeout_seconds ?? defaults.execution_timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS,
       };
+      if (step.wait) {
+        item.wait = {
+          poll_sec: step.wait.poll_sec ?? DEFAULT_WAIT_POLL_SEC,
+          timeout_sec: step.wait.timeout_sec ?? DEFAULT_WAIT_TIMEOUT_SEC,
+        };
+      }
       const itemHooks = compileItemHooks(stage, step, stepIndex, steps.length);
       if (itemHooks) item.hooks = itemHooks;
       if (step.instructions) item.instructions = substitute(step.instructions, renderVars);
@@ -151,4 +160,6 @@ module.exports = {
   compileTaskHooks,
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_TIMEOUT_SECONDS,
+  DEFAULT_WAIT_POLL_SEC,
+  DEFAULT_WAIT_TIMEOUT_SEC,
 };

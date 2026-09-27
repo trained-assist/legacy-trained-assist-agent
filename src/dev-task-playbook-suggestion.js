@@ -49,6 +49,19 @@ const DEV_TASK_RE = new RegExp([
   '\\bendpoint\\b|\\bapi\\b|\\bsql\\b|скрипт|пакет|библиотек',
 ].join('|'), 'i');
 
+// The engineering domain ships three playbooks (trained-assist-engineering):
+// feature (default), debugging and new-software. When the audience default is the
+// feature playbook, the task wording picks the more specific one — if it resolves.
+const ENGINEERING_DEFAULT_ID = 'feature';
+const BUG_TASK_RE = /почини|исправь|багфикс|hotfix|bugfix|баг|\bbug\b|ошибк|сломал|не работает|падает|\bdebug\b|отлад/i;
+const NEW_SOFTWARE_RE = /с\s+нуля|нов(?:ый|ую|ое)\s+(?:сервис|модул|проект|систем|приложени|бот|библиотек)|\bfrom\s+scratch\b|\bnew\s+(?:service|project|module|app)\b|\bgreenfield\b/i;
+
+function engineeringPlaybookForTask(task) {
+  if (BUG_TASK_RE.test(task)) return 'debugging';
+  if (NEW_SOFTWARE_RE.test(task)) return 'new-software';
+  return ENGINEERING_DEFAULT_ID;
+}
+
 function isDevelopmentTask(task) {
   const text = typeof task === 'string' ? task.trim() : '';
   if (!text) return false;
@@ -81,22 +94,27 @@ function buildDevPlaybookSuggestion({ task, profileId = null, audience = null, s
   // Availability is the opt-in gate: no resolved playbook → unchanged prompt.
   if (!suggestion || suggestion.available !== true) return '';
 
-  const id = suggestion.playbook_id;
-  const scaffold = id === 'development'
-    ? '`ba_development_playbook` (развернуть шаги) → `playbook_run` (собрать черновик-план)'
-    : `\`playbook_run(playbook_id: "${id}")\` (собрать черновик-план)`;
+  let id = suggestion.playbook_id;
+  if (id === ENGINEERING_DEFAULT_ID) {
+    const specific = engineeringPlaybookForTask(task);
+    try { if (specific !== id && playbookStore.resolve(specific)) id = specific; } catch { /* keep default */ }
+  }
+  const scaffold = `\`playbook_run(playbook_id: "${id}", goal: …)\` (собрать черновик-план)`;
+  const engineering = [ENGINEERING_DEFAULT_ID, 'debugging', 'new-software'].includes(id);
 
   return [
     '[ПРОЦЕСС РАЗРАБОТКИ ДОСТУПЕН — предложи его, но НЕ запускай сам]',
-    `Для этой задачи доступен плейбук процесса \`${id}\` (пошаговый инженерный контракт: frame → discover → design → build → deliver).`,
+    `Для этой задачи доступен плейбук процесса \`${id}\` (пошаговый инженерный контракт; шаги переживают рестарт, ожидания CI/деплоя/кредов — без модели).`,
+    engineering ? 'Инженерные плейбуки: `feature` — фича/изменение; `debugging` — баг (лестница воспроизведения L0–L5); `new-software` — новый сервис/модуль с нуля (sandbox-first). Выбери подходящий.' : '',
     `Если задача крупная (фича, неоднозначная правка, несколько файлов/модулей) — предложи пользователю провести её через процесс: ${scaffold}.`,
     'После согласия пользователя план активируется явным шагом `task_update status=active`.',
     'НИКОГДА не запускай и не активируй план самовольно: `draft→active` — только явное решение пользователя. Мелкую правку просто сделай.',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 module.exports = {
   DEV_TASK_RE,
   isDevelopmentTask,
   buildDevPlaybookSuggestion,
+  engineeringPlaybookForTask,
 };

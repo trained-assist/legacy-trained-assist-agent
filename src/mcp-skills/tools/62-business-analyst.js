@@ -29,13 +29,14 @@ module.exports = {
 
   tools: {
     ba_development_playbook: {
-      description: 'Engineering playbook for durable planning (Playbook v1 "development", resolved from profile → sibling repo → system). Expand into concrete items, then persist atomically with task_create. No model call or execution. Optional: if the playbook is not connected, returns available:false and the caller just works without the process scaffold.',
+      description: 'Engineering playbook for durable planning (Playbook v1 "feature" — legacy id "development" as fallback; for bugs use playbook_get("debugging"), for new software playbook_get("new-software"); resolved from profile → sibling repo → system). Expand into concrete items, then persist atomically with task_create. No model call or execution. Optional: if the playbook is not connected, returns available:false and the caller just works without the process scaffold.',
       inputSchema: { type: 'object', properties: {} },
       handler: async (_args, ctx) => {
         // Opt-in: the playbook lives in its domain repo (trained-assist-engineering),
         // not the Control Plane. Absence is a normal state, never an error — an agent
         // without it simply codes without the process scaffold.
-        const playbook = new PlaybookStore({ profileId: ctx?.userId }).get('development');
+        const store = new PlaybookStore({ profileId: ctx?.userId });
+        const playbook = store.get('feature') || store.get('development');
         if (!playbook) {
           return {
             available: false,

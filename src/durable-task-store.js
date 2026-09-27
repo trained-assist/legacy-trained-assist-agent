@@ -140,12 +140,13 @@ class DurableTaskStore {
           delay_after_sec: item.delay_after_sec ?? 0 });
         this._prep(`UPDATE task_items SET stage=?, instructions=?, execution_kind=?, executor_role=?,
           minimum_model_level=?, current_model_level=?, context_budget=?, validation_json=?,
-          max_attempts=?, execution_timeout_seconds=?, hooks_json=? WHERE id=?`)
+          max_attempts=?, execution_timeout_seconds=?, hooks_json=?, wait_json=? WHERE id=?`)
           .run(item.stage ?? null, item.instructions ?? null, item.execution_kind,
             item.executor_role ?? null, item.minimum_model_level ?? null, item.minimum_model_level ?? null,
             item.context_budget ?? null, JSON.stringify(item.validation), item.max_attempts ?? 3,
             item.execution_timeout_seconds ?? 600,
-            item.hooks == null ? null : JSON.stringify(item.hooks), itemId);
+            item.hooks == null ? null : JSON.stringify(item.hooks),
+            item.wait == null ? null : JSON.stringify(item.wait), itemId);
       });
       if (session_id) this.attachSession(id, session_id, profile_id);
       return { task: this.getTask(id, profile_id), items: this.listTaskItems(id, profile_id) };
@@ -443,6 +444,44 @@ class DurableTaskStore {
    * is terminal for the item budget and visible to the recovery slice (P3c).
    * Returns the number of items expired.
    */
+  /**
+   * Durable wait: park a programmatic step whose condition is not met yet until
+   * its next poll. A poll is not an attempt — the attempt startExecution just
+   * charged is refunded, so a 3-day wait never burns the step's retry budget.
+   * `wait_started_at` is kept from the first poll (the timeout window is measured
+   * from it). `backstopAt` is the expireWaitingDeadlines backstop, set past the
+   * controller's own timeout so the controller's timeout path (with hooks) wins.
+   */
+  holdWaitingItem(id, profileId, { dueAt, waitStartedAt, backstopAt }) {
+    return this.db.transaction(() => {
+      const item = this._itemOwnedBy(id, profileId);
+      if (!item) return null;
+      this._prep(`UPDATE task_items SET status = 'waiting', due_at = ?, wait_started_at = ?,
+          wait_deadline_at = ?, attempt_count = MAX(attempt_count - 1, 0), updated_at = ?
+          WHERE id = ?`).run(dueAt, waitStartedAt, backstopAt, nowMs(), id);
+      this._bump(item.task_id);
+      return this.getTaskItem(id);
+    })();
+  }
+
+  /**
+   * Put a failed/blocked step back into play with a fresh budget — e.g. after the
+   * user answered the question a step stopped on, or handed over credentials. The
+   * wait window restarts too. Done/skipped steps are left alone.
+   */
+  resumeItem(id, profileId) {
+    return this.db.transaction(() => {
+      const item = this._itemOwnedBy(id, profileId);
+      if (!item) return null;
+      if (item.status === 'done' || item.status === 'skipped') return this.getTaskItem(id);
+      this._prep(`UPDATE task_items SET status = 'pending', due_at = NULL, wait_deadline_at = NULL,
+          wait_started_at = NULL, attempt_count = 0, last_error = NULL, updated_at = ? WHERE id = ?`)
+        .run(nowMs(), id);
+      this._bump(item.task_id);
+      return this.getTaskItem(id);
+    })();
+  }
+
   expireWaitingDeadlines(now = nowMs()) {
     return this.db.transaction(() => {
       const rows = this._prep(`SELECT id, task_id FROM task_items
