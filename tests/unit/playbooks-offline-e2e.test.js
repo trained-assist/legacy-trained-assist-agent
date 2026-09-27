@@ -78,7 +78,7 @@ function fakeGitHub() {
 }
 
 // Scripted engines: behave like a well-formed agent, per step title.
-function scriptedEngine({ calls, killOnce = null }) {
+function scriptedEngine({ calls, killOnce = null, onStep = null }) {
   const tools = require('../../src/mcp-skills/tools/101-durable-tasks.js').tools;
   const killed = new Set();
   const waited = new Set();
@@ -87,6 +87,7 @@ function scriptedEngine({ calls, killOnce = null }) {
     const stepId = (prompt.match(/Step id: (\S+)/) || [])[1];
     const label = (prompt.match(/root_task_id: "([^"]+)"/) || [])[1] || null;
     calls.push({ title, engine, ocProfile, label });
+    if (onStep) await onStep({ title, stepId, prompt, tools });
     if (killOnce && killOnce.test(title) && !killed.has(title)) {
       killed.add(title);
       return new Promise(() => {}); // the engine dies with the restart; never answers
@@ -166,6 +167,63 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
       expect(calls.filter(c => /^CI зел/.test(c.title)).length).toBe(2);
     }, 30_000);
   }
+
+  it('the agent may legally add a step after the current one and skip a later one', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { store, task } = startPlan(G, 'feature');
+    const calls = [];
+    let added = null; let skipped = null;
+    const onStep = async ({ title, stepId, prompt, tools }) => {
+      if (!/^Предложение изменения/.test(title) || added) return;
+      const planId = (prompt.match(/Plan id: (\S+)/) || [])[1];
+      // add a follow-up check right after THIS step, with a full step contract
+      const a = await tools.task_item_add.handler({
+        task_id: planId, after_item_id: stepId, title: 'Доп. проверка: бенчмарк сортировки',
+        execution_kind: 'agent', executor_role: 'verifier', minimum_model_level: 'bachelor', context_budget: 'small',
+        validation: { benchmark_recorded: true }, instructions: 'Замерь todo list на 10k задач.',
+      }, { userId: PROFILE });
+      expect(a.error).toBeUndefined();
+      added = a.item;
+      // skip a later step that does not apply to a CLI, with a reason
+      const { items } = await tools.task_get.handler({ task_id: planId }, { userId: PROFILE });
+      const observe = items.find(i => /^Наблюдение после релиза/.test(i.title));
+      const k = await tools.task_item_skip.handler({ item_id: observe.id, reason: 'CLI без прода — наблюдать нечего' }, { userId: PROFILE });
+      expect(k.error).toBeUndefined();
+      skipped = observe.id;
+    };
+    const t = await drive(G, task.id, { runTask: scriptedEngine({ calls, onStep }), registry: fakeGitHub() });
+
+    expect(added).toBeTruthy();
+    const titles = calls.map(c => c.title);
+    const iPropose = titles.findIndex(x => /^Предложение изменения/.test(x));
+    expect(titles[iPropose + 1]).toBe('Доп. проверка: бенчмарк сортировки'); // runs right after the step that added it
+    const addedCall = calls.find(c => c.title === 'Доп. проверка: бенчмарк сортировки');
+    expect([addedCall.engine, addedCall.ocProfile]).toEqual(['opencode', 'free']); // follows the plan level map
+    expect(titles.some(x => /^Наблюдение после релиза/.test(x))).toBe(false); // skipped step never ran
+    const sk = store.getTaskItem(skipped);
+    expect(sk.status).toBe('skipped');
+    expect(sk.last_error).toContain('CLI без прода');
+    expect(t.status).toBe('done'); // a legal skip does not block finalization
+  }, 30_000);
+
+  it('plan edits have guard rails: no skipping a started step, no step without validation', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { store, task } = startPlan(G, 'feature');
+    const tools = require('../../src/mcp-skills/tools/101-durable-tasks.js').tools;
+    const [first] = store.listTaskItems(task.id, PROFILE);
+    store.updateTaskItem(first.id, { status: 'done' }, PROFILE);
+    const k = await tools.task_item_skip.handler({ item_id: first.id, reason: 'поздно' }, { userId: PROFILE });
+    expect(k.error).toMatch(/not started/);
+    const noReason = await tools.task_item_skip.handler({ item_id: first.id, reason: ' ' }, { userId: PROFILE });
+    expect(noReason.error).toBeTruthy();
+    const a = await tools.task_item_add.handler({
+      task_id: task.id, after_item_id: first.id, title: 'без проверки',
+      execution_kind: 'agent', executor_role: 'developer', minimum_model_level: 'master', context_budget: 'small',
+    }, { userId: PROFILE });
+    expect(a.error).toMatch(/validation/);
+    const other = await tools.task_item_add.handler({ task_id: task.id, title: 'x', validation: { ok: true } }, { userId: 'someone-else' });
+    expect(other.error).toMatch(/not found/);
+  });
 
   it('a step killed by a restart is re-queued and completes', async () => {
     const G = require('../../src/gtd-controller.js');

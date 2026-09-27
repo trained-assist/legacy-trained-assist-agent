@@ -100,23 +100,48 @@ module.exports = {
 
     task_item_add: {
       description:
-        'Add an item (step) to an existing durable task. Items run in position order ' +
-        'and can escalate execution tier (free → standard → strong) on failure.',
+        'Add a step to a durable task. For a CONTRACT plan (created by playbook_run/task_create with ' +
+        'acceptance_criteria) this is a legal self-edit of the plan: pass the full step contract ' +
+        '(execution_kind, executor_role, minimum_model_level, context_budget, validation, instructions) and ' +
+        'after_item_id = the step that should precede it (usually your own Step id) — it then runs right after ' +
+        'that step and routes by the plan level map like any compiled step. Legacy tasks: title + tier only.',
       inputSchema: {
         type: 'object',
         required: ['task_id', 'title'],
         properties: {
           task_id: { type: 'string' },
           title: { type: 'string' },
-          position: { type: 'number', description: 'Order among siblings (default: append)' },
+          after_item_id: { type: 'string', description: 'Contract plan: insert right after this step (default: append)' },
+          execution_kind: { type: 'string', enum: ['agent', 'programmatic'] },
+          executor_role: { type: 'string', enum: ['researcher', 'developer', 'reviewer', 'verifier'] },
+          minimum_model_level: { type: 'string', enum: ['bachelor', 'master', 'doctor'] },
+          context_budget: { type: 'string', enum: ['small', 'medium', 'large'] },
+          validation: { type: 'object', description: 'Contract plan: non-empty validation of the new step' },
+          instructions: { type: 'string' },
+          stage: { type: 'string' },
+          position: { type: 'number', description: 'Legacy: order among siblings (default: append)' },
           execution_tier: { type: 'string', enum: ['free', 'standard', 'strong'] },
           delay_after_sec: { type: 'number', description: 'Delay before this item becomes runnable, in seconds' },
         },
       },
-      handler: async ({ task_id, title, position, execution_tier, delay_after_sec }, ctx) => {
+      handler: async ({ task_id, title, position, execution_tier, delay_after_sec, after_item_id, ...contract }, ctx) => {
         const profileId = requireProfile(ctx);
         const task = store().getTask(task_id, profileId);
         if (!task) return { error: 'task not found (or not owned by this profile)' };
+        if (task.acceptance_criteria_json) {
+          try {
+            const item = store().insertPlanItem(task_id, profileId, {
+              afterItemId: after_item_id || null,
+              item: {
+                title, stage: contract.stage, instructions: contract.instructions,
+                execution_kind: contract.execution_kind || 'agent', executor_role: contract.executor_role ?? null,
+                minimum_model_level: contract.minimum_model_level ?? null, context_budget: contract.context_budget ?? null,
+                validation: contract.validation, delay_after_sec: delay_after_sec || 0,
+              },
+            });
+            return { item };
+          } catch (e) { return { error: e.message }; }
+        }
         const existing = store().listTaskItems(task_id, profileId);
         const item = store().createTaskItem({
           id: crypto.randomUUID(),
@@ -127,6 +152,28 @@ module.exports = {
           delay_after_sec: delay_after_sec || 0,
         });
         return { item };
+      },
+    },
+
+    task_item_skip: {
+      description:
+        'Skip a step of a durable plan that does not apply (legal, audited) — e.g. "observe after release" for a ' +
+        'CLI with no prod. Only a step that has not started yet. The reason is stored on the step and in its ' +
+        'validation evidence ({skipped:true, reason}); the plan can still finalize.',
+      inputSchema: {
+        type: 'object',
+        required: ['item_id', 'reason'],
+        properties: { item_id: { type: 'string' }, reason: { type: 'string', description: 'Why this step does not apply' } },
+      },
+      handler: async ({ item_id, reason }, ctx) => {
+        const profileId = requireProfile(ctx);
+        try {
+          const item = store().skipItem(item_id, profileId, { reason, by: 'agent' });
+          // Skipping the last open step must not leave a finished plan unfinalized.
+          const progress = store().progressSummary(item.task_id, profileId);
+          if (progress.total > 0 && progress.finished >= progress.total) store().finalizePlan(item.task_id, profileId);
+          return { item };
+        } catch (e) { return { error: e.message }; }
       },
     },
 
