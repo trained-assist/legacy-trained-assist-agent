@@ -4,6 +4,7 @@
 
 | Статус | Требование | Описание |
 |--------|-----------|----------|
+| ✅ реализовано | **Удалён legacy `94-outsource-project`** (#1470, 2026-09-27) | Дубль `freelance_*` из freelance-skill. Единственный профиль с данными `outsource-projects/` (aleksandrl-iquarus) уже мигрирован `migrate-outsource.js` (dry-run: 3/3 в индексе); вызовов `outsource_*` за 30 дней в логах нет. |
 | ✅ реализовано | **EPIPE-guard в crash-хендлерах** | `src/stream-gone.js` → `installCrashGuards()`: `uncaughtException`/`unhandledRejection` с `code` EPIPE/ERR_STREAM_DESTROYED сразу `process.exit(0)` без логирования; `process.stdout/stderr.on('error')` тоже выходят на EPIPE; логи внутри хендлеров обёрнуты в try/catch, чтобы падающий лог не перебрасывал исключение. Устанавливается в `src/server.js` вместо прежних инлайн-хендлеров. |
 | ✅ реализовано | **Регресс-тест** | `test/stream-gone.test.cjs` — дочерний процесс с закрытыми stdio: стрим-ошибка и EPIPE-uncaughtException дают выход 0, а не спин; не-EPIPE остаётся залогирован и процесс живёт. |
 | ✅ реализовано | **Правило в README** | Раздел Testing & Debugging: агент, запустивший `node src/server.js` для теста, обязан его убить (`kill $SRV` / `kill %1`). |
