@@ -7,6 +7,8 @@
 //                                 OpenRouter free as fallback), short timeouts,
 //                                 answer guard, SSE relay for streaming clients.
 //   GET  /v1/models             — the single public model id ("free-ladder").
+//   GET  /v1/ladder-stats       — call/limit log summary (?hours=24): which rung answered,
+//                                 paid share, limit hits (src/ladder-log.js).
 //
 // Auth: ONE external bearer token (LLM_GATEWAY_TOKEN env, else
 // $AGENT_TOKENS_DIR/llm-gateway/token). No token configured ⇒ 503 — we never
@@ -41,6 +43,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const modelHealth = require('./model-health');
+const ladderLog = require('./ladder-log');
 
 const DEFAULT_CONFIG_FILE = path.join(__dirname, '..', 'config', 'llm-gateway.json');
 
@@ -116,6 +119,7 @@ function recordRungFailure(rung, errorText) {
     return { class: 'transient' };
   }
   modelHealth.recordFailure(key, {
+    source: 'gateway',
     class: verdict.class,
     retryAfterMs: verdict.ttlMs === null ? undefined : verdict.ttlMs,
     errorText,
@@ -326,6 +330,7 @@ async function attemptRung(rung, body, opts) {
       // 429: one same-rung retry with short backoff (Retry-After honored ≤3s).
       if (res.status === 429 && !retry429 && attempt < 1) {
         retry429 = true;
+        ladderLog.logLimit({ source: 'gateway', model: healthKey(rung), class: 'rate_limit_retry', status: 429, errorText: `HTTP 429: ${errText.slice(0, 200)}` });
         const ra = Number(res.headers.get('retry-after')) || 0;
         const waitMs = Math.min(Math.max(ra * 1000, 1500), 3000);
         await new Promise(r => setTimeout(r, waitMs));
@@ -412,6 +417,7 @@ async function attemptRung(rung, body, opts) {
               Connection: 'keep-alive',
               // nginx: do not buffer SSE (works on both relay and CF tunnel).
               'X-Accel-Buffering': 'no',
+              'X-Ladder-Rung': healthKey(rung),
             });
             opts.res.write(rawEvent + '\n\n');
           }
@@ -484,22 +490,41 @@ async function runLadder(body, opts) {
   if (!rungs.length) return { fatal: { status: 503, message: 'no provider keys configured' } };
 
   const errors = [];
+  // Call log (src/ladder-log.js): which configured rung (1-based) answered, every attempt,
+  // whether a paid rung was touched. Written once per request, whatever the outcome.
+  const startedAt = Date.now();
+  const attempts = [];
+  const rungNo = r => cfg.rungs.findIndex(c => c.provider === r.provider && c.model === r.model) + 1;
+  const logged = (outcome, ret) => {
+    ladderLog.logCall({
+      source: 'gateway', ladder: cfg.modelId, rungsTotal: cfg.rungs.length, outcome, attempts,
+      latencyMs: Date.now() - startedAt, extra: { stream: !!body.stream, tools: Array.isArray(body.tools) && body.tools.length > 0 },
+    });
+    return ret;
+  };
   for (const rung of rungs) {
     const label = healthKey(rung);
+    const attempt = { model: label, rung: rungNo(rung), tier: rung.tier };
+    attempts.push(attempt);
     const result = await attemptRung(rung, body, opts);
     if (result.ok) {
-      if (result.relayed) return { relayed: true, rung: label };
+      if (result.relayed) { attempt.outcome = 'ok'; return logged('ok', { relayed: true, rung: label }); }
       const reason = guardAnswer(body, result.message);
       if (reason) {
         // Quality failure, not quota — short transient backoff so the rung is
         // not hammered by every subsequent request either.
-        modelHealth.recordFailure(label, { class: 'transient', errorText: `guard: ${reason}` });
+        modelHealth.recordFailure(label, { class: 'transient', errorText: `guard: ${reason}`, source: 'gateway' });
         errors.push(`${label}: guard:${reason}`);
+        attempt.outcome = `guard:${reason}`;
         continue;
       }
-      return { rung: label, message: result.message, finish_reason: result.finish_reason, usage: result.usage };
+      attempt.outcome = 'ok';
+      return logged('ok', { rung: label, rungIndex: attempt.rung, message: result.message, finish_reason: result.finish_reason, usage: result.usage });
     }
-    if (result.error === 'client-disconnected') return { aborted: true };
+    attempt.outcome = 'error';
+    attempt.error = String(result.error || '').slice(0, 200);
+    if (result.status) attempt.status = result.status;
+    if (result.error === 'client-disconnected') return logged('client-disconnected', { aborted: true });
     errors.push(`${label}: ${result.error}`);
     if (result.status === 404 || result.status === 401) {
       // Provider/model endpoint is dead — park it until the next sweep window.
@@ -507,10 +532,11 @@ async function runLadder(body, opts) {
         class: 'quota',
         retryAfterMs: cfg.sweepIdleMs || 1800000,
         errorText: result.error,
+        source: 'gateway',
       });
     }
   }
-  return { fatal: { status: 502, message: `all rungs failed: ${errors.slice(-4).join(' | ')}` } };
+  return logged('all_failed', { fatal: { status: 502, message: `all rungs failed: ${errors.slice(-4).join(' | ')}` } });
 }
 
 // ── HTTP plumbing ──────────────────────────────────────────────────────────────
@@ -578,6 +604,7 @@ async function handleChatCompletions(req, res) {
     usage: result.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     // Non-standard but harmless observability aids:
     'x-ladder-rung': result.rung,
+    'x-ladder-rung-index': result.rungIndex,
   });
 }
 
@@ -607,6 +634,15 @@ async function route(req, res, url) {
   if (url.pathname === '/v1/models' && req.method === 'GET') {
     ensureTimers();
     handleModels(req, res);
+    return true;
+  }
+  if (url.pathname === '/v1/ladder-stats' && req.method === 'GET') {
+    // Ladder observability (src/ladder-log.js): rung distribution, paid share, limit hits.
+    if (!authOk(req)) {
+      return openaiError(res, 401, 'invalid gateway token', 'invalid_request_error', 'invalid_api_key'), true;
+    }
+    const hours = Math.min(Math.max(Number(url.searchParams.get('hours')) || 24, 1), 24 * 30);
+    json(res, 200, ladderLog.summary(hours * 3600 * 1000));
     return true;
   }
   if (url.pathname === '/v1/chat/completions' || url.pathname === '/v1/models') {
@@ -659,6 +695,7 @@ async function pingRung(rung) {
     } else {
       const text = await res.text().catch(() => '');
       modelHealth.recordFailure(key, {
+        source: 'gateway-sweep',
         class: 'quota',
         retryAfterMs: cfg.sweepIdleMs || 1800000, // dead until the next sweep window
         errorText: `sweep HTTP ${res.status}: ${text.slice(0, 200)}`,
@@ -717,6 +754,7 @@ async function syncCatalog() {
         if (!ids.has(r.model)) {
           const key = healthKey(r);
           modelHealth.recordFailure(key, {
+            source: 'gateway-catalog',
             class: 'quota',
             retryAfterMs: 7 * 24 * 3600_000,
             errorText: 'gone from OpenRouter catalog (weekly rotation)',
@@ -755,6 +793,7 @@ async function syncCatalog() {
           for (const r of cfg.rungs.filter(x => x.provider === 'go')) {
             if (!ids.has(r.model)) {
               modelHealth.recordFailure(healthKey(r), {
+                source: 'gateway-catalog',
                 class: 'quota',
                 retryAfterMs: 7 * 24 * 3600_000,
                 errorText: 'gone from OpenCode Go catalog',
