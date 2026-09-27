@@ -6,12 +6,12 @@
 // Two append-only JSONL files, one writer for every ladder in the process:
 //   calls.jsonl  — one line per ladder call: which rung (1-based) answered, of how many,
 //                  its billing tier, whether the call reached a PAID rung, every attempt.
-//                  Written by the free-ladder gateway (src/llm-gateway.js) and by the runner's
-//                  OpenCode ladder (src/runner/index.js) — source field tells them apart.
+//                  Written by the runner's OpenCode ladder (src/runner/index.js). (The free-ladder
+//                  gateway moved to the trained-assist-llm-ladder worker, 2026-09-27.)
 //   limits.jsonl — SEPARATE file for limit hits: 429 rate limits, daily/free quotas, credits
 //                  exhausted, auth/config dead ends. Fed from the single choke point
-//                  model-health.recordFailure (non-transient classes) plus the gateway's
-//                  same-rung 429 retry, so no ladder can hit a limit silently.
+//                  model-health.recordFailure (non-transient classes), so no ladder can hit a
+//                  limit silently.
 //
 // Tier (billing) of a model key:
 //   subscription — opencode-go/* (flat paid subscription, no marginal cost per call)

@@ -141,11 +141,15 @@ describe('evaluateItemValidationsModeAware', () => {
   });
 });
 
+let afterTokenRestore = () => {};
 describe('default LLM validator (bounded service-LLM call)', () => {
   it('without an API key returns inconclusive and makes no request', async () => {
     const fetchImpl = vi.fn();
+    const saved = process.env.LLM_LADDER_TOKEN; delete process.env.LLM_LADDER_TOKEN; // no ladder token
+    afterTokenRestore = () => { if (saved !== undefined) process.env.LLM_LADDER_TOKEN = saved; };
     const fn = makeLlmValidate({ apiKey: '', fetchImpl });
     const r = await fn({ key: 'x', validation: true, mode: 'programmatic+llm' });
+    afterTokenRestore();
     expect(r).toEqual({ status: 'inconclusive', reason: 'no-llm-key' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });

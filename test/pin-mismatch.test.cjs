@@ -1,4 +1,9 @@
 'use strict';
+// service-llm → llm-ladder worker: pin tests to an unroutable host + dummy token so they are
+// self-contained (staging runs this file directly, outside scripts/run-cjs-tests.js) and can
+// never reach the live worker via the VM's token file.
+process.env.LLM_LADDER_URL = 'http://llm-ladder.invalid';
+process.env.LLM_LADDER_TOKEN = 'test-ladder-token';
 // Pinned chat + task confidently about ANOTHER project → 'ask' (owner 2026-09-24).
 //   X1  confident verdict for another project → ask, suggested first, pinned second, mismatch meta
 //   X2  low confidence → stays auto into the pin
@@ -42,10 +47,10 @@ function ok(c, m) { if (c) pass++; else { fail++; console.log('FAIL:', m); } }
   const f = async () => { calls++; return { ok: true, json: async () => ({ choices: [{ message: { content: '{}' } }] }) }; };
   await match.classifyTaskProject('коротко', all, { apiKey: 'k', fetchImpl: f });
   await match.classifyTaskProject('достаточно длинная задача про выставку', [a], { apiKey: 'k', fetchImpl: f });
-  const savedKey = process.env.OPENROUTER_API_KEY; delete process.env.OPENROUTER_API_KEY;
+  const savedKey = process.env.LLM_LADDER_TOKEN; delete process.env.LLM_LADDER_TOKEN;
   const savedOa = process.env.OPENAI_API_KEY; delete process.env.OPENAI_API_KEY;
   await match.classifyTaskProject('достаточно длинная задача про выставку', all, { fetchImpl: f });
-  if (savedKey) process.env.OPENROUTER_API_KEY = savedKey;
+  if (savedKey) process.env.LLM_LADDER_TOKEN = savedKey;
   if (savedOa) process.env.OPENAI_API_KEY = savedOa;
   ok(calls === 0, 'X6 no network for short / single project / no key');
 
@@ -57,10 +62,10 @@ function ok(c, m) { if (c) pass++; else { fail++; console.log('FAIL:', m); } }
   ok(v && v.projectId === b.id && v.confidence === 1, 'X7 valid verdict clamped');
   ok(await match.classifyTaskProject(long, all, { apiKey: 'k', fetchImpl: async () => { throw new Error('timeout'); } }) === null, 'X7 error → null');
 
-  // X8 service-LLM ladder 402 → OpenAI fallback answers; garbage from the ladder is a failed rung
+  // X8 llm-ladder worker error → OpenAI fallback answers; garbage from the ladder is a failed rung
   // (service-llm.js JSON guard), so the OpenAI fallback is tried too (reliability over one call)
   const urls = [];
-  const f402 = async (u) => { urls.push(u); return u.includes('openrouter')
+  const f402 = async (u) => { urls.push(u); return u.includes('llm-ladder')
     ? { ok: false, status: 402, json: async () => ({}) }
     : { ok: true, json: async () => ({ choices: [{ message: { content: '{"projectId":"' + b.id + '","confidence":0.9}' } }] }) }; };
   const v8 = await match.classifyTaskProject(long, all, { apiKey: 'k', openaiKey: 'o', fetchImpl: f402 });

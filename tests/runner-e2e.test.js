@@ -1153,7 +1153,7 @@ describe('GTD footer is not an assistant menu', () => {
     const inputs = [];
     const originalFetch = globalThis.fetch;
     const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, options) => {
-      if (!String(url).startsWith('https://openrouter.ai/')) return originalFetch(url, options);
+      if (!String(url).startsWith(process.env.LLM_LADDER_URL || 'http://llm-ladder.invalid')) return originalFetch(url, options);
       const input = JSON.parse(options.body).messages.find(m => m.role === 'user').content;
       inputs.push(input);
       const footer = input.includes('/checklist_turn_off');
