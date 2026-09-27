@@ -34,9 +34,10 @@ revision and hid current tools from it.
 - [x] HH MCP tools (`90`–`95`), incl. `calltips_*` and recruiter text tools
 - [x] HTTP routes `/hh/*`, `/api/hh/*`, `/calltips-*` (`hh-routes.js`)
 - [x] ApplyLink tools `applylink_*` (`96-applylink.js`)
+- [x] HH demo mode `demo_*` (`98-demo.js`) — still its own catalog section `demo`, addressed as `hh-skills/98-demo.js`
 - [x] quick-answer intents (`hh-intents.js`) and the vacancy-creation flow (`hh-vacancy-quick.js`)
 - [x] prompt domains `hh`, `hh.setup`, `hh-notify`
-- [ ] `97b-candidate-client-report` + `src/candidate-report.js`, `99-interview-analysis` + `95-video-analysis` (in-process coupling), `97b` also needs a publish API for domain repos; `98-demo` stays in core — its own catalog section, enabled per profile (vova, vova-recruiter) independently of recruiting
+- [ ] `97b-candidate-client-report` + `src/candidate-report.js`, `99-interview-analysis` + `95-video-analysis` (in-process coupling), `97b` also needs a publish API for domain repos
 - Stays in core on purpose: HH OAuth (`/connect/hh/*`, `/hh-callback`, `connect-forms/hh.js`) — platform credential collection shared with other services
 
 ### sales-crm — `trained-assist-sales-skill`
