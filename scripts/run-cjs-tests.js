@@ -33,7 +33,9 @@ const isoEnv = {
 // A test file may still point these at its own temp dir; it just can't fall through to $HOME.
 const childEnv = { ...isoEnv, ...process.env };
 // Provider keys from the developer's shell must not leak into tests (CI has none).
-for (const k of ['OPENROUTER_API_KEY', 'OPENCODE_GO_API_KEYS', 'OPENCODE_GO_API_KEY']) delete childEnv[k];
+for (const k of ['OPENROUTER_API_KEY', 'OPENCODE_GO_API_KEYS', 'OPENCODE_GO_API_KEY', 'LLM_LADDER_TOKEN']) delete childEnv[k];
+// …nor may they call the live llm-ladder worker with the VM's token file.
+childEnv.LLM_LADDER_DISABLED = '1';
 for (const k of Object.keys(isoEnv)) {
   if (process.env[k] && process.env[k].startsWith(os.homedir())) childEnv[k] = isoEnv[k];
 }
