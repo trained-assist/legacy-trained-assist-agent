@@ -9,7 +9,6 @@
 // Even a confident mismatch never re-routes on its own: it turns 'auto' into 'ask'
 // with the suggested project first and the pinned one second — the user decides.
 
-const DEFAULT_MODEL = process.env.PROJECT_MATCH_MODEL || 'google/gemini-2.5-flash';
 const FALLBACK_MODEL = process.env.PROJECT_MATCH_FALLBACK_MODEL || 'gpt-4o-mini';
 const DEFAULT_THRESHOLD = Number(process.env.PROJECT_MISMATCH_THRESHOLD) || 0.85;
 const MIN_TASK_CHARS = 20; // «привет», «ок», «делай» carry no topic — never second-guess the pin
@@ -54,6 +53,13 @@ function applyMismatch(decision, verdict, { threshold = DEFAULT_THRESHOLD, allPr
   };
 }
 
+// Verdict object → normalized {projectId, confidence, reason} or null (garbage / unknown id).
+function _verdict(v, projects) {
+  if (!v || typeof v.projectId !== 'string' || !projects.some(p => p.id === v.projectId)) return null;
+  const confidence = Math.max(0, Math.min(1, Number(v.confidence) || 0));
+  return { projectId: v.projectId, confidence, reason: clip(v.reason, 120) };
+}
+
 // One provider call → parsed verdict or null (http error / garbage / unknown id).
 async function _ask(url, key, model, projects, text, { timeoutMs, fetchImpl, pinnedId }) {
   const res = await fetchImpl(url, {
@@ -76,29 +82,35 @@ async function _ask(url, key, model, projects, text, { timeoutMs, fetchImpl, pin
   const raw = String(data.choices?.[0]?.message?.content || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   const m = raw.match(/\{[\s\S]*\}/);
   if (!m) return null;
-  const v = JSON.parse(m[0]);
-  if (!v || typeof v.projectId !== 'string' || !projects.some(p => p.id === v.projectId)) return null;
-  const confidence = Math.max(0, Math.min(1, Number(v.confidence) || 0));
-  return { projectId: v.projectId, confidence, reason: clip(v.reason, 120) };
+  return _verdict(JSON.parse(m[0]), projects);
 }
 
-// Returns {projectId, confidence, reason} or null. Never throws. OpenRouter first; if it
-// is unavailable (402 out of credits, 5xx, timeout) and an OpenAI key exists → gpt-4o-mini.
-async function classifyTaskProject(task, projects, { apiKey, openaiKey, model = DEFAULT_MODEL, timeoutMs = 3500, fetchImpl = fetch, pinnedId = null } = {}) {
-  const orKey = apiKey || process.env.OPENROUTER_API_KEY;
+// Returns {projectId, confidence, reason} or null. Never throws. Service-LLM ladder first
+// (src/service-llm.js: Go rungs → OpenRouter last); if no rung answers and an OpenAI key exists →
+// gpt-4o-mini.
+async function classifyTaskProject(task, projects, { apiKey, openaiKey, timeoutMs = 3500, fetchImpl = fetch, pinnedId = null } = {}) {
+  const serviceLlm = require('./service-llm');
+  const orKey = apiKey || null;
   const oaKey = openaiKey || process.env.OPENAI_API_KEY;
   const text = clip(task, 1500);
-  if ((!orKey && !oaKey) || text.length < MIN_TASK_CHARS || !Array.isArray(projects) || projects.length < 2) return null;
+  if ((!serviceLlm.available(orKey) && !oaKey) || text.length < MIN_TASK_CHARS || !Array.isArray(projects) || projects.length < 2) return null;
   // Deterministic order (pinned first, rest by id): list order used to swing the model's
   // confidence 0.7↔0.9 on the same task.
   const ordered = [...projects].sort((x, y) => (y.id === pinnedId) - (x.id === pinnedId) || String(x.id).localeCompare(String(y.id)));
   projects = ordered;
   const opts = { timeoutMs, fetchImpl, pinnedId };
-  if (orKey) {
+  if (serviceLlm.available(orKey)) {
     try {
-      const v = await _ask('https://openrouter.ai/api/v1/chat/completions', orKey, model, projects, text, opts);
-      if (v !== undefined) return v; // answered (verdict or garbage) — don't pay twice
-    } catch (e) { console.warn('[project-match] openrouter:', e.message); }
+      const r = await serviceLlm.serviceChat({
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: `Проекты:\n${projects.map(p => describeProject(p, pinnedId)).join('\n')}\n\nЗадача:\n${text}` },
+        ],
+        json: true, maxTokens: 80, timeoutMs, totalTimeoutMs: timeoutMs + 2000, apiKey: orKey,
+        source: 'project-match', fetchImpl: fetchImpl === fetch ? null : fetchImpl,
+      });
+      if (r) return _verdict(r.value, projects); // answered (verdict or garbage) — don't pay twice
+    } catch (e) { console.warn('[project-match] service-llm:', e.message); }
   }
   if (oaKey) {
     try {

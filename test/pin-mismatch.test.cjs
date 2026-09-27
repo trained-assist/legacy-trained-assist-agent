@@ -57,7 +57,8 @@ function ok(c, m) { if (c) pass++; else { fail++; console.log('FAIL:', m); } }
   ok(v && v.projectId === b.id && v.confidence === 1, 'X7 valid verdict clamped');
   ok(await match.classifyTaskProject(long, all, { apiKey: 'k', fetchImpl: async () => { throw new Error('timeout'); } }) === null, 'X7 error → null');
 
-  // X8 OpenRouter 402 → OpenAI fallback answers; garbage from OpenRouter does NOT double-pay
+  // X8 service-LLM ladder 402 → OpenAI fallback answers; garbage from the ladder is a failed rung
+  // (service-llm.js JSON guard), so the OpenAI fallback is tried too (reliability over one call)
   const urls = [];
   const f402 = async (u) => { urls.push(u); return u.includes('openrouter')
     ? { ok: false, status: 402, json: async () => ({}) }
@@ -66,7 +67,7 @@ function ok(c, m) { if (c) pass++; else { fail++; console.log('FAIL:', m); } }
   ok(v8 && v8.projectId === b.id && urls.length === 2 && urls[1].includes('openai.com'), 'X8 402 → openai fallback');
   urls.length = 0;
   const fGarbage = async (u) => { urls.push(u); return { ok: true, json: async () => ({ choices: [{ message: { content: 'x' } }] }) }; };
-  ok(await match.classifyTaskProject(long, all, { apiKey: 'k', openaiKey: 'o', fetchImpl: fGarbage }) === null && urls.length === 1, 'X8 answered garbage → no second provider');
+  ok(await match.classifyTaskProject(long, all, { apiKey: 'k', openaiKey: 'o', fetchImpl: fGarbage }) === null && urls.length === 2 && urls[1].includes('openai.com'), 'X8 ladder garbage → OpenAI fallback tried, still garbage → null');
 
   // X9 prompt marks the pinned project and lists it first, rest by id (list order used to
   // swing gpt-4o-mini's confidence 0.7↔0.9 on the same task)

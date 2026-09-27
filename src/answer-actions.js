@@ -12,9 +12,10 @@
 //    paragraphs/lists by the LLM; the result is accepted only if it kept the
 //    words of the original (coverage guard), otherwise the original goes out.
 //
-// Both are fail-soft: no key / timeout / bad JSON → null, caller keeps legacy path.
+// Both are fail-soft: no key / timeout / bad JSON → null, caller keeps legacy path. Both run on
+// the service-LLM ladder (src/service-llm.js).
 
-const OR_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const serviceLlm = require('./service-llm');
 const MAX_ACTIONS = 3;
 const MAX_LABEL = 40;
 
@@ -22,21 +23,12 @@ function norm(s) {
   return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
-async function callJson({ apiKey, model, system, user, maxTokens, timeoutMs }) {
-  const res = await fetch(OR_URL, {
-    method: 'POST',
-    signal: AbortSignal.timeout(timeoutMs),
-    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model, temperature: 0, max_tokens: maxTokens,
-      response_format: { type: 'json_object' },
-      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-    }),
-  });
-  if (!res.ok) throw new Error(`openrouter ${res.status}`);
-  const data = await res.json();
-  const raw = data?.choices?.[0]?.message?.content || '';
-  return JSON.parse(raw.replace(/^```json\s*|\s*```$/g, '').trim());
+// Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last) — throws when every rung
+// failed so callers keep their existing fail-soft catch.
+async function callJson({ apiKey, system, user, maxTokens, timeoutMs, source }) {
+  const value = await serviceLlm.serviceJson({ system, user, maxTokens, timeoutMs, apiKey, source });
+  if (value == null) throw new Error('service-llm: no rung answered');
+  return value;
 }
 
 const ACTIONS_SYSTEM = [
@@ -55,16 +47,14 @@ const ACTIONS_SYSTEM = [
 ].join(' ');
 
 // → { kind, actions: [{label, quote}] } | null (null = LLM unavailable → caller uses legacy)
-async function extractAnswerActions(text, apiKey, { timeoutMs = 10000, model } = {}) {
+async function extractAnswerActions(text, apiKey, { timeoutMs = 10000 } = {}) {
   const t = String(text || '').trim();
   if (t.length < 100) return { kind: 'none', actions: [] };
-  const key = apiKey || process.env.OPENROUTER_API_KEY;
-  if (!key) return null;
+  if (!serviceLlm.available(apiKey)) return null;
   let obj;
   try {
     obj = await callJson({
-      apiKey: key,
-      model: model || process.env.ANSWER_ACTIONS_MODEL || process.env.GTD_INTENT_MODEL || 'google/gemini-2.5-flash',
+      apiKey, source: 'answer-actions',
       system: ACTIONS_SYSTEM,
       user: t.slice(-6000),
       maxTokens: 400,
@@ -144,15 +134,13 @@ const PARA_SYSTEM = [
 ].join(' ');
 
 // → reformatted text, or the original when not needed / unsafe / unavailable.
-async function paragraphize(text, apiKey, { timeoutMs = 12000, model } = {}) {
+async function paragraphize(text, apiKey, { timeoutMs = 12000 } = {}) {
   const t = String(text || '');
   if (!isWallOfText(t) || t.length > 8000) return t;
-  const key = apiKey || process.env.OPENROUTER_API_KEY;
-  if (!key) return t;
+  if (!serviceLlm.available(apiKey)) return t;
   try {
     const obj = await callJson({
-      apiKey: key,
-      model: model || process.env.ANSWER_FORMAT_MODEL || 'google/gemini-2.5-flash',
+      apiKey, source: 'answer-format',
       system: PARA_SYSTEM,
       user: t,
       maxTokens: Math.min(4000, Math.ceil(t.length / 2) + 200),

@@ -72,31 +72,14 @@ ${sessionDescriptions}
 - Если сообщение может относиться к нескольким диалогам — напиши "ambiguous"
 - Не пиши ничего лишнего, только ID или "ambiguous"`;
 
-  if (!openrouterKey) {
-    throw new Error('No API key configured for classify (OPENROUTER_API_KEY required)');
+  // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
+  const serviceLlm = require('./service-llm');
+  if (!serviceLlm.available(openrouterKey)) {
+    throw new Error('No LLM key configured for classify (OpenCode Go or OPENROUTER_API_KEY required)');
   }
-
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${openrouterKey}`,
-    },
-    body: JSON.stringify({
-      model: 'z-ai/glm-5.3-flash',
-      max_tokens: 64,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-    signal: AbortSignal.timeout(8000),
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => '');
-    throw new Error(`OpenRouter API ${res.status}: ${errBody.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  const answer = data.choices?.[0]?.message?.content?.trim() || 'ambiguous';
+  const out = await serviceLlm.serviceText({ user: prompt, maxTokens: 64, timeoutMs: 8000, apiKey: openrouterKey, source: 'classify' });
+  if (out == null) throw new Error('classify: no service-llm rung answered');
+  const answer = out.trim().replace(/^["'`]+|["'`.]+$/g, '') || 'ambiguous';
 
   if (answer === 'ambiguous') return { sessionId: null, confidence: 'low' };
 
