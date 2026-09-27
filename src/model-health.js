@@ -137,8 +137,15 @@ function all(now = Date.now()) {
 //   class 'transient' → failures++ and skipUntil = now + backoff(failures)
 //   anything else (quota / force / …) → failures++ and skipUntil = now + retryAfterMs
 //                                        (or backoff(failures) when no explicit TTL is given)
-function recordFailure(model, { class: cls = 'transient', retryAfterMs, errorText } = {}) {
+function recordFailure(model, { class: cls = 'transient', retryAfterMs, errorText, source } = {}) {
   if (!model) return null;
+  // Limit hits (quota/config — not flaky 'transient', not the blind 'force' alternation) go to
+  // the separate limits log: this is the one choke point every ladder parks a model through.
+  if (cls !== 'transient' && cls !== 'force') {
+    try {
+      require('./ladder-log').logLimit({ source: source || 'model-health', model, class: cls, retryAfterMs, errorText });
+    } catch { /* logging never breaks health bookkeeping */ }
+  }
   const pol = policy();
   const now = Date.now();
   const state = _readState();
