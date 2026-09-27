@@ -132,12 +132,11 @@ Every chat without an explicit choice runs on `deepseek` (`src/profiles.js`). It
 ladder (`.opencode/profiles/deepseek.json` → `ladderRef: deepseek` in `config/model-routing.json`):
 
 `opencode-go/mimo-v2.6-flash` → `opencode-go/deepseek-v4.1-flash` ($0.15/$0.60)
-→ `opencode-go/muse-spark-1.3-contributor` ($0.10/$0.20)
 → **`openrouter/deepseek/deepseek-v4-flash-0731`** (paid, last). Same ladder for every role.
 
-Order set by the owner 2026-09-27: «MiMo-V2.6-Flash → DeepSeek V4.1 Flash → Muse Spark 1.3
-Contributor → далее openrouter» (supersedes #1589's cheapest-first order; `gpt-6-luna` dropped,
-`deepseek-v4-pro` stays out).
+Order set by the owner 2026-09-27: «MiMo-V2.6-Flash → DeepSeek V4.1 Flash → … → далее openrouter»
+(supersedes #1589's cheapest-first order; `gpt-6-luna` dropped, `deepseek-v4-pro` stays out).
+`muse-spark-1.3-contributor` was removed the same day — owner: «беда с моделью, удаляем».
 
 How it degrades and comes back — no manual switch anywhere:
 

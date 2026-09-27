@@ -73,7 +73,7 @@ test('all Go keys parked → parkProvider skips every Go rung, the ladder serves
   freshModule();
   const opencodeLadder = require('../src/opencode-ladder');
   const parked = opencodeLadder.parkProvider('deepseek', 'opencode-go/', Date.now() + 10 * 60 * 1000, 'usage limit');
-  assert.ok(parked.length >= 3 && parked.every(m => m.startsWith('opencode-go/')));
+  assert.ok(parked.length >= 2 && parked.every(m => m.startsWith('opencode-go/')));
   for (const role of opencodeLadder.ROLES) {
     assert.equal(opencodeLadder.resolveModel(deepseekProfile(), 'deepseek', role), 'openrouter/deepseek/deepseek-v4-flash-0731', role);
   }
