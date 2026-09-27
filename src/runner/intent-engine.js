@@ -660,7 +660,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
       free:     'FREE — только бесплатный inference (MiMo/Nemotron)',
       russian:  'RUSSIAN — GigaChat Pro/Ultra/Max',
       'deepseek-openrouter': 'DEEPSEEK, закреплено на OpenRouter — openrouter/deepseek/deepseek-v4-flash-0731',
-      'deepseek-go':         'DEEPSEEK, закреплено на Go — opencode-go/deepseek-v4.1-flash',
+      'deepseek-go':         'DEEPSEEK, закреплено на Go — opencode-go/muse-spark-1.3-contributor',
     };
     const label = PROFILE_LABELS[raw] || raw;
     // deepseek-openrouter/deepseek-go are a pin for THIS profile only — unlike /oc_deepseek,

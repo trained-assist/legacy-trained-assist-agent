@@ -38,7 +38,9 @@ test('/oc_ds_go pins ocProfile to the literal deepseek-go file', () => {
   assert.match(reply, /закреплено на Go/);
   assert.equal(profiles.getOcProfile(wd), 'deepseek-go');
   const overrides = opencodeLadder.buildOcProfileOverrides(profiles.getOcProfile(wd));
-  assert.equal(overrides.model, 'opencode-go/deepseek-v4.1-flash');
+  // The pin contract is the PROFILE file (deepseek-go), not the model: the ladder's top rung
+  // changed 2026-09-27 (owner, issue #1589) to the cheapest paid Go model muse-spark-1.3-contributor.
+  assert.equal(overrides.model, 'opencode-go/muse-spark-1.3-contributor');
 });
 
 test('/oc_deepseek_go is a full-word alias for /oc_ds_go', () => {
