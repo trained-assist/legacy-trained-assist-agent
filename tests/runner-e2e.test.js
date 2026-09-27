@@ -1164,7 +1164,8 @@ describe('GTD footer is not an assistant menu', () => {
     try {
       await runTask({ taskId: `footer-${Date.now()}`, user, task: 'Исправь уведомления',
         forceClaude: true, mode: 'deep', secrets: { BOT_TOKEN: 'fake:token', OPENROUTER_API_KEY: 'fake' } });
-      expect(inputs.filter(t => t === answer).length).toBe(2);
+      // #1542 P3: one action-extraction call replaced the plan+menu pair; it sees only the bare answer.
+      expect(inputs.filter(t => t === answer).length).toBe(1);
       expect(inputs.every(t => !t.includes('/checklist_turn_off'))).toBe(true);
       expect(tgTexts().at(-1)).toContain('/checklist_turn_off');
       expect(tgSent().at(-1).body.reply_markup).toEqual({ inline_keyboard: [] });
