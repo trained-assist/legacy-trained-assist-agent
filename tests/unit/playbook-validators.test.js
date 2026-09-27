@@ -106,6 +106,17 @@ describe('playbook-validators', () => {
     const fail = await evaluateValidation('ci_green', { item: item(), profileId: 'u1' }, red);
     expect(fail.status).toBe('fail');
     expect(fail.evidence.failing).toContain('ci');
+    expect(fail.evidence.final).toBe(true); // finished red — a durable wait wakes on it
+
+    const running = createDefaultRegistry({
+      ghToken: () => 'token',
+      ghFetch: async (url) => url.endsWith('/pulls/7')
+        ? { head: { sha: 'abc' } }
+        : { check_runs: [{ name: 'ci', status: 'in_progress', conclusion: null }] },
+    });
+    const pending = await evaluateValidation('ci_green', { item: item(), profileId: 'u1' }, running);
+    expect(pending.status).toBe('fail');
+    expect(pending.evidence.final).toBe(false); // still running — keep waiting
 
     const empty = createDefaultRegistry({
       ghToken: () => 'token',

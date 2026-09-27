@@ -22,7 +22,7 @@
 //
 // wait_json fields: then, until, awaiting_user, reason, poll_every_sec,
 // timeout_sec, started_at, deadline_at, last_poll_at, last_poll, woken_at,
-// woken_by, wake_message, resolved ('satisfied'|'woken'|'timeout'), resolved_at,
+// woken_by, wake_message, resolved ('satisfied'|'woken'|'failed'|'timeout'), resolved_at,
 // resolve_evidence.
 
 const DEFAULT_POLL_SEC = 300;
@@ -99,11 +99,14 @@ function normalizeAgentWait(req, { now, registryKeys = [] } = {}) {
 /**
  * Decide what a poll means. `results` are deterministic validator verdicts for
  * the condition (null when the wait has no condition — a timer or user wait).
- * @returns {'satisfied'|'woken'|'timeout'|'keep'}
+ * @returns {'satisfied'|'woken'|'failed'|'timeout'|'keep'}
  */
 function decidePoll(wait, results, now) {
   if (wait.woken_at) return 'woken';
   if (Array.isArray(results) && results.length && results.every(r => r.status === 'pass')) return 'satisfied';
+  // A validator may mark a fail as final (e.g. CI finished red): waiting longer
+  // cannot turn it green, so wake now and let the step repair or fail.
+  if (Array.isArray(results) && results.some(r => r.status === 'fail' && r.evidence && r.evidence.final === true)) return 'failed';
   if (now >= wait.deadline_at) return 'timeout';
   return 'keep';
 }
@@ -142,6 +145,10 @@ function resumeNote(wait, now = Date.now()) {
   } else if (wait.resolved === 'woken') {
     lines.push(`Тебя разбудил: ${wait.woken_by || 'user'}.`);
     if (wait.wake_message) lines.push(`Сообщение: ${wait.wake_message}`);
+  } else if (wait.resolved === 'failed') {
+    lines.push(`Условие окончательно НЕ выполнилось (ждать дальше бессмысленно): ${JSON.stringify(wait.until)}.`);
+    if (wait.resolve_evidence) lines.push(`Evidence: ${JSON.stringify(wait.resolve_evidence).slice(0, 1500)}`);
+    lines.push('Разберись: почини причину (новый коммит/PR по правилам репо) и снова task_item_wait, либо DURABLE: failed: <почему>.');
   } else if (wait.resolved === 'timeout') {
     lines.push(wait.until || wait.awaiting_user
       ? 'Ожидание ИСТЕКЛО по таймауту — условие так и не выполнилось / ответа не было.'

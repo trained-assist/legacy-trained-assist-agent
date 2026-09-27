@@ -369,11 +369,11 @@ async function pollDurableWait(store, { task, item, wait, now, registry, project
   if (w.then === 'complete') {
     // satisfied → the normal programmatic path re-checks and completes the step
     // (the wait stays active, so a flake there simply resumes waiting on retry);
-    // timeout → mark resolved so the failure path runs: recovery budget, then
-    // on_fail/task_failed hooks tell the owner the wait expired.
-    if (decision === 'timeout') {
-      store.setItemWait(item.id, task.profile_id, { ...w, resolved: 'timeout', resolved_at: now });
-      console.log(`[gtd-durable] wait timeout ${item.id.slice(0, 8)}`);
+    // timeout / final fail → mark resolved so the failure path runs: recovery
+    // budget, then on_fail/task_failed hooks tell the owner.
+    if (decision === 'timeout' || decision === 'failed') {
+      store.setItemWait(item.id, task.profile_id, { ...w, resolved: decision, resolved_at: now, resolve_evidence: results ? summarizeResults(results) : null });
+      console.log(`[gtd-durable] wait ${decision} ${item.id.slice(0, 8)}`);
     }
     return 'proceed';
   }
@@ -590,9 +590,11 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
             recordFastpassSkip(store, { task, item: freshItem, executionId, reason: skipReason });
             console.log(`[gtd-durable] fastpass skip ${itemSnap.id.slice(0, 8)}: ${skipReason}`);
           } else {
+            // The reply joins the plan text: a step that just opened a PR is
+            // validated (pr_opened / ci_green) against the URL it printed.
             await recordItemValidations(store, {
               task, item: itemSnap, executionId, registry: validators, projectDir: itemProjectDir,
-              validationMode: mode, llmValidate, planText,
+              validationMode: mode, llmValidate, planText: `${planText}\n${said}`,
             });
           }
           store.setItemEvidence(itemSnap.id, task.profile_id, {

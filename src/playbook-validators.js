@@ -122,7 +122,13 @@ function makeCiValidator({ ghToken, ghFetch, staging = false }) {
     const subject = { pr: ref.url, sha: pr.head.sha, staging };
     const evidence = { checks: runs.map(r => ({ name: r.name, status: r.status, conclusion: r.conclusion })) };
     const failing = runs.filter(r => !(r.status === 'completed' && r.conclusion === 'success'));
-    if (failing.length) return { status: 'fail', subject, evidence: { ...evidence, failing: failing.map(r => r.name) } };
+    // `final` marks a verdict that more waiting cannot change: every run finished
+    // and at least one is red. A durable wait wakes on it instead of polling a red
+    // CI to its timeout; runs still in progress are a plain (non-final) fail.
+    const pendingRuns = failing.filter(r => r.status !== 'completed');
+    if (failing.length) {
+      return { status: 'fail', subject, evidence: { ...evidence, failing: failing.map(r => r.name), final: pendingRuns.length === 0 } };
+    }
     if (staging) return { status: 'inconclusive', subject, evidence: { ...evidence, reason: 'staging-unverified' } };
     return { status: 'pass', subject, evidence };
   };

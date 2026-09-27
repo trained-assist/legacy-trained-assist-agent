@@ -214,6 +214,28 @@ const passAll = { command_exit_zero: async () => ({ status: 'pass', subject: {},
     ok(store.listTaskItems(taskId, 'u1')[0].status === 'done', 'timer step completes');
   }
 
+  // 5b. a final fail (CI finished red) wakes the agent now instead of polling to timeout
+  {
+    const { G, store, tools } = fresh('5b');
+    const taskId = activePlan(store, [agentItem('CI green (repair if red)')]);
+    const registry = { ...passAll, ci_green: async () => ({ status: 'fail', subject: {}, evidence: { failing: ['test'], final: true } }) };
+    await G.runDueDurable({
+      secrets: {}, now: Date.now(), isTaskRunning: () => false, registry,
+      runTask: async (opts) => {
+        const itemId = /Step id: (\S+)/.exec(opts.task)[1];
+        await tools.task_item_wait.handler({ item_id: itemId, until: { ci_green: 'https://github.com/o/r/pull/9' }, timeout_sec: 7200, reason: 'CI' }, { userId: 'u1' });
+        return 'DURABLE: waiting';
+      },
+    });
+    await drain(); await drain();
+    let prompt = '';
+    await G.runDueDurable({ secrets: {}, now: Date.now() + 301_000, isTaskRunning: () => false, registry, maxFires: 1,
+      runTask: async (opts) => { prompt = opts.task; return 'DURABLE: done'; } });
+    await drain(); await drain();
+    ok(/окончательно НЕ выполнилось/.test(prompt) && /failing/.test(prompt), 'red CI wakes the step with the failing evidence');
+    ok(store.listTaskItems(taskId, 'u1')[0].status === 'done', 'woken step can repair and finish');
+  }
+
   // 6. DURABLE: waiting without task_item_wait → bounded failure, not a silent park
   {
     const { G, store } = fresh('6');
