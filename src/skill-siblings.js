@@ -9,10 +9,14 @@
 const fs = require('fs');
 const path = require('path');
 
+// `mcpServerId` is the MCP server name this sibling mounts as in the engine's
+// `.mcp.json` (src/browser.js). It is the identity an approved/sealed source
+// matches when it replaces the sibling (same id => sealed wins, sibling is the
+// core fallback) — both in the session path and the headless transport.
 const SKILL_SIBLINGS = [
-  { id: 'hh', repo: 'trained-assist-hh-skill' },
-  { id: 'freelance', repo: 'trained-assist-freelance-skill' },
-  { id: 'engineering', repo: 'trained-assist-engineering' },
+  { id: 'hh', repo: 'trained-assist-hh-skill', mcpServerId: 'hh-skills' },
+  { id: 'freelance', repo: 'trained-assist-freelance-skill', mcpServerId: 'freelance-skills' },
+  { id: 'engineering', repo: 'trained-assist-engineering', mcpServerId: 'engineering-skills' },
 ];
 
 const DEFAULT_ROOT = path.join(__dirname, '..', '..');
