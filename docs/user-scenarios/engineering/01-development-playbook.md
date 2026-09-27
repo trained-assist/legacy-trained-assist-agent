@@ -3,7 +3,7 @@
 **Домен:** Инженерная разработка (сам продукт `trained-assist-agent` и родственные репозитории)  
 **Длина:** ~16 шагов (5 стадий плейбука)  
 **Профиль:** любой профиль, запускающий изменения в репозитории  
-**Плейбук:** `playbooks/development.json` (id `development`, v1, scope `system`)  
+**Плейбук:** `trained-assist-engineering/playbooks/development.json` (id `development`, v1, scope `system`; sibling-репо, ядро резолвит opt-in)  
 **Тул:** `ba_development_playbook` (`src/mcp-skills/tools/62-business-analyst.js`), компилятор — `src/playbook-compiler.js`  
 **Охват:** от «пользователь просит поставить изменение» до финализации только с актуальным доказательством приёмки
 
@@ -24,15 +24,17 @@
 | **P2** | `playbook_run` — компиляция плейбука + goal в DRAFT durable-план (items пиннятся к `playbook_id@version`) | ✅ IMPLEMENTED |
 | **P3a** | Активация (`task_update status=active`) + бюджет шага (`attempt_count`/`max_attempts`, `expireWaitingDeadlines`, `execution_timeout_seconds`) | ✅ IMPLEMENTED |
 | **P3b** | Резолв движка/модели по `executor_role` / `minimum_model_level` / `context_budget` (`src/playbook-executor.js`) | ✅ IMPLEMENTED |
-| **P3c** | Recovery-policy (`failure-classifier` → `recovery_policy`) после исчерпания бюджета | 🔵 PLANNED |
-| **P3d** | `task_validation_results` + `evidence_json`, разблокировка финализации contract-плана | 🔵 PLANNED |
-| **P4** | Исполнение хуков (`notify`/`check` на границах стадий/шагов) | 🔵 PLANNED |
-| **P5** | Миграция существующих плейбуков | 🔵 PLANNED |
+| **P3c** | Recovery-policy (`failure-classifier` → `recovery_policy`) после исчерпания бюджета | ✅ IMPLEMENTED (#1457/#1458) |
+| **P3d** | `task_validation_results` + `evidence_json`, гейт финализации contract-плана | ✅ IMPLEMENTED (#1431/#1442) |
+| **P4** | Исполнение хуков (`notify`/`check` на границах стадий/шагов) | ✅ IMPLEMENTED (#1459/#1460) |
+| **P5** | Вынос плейбуков + дефолт по аудитории (`AUDIENCE_DEFAULT_PLAYBOOK`) | ✅ IMPLEMENTED (#1462/#1464, dev-вынос #1541) |
 
-**Что это значит для сценария ниже:** шаги 1–3 (авторинг/компиляция), шаги 5+ (активация,
-claim items, бюджет шага) и резолв контракта в движок/модель (P3b) **работают**; recovery
-после исчерпания попыток (P3c) и машинная финализация по evidence (P3d) — **ещё нет**.
-Хуки (P4) описаны в плейбуке, но пока не исполняются.
+**Что это значит для сценария ниже:** весь контур P0–P5 **работает** — авторинг/компиляция,
+активация, claim items, бюджет шага, резолв контракта в движок/модель (P3b), recovery
+после исчерпания попыток (P3c), машинная финализация по evidence (P3d) и хуки (P4).
+Инженерный `development.json` живёт в sibling-репо `trained-assist-engineering` (#1541),
+ядро резолвит его opt-in. Остаток работы сведён в sub-issue #1573 (авто-предложение
+плейбука на старте dev-задачи, судьба prose-процедур, живая приёмка).
 
 **Как работает резолв (P3b):** `src/playbook-executor.js` — чистый резолвер:
 `executor_role` + `minimum_model_level` (эскалированный `current_model_level` важнее) →
@@ -155,7 +157,7 @@ User: план ок, запускай
 
 **Ожидаем:**
 - `DurableTaskStore.updateTask` переводит план `draft → active` (гейт сужен: `done`
-  остаётся заблокированным до per-criterion валидации — P3d)
+  остаётся заблокированным до per-criterion валидации — гейт finalizePlan, P3d)
 - План становится виден executor'у (`gtd-controller.js → claimNextDurableItem`)
 
 **Validation:**
@@ -203,7 +205,7 @@ Executor claim-ит items по порядку. Первые три шага:
 
 **Validation:**
 - `problem_reproduced_or_researched`, `root_cause_identified`
-- Репро/лог прикладывается как доказательство к шагу (evidence — 🔵 P3d)
+- Репро/лог прикладывается как доказательство к шагу (evidence — ✅ P3d, `task_items.evidence_json`)
 
 ---
 
@@ -272,8 +274,9 @@ Task(durable item): [programmatic] Open PR
 
 **Ожидаем:**
 - Пуш feature-ветки и `gh pr create --base main`
-- Хук `task_done` (`notify to=owner`) описан в плейбуке — 🔵 P4, пока не исполняется;
-  бот-оператор получает статус через существующие каналы
+- Хук `task_done` (`notify to=owner`) исполняется рантаймом (✅ P4) — уведомление
+  уходит через audience-aware `bot-delivery.js` только с согласием (`approveHooks`),
+  иначе записывается как `skipped` и не валит задачу
 
 **Validation:**
 - `pr_opened` — детерминированный GitHub-валидатор (`#1449`): подтверждает
@@ -383,9 +386,9 @@ Task(durable item): [reviewer/doctor/medium] Finalize only with current acceptan
 **Validation:**
 - `acceptance_evidence_current`
 - `updateTask`-гейт не даёт перевести contract-план в `done` без per-criterion
-  валидации — 🔵 PLANNED (P3d); сегодня финализация опирается на прогон шага и маркер
+  валидации — ✅ IMPLEMENTED (P3d, `finalizePlan`)
 
-**Статус:** сам шаг claim/бюджет ✅ IMPLEMENTED (P3a); машинная разблокировка финализации 🔵 PLANNED (P3d).
+**Статус:** сам шаг claim/бюджет ✅ IMPLEMENTED (P3a); машинная разблокировка финализации ✅ IMPLEMENTED (P3d — гейт `finalizePlan`).
 
 ---
 
@@ -414,7 +417,7 @@ Task(durable item): [reviewer/doctor/medium] Finalize only with current acceptan
 
 ---
 
-## Хуки (объявлены в плейбуке, исполнение — 🔵 P4)
+## Хуки (объявлены в плейбуке, исполняются рантаймом — ✅ P4)
 
 | Событие | Хук | Что должен делать |
 |---------|-----|-------------------|
@@ -423,8 +426,9 @@ Task(durable item): [reviewer/doctor/medium] Finalize only with current acceptan
 | `stage.on_enter` / `stage.on_exit` | (по стадиям) | Границы стадии |
 | `step.on_complete` / `step.on_fail` | (по шагам) | Границы шага |
 
-Схема допускает также `check`, `create_issue`, `publish`. До P4 хуки — только данные
-в артефакте, рантайм их не исполняет.
+Схема допускает также `check`, `create_issue`, `publish`. Рантайм (`src/playbook-hooks.js`)
+исполняет хуки на границах; внешние эффекты (`notify`/`create_issue`/`publish`) требуют
+согласия (`approveHooks`/`execution_policy.hooks_approved`), иначе `skipped`.
 
 ---
 
@@ -490,7 +494,7 @@ Task(durable item): [reviewer/doctor/medium] Finalize only with current acceptan
 4. Провал шага ретраится ровно `max_attempts` раз, затем `failed` — не вечный `pending`.
 5. Шаг с `delay_after_sec=600` не runnable до +600s (fake clock), и по `wait_deadline_at`
    истёкший waiter становится `failed`.
-6. Финализация (target P3d): план без свежего evidence не переходит в `done`.
+6. Финализация (P3d): план без свежего evidence не переходит в `done`.
 
 ---
 
@@ -507,7 +511,7 @@ Task(durable item): [reviewer/doctor/medium] Finalize only with current acceptan
 | Шаг завис / перерасходовал `execution_timeout_seconds` | Жёсткий kill движка, шаг = провал, ретрай по бюджету |
 | Ждём CI дольше `wait_deadline_at` | `expireWaitingDeadlines` → `failed`, не откладывание навсегда |
 | Рестарт агента во время плана | Items персистентны в SQLite; orphaned `running` возвращаются в `pending` |
-| План закрывают без evidence | Гейт финализации не пускает (🔵 P3d) |
+| План закрывают без evidence | Гейт финализации не пускает (✅ P3d) |
 
 ---
 
@@ -525,4 +529,4 @@ Task(durable item): [reviewer/doctor/medium] Finalize only with current acceptan
 6. **Бюджет шага конечен.** `max_attempts` и `execution_timeout_seconds` ограничивают
    ретраи и время; исчерпание = `failed`, а не бесконечный `pending`.
 7. **Финализация — только по актуальному доказательству приёмки**, не по факту
-   «шаги прошли» (целевое, P3d).
+   «шаги прошли» (✅ P3d).
