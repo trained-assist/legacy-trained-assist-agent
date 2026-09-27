@@ -44,7 +44,8 @@ revision and hid current tools from it.
 
 ### freelance — `trained-assist-freelance-skill` (repo exists)
 
-- [ ] `94-outsource-project`, `62-business-analyst`
+- [x] `94-outsource-project` removed from core — its successor `freelance_*` tools live in freelance-skill; the only profile with legacy `outsource-projects/` data was migrated by `scripts/migrate-outsource.js` (dry-run on prod: 3/3 already in index)
+- stays in core: `62-business-analyst` (depends on the platform `playbook-store`)
 
 ### engineering — `trained-assist-engineering` (repo exists)
 
