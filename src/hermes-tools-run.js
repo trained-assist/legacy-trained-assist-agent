@@ -25,7 +25,6 @@ const { writeMcpConfig } = require('./browser');
 const { buildEngineCommand, runEngineProcess } = require('./runner/claude-runner');
 const { parseLlmJson } = require('./llm-client');
 const { loadUserTokens } = require('./user-tokens');
-const { getDefaultSourceRuntime } = require('./mcp-source-runtime');
 const opencodeLadder = require('./opencode-ladder');
 
 function hermesWorkDir(username) {
