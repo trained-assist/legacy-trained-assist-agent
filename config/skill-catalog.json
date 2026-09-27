@@ -24,12 +24,12 @@
     },
     "recruiting": {
       "title": "Рекрутинг",
-      "modules": ["96-recruiter-tools.js", "97b-candidate-client-report.js"]
+      "modules": ["97b-candidate-client-report.js"]
     },
     "recruiting/hh": {
       "title": "HeadHunter",
       "siblings": ["hh-skills"],
-      "modules": ["93-calltips.js"],
+      "modules": [],
       "promptDomains": ["hh", "hh.setup", "hh-notify"]
     },
     "recruiting/applylink": {

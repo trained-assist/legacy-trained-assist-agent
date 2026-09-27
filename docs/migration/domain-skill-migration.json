@@ -26,8 +26,6 @@
         "demo_activate", "demo_status", "demo_candidates", "demo_next_wave", "demo_candidate_profile", "demo_reply", "demo_deactivate"
       ],
       "coreTools": [
-        "93-calltips.js",
-        "96-recruiter-tools.js",
         "99-interview-analysis.js",
         "97b-candidate-client-report.js",
         "41-applylink.js",
