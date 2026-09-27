@@ -7,7 +7,7 @@ const os = require('os');
 // Why: a model/provider "залипает" (opencode-go/deepseek-v4.1-flash intermittently returned
 // `Bad Request: {"model":...}`). Before this, ladder health lived in opencode-ladder.js keyed by
 // (profile, role, model) — so the SAME upstream model, which appears in the ladders of several
-// profiles (deepseek-go, max, value), had its flakiness learned separately in each one, and a
+// profiles (deepseek, max, value), had its flakiness learned separately in each one, and a
 // transient error was not persisted at all. The owner's framing (2026-09-26): "клиент единый
 // сервис, единый для всех профилей" → the health of a model is a property of the MODEL, not of
 // who is asking; one store, shared by every profile/role.
@@ -78,7 +78,7 @@ function backoffFor(failures, p) {
   return Math.min(pol.baseMs * Math.pow(pol.multiplier, n - 1), pol.capMs);
 }
 
-// Named ladder from the central routing config, e.g. ladder('deepseek-go'). Returns null when the
+// Named ladder from the central routing config, e.g. ladder('deepseek'). Returns null when the
 // config has no such ladder — the caller then falls back to a profile's inline `ladder` (legacy).
 function ladder(name) {
   if (!name) return null;

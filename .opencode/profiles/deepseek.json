@@ -1,4 +1,4 @@
 {
-  "ladderRef": "deepseek-go",
+  "ladderRef": "deepseek",
   "model": "opencode-go/deepseek-v4.1-flash"
 }

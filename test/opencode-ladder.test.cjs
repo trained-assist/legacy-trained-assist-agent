@@ -266,28 +266,19 @@ test('recordFailure gives a transient Bad Request a SHORT shared per-model backo
   assert.equal(mod.resolveModel({ ladder: { build: ['flaky-model', 'sibling'] } }, 'p', 'build'), 'flaky-model');
 });
 
-test('deepseek-go profile: config-driven ladder, top rung deepseek-v4.1-flash, degrading to deepseek and mimo siblings on the same Go gateway', () => {
+test('deepseek profile: one config-driven ladder — Go rungs first, paid OpenRouter only as the LAST rung (2026-09-27)', () => {
   const routing = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'model-routing.json'), 'utf8'));
-  const profile = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'deepseek-go.json'), 'utf8'));
-  assert.equal(profile.ladderRef, 'deepseek-go', 'profile must be config-driven (ladderRef), not hardcode the model list');
-  const ladder = routing.ladders['deepseek-go'];
-  assert.ok(Array.isArray(ladder?.build) && ladder.build.length >= 2,
-    'deepseek-go must carry a real ladder — the old single-uniform-model shape could only flip the gateway');
-  assert.equal(ladder.build[0], 'opencode-go/deepseek-v4.1-flash');
-  assert.ok(ladder.build.includes('opencode-go/mimo-v2.6-flash'),
-    'the sibling alternative for a flaky deepseek rung must be a same-gateway model (mimo-v2.6-flash)');
-  for (const rung of ladder.build) assert.ok(rung.startsWith('opencode-go/'), `deepseek-go rung ${rung} must stay on the Go gateway`);
-});
-
-test('deepseek-openrouter profile: config-driven ladder on the OpenRouter gateway with a mimo sibling', () => {
-  const routing = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'model-routing.json'), 'utf8'));
-  const profile = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'deepseek-openrouter.json'), 'utf8'));
-  assert.equal(profile.ladderRef, 'deepseek-openrouter');
-  const ladder = routing.ladders['deepseek-openrouter'];
-  assert.ok(Array.isArray(ladder?.build) && ladder.build.length >= 2);
-  assert.equal(ladder.build[0], 'openrouter/deepseek/deepseek-v4-flash-0731');
-  assert.ok(ladder.build.includes('openrouter/xiaomi/mimo-v2.6-flash'));
-  assert.ok(!ladder.build.some(m => m.includes('glm')), 'the expensive GLM rung was replaced by the cheap mimo sibling (owner 2026-09-26)');
+  const profile = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'deepseek.json'), 'utf8'));
+  assert.equal(profile.ladderRef, 'deepseek', 'profile must be config-driven (ladderRef), not hardcode the model list');
+  assert.equal(routing.ladders['deepseek-go'], undefined, 'the toggle halves are gone');
+  assert.equal(routing.ladders['deepseek-openrouter'], undefined, 'the toggle halves are gone');
+  for (const [role, rungs] of Object.entries(routing.ladders.deepseek)) {
+    assert.equal(rungs[0], 'opencode-go/deepseek-v4.1-flash', `${role}: top rung`);
+    assert.ok(rungs.includes('opencode-go/mimo-v2.6-flash'), `${role}: same-gateway sibling for a flaky deepseek rung`);
+    const firstOr = rungs.findIndex(m => m.startsWith('openrouter/'));
+    assert.equal(firstOr, rungs.length - 1, `${role}: OpenRouter must be the last rung only`);
+    assert.equal(rungs[firstOr], 'openrouter/deepseek/deepseek-v4-flash-0731');
+  }
 });
 
 test('buildOcProfileOverrides resolves a ladderRef from config/model-routing.json (issue #1467)', () => {

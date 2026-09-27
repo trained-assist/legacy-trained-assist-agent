@@ -25,29 +25,3 @@ test('playbook bachelor/master run on the deepseek (Go) profile, not value/max',
     assert.equal(r.ocProfile, 'deepseek');
   }
 });
-
-function freshToggle() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'go-ttl-'));
-  process.env.OPENCODE_GO_MODE_FILE = path.join(dir, 'go-mode.json');
-  process.env.OPENCODE_GO_KEYS_STATE_FILE = path.join(dir, 'go-keys-state.json');
-  process.env.OPENCODE_GO_AUTH_FILE = path.join(dir, 'auth.json');
-  process.env.OPENCODE_GO_API_KEYS = 'oc_a,oc_b';
-  fs.writeFileSync(process.env.OPENCODE_GO_AUTH_FILE, JSON.stringify({ 'opencode-go': { type: 'api', key: 'oc_a' } }));
-  for (const m of ['../src/opencode-go-toggle', '../src/opencode-go-keys']) delete require.cache[require.resolve(m)];
-  return { mod: require('../src/opencode-go-toggle'), keys: require('../src/opencode-go-keys') };
-}
-
-test('a passing 503 parks the key for its own short TTL, and OpenRouter ends when the first key heals', () => {
-  const { mod, keys } = freshToggle();
-  const t0 = Date.now();
-  mod.noteFailure('opencode-go/deepseek-v4.1-flash', 'HTTP 503 temporarily overloaded');
-  mod.noteFailure('opencode-go/deepseek-v4.1-flash', 'HTTP 503 temporarily overloaded');
-  assert.equal(mod.getMode(), 'openrouter');
-  const exhausted = JSON.parse(fs.readFileSync(process.env.OPENCODE_GO_KEYS_STATE_FILE, 'utf8')).exhausted;
-  for (const until of Object.values(exhausted)) assert.ok(until - t0 <= 5 * 60 * 1000 + 1000, 'parked ≤5min, not the full window');
-  const state = JSON.parse(fs.readFileSync(process.env.OPENCODE_GO_MODE_FILE, 'utf8'));
-  const revertIn = Date.parse(state.autoRevertAt) - t0;
-  assert.ok(revertIn <= 5 * 60 * 1000 + 1000, `revert in ${revertIn}ms`);
-  assert.ok(revertIn >= mod.MIN_OPENROUTER_MS - 1000);
-  assert.ok(keys.nextUsableAt() > t0);
-});
