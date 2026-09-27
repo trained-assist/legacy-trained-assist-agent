@@ -78,7 +78,7 @@ test("skills.json {enabled:['recruiting']} → no engineering/freelance sibling,
   assert.strictEqual(cfg.mcpServers['hh-skills'].env.SKILLS_RESOLVED, file);
   const eff = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.ok(eff.hidden.modules.includes('60-github.js'));
-  assert.ok(!eff.hidden.modules.includes('96-recruiter-tools.js'));
+  assert.ok(!eff.hidden.modules.includes('97b-candidate-client-report.js'));
   assert.ok(!eff.hidden.modules.includes('04-cron.js'), 'core is always on');
   assert.ok(!eff.hidden.modules.includes('40-company.js'), 'shared module on via recruiting/company');
 
@@ -156,11 +156,11 @@ test('registry tools/list: SKILLS_RESOLVED hides switched-off modules; unset/bro
   const file = cfg.mcpServers['trained-skills'].env.SKILLS_RESOLVED;
   const base = { SKILLS_RESOLVED: '' };
   const legacy = listTools(base).names;
-  assert.ok(legacy.includes('github_status') && legacy.includes('boolean_search'));
+  assert.ok(legacy.includes('github_status') && legacy.includes('candidate_report_context'));
 
   const filtered = listTools({ SKILLS_RESOLVED: file }).names;
   assert.ok(!filtered.includes('github_status'), 'software-engineering module hidden');
-  assert.ok(filtered.includes('boolean_search'), 'recruiting module kept');
+  assert.ok(filtered.includes('candidate_report_context'), 'recruiting module kept');
   assert.ok(filtered.includes('connect'), 'core kept');
 
   const broken = path.join(wd, 'broken.json');

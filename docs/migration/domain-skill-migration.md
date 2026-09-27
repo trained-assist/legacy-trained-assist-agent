@@ -76,15 +76,16 @@ this epic's — the matrix only records where each domain stands.
 
 ### recruiting — `hh`
 
-- [x] core implementation mounted (`93-calltips`, `96-recruiter-tools`, `99-interview-analysis`, `97b-candidate-client-report`, `41-applylink`, `98-demo`)
+- [x] core implementation mounted (`99-interview-analysis`, `97b-candidate-client-report`, `41-applylink`, `98-demo`)
 - [x] sealed domain source mounted on `trained-assist-product-owner` (`scripts/staging/canaries/hh.json`, pinned `2d194cd4a65f9ff3888aacdeea87afc33b0971b4`)
 - [x] live canary green (#1463/#1466)
 - [x] **serving toggle proof (P0.1c):** with hh activated for the sandbox profile, HH is served by the sealed adapter (`tools/list=37`, live `hh_list_vacancies` through runtime → adapter → broker); re-activating the retained `.previous` config makes `hh-skills` resolve to the sibling again — core↔domain is a config-only switch (no redeploy)
 - [x] **schedulable: yes** — `hh_proactive_search` declares `[user, cron, durable_task]` (#1489 §1.3)
 - [ ] move the dedicated HH timer onto cron-service (#1489 S7.1)
 - [ ] cutover `serving: core -> domain` for the wider recruiting profile set (P0.1c follow-up — widen the config `profiles` allowlist; sandbox is already on the sealed path)
-- [x] remove duplicated `src/hh-*.js` — core consumers (`runner/*`, `server.js`, `93-calltips`) load HH code from the hh-skill sibling via `src/domains/hh/lib.js` `hhLib()`; core keeps no copies (#1470 P1.3)
+- [x] remove duplicated `src/hh-*.js` — core consumers (`runner/*`, `server.js`) load HH code from the hh-skill sibling via `src/domains/hh/lib.js` `hhLib()`; core keeps no copies (#1470 P1.3)
 - [x] HH HTTP routes (`/hh/*`, `/api/hh/*`) live in hh-skill `src/hh-routes.js`; core `server.js` only mounts them via `hhLib('hh-routes')` (#1470)
+- [x] `calltips_*` + recruiter text tools (`boolean_search`, `jd_generate`, `interview_questions_bank`, `salary_benchmark`, `sourcing_checklist`) served by hh-skill (`94-calltips`, `95-recruiter-tools`); core copies removed (#1470 P1.4)
 
 State: **dual** (domain canary-mounted to sandbox, core serves everyone).
 
