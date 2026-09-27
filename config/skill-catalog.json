@@ -35,7 +35,7 @@
     },
     "recruiting/interview": {
       "title": "Интервью и видео",
-      "modules": ["99-interview-analysis.js", "95-video-analysis.js"]
+      "modules": ["hh-skills/99-interview-analysis.js", "95-video-analysis.js"]
     },
     "recruiting/company": {
       "title": "Компании (ИНН, DaData, Checko)",

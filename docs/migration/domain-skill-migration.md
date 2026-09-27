@@ -38,7 +38,7 @@ revision and hid current tools from it.
 - [x] quick-answer intents (`hh-intents.js`) and the vacancy-creation flow (`hh-vacancy-quick.js`)
 - [x] prompt domains `hh`, `hh.setup`, `hh-notify`
 - [x] candidate-for-client report `candidate_report_*` (`97-candidate-client-report.js`, `hh-candidate-report.js`); publishes via core `POST /internal/publish`
-- [ ] `99-interview-analysis` + `95-video-analysis` (in-process coupling)
+- [x] interview analysis `interview_*` (`99-interview-analysis.js`); core's `95-video-analysis` (ffmpeg + Deepgram — media, stays in core) calls it through `siblingLib('hh', …)`
 - Stays in core on purpose: HH OAuth (`/connect/hh/*`, `/hh-callback`, `connect-forms/hh.js`) — platform credential collection shared with other services
 
 ### sales-crm — `trained-assist-sales-skill`

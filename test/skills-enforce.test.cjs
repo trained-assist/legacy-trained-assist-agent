@@ -147,11 +147,11 @@ test('registry tools/list: SKILLS_RESOLVED hides switched-off modules; unset/bro
   const file = cfg.mcpServers['trained-skills'].env.SKILLS_RESOLVED;
   const base = { SKILLS_RESOLVED: '' };
   const legacy = listTools(base).names;
-  assert.ok(legacy.includes('github_status') && legacy.includes('interview_analyze'));
+  assert.ok(legacy.includes('github_status') && legacy.includes('video_analyze_batch'));
 
   const filtered = listTools({ SKILLS_RESOLVED: file }).names;
   assert.ok(!filtered.includes('github_status'), 'software-engineering module hidden');
-  assert.ok(filtered.includes('interview_analyze'), 'recruiting module kept');
+  assert.ok(filtered.includes('video_analyze_batch'), 'recruiting module kept');
   assert.ok(filtered.includes('connect'), 'core kept');
 
   const broken = path.join(wd, 'broken.json');

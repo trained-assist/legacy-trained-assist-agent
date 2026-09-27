@@ -243,7 +243,11 @@ function deepgramTranscribe(key, audioBuf, language) {
 }
 
 // Тот же движок разбора, что и для готовых транскриптов — не переизобретаем.
-const interviewAnalyze = require('./99-interview-analysis.js').tools.interview_analyze.handler;
+// interview_analyze lives in trained-assist-hh-skill (#1470); resolved lazily through the
+// sibling bridge so a missing checkout only fails the analysis step, not this server.
+const interviewAnalyze = (...args) =>
+  require('../../domains/sibling-lib').siblingLib('hh', 'src/mcp-skills/tools/99-interview-analysis.js')
+    .tools.interview_analyze.handler(...args);
 
 // Нормализация входа: строка / список строк / список {name, source|url|path}.
 function normalizeVideos(videos) {
