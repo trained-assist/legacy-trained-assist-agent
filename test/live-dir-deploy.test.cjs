@@ -138,10 +138,13 @@ test('release_gc keeps the newest sha releases and preserves every sibling symli
   assert.ok(fs.lstatSync(engSibling).isSymbolicLink(), 'must not GC the engineering sibling symlink');
 });
 
-test('deploy.sh provisions the trained-assist-engineering sibling checkout + releases symlink (#1418)', () => {
+test('deploy.sh provisions every sibling in SKILL_SIBLINGS (checkout + releases symlink) (#1418, #1470)', () => {
   const body = fs.readFileSync(path.resolve(__dirname, '../scripts/deploy.sh'), 'utf8');
-  assert.match(body, /ENGINEERING_DIR="\$\{ENGINEERING_DIR:-\$AGENT_HOME\/trained-assist-engineering\}"/);
-  assert.match(body, /ln -sfn "\$ENGINEERING_DIR" "\$RELEASES_DIR\/trained-assist-engineering"/);
+  assert.match(body, /ln -sfn "\$dir" "\$RELEASES_DIR\/\$repo"/);
+  const { SKILL_SIBLINGS } = require('../src/skill-siblings');
+  for (const { repo } of SKILL_SIBLINGS) {
+    assert.match(body, new RegExp(`ensure_sibling ${repo} "\\$[A-Z_]+_DIR"`), `deploy.sh must ensure ${repo}`);
+  }
 });
 
 test('units serve from agent-master and no longer run a live-tree guard', () => {

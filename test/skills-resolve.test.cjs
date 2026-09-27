@@ -17,13 +17,13 @@ const localModules = fs.readdirSync(TOOLS).filter(f => f.endsWith('.js')).sort()
 
 // Readiness of a typical "no credentials" user with every sibling on the host.
 function readiness(over = {}) {
-  const r = { 'hh-skills': true, 'freelance-skills': true, 'engineering-skills': true };
+  const r = { 'hh-skills': true, 'freelance-skills': true, 'engineering-skills': true, 'sales-skills': true };
   for (const m of localModules) r[`trained-skills/${m}`] = true;
-  for (const m of ['30-weeek.js', '80-getcourse.js', '81-gc-discovery.js', '10-nalog.js', '20-tilda.js',
+  for (const m of ['80-getcourse.js', '81-gc-discovery.js', '10-nalog.js', '20-tilda.js',
     '85-expo.js', '86-expo-flexi.js', '87-expo-pipeline.js', '88-expo-catalog.js', '89-expo-pipeline-run.js',
     '92-flexi-sales.js', '95-illustrate.js', '96-label.js', '50-gdrive.js']) r[`trained-skills/${m}`] = false;
   Object.assign(r, { 'hh-skills/90-hh.js': true, 'hh-skills/92-hh-proactive.js': true,
-    'freelance-skills/10-freelance-project.js': true,
+    'freelance-skills/10-freelance-project.js': true, 'sales-skills/30-weeek.js': false,
     'engineering-skills/10-prepare-task.js': true, 'engineering-skills/20-workspace.js': true });
   return Object.assign(r, over);
 }
@@ -63,7 +63,7 @@ test('legacy mode (no skills.json) = exactly what the current code exposes', () 
   const res = resolve(catalog, null, r);
   assert.strictEqual(res.mode, 'legacy');
   assert.deepStrictEqual(res.sections, Object.keys(catalog.sections));
-  assert.deepStrictEqual(res.siblings, ['engineering-skills', 'freelance-skills', 'hh-skills']);
+  assert.deepStrictEqual(res.siblings, ['engineering-skills', 'freelance-skills', 'hh-skills', 'sales-skills']);
   // prompt domains: same answer as src/prompt-domains selectDomains on the same probe
   const probe = {};
   for (const [k, v] of Object.entries(r)) {
@@ -122,7 +122,7 @@ test('setupOnly when the credential is missing: setup text, not the workflow', (
   const res = resolve(catalog, { enabled: ['recruiting', 'crm-weeek'] }, readiness({ 'hh-skills/90-hh.js': false }));
   assert.ok(res.setupOnly.includes('hh-skills/90-hh.js'));
   assert.ok(!res.modules.includes('hh-skills/90-hh.js'));
-  assert.ok(res.setupOnly.includes('trained-skills/30-weeek.js'));
+  assert.ok(res.setupOnly.includes('sales-skills/30-weeek.js'));
   assert.ok(res.promptDomains.includes('hh.setup') && !res.promptDomains.includes('hh'));
   assert.ok(res.promptDomains.includes('weeek.setup') && !res.promptDomains.includes('weeek'));
   assert.ok(res.promptDomains.includes('hh-notify'));
@@ -151,7 +151,7 @@ test('shadow: legacy profile → diff=0, writes .skills-resolved.json, audience 
   for (const [k, v] of Object.entries(r)) if (k.includes('/')) { const [s, m] = k.split('/'); (probe[s] || (probe[s] = {}))[m] = v; }
   const picked = pd.selectDomains(pd.loadDomains(), probe).map(d => d.name);
   const mcp = path.join(dir, '.mcp.json');
-  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { playwright: {}, 'trained-skills': {}, 'hh-skills': {}, 'freelance-skills': {}, 'engineering-skills': {} } }));
+  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { playwright: {}, 'trained-skills': {}, 'hh-skills': {}, 'freelance-skills': {}, 'engineering-skills': {}, 'sales-skills': {} } }));
   const lines = [];
   const rd = buildReadiness(catalog, { probe, siblingExists: () => true });
   assert.strictEqual(rd['engineering-skills'], true);
@@ -164,7 +164,7 @@ test('shadow: legacy profile → diff=0, writes .skills-resolved.json, audience 
   assert.match(lines[0], /^\[skills-shadow\] user=u1 mode=legacy diff=0 /);
   const saved = JSON.parse(fs.readFileSync(path.join(dir, '.skills-resolved.json'), 'utf8'));
   assert.strictEqual(saved.resolved.mode, 'legacy');
-  assert.deepStrictEqual(saved.preview.hides.siblings, ['engineering-skills', 'freelance-skills']);
+  assert.deepStrictEqual(saved.preview.hides.siblings, ['engineering-skills', 'freelance-skills', 'sales-skills']);
   assert.ok(saved.preview.hides.promptDomains.includes('engineering'));
   assert.ok(!saved.preview.hides.promptDomains.some(d => d.startsWith('hh')));
 });

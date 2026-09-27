@@ -5,7 +5,8 @@
     "trained-skills": { "kind": "local" },
     "hh-skills": { "kind": "sibling", "repo": "trained-assist-hh-skill" },
     "freelance-skills": { "kind": "sibling", "repo": "trained-assist-freelance-skill" },
-    "engineering-skills": { "kind": "sibling", "repo": "trained-assist-engineering" }
+    "engineering-skills": { "kind": "sibling", "repo": "trained-assist-engineering" },
+    "sales-skills": { "kind": "sibling", "repo": "trained-assist-sales-skill" }
   },
   "audienceDefaults": {
     "recruiter": { "enabled": ["recruiting"] }
@@ -61,7 +62,7 @@
       ],
       "promptDomains": ["expo", "flexi-sales"]
     },
-    "crm-weeek": { "title": "Weeek CRM", "modules": ["30-weeek.js"], "promptDomains": ["weeek", "weeek.setup"] },
+    "crm-weeek": { "title": "Weeek CRM", "siblings": ["sales-skills"], "promptDomains": ["weeek", "weeek.setup"] },
     "getcourse": { "title": "GetCourse", "modules": ["80-getcourse.js", "81-gc-discovery.js"], "promptDomains": ["getcourse", "getcourse.setup"] },
     "nalog": { "title": "Самозанятый НПД", "modules": ["10-nalog.js"], "promptDomains": ["nalog.setup"] },
     "tilda": { "title": "Tilda", "modules": ["20-tilda.js"], "promptDomains": ["tilda.setup"] },

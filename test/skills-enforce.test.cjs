@@ -121,7 +121,7 @@ test('catalog load failure → legacy (never silently cut tools)', () => {
 test('computePlan: disabled child, unknown sections, unlisted things never hidden', () => {
   const catalog = loadCatalog();
   const p = computePlan(catalog, { enabled: ['recruiting'], disabled: ['recruiting/hh'], });
-  assert.deepStrictEqual(p.hidden.siblings, ['engineering-skills', 'freelance-skills', 'hh-skills']);
+  assert.deepStrictEqual(p.hidden.siblings, ['engineering-skills', 'freelance-skills', 'hh-skills', 'sales-skills']);
   assert.ok(p.hidden.domains.includes('hh') && !p.hidden.domains.includes('cron'));
   const all = computePlan(catalog, { enabled: Object.keys(catalog.sections) });
   assert.deepStrictEqual(all.hidden, { siblings: [], modules: [], domains: [] });
