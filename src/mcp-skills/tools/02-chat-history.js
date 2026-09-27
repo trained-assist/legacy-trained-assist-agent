@@ -3,6 +3,7 @@
 const fs = require('fs');
 const { sessionsDirPath } = require('../../data-paths');
 const chatHistory = require('../../chat-history');
+const groupHistory = require('../../group-history-store');
 const { threadOf } = require('../../session-store');
 
 /**
@@ -154,6 +155,39 @@ module.exports = {
           note: matched.length === 0
             ? 'No previous sessions found for this chat.'
             : undefined,
+        };
+      },
+    },
+
+    get_group_history: {
+      description:
+        'Messages group participants wrote while the bot stayed quiet (NOT addressed to the bot), ' +
+        'for the current group chat / forum topic, last 7 days. Each run\'s prompt only includes ' +
+        'the ones that are NEW since the previous task; use this tool for earlier ones ' +
+        '(«что обсуждали вчера», «что Петя писал утром»). Oldest first.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          since_hours: { type: 'number', description: 'Only messages from the last N hours.' },
+          limit: { type: 'number', description: 'Max messages, newest kept (default 100, max 1000).' },
+        },
+      },
+      handler: async ({ since_hours, limit = 100 } = {}) => {
+        const username = process.env.AGENT_USER_ID;
+        if (!username) return { error: 'AGENT_USER_ID not set' };
+        const chatId = resolveCurrentChatId();
+        if (chatId == null) return { error: 'Current session has no chat.' };
+        if (!(Number(chatId) < 0)) return { chat_id: String(chatId), messages: [], total: 0, note: 'Not a group chat.' };
+        const threadId = resolveCurrentThreadId();
+        const entries = groupHistory.readGroupHistory(username, chatId, threadId ?? null, {
+          sinceHours: Number(since_hours) > 0 ? Number(since_hours) : null,
+          limit,
+        });
+        return {
+          chat_id: String(chatId),
+          messages: entries.map(e => ({ from: e.from, text: e.text, at: formatTime(e.ts) })),
+          total: entries.length,
+          note: entries.length ? undefined : 'No group history kept for this chat (or /history_off).',
         };
       },
     },
