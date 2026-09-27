@@ -97,7 +97,7 @@ function planLevelMap(policy) {
   return merged;
 }
 
-function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = null, roleMap = null } = {}) {
+function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = null, roleMap = null, useRoleMap = true } = {}) {
   const map = levelMap || loadLevelMap();
   const executionKind = item && item.execution_kind === 'programmatic' ? 'programmatic' : 'agent';
 
@@ -119,7 +119,9 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
   // A role override is intended for the normal rung only. Once durable recovery
   // escalates current_model_level, the ordinary level map regains control.
   const roleOverrides = { ...DEFAULT_ROLE_MAP, ...(roleMap || loadRoleMap()) };
-  const roleMapped = item.current_model_level === item.minimum_model_level
+  // A plan that pins its own routing (execution_policy.level_map, e.g. the playbook
+  // e2e harness) owns every step's engine — role defaults don't override it.
+  const roleMapped = useRoleMap && item.current_model_level === item.minimum_model_level
     ? roleOverrides[role]
     : null;
   const mapped = roleMapped || map[level] || DEFAULT_LEVEL_MAP[level];

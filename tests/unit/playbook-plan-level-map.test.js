@@ -66,3 +66,13 @@ describe('runDueDurable with a plan level map', () => {
     ]);
   });
 });
+
+describe('plan level_map vs role defaults', () => {
+  it('a plan that pins its routing (useRoleMap:false) is not overridden by the researcher role default', async () => {
+    const { resolveStepExecution } = await import('../../src/playbook-executor.js').then(m => m.default || m);
+    const item = { executor_role: 'researcher', minimum_model_level: 'master', current_model_level: 'master' };
+    const levelMap = { master: { engine: 'opencode', ocProfile: 'free' } };
+    expect(resolveStepExecution(item, { levelMap, useRoleMap: false }).ocProfile).toBe('free');
+    expect(resolveStepExecution(item, { levelMap }).ocProfile).toBe('research');
+  });
+});
