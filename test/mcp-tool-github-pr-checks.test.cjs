@@ -1,9 +1,14 @@
 // Contract tests for github_pr_checks tool (src/mcp-skills/tools/60-github.js).
-// Stubs global fetch — no network, no token needed. Covers the status
+// Stubs global fetch and a fake GH_TOKEN — hermetic, no network or real token. Covers the status
 // aggregation logic: success (incl. skipped post-merge jobs), failure,
 // pending, commit-status fallback, no-checks, and 404 on missing PR.
 let pass = 0, fail = 0;
 function ok(c, m) { c ? (pass++) : (fail++, console.log('FAIL:', m)); }
+
+// getToken() reads env at call time; without this the test only passed on
+// machines that happen to have a real token (failed in CI, #1577).
+process.env.GH_TOKEN = 'test-token';
+delete process.env.GITHUB_TOKEN;
 
 const { tools } = require('../src/mcp-skills/tools/60-github.js');
 
