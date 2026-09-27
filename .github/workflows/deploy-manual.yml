@@ -33,6 +33,13 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci --include=dev
+      # Same as ci.yml staging-gate: since the HH extraction (#1470/#1599) the
+      # staging suites load HH code from the sibling repo, and the review
+      # scenario needs Chromium — without these Manual Deploy's gate always failed.
+      - name: Check out trained-assist-hh-skill next to core (HH domain code, src/domains/hh/lib.js)
+        run: git clone --quiet --depth 1 https://github.com/trained-assist/trained-assist-hh-skill.git "$GITHUB_WORKSPACE/../trained-assist-hh-skill"
+      - name: Install Chromium for response review scenario
+        run: npx playwright install --with-deps chromium
       - name: Replay mandatory user scenarios
         run: npm run test:staging
       - name: Save scenario results and tested revision
