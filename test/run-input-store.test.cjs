@@ -8,7 +8,7 @@ const store = require('../src/run-input-store');
 
 const freshWorkDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'run-input-test-'));
 
-test('buildDocument: two sections + truthful header (sizes, engine, session, not-reproduced note)', () => {
+test('buildDocument: the document IS the input — system prompt + prompt, nothing else', () => {
   const doc = store.buildDocument({
     taskId: 'user1-msg-42-7',
     engine: 'claude',
@@ -16,28 +16,22 @@ test('buildDocument: two sections + truthful header (sizes, engine, session, not
     systemPrompt: 'SYS',
     prompt: 'PROMPT',
     createdAt: Date.UTC(2026, 8, 27),
+    mcpServers: ['trained-skills', 'hh-skills'],
+    resumed: true,
   });
-  assert.match(doc, /Реальный input агента — user1-msg-42-7/);
-  assert.match(doc, /движок: claude · сессия: s-abc/);
-  assert.match(doc, /Системный промпт: 3 символов · контекст\+задача: 6 символов/);
-  assert.match(doc, /1\. СИСТЕМНЫЙ ПРОМПТ [\s\S]*SYS/);
-  assert.match(doc, /2\. ПРОМПТ \(контекст \+ задача\) [\s\S]*PROMPT/);
-  assert.match(doc, /0\. ЧТО ДОБАВЛЯЕТ ДВИЖОК/);
+  assert.equal(doc, 'SYS\n\nPROMPT');
 });
 
-test('buildDocument: per-engine notes + MCP servers + resume flag', () => {
-  for (const [engine, marker] of [['claude', /ОТЛОЖЕННО[\s\S]*ToolSearch/], ['opencode', /tools\[\] каждого шага целиком/], ['codex', /tool_output_token_limit/]]) {
-    const doc = store.buildDocument({ taskId: 't1', engine, systemPrompt: 'S', prompt: 'P', mcpServers: ['trained-skills', 'hh-skills'], resumed: engine === 'claude' });
-    assert.match(doc, marker, engine);
-    assert.match(doc, /MCP-серверы: trained-skills, hh-skills/);
-    assert.match(doc, new RegExp(`продолжение сессии движка: ${engine === 'claude' ? 'да' : 'нет'}`));
-    for (const other of Object.keys(store.ENGINE_NOTES).filter(e => e !== engine)) {
-      assert.ok(!doc.includes(store.ENGINE_NOTES[other][0]), `${engine} doc must not carry ${other} notes`);
-    }
+test('buildDocument: verbatim bytes, no wrapper — header/stats/notes absent, empty parts dropped', () => {
+  const doc = store.buildDocument({ systemPrompt: 'SYS', prompt: 'PROMPT' });
+  assert.equal(doc, 'SYS\n\nPROMPT');
+  for (const noise of ['Реальный input агента', 'движок:', 'Системный промпт:', 'MCP-серверы:',
+    'ЧТО ДОБАВЛЯЕТ ДВИЖОК', 'СИСТЕМНЫЙ ПРОМПТ', 'ПРОМПТ (контекст + задача)']) {
+    assert.ok(!doc.includes(noise), `doc must not carry wrapper noise: ${noise}`);
   }
-  const unknown = store.buildDocument({ taskId: 't2', engine: 'hermes', systemPrompt: '', prompt: '' });
-  assert.match(unknown, /Движок неизвестен/);
-  assert.match(unknown, /MCP-серверы: —/);
+  assert.equal(store.buildDocument({ systemPrompt: '', prompt: 'P' }), 'P');
+  assert.equal(store.buildDocument({ systemPrompt: 'S', prompt: '' }), 'S');
+  assert.equal(store.buildDocument({ systemPrompt: '', prompt: '' }), '');
 });
 
 test('writeInput/readInput round-trip inside workDir/.run-inputs, mode 0600', () => {
