@@ -24,6 +24,7 @@ function detectMime(filePath) {
     '.txt': 'text/plain',
     '.csv': 'text/csv',
     '.json': 'application/json',
+    '.md': 'text/markdown',
     '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     '.zip': 'application/zip',
   };
@@ -94,7 +95,36 @@ async function sendFile(filePath, caption, asPhoto) {
   return tgRequest(method, body);
 }
 
+// Plain-text / document reply to the run's chat, in its forum topic when there is one
+// (AGENT_THREAD_ID). Used by hermes_research delivery — kept here, in the one legacy
+// sender, so it migrates with tg_send_file to the channel adapter (epic #1365 PR5)
+// instead of adding a new direct-Telegram site. `target`/`fetchImpl` are test seams.
+function chatTarget() {
+  if (!BOT_TOKEN || !CHAT_ID || CHAT_ID === '0' || CHAT_ID === 'hermes') return null;
+  const threadId = parseInt(process.env.AGENT_THREAD_ID || '', 10);
+  return { token: BOT_TOKEN, chatId: CHAT_ID, threadId: Number.isInteger(threadId) && threadId > 0 ? threadId : null };
+}
+
+async function sendChatReply({ text, document }, { target = chatTarget(), fetchImpl = fetch } = {}) {
+  if (!target) return { delivered: false, reason: 'no telegram chat (web or headless run)' };
+  const form = new FormData();
+  form.append('chat_id', target.chatId);
+  if (target.threadId) form.append('message_thread_id', String(target.threadId));
+  let method = 'sendMessage';
+  if (document) {
+    method = 'sendDocument';
+    if (document.caption) form.append('caption', String(document.caption).slice(0, 1024));
+    form.append('document', new Blob([fs.readFileSync(document.path)], { type: detectMime(document.path) }), path.basename(document.path));
+  } else form.append('text', String(text));
+  const res = await fetchImpl(`${TG_API}/bot${target.token}/${method}`, { method: 'POST', body: form });
+  const data = await res.json().catch(() => ({}));
+  if (!data.ok) throw new Error(`Telegram ${method}: ${data.description || res.status}`);
+  return { delivered: true, channel: 'telegram' };
+}
+
 module.exports = {
+  chatTarget,
+  sendChatReply,
   tools: {
     tg_send_file: {
       description:

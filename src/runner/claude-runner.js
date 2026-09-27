@@ -12,6 +12,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { keepaliveFilePath, lastKeepaliveAt } = require('../mcp-keepalive');
 
 const STREAM_INTERVAL_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 3000;
@@ -64,6 +65,9 @@ const runningControls = (taskId, inputMessageId = null, sessionId = null) => ({ 
 const editLanded = result => !!(result && result.ok && !result.skipped);
 const WARN_TIMEOUT_MS  = 38 * 60 * 1000; // 38 min — graceful SIGTERM + Telegram warning before hard kill
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 min silence → kill + auto-restart (all engines)
+// Per-MCP-tool-call ceiling for every engine. Bounded by the 40-min hard limit anyway;
+// the point is to stop engines' own short defaults (opencode 60s) from killing slow tools.
+const MCP_TOOL_TIMEOUT_MS = 30 * 60 * 1000;
 
 // OpenCode loop guard (#1583): a degraded model can enter an "active" loop where it
 // keeps emitting output (so the inactivity kill never fires) but makes no real progress —
@@ -117,6 +121,8 @@ function codexMcpArgs(mcpConfig) {
     args.push('-c', `mcp_servers.${name}.command=${JSON.stringify(srv.command)}`);
     if (srv.args) args.push('-c', `mcp_servers.${name}.args=${JSON.stringify(srv.args)}`);
     if (srv.env) args.push('-c', `mcp_servers.${name}.env=${tomlInlineTable(srv.env)}`);
+    // Long tools (hermes_research: a whole CLI session) must not hit codex's per-tool cap.
+    args.push('-c', `mcp_servers.${name}.tool_timeout_sec=${MCP_TOOL_TIMEOUT_MS / 1000}`);
   }
   return args;
 }
@@ -172,11 +178,16 @@ function writeOpencodeMcpConfig(configDir, mcpConfig, ocProfileOverrides) {
       type: 'local',
       command: [srv.command, ...(srv.args || [])],
       ...(srv.env ? { environment: srv.env } : {}),
+      timeout: MCP_TOOL_TIMEOUT_MS,
     };
   }
   fs.mkdirSync(configDir, { recursive: true });
   const configPath = path.join(configDir, '.opencode-mcp.json');
-  fs.writeFileSync(configPath, JSON.stringify({ mcp, ...ocProfileOverrides }, null, 2));
+  // opencode aborts every MCP tool call at 60s by default (MCP SDK request timeout) —
+  // hermes_research died there 11/11 times (2026-09-27). experimental.mcp_timeout is the
+  // tool-call timeout; per-server `timeout` covers the other MCP requests.
+  const experimental = { ...(ocProfileOverrides?.experimental || {}), mcp_timeout: MCP_TOOL_TIMEOUT_MS };
+  fs.writeFileSync(configPath, JSON.stringify({ mcp, ...ocProfileOverrides, experimental }, null, 2));
   return configPath;
 }
 
@@ -338,6 +349,7 @@ async function runEngineProcess(opts) {
   // dependency, so web runs get real progress instead of a frozen "waiting" state.
   const reportProgress = (label) => { if (onProgress) try { onProgress(label); } catch {} };
 
+  const keepaliveFile = keepaliveFilePath(taskId);
   const engineEnv = {
       ...cleanEnv,
       ...userTokens,
@@ -354,6 +366,11 @@ async function runEngineProcess(opts) {
       ...(user.username ? { AGENT_USER_HANDLE: user.username }   : {}),
       ...(sessionFilePath ? { AGENT_SESSION_FILE: sessionFilePath } : {}),
       AGENT_TASK_ID: taskId,
+      // Slow MCP tools touch this while they work so the inactivity watchdog doesn't
+      // mistake a pending tool call for a hung engine (see src/mcp-keepalive.js).
+      AGENT_KEEPALIVE_FILE: keepaliveFile,
+      ...(runThreadId ? { AGENT_THREAD_ID: String(runThreadId) } : {}),
+      MCP_TOOL_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS), // claude's MCP tool-call ceiling
       // All user-facing times are Moscow (МСК) — the pinned card and session context
       // format with timeZone 'Europe/Moscow'. Without this the engine shell inherited the
       // VM clock (UTC on GCP), so plain `date` disagreed with every time the user sees and
@@ -865,7 +882,7 @@ async function runEngineProcess(opts) {
       inactivityCheckTimer = setInterval(() => {
         if (onHeartbeat) { try { onHeartbeat(); } catch (e) { console.warn(`[${taskId}] heartbeat write failed:`, e.message); } }
         if (timedOut || sessionState.userStopped) return;
-        const silentMs = Date.now() - lastOutputAt;
+        const silentMs = Date.now() - Math.max(lastOutputAt, lastKeepaliveAt(keepaliveFile));
         if (silentMs >= INACTIVITY_TIMEOUT_MS) {
           clearInterval(inactivityCheckTimer); inactivityCheckTimer = null;
           inactivityKill = true;
@@ -945,6 +962,7 @@ async function runEngineProcess(opts) {
     activeTimers.delete(taskId);
     await stopProgress();
     heartbeatTimer = null;
+    try { fs.unlinkSync(keepaliveFile); } catch {}
   }
 
   return {
@@ -974,5 +992,5 @@ module.exports = {
   inputInspectionRows,
   controlKey,
   // constants exposed for tests
-  _const: { STREAM_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, STOP_BUTTON_AFTER_SECS, MAX_MSG_LEN, CLAUDE_TIMEOUT_MS, WARN_TIMEOUT_MS, INACTIVITY_TIMEOUT_MS, LOOP_GUARD_REPEAT_LIMIT, LOOP_GUARD_TEXT_MIN_LEN },
+  _const: { STREAM_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, STOP_BUTTON_AFTER_SECS, MAX_MSG_LEN, CLAUDE_TIMEOUT_MS, WARN_TIMEOUT_MS, INACTIVITY_TIMEOUT_MS, MCP_TOOL_TIMEOUT_MS, LOOP_GUARD_REPEAT_LIMIT, LOOP_GUARD_TEXT_MIN_LEN },
 };
