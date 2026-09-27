@@ -630,6 +630,19 @@ async function main() {
       return;
     }
 
+    // POST /internal/publish — publish a page for a profile on behalf of a domain skill
+    // repo (#1470): the same writer as the publish_page tool, reached over HTTP so a
+    // sibling never requires core code. Body: { username, slug, content, title?,
+    // password?, is_public?, format? } → { url, public_url, slug, is_protected, … }.
+    if (req.method === 'POST' && url.pathname === '/internal/publish') {
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+      const { username, slug, content, title, password, is_public, format } = body || {};
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(username || ''))) return json(res, 400, { error: 'invalid username' });
+      const out = require('./mcp-skills/tools/97-publish').publishPage({ username, slug, content, title, password, is_public, format });
+      return json(res, out.error ? 400 : 200, out);
+    }
+
     // GET /internal/run-input?username=X&taskId=Y — the REAL model input of a run
     // (system prompt + context/task), written by the runner at spawn time
     // (src/run-input-store.js). Powers the gateway's «Посмотреть input» button.
