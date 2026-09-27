@@ -168,3 +168,12 @@ test('sibling modules are gated per section: recruiting keeps company/INN, hides
   const none = computePlan(catalog, { enabled: ['gdrive'] });
   assert.ok(none.hidden.siblings.includes('sales-skills'), 'no section needs sales → sibling not mounted');
 });
+
+test('hh-skills/98-demo.js follows its own demo section (#1470)', () => {
+  const catalog = loadCatalog();
+  const off = computePlan(catalog, { enabled: ['recruiting'] });
+  assert.ok(off.hidden.modules.includes('hh-skills/98-demo.js'));
+  assert.ok(!off.hidden.siblings.includes('hh-skills'));
+  const on = computePlan(catalog, { enabled: ['recruiting', 'demo'] });
+  assert.ok(!on.hidden.modules.includes('hh-skills/98-demo.js'));
+});

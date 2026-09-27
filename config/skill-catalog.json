@@ -68,7 +68,7 @@
     "tilda": { "title": "Tilda", "modules": ["20-tilda.js"], "promptDomains": ["tilda.setup"] },
     "gdrive": { "title": "Google Drive", "modules": ["50-gdrive.js"], "promptDomains": ["gdrive"] },
     "illustrate": { "title": "Иллюстрации", "modules": ["95-illustrate.js", "96-label.js"] },
-    "demo": { "title": "Демо-режим рекрутинга", "modules": ["98-demo.js"] },
+    "demo": { "title": "Демо-режим рекрутинга", "modules": ["hh-skills/98-demo.js"] },
     "website-api": { "title": "API из сайта (черновик)", "modules": ["98-api-from-website.js"] }
   }
 }

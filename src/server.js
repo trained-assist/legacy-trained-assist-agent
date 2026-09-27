@@ -289,6 +289,13 @@ const ABANDONED_NOTICE_MS = 6 * 60 * 60 * 1000; // older but not ancient: tell t
 const CONTINUATION_PROMPT = '[ПРОДОЛЖЕНИЕ] Сервер перезапустился и прервал тебя. Продолжи с того места, где остановился.';
 
 async function resumePendingTasks(secrets) {
+  // Durable plan steps are not in the resumable journal (no chat to resume into):
+  // put every step the previous process was running straight back in the queue.
+  try {
+    const { reconcileOrphanedRunning } = require('./gtd-controller');
+    const n = reconcileOrphanedRunning(undefined, { graceMs: 0 });
+    if (n) console.log(`[resume] re-queued ${n} durable step(s) interrupted by the restart`);
+  } catch (e) { console.error('[resume] durable re-queue failed:', e.message); }
   if (!secrets?.BOT_TOKEN) return;
 
   const pending = getPendingTasks();
@@ -621,6 +628,19 @@ async function main() {
     if (auth !== `Bearer ${secrets.AGENT_SECRET}`) {
       res.writeHead(401).end(JSON.stringify({ error: 'unauthorized' }));
       return;
+    }
+
+    // POST /internal/publish — publish a page for a profile on behalf of a domain skill
+    // repo (#1470): the same writer as the publish_page tool, reached over HTTP so a
+    // sibling never requires core code. Body: { username, slug, content, title?,
+    // password?, is_public?, format? } → { url, public_url, slug, is_protected, … }.
+    if (req.method === 'POST' && url.pathname === '/internal/publish') {
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+      const { username, slug, content, title, password, is_public, format } = body || {};
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(username || ''))) return json(res, 400, { error: 'invalid username' });
+      const out = require('./mcp-skills/tools/97-publish').publishPage({ username, slug, content, title, password, is_public, format });
+      return json(res, out.error ? 400 : 200, out);
     }
 
     // GET /internal/run-input?username=X&taskId=Y — the REAL model input of a run
