@@ -4,7 +4,7 @@ process.once('exit', () => executionOwner.close());
 const { atomicJson } = require('./atomic-json');
 const { deliverySecrets, taskDelivery } = require('./bot-delivery');
 const { withDedupLock } = require('./request-dedup-lock');
-const { isTaskResumable } = require('./pending-task-resume');
+const { isTaskResumable, resumeSinkOf } = require('./pending-task-resume');
 const { isNonTaskMessage } = require('./resume-hygiene');
 const { recordResume, getResumeStats } = require('./resume-stats');
 const { getRetryDelayMs } = require('./retry-policy');
@@ -293,17 +293,33 @@ const ABANDONED_NOTICE_MS = 6 * 60 * 60 * 1000; // older but not ancient: tell t
 const CONTINUATION_PROMPT = '[ПРОДОЛЖЕНИЕ] Сервер перезапустился и прервал тебя. Продолжи с того места, где остановился.';
 
 async function resumePendingTasks(secrets) {
-  // Durable plan steps are not in the resumable journal (no chat to resume into):
-  // put every step the previous process was running straight back in the queue.
+  const pending = getPendingTasks();
+  // Durable plan steps whose run is journaled (and still inside the resume window)
+  // continue in their own engine session below (#1671); every OTHER step the
+  // previous process was running goes straight back in the queue.
+  const resumingDurable = new Set(pending
+    .filter(p => isTaskResumable(p, Date.now(), RESUME_WINDOW_MS))
+    .map(p => resumeSinkOf(p)).filter(s => s && s.kind === 'durable').map(s => s.itemId));
   try {
     const { reconcileOrphanedRunning } = require('./gtd-controller');
-    const n = reconcileOrphanedRunning(undefined, { graceMs: 0 });
+    const n = reconcileOrphanedRunning(undefined, { graceMs: 0, exceptItemIds: resumingDurable });
     if (n) console.log(`[resume] re-queued ${n} durable step(s) interrupted by the restart`);
   } catch (e) { console.error('[resume] durable re-queue failed:', e.message); }
-  if (!secrets?.BOT_TOKEN) return;
-
-  const pending = getPendingTasks();
+  // Resume is NOT Telegram-only (#1671): web and durable runs resume without a bot token.
   if (pending.length === 0) return;
+  // A durable step that cannot be resumed after all goes back to the queue.
+  const requeueDurable = (sink) => {
+    try {
+      const { durableStore } = require('./gtd-controller');
+      const st = durableStore();
+      const it = st.getTaskItem(sink.itemId);
+      if (it && it.status === 'running') st.updateTaskItem(it.id, { status: 'pending', due_at: Date.now() }, sink.profileId);
+    } catch (e) { console.error('[resume] durable requeue:', e.message); }
+  };
+  const closeWeb = (sink, patch) => {
+    try { require('./web-routes').completeWebMutation(sink.username, sink.requestId, patch); }
+    catch (e) { console.warn('[resume] web receipt close failed:', e.message); }
+  };
 
   const TG_BASE = (process.env.TELEGRAM_API_URL || 'https://api.telegram.org').replace(/\/$/, '');
   const tgCall = (token, method, body) =>
@@ -314,6 +330,7 @@ async function resumePendingTasks(secrets) {
     }).catch(() => {});
   // Failure notice: replaces the task's status message when it has one, else sends a new one.
   const notifyFailure = (p, text) => {
+    if (!p.userId || !secrets?.BOT_TOKEN) return Promise.resolve(); // Telegram sink only
     let token;
     try { token = taskDelivery({ user: { audience: p.audience, workDir: p.workDir || path.join(BASE_USERS_DIR, p.username) }, sessionId: p.sessionId, secrets }).secrets.BOT_TOKEN; }
     catch (e) { console.error('[resume] delivery unavailable:', e.message); return Promise.resolve(); }
@@ -405,6 +422,9 @@ async function resumePendingTasks(secrets) {
       // The resume itself keeps failing across restarts (not just once) — this is a real,
       // repeatable break, not restart noise. Stop retrying and say so plainly.
       await notifyFailure(p, `⚠️ Не удалось восстановить сессию после ${MAX_RESUME_ATTEMPTS} попыток через перезапуски сервера. Это сбой сервера, не твоей задачи — напиши запрос заново.`);
+      const giveUpSink = resumeSinkOf(p);
+      if (giveUpSink && giveUpSink.kind === 'durable') requeueDurable(giveUpSink);
+      if (giveUpSink && giveUpSink.kind === 'web') closeWeb(giveUpSink, { state: 'error', error: 'Не удалось продолжить задачу после перезапусков — отправьте ещё раз.', sessionId: p.sessionId || null });
       clearPendingTask(p.taskId);
       await releaseChat(p);
       console.warn(`[resume] user=${p.username} session=${p.sessionId} gave up after ${MAX_RESUME_ATTEMPTS} attempts`);
@@ -419,6 +439,7 @@ async function resumePendingTasks(secrets) {
       id: p.userId, name: p.username, username: p.username, workDir,
       profileId: p.profileId, telegramUserId: p.telegramUserId, audience: p.audience,
     };
+    const sink = resumeSinkOf(p);
     const fireResume = async () => {
       try {
         // runTask journals its replacement synchronously before returning its promise.
@@ -436,15 +457,26 @@ async function resumePendingTasks(secrets) {
           mode: p.mode, continuationCount: p.continuationCount,
           initiatedAt: p.initiatedAt, threadId: p.threadId,
           rootTaskId: p.rootTaskId || p.taskId, requestId: p.requestId || null,
+          resumeSink: p.resumeSink || null,
+          // A web run streams to its SSE client, never to Telegram; that client is gone,
+          // the answer is persisted in the web session the UI re-reads.
+          ...(sink && sink.kind === 'web' ? { outputCallback: () => {} } : {}),
+          ocProfile: p.ocProfile || null, ocRole: p.ocRole || null, stepTimeoutMs: p.stepTimeoutMs || null,
         });
         clearPendingTask(p.taskId);
         const reply = await running;
+        // The original run's completion handler died with the old process: hand the
+        // resumed reply to the same sink it would have gone to (#1671).
+        if (sink && sink.kind === 'durable') await require('./gtd-controller').resumeDurableReply(sink, reply, { secrets });
+        else if (sink && sink.kind === 'web') closeWeb(sink, { state: 'done', sessionId: p.sessionId || null, taskId: p.taskId });
         // Resumed GTD turn: runDue's .then() died with the old process, so settle here.
-        if (p.internalGtd && p.sessionId) require('./gtd-controller').settleResumedGtd(workDir, p.sessionId, reply);
+        else if (p.internalGtd && p.sessionId) require('./gtd-controller').settleResumedGtd(workDir, p.sessionId, reply);
       } catch (err) {
         console.error(`[resume] user=${p.username} error:`, err.message);
         await releaseChat(p);
-        if (!p.internalGtd) await notifyFailure(p, '⚠️ Не удалось продолжить задачу после перезапуска. Повтори запрос.');
+        if (sink && sink.kind === 'durable') await require('./gtd-controller').resumeDurableCrash(sink, err, { secrets }).catch(() => {});
+        else if (sink && sink.kind === 'web') closeWeb(sink, { state: 'error', error: 'Не удалось продолжить задачу после перезапуска — отправьте ещё раз.', sessionId: p.sessionId || null });
+        else if (!p.internalGtd) await notifyFailure(p, '⚠️ Не удалось продолжить задачу после перезапуска. Повтори запрос.');
       }
     };
     const delayMs = getRetryDelayMs(attempt) || 0;

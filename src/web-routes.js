@@ -451,6 +451,10 @@ async function streamWebTask({ req, res, secrets, username, task, sessionId, new
     pinnedMsgId: null,
     projectId: projectId || null,
     fileRefs,
+    // #1671: a restart resumes this run in the same engine session and closes the
+    // receipt itself (the SSE stream dies with the process; the answer lands in the
+    // web session the client re-reads).
+    resumeSink: { kind: 'web', username, requestId },
     outputCallback: (text) => { streamed = true; emitter.emit('chunk', text); },
     onProgress: (label) => emitter.emit('progress', label),
   }).then((result) => {

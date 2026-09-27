@@ -37,7 +37,7 @@ test('SIGTERM handler flags the restart and exits without draining', () => {
   assert.doesNotMatch(body, /drain|paused|maintenance\.pause/);
 });
 
-const { isTaskResumable } = require('../src/pending-task-resume');
+const { isTaskResumable, resumeSinkOf } = require('../src/pending-task-resume');
 
 function resumeHarness({ pending, now = Date.now(), retryDelayMs = () => 0, engineSessionIds = {}, secrets = { BOT_TOKEN: 'tok' } }) {
   const start = serverSrc.indexOf('const RESUME_WINDOW_MS');
@@ -48,7 +48,7 @@ function resumeHarness({ pending, now = Date.now(), retryDelayMs = () => 0, engi
     path, console: { log() {}, error() {}, warn() {} }, Date: class extends Date { static now() { return now; } },
     BASE_USERS_DIR: '/users', AbortSignal, Promise,
     setTimeout: (fn, ms) => { delays.push(ms); fn(); return 0; },
-    process: { env: {} }, isTaskResumable, MAX_RESUME_ATTEMPTS: 3,
+    process: { env: {} }, isTaskResumable, resumeSinkOf, MAX_RESUME_ATTEMPTS: 3,
     getRetryDelayMs: attempt => retryDelayMs(attempt),
     getPendingTasks: () => pending,
     clearPendingTask: id => cleared.push(id),
@@ -64,10 +64,20 @@ function resumeHarness({ pending, now = Date.now(), retryDelayMs = () => 0, engi
   };
   // releaseChat() calls require('./gateway-callback') from inside the sandbox
   // slice; expose a stub so the harness needs no real module resolution.
-  sandbox.require = () => ({ notifyRunFinished: async (p) => { releases.push(p); return true; } });
+  const webCloses = [], durableReplies = [];
+  sandbox.require = (m) => {
+    if (m === './web-routes') return { completeWebMutation: (...a) => webCloses.push(a) };
+    if (m === './gtd-controller') return {
+      reconcileOrphanedRunning: () => 0,
+      resumeDurableReply: async (sink, reply) => { durableReplies.push({ sink, reply }); },
+      resumeDurableCrash: async () => {},
+      settleResumedGtd: () => {},
+    };
+    return { notifyRunFinished: async (p) => { releases.push(p); return true; } };
+  };
   vm.createContext(sandbox);
   vm.runInContext(`${serverSrc.slice(start, end)}; this.resume = resumePendingTasks;`, sandbox);
-  return { resume: () => sandbox.resume(secrets), calls, runs, cleared, delays, resumeKinds, releases, now };
+  return { resume: () => sandbox.resume(secrets), calls, runs, cleared, delays, resumeKinds, releases, now, webCloses, durableReplies };
 }
 
 const task = (over = {}) => ({ taskId: 'alice-1', username: 'alice', userId: 42, task: 'work', initialMsgId: 7,
@@ -158,7 +168,7 @@ test('a resumed task that fails to start tells the user', async () => {
   const sandbox = {
     taskDelivery: require('../src/bot-delivery').taskDelivery,
     path, console: { log() {}, error() {}, warn() {} }, BASE_USERS_DIR: '/users', AbortSignal, Promise,
-    setTimeout: fn => { fn(); return 0; }, process: { env: {} }, isTaskResumable, MAX_RESUME_ATTEMPTS: 3,
+    setTimeout: fn => { fn(); return 0; }, process: { env: {} }, isTaskResumable, resumeSinkOf, MAX_RESUME_ATTEMPTS: 3,
     getRetryDelayMs: () => 0,
     getPendingTasks: () => pending, clearPendingTask() {},
     getEngineSessionId: () => null,
@@ -326,4 +336,28 @@ test('restart-resume carries the original rootTaskId and requestId into the new 
   const h2 = resumeHarness({ pending: [task({ taskId: 'alice-resume-1', rootTaskId: 'alice-req9', requestId: 'req9' })] });
   await h2.resume();
   assert.equal(h2.runs[0].rootTaskId, 'alice-req9', 'second restart keeps the FIRST id, not the resume id');
+});
+
+// #1671 — resume is not Telegram-only.
+test('web task resumes WITHOUT a bot token and closes its receipt when done', async () => {
+  const h = resumeHarness({ secrets: {}, runTaskReply: 'ok', pending: [task({ taskId: 'alice-web-r1', userId: 0,
+    resumeSink: { kind: 'web', username: 'alice', requestId: 'r1' } })] });
+  await h.resume();
+  await new Promise(r => setImmediate(r));
+  assert.equal(h.runs.length, 1, 'web task was resumed');
+  assert.equal(typeof h.runs[0].outputCallback, 'function', 'resumed web run never streams to Telegram');
+  assert.deepEqual(h.webCloses.map(a => [a[0], a[1], a[2].state]), [['alice', 'r1', 'done']]);
+  assert.equal(h.calls.length, 0, 'no Telegram message for a web task');
+});
+
+test('durable plan step resumes in its engine session and its reply settles the step', async () => {
+  const sink = { kind: 'durable', taskId: 't1', itemId: 'i1', executionId: 'e1', profileId: 'alice' };
+  const h = resumeHarness({ secrets: {}, pending: [task({ taskId: 'durable-alice-i1-1', userId: null, internalGtd: true,
+    resumeSink: sink, engine: 'opencode', engineSessionId: 'ses_1', ocProfile: 'free', ocRole: 'build' })] });
+  await h.resume();
+  await new Promise(r => setImmediate(r));
+  assert.equal(h.runs.length, 1, 'durable step was resumed');
+  assert.equal(h.runs[0].resumeSessionId, 'ses_1', 'same engine session');
+  assert.deepEqual([h.runs[0].ocProfile, h.runs[0].ocRole], ['free', 'build'], 'same engine profile/role');
+  assert.deepEqual(h.durableReplies.map(d => d.sink), [sink]);
 });
