@@ -29,7 +29,6 @@ const isoEnv = {
   OPENCODE_GO_KEYS_STATE_FILE: path.join(isoDir, 'go-keys-state.json'),
   OPENCODE_GO_AUTH_FILE: path.join(isoDir, 'auth.json'),
   OPENCODE_MODEL_HEALTH_FILE: path.join(isoDir, 'model-health.json'),
-  LADDER_LOG_DIR: path.join(isoDir, 'ladder-log'),
 };
 // A test file may still point these at its own temp dir; it just can't fall through to $HOME.
 const childEnv = { ...isoEnv, ...process.env };
