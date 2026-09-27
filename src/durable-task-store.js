@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
-const { validateItem, declaredValidations } = require('./durable-task-plan');
+const { validateItem, declaredValidations, criterionIdForItem } = require('./durable-task-plan');
 
 const TASK_STATUSES = ['draft', 'paused', 'blocked', 'active', 'done', 'failed', 'cancelled'];
 const ITEM_STATUSES = ['pending', 'running', 'waiting', 'done', 'failed', 'skipped'];
@@ -150,6 +150,73 @@ class DurableTaskStore {
       });
       if (session_id) this.attachSession(id, session_id, profile_id);
       return { task: this.getTask(id, profile_id), items: this.listTaskItems(id, profile_id) };
+    })();
+  }
+
+  /**
+   * A running plan edits itself (legal): insert a fully-contracted step right after
+   * `afterItemId` (later steps shift down one position), or append when omitted.
+   * Contract plans only — the step goes through the same validateItem as createPlan,
+   * so it routes by the plan's level map like any compiled step.
+   */
+  insertPlanItem(taskId, profileId, { afterItemId = null, item }) {
+    return this.db.transaction(() => {
+      const task = this.getTask(taskId, profileId);
+      if (!task) throw new Error('task not found (or not owned by this profile)');
+      if (!task.acceptance_criteria_json) throw new Error('not a contract plan — use the legacy item fields');
+      if (['done', 'failed', 'cancelled'].includes(task.status)) throw new Error(`plan is ${task.status}`);
+      validateItem(item);
+      let position;
+      if (afterItemId) {
+        const after = this._itemOwnedBy(afterItemId, profileId);
+        if (!after || after.task_id !== taskId) throw new Error('after_item_id is not a step of this plan');
+        position = after.position + 1;
+        this._prep('UPDATE task_items SET position = position + 1, updated_at = ? WHERE task_id = ? AND position >= ?')
+          .run(nowMs(), taskId, position);
+      } else {
+        position = this._prep('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM task_items WHERE task_id = ?').get(taskId).p;
+      }
+      const itemId = crypto.randomUUID();
+      this.createTaskItem({ id: itemId, task_id: taskId, title: item.title, position, delay_after_sec: item.delay_after_sec ?? 0 });
+      this._prep(`UPDATE task_items SET stage=?, instructions=?, execution_kind=?, executor_role=?,
+        minimum_model_level=?, current_model_level=?, context_budget=?, validation_json=?,
+        max_attempts=?, execution_timeout_seconds=? WHERE id=?`)
+        .run(item.stage ?? null, item.instructions ?? null, item.execution_kind,
+          item.executor_role ?? null, item.minimum_model_level ?? null, item.minimum_model_level ?? null,
+          item.context_budget ?? null, JSON.stringify(item.validation), item.max_attempts ?? 3,
+          item.execution_timeout_seconds ?? 600, itemId);
+      this._bump(taskId);
+      return this.getTaskItem(itemId);
+    })();
+  }
+
+  /**
+   * A running plan drops a step that does not apply (legal, audited): only a step
+   * that has not started (pending/waiting). Its declared validations are recorded as
+   * 'pass' with evidence {skipped:true, reason, by} — like a fast-pass skip — so the
+   * finalization gate is not blocked forever, while the skip stays visible.
+   */
+  skipItem(itemId, profileId, { reason, by = 'agent' }) {
+    if (typeof reason !== 'string' || !reason.trim()) throw new Error('reason required');
+    return this.db.transaction(() => {
+      const item = this._itemOwnedBy(itemId, profileId);
+      if (!item) throw new Error('item not found (or not owned by this profile)');
+      if (!['pending', 'waiting'].includes(item.status)) throw new Error(`only a step that has not started can be skipped (status=${item.status})`);
+      const task = this.getTask(item.task_id, profileId);
+      this._prep(`UPDATE task_items SET status = 'skipped', last_error = ?, updated_at = ? WHERE id = ?`)
+        .run(`skipped: ${reason.trim()}`.slice(0, 500), nowMs(), itemId);
+      let validation = {};
+      try { validation = item.validation_json ? JSON.parse(item.validation_json) : {}; } catch { /* none */ }
+      for (const key of Object.keys(validation)) {
+        this.recordValidation({
+          task_id: task.id, profile_id: profileId, task_item_id: itemId,
+          criterion_id: criterionIdForItem(task, item, key), contract_revision: task.contract_revision || 1,
+          validator: key, status: 'pass',
+          evidence_json: JSON.stringify({ skipped: true, reason: reason.trim(), by }),
+        });
+      }
+      this._bump(item.task_id);
+      return this.getTaskItem(itemId);
     })();
   }
 
