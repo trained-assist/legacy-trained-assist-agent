@@ -54,7 +54,7 @@
     "freelance": {
       "title": "Фриланс / аутсорс",
       "siblings": ["freelance-skills"],
-      "modules": ["94-outsource-project.js", "62-business-analyst.js"]
+      "modules": ["62-business-analyst.js"]
     },
     "flexi-expo": {
       "title": "Выставки Flexi",
