@@ -17,6 +17,7 @@ const opencodeLadder = require('../opencode-ladder');
 const opencodeGoToggle = require('../opencode-go-toggle');
 const { MAX_RETRIES: MAX_INCOMPLETE_RETRIES, getRetryDelayMs, isTestMode } = require('../retry-policy');
 const { recordUsage } = require('../usage-store');
+const promptAudit = require('../prompt-audit');
 const { classifyDeterministic: classifyFailureDeterministic } = require('../failure-classifier');
 const executionHistory = require('../execution-history');
 const { markEngineSuccess, markEngineFailure, isCredentialInvalidClass } = require('../engine-health');
@@ -2886,6 +2887,37 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       cache_creation_input_tokens: claudeUsage.cache_creation_input_tokens || 0,
     });
   }
+
+  // Prompt-effectiveness instrumentation (§5.1–5.2): one JSONL line per task with the
+  // assembled prompt's section sizes + deterministic adherence flags on the final
+  // answer. Feeds the weekly prompt-KPI report (adherence, prompt weight, cost) —
+  // see src/prompt-audit.js. Never throws; pure observation.
+  try {
+    const effectiveMode = (explicitMode === 'deep'
+      || answerRouter.readMode(user.workDir, activeSessionId)?.mode === 'deep')
+      ? 'deep' : (explicitMode || 'oneshot');
+    promptAudit.recordPromptAudit(user.workDir, {
+      taskId, sessionId: activeSessionId, webExactSession,
+      at: Date.now(), engine,
+      mode: effectiveMode,
+      model: engine === 'opencode' ? (opencodeModel || 'opencode-config') : (claudeModel || process.env.ANTHROPIC_MODEL || 'claude'),
+      input_tokens: engine === 'opencode' ? (opencodeUsage?.input || 0) : (claudeUsage?.input_tokens || 0),
+      output_tokens: engine === 'opencode' ? (opencodeUsage?.output || 0) : (claudeUsage?.output_tokens || 0),
+      cache_read: engine === 'opencode' ? (opencodeUsage?.cacheRead || 0) : (claudeUsage?.cache_read_input_tokens || 0),
+      cache_write: engine === 'opencode' ? (opencodeUsage?.cacheWrite || 0) : (claudeUsage?.cache_creation_input_tokens || 0),
+      cost_usd: engine === 'opencode' ? (opencodeUsage?.cost ?? null) : null,
+      section_tokens: promptAudit.computeSectionTokens({
+        base: systemPromptText,
+        oc_capabilities: ocCapBlock,
+        notes: notesSection,
+        project_notes: projectNotesSection,
+        reqlog: reqLogSection,
+        history: sessionContext,
+        current_task: currentTask,
+      }),
+      adherence: promptAudit.adherenceFlags(result, { mode: effectiveMode }),
+    });
+  } catch (e) { console.warn('[runner] prompt-audit:', e.message); }
   const costFooter = engine === 'opencode'
     ? formatOcFooter(opencodeUsage, opencodeBreakdown)
     : formatCostFooter(claudeUsage, claudeModel);
