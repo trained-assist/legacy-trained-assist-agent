@@ -46,6 +46,9 @@ function deferredHarness({ pending, now = Date.now(), retryDelayMs = () => 50, s
     fetch: async (url, init) => { calls.push({ url, body: JSON.parse(init.body) }); return {}; },
     runTask: opts => { if (startError) throw startError; runs.push(opts); return Promise.resolve(); },
   };
+  // resumePendingTasks() calls require('./gateway-callback') to release the chat
+  // for tasks that end without a run; the slice runs in a VM with no require.
+  sandbox.require = () => ({ notifyRunFinished: async () => true });
   vm.createContext(sandbox);
   vm.runInContext(`${serverSrc.slice(start, end)}; this.resume = resumePendingTasks;`, sandbox);
   return {

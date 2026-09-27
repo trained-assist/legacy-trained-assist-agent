@@ -351,7 +351,7 @@ async function handleWeb(req, url, res, ctx) {
     if (projectId != null && !require('../valid-project-id').isValidProjectId(projectId)) return json(res, 400, { error: 'invalid projectId' });
     const { streamWebTask, prepareWebTaskFiles, claimWebMutation } = require('../web-routes');
     let prepared;
-    try { prepared = prepareWebTaskFiles(username, taskText, refs); }
+    try { prepared = await prepareWebTaskFiles(username, taskText, refs, secrets); }
     catch (e) { return json(res, e.statusCode || 503, { error: e.message || 'attachment preparation failed' }); }
     const sid = (sessionId && /^[a-zA-Z0-9_-]+$/.test(sessionId)) ? sessionId : null;
     // Exact-session Web runs mint the new id BEFORE the receipt, so a duplicate
@@ -405,7 +405,7 @@ async function handleWeb(req, url, res, ctx) {
     // onto a pointer) — the UI then showed an answer in a dialog nobody opened.
     if (!getSessionFor(username, id)) return json(res, 404, { error: 'session not found', id });
     let prepared;
-    try { prepared = prepareWebTaskFiles(username, messageText, refs); }
+    try { prepared = await prepareWebTaskFiles(username, messageText, refs, secrets); }
     catch (e) { return json(res, e.statusCode || 503, { error: e.message || 'attachment preparation failed' }); }
     let claim;
     try { claim = claimWebMutation(username, requestId || null, { kind: 'reply', sessionId: id }); }
