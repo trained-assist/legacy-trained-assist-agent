@@ -32,10 +32,6 @@
       "modules": [],
       "promptDomains": ["hh", "hh.setup", "hh-notify"]
     },
-    "recruiting/applylink": {
-      "title": "ApplyLink",
-      "modules": ["41-applylink.js"]
-    },
     "recruiting/interview": {
       "title": "Интервью и видео",
       "modules": ["99-interview-analysis.js", "95-video-analysis.js"]

@@ -87,10 +87,9 @@ test('legacy mode (no skills.json) = exactly what the current code exposes', () 
 
 test('enabled parent enables its children; other sections stay off; core always on', () => {
   const res = resolve(catalog, { enabled: ['recruiting'] }, readiness());
-  assert.deepStrictEqual(res.sections, ['core', 'recruiting', 'recruiting/hh', 'recruiting/applylink', 'recruiting/interview', 'recruiting/company']);
+  assert.deepStrictEqual(res.sections, ['core', 'recruiting', 'recruiting/hh', 'recruiting/interview', 'recruiting/company']);
   assert.deepStrictEqual(res.siblings, ['hh-skills']);
   assert.ok(res.modules.includes('hh-skills/90-hh.js'));
-  assert.ok(res.modules.includes('trained-skills/41-applylink.js'));
   assert.ok(res.modules.includes('trained-skills/22-connect.js'));
   assert.ok(res.modules.includes('trained-skills/00-meta.js'));
   assert.ok(!res.modules.includes('trained-skills/60-github.js'));

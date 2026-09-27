@@ -28,7 +28,7 @@ OpenRouter is called as a plain OpenAI-compatible chat-completions endpoint:
 Existing call sites to copy from:
 - `src/hh-scoring.js` — model selection + fallback pattern
   (`FALLBACK_MODEL = 'google/gemini-2.5-flash'`)
-- `src/mcp-skills/tools/41-applylink.js` — PDF/resume extraction via
+- `trained-assist-hh-skill` `src/mcp-skills/tools/96-applylink.js` (was core `41-applylink.js`) — PDF/resume extraction via
   OpenRouter (`gemini-2.5-flash` native file parsing + `gpt-4o-mini` text
   fallback, run concurrently, pick the more complete result)
 - `src/hh-bullshit-guard.js`, `src/session-summary.js`, `src/project-summary.js`,
