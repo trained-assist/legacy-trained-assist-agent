@@ -60,10 +60,11 @@ suite('playbook e2e API', () => {
   it('starts a plan over HTTP with the e2e level map and reports it', async () => {
     const started = await call('POST', '/internal/e2e/plans', { profile: 'p1', playbook_id: 'feature', goal: 'api e2e' });
     expect(started.status).toBe(200);
-    // researcher steps go to the Gemini research profile (role map, #1618); the rest follow the e2e level map
-    const routes = started.data.routing.map(r => r.route);
-    expect(routes.some(r => /^opencode\/free /.test(r))).toBe(true);
-    expect(routes.filter(r => r !== 'programmatic').every(r => /^opencode\/(free|research|deepseek) /.test(r))).toBe(true);
+    // a plan with its own level map runs EVERY step on it — researcher steps included
+    // (no Gemini research profile on the test): free for master/bachelor, deepseek for doctor
+    const routes = started.data.routing.map(r => r.route).filter(r => r !== 'programmatic');
+    expect(routes.every(r => /^opencode\/(free|deepseek) /.test(r))).toBe(true);
+    expect(routes.some(r => /\(master, explore\)/.test(r) && r.startsWith('opencode/free'))).toBe(true);
     const id = started.data.plan.id;
     const rep = await call('GET', `/internal/e2e/plans/${id.slice(0, 8)}?profile=p1`);
     expect(rep.status).toBe(200);

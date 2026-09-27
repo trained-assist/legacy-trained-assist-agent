@@ -60,7 +60,10 @@ function startPlan({ profile, playbookId, goal, levelMap = null, preamble = true
   return {
     plan: { id: task.id, playbook: `${playbook.id}@${playbook.version}`, profile },
     routing: items.map(it => {
-      const r = resolveStepExecution(it, { levelMap: resolved });
+      // Same routing the executor uses for a plan with its own level map: the role map
+      // (researcher → Gemini research profile) does not apply — e2e runs every step on
+      // the plan's engines (free models on the test).
+      const r = resolveStepExecution(it, { levelMap: resolved, useRoleMap: false });
       return { n: it.position + 1, title: it.title, route: r.executionKind === 'programmatic'
         ? 'programmatic' : `${r.engine}/${r.ocProfile || '-'} (${r.modelLevel}, ${r.ocRole || '-'})` };
     }),
