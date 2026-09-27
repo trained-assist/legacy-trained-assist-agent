@@ -85,12 +85,15 @@ test('routeInput: one OpenRouter call with json response_format, validated outpu
 });
 
 test('routeInput returns null on every failure mode', async () => {
+  const savedKey = process.env.OPENROUTER_API_KEY; delete process.env.OPENROUTER_API_KEY; // hermetic: '' must not fall back to a real env key
+  try {
   assert.equal(await ir.routeInput('x', { openrouterKey: '' , fetchImpl: fakeFetch(GOOD) }), null);
   assert.equal(await ir.routeInput('', { openrouterKey: 'k', fetchImpl: fakeFetch(GOOD) }), null);
   assert.equal(await ir.routeInput('x', { openrouterKey: 'k', fetchImpl: async () => { throw new Error('net'); } }), null);
   assert.equal(await ir.routeInput('x', { openrouterKey: 'k', fetchImpl: async () => ({ ok: false, status: 500 }) }), null);
   assert.equal(await ir.routeInput('x', { openrouterKey: 'k', fetchImpl: fakeFetch('not json') }), null);
   assert.equal(await ir.routeInput('x', { openrouterKey: 'k', fetchImpl: async () => ({ ok: true, json: async () => { throw new Error('bad'); } }) }), null);
+  } finally { if (savedKey !== undefined) process.env.OPENROUTER_API_KEY = savedKey; }
 });
 
 test('shadow: disabled by INPUT_ROUTER_SHADOW=0, no call', () => {
