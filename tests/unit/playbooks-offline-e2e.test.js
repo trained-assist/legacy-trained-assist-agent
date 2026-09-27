@@ -82,11 +82,11 @@ function scriptedEngine({ calls, killOnce = null, onStep = null }) {
   const tools = require('../../src/mcp-skills/tools/101-durable-tasks.js').tools;
   const killed = new Set();
   const waited = new Set();
-  return async ({ task: prompt, engine, ocProfile }) => {
+  return async ({ task: prompt, engine, ocProfile, sessionId, webExactSession }) => {
     const title = (prompt.match(/Step \(\d+\/\d+\): (.*)/) || [])[1] || '';
     const stepId = (prompt.match(/Step id: (\S+)/) || [])[1];
     const label = (prompt.match(/root_task_id: "([^"]+)"/) || [])[1] || null;
-    calls.push({ title, engine, ocProfile, label });
+    calls.push({ title, engine, ocProfile, label, sessionId, webExactSession });
     if (onStep) await onStep({ title, stepId, prompt, tools });
     if (killOnce && killOnce.test(title) && !killed.has(title)) {
       killed.add(title);
@@ -162,6 +162,8 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
       // one workspace label for the whole plan
       const labels = new Set(calls.map(c => c.label));
       expect([...labels]).toEqual([`plan-${task.id.slice(0, 8)}`]);
+      // every step runs in the plan's OWN exact session — never the profile's chat session
+      expect([...new Set(calls.map(c => `${c.sessionId}|${c.webExactSession}`))]).toEqual([`s-plan-${task.id.slice(0, 8)}|true`]);
 
       // the CI step parked on a durable wait and was re-run after CI went green
       expect(calls.filter(c => /^CI зел/.test(c.title)).length).toBe(2);
