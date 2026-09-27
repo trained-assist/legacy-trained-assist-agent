@@ -113,6 +113,13 @@ function sessionFilePath(username, sessionId) {
   return path.join(USERS_ROOT, String(username), 'sessions', `${sessionId}.json`);
 }
 
+// Quiet-mode group history the gateway delivered with /run (group-history-store.js):
+// one file per (group chat, forum topic).
+function groupHistoryPath(username, chatId, threadId = null) {
+  const topic = threadId != null ? `_t${threadId}` : '';
+  return path.join(USERS_ROOT, String(username), 'group-history', `${chatId}${topic}.json`);
+}
+
 // ── Token storage (TOKENS_ROOT) ───────────────────────────────────────────────
 
 function tokenPath(username, service) {
@@ -135,6 +142,7 @@ module.exports = {
   pendingTaskPath,
   sessionIndexPath,
   sessionFilePath,
+  groupHistoryPath,
   tokenPath,
   durableTaskDbPath,
   engineHealthDbPath,

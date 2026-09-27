@@ -1346,6 +1346,11 @@ ${recent || '(пока нет)'}
         console.log('[/run] 400 invalid username:', username);
         return reject(400, { error: 'invalid username' });
       }
+      // Quiet-mode group history (tg-bot src/group-history.js) arrives once; keep it so the
+      // get_group_history MCP tool can still show it after the next run stops repeating it.
+      if (Array.isArray(payload.groupHistory) && payload.groupHistory.length) {
+        require('./group-history-store').appendGroupHistory(username, chatId, threadId ?? null, payload.groupHistory);
+      }
       // Replay of an already-accepted request (lost ACK, outbox retry across a restart) is
       // acknowledged BEFORE content/delivery validation: the work already ran, so a stateful
       // check that fails now must not surface a false "сервер отклонил" to the user.
