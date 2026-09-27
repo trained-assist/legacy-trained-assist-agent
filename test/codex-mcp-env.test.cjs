@@ -58,8 +58,11 @@ test('shared per-profile .mcp.json carries no per-run session file', () => {
 
 test('runEngineProcess wires the forwarding for codex (source contract)', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'runner', 'claude-runner.js'), 'utf8');
-  assert.match(src, /engine === 'codex' && mcpConfig\s*\?\s*withCodexMcpEnvForwarding\(engineArgs, mcpConfig, Object\.keys\(engineEnv\)\)/);
-  assert.match(src, /spawn\(engineBin, spawnArgs, \{[\s\S]{0,40}env: engineEnv/);
+  assert.match(src, /engine === 'codex' && mcpConfig\s*\?\s*withCodexMcpEnvForwarding\(engineArgs, mcpConfig, Object\.keys\(spawnEnv\)\)/);
+  // Forwarded names = the env the process is actually spawned with (the allowlisted one
+  // under isolation, issue #1649), and the spawn args carry the forwarding.
+  assert.match(src, /isolation\.wrap\(engineBin, spawnArgs\)/);
+  assert.match(src, /spawn\(spawnBin, spawnArgv, \{[\s\S]{0,40}env: spawnEnv/);
 });
 
 // All user-facing times are МСК (card + session context use Europe/Moscow). Without an
