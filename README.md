@@ -504,6 +504,8 @@ npm run check  # syntax check all src files
 | `NODE_ENV` | — | Set to `production` in systemd |
 | `AGENT_PUBLIC_URL` | `https://recruiter-assistant.ru` | Public base URL for connect-links. RU VM: `https://platform.recruiter-assistant.ru` |
 | `ENGINE_UNAVAILABLE_AFTER_FAILURES` | `3` | Consecutive relevant engine failures before `engine_health.status` flips degraded → unavailable |
+| `AGENT_ENV_ALLOWLIST` | — | `1` = engine env from an allowlist + MCP via the run-token bridge (issue #1649, [docs/agent-process-isolation.md](docs/agent-process-isolation.md)) |
+| `AGENT_RUN_AS_USERS` | — | Comma list of unprivileged slot users engines run as (implies the allowlist). Set by `scripts/ops/agent-isolation-setup.sh` |
 
 > **Engine Health vs Credentials vs Failure Events** (`src/engine-health.js`, spec §7–§10): three separate concerns.
 > - **Credentials** — `auth-flag.js` + CLI credential stores. The auth flag now tracks only a real credential loss (class `AUTH`).
@@ -565,6 +567,7 @@ Enforced in CI (`ci.yml` → "Recruiter/HH tools must call OpenRouter, not spawn
 | `src/site-connector.js` | Generic website connector: Playwright login → BFS crawl → Claude Haiku analysis → intent generation. Used by `POST /connect/site` and `src/user-sites.js`. |
 | `src/user-sites.js` | Stores and loads connected-site settings per profile. Reads intents from the crawl results; used by `runner.js` to inject site-specific quick answers. |
 | `src/service-llm.js` | Small "service" LLM calls (answer buttons, paragraph formatting, classifiers, summaries, routing, intake gate, tg-format fixer, playbook validator, issue gate, bug reports) — `serviceChat`/`serviceJson`/`serviceText`. Thin client of the **trained-assist-llm-ladder** Cloudflare Worker (`https://llm-ladder.trainedassist.store`, repo `trained-assist/trained-assist-llm-ladder`; token `$AGENT_TOKENS_DIR/llm-ladder/token`, GCP SM `LLM_LADDER_TOKEN`), which owns the ladder, model health and Go key rotation. No in-process copy. Research / presentation / vision calls (site-connector, calltips, media-vision, HH/MCP domain tools, Hermes) intentionally stay on their own Gemini path. The free-ladder gateway (`llm-gateway.js`, `infra/llm-edge`) also moved into that worker (`model: free-ladder`). |
+| `src/agent-isolation.js` | T0 agent process hardening (issue #1649, [docs/agent-process-isolation.md](docs/agent-process-isolation.md)): env allowlist, run-as slot leases, per-run profile gate ACLs, per-profile engine home. Glue: `src/runner/engine-isolation.js`; MCP bridge `src/agent-mcp-bridge.js` (+ `-client.js`); run tokens `src/agent-run-tokens.js`. Off by default. |
 
 ### Hermes research
 

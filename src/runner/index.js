@@ -5,7 +5,8 @@ let restartShutdown = false;
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { writeMcpConfig } = require('../browser');
+const { writeRunMcpConfig } = require('../browser');
+const { isolationConfig } = require('../agent-isolation');
 const sessions = require('../session-store');
 const answerActions = require('../answer-actions');
 const { getCurrentSessionId, setCurrentSessionId } = require('../session-store');
@@ -607,8 +608,14 @@ function _runTaskInner(opts) {
   // Topic-aware new-message send: edit targets an existing message (already in the
   // right topic) so it stays thread-less; only a fresh send carries the thread.
   const sendTo = (token, chatId, text, extra = {}) => tgSend(token, chatId, text, extra, runThreadId);
+  // A durable plan step / GTD re-open is a MACHINE prompt (internalGtd): the chat
+  // intents below are for what a human typed. Matching them against a long step
+  // prompt hijacked the run — e.g. "…поправь… чек-лист…" in a playbook step got the
+  // checklist-autologin link back instead of an engine run (3 attempts in 2 s, and the
+  // autologin token leaked into the step evidence). Found by the playbooks e2e.
+  const humanInput = !opts.internalGtd;
   // Stop commands bypass the queue — kill the running task immediately.
-  if (STOP_TASK_INTENT.test((opts.task || '').trim())) {
+  if (humanInput && STOP_TASK_INTENT.test((opts.task || '').trim())) {
     const username = opts.user.username;
     const workDir = opts.user.workDir;
     const chatId = opts.user.id;
@@ -638,7 +645,7 @@ function _runTaskInner(opts) {
 
   // GTD hard-stop: cancel this chat's open GTD tracking + kill its running task.
   // Chat-scoped for the same reason as STOP_TASK_INTENT above (#leak-between-chats).
-  if (GTD_STOP_INTENT.test((opts.task || '').trim())) {
+  if (humanInput && GTD_STOP_INTENT.test((opts.task || '').trim())) {
     const username = opts.user.username;
     const workDir = opts.user.workDir;
     const chatId = opts.user.id;
@@ -662,7 +669,7 @@ function _runTaskInner(opts) {
 
   // /show_active_cheklist — list all open GTD records for this user, plus a one-click
   // link into checklist.trainedassist.store (no password needed, see checklistAutologinUrl).
-  if (ACTIVE_CHECKLIST_INTENT.test((opts.task || '').trim())) {
+  if (humanInput && ACTIVE_CHECKLIST_INTENT.test((opts.task || '').trim())) {
     return (async () => {
       const workDir = opts.user.workDir;
       const botToken = opts.secrets?.TELEGRAM_BOT_TOKEN;
@@ -696,7 +703,7 @@ function _runTaskInner(opts) {
 
   // Natural-language "хочу поправить чек-лист" — hand back a one-click autologin link
   // instead of asking the user to type a password (checklist.trainedassist.store).
-  if (CHECKLIST_EDIT_INTENT.test((opts.task || '').trim())) {
+  if (humanInput && CHECKLIST_EDIT_INTENT.test((opts.task || '').trim())) {
     return (async () => {
       const botToken = opts.secrets?.TELEGRAM_BOT_TOKEN;
       const chatId = opts.user.id;
@@ -729,7 +736,7 @@ function _runTaskInner(opts) {
   }
 
   // Wakeup command — kill stuck task + clear the queue so new messages can flow through.
-  if (WAKEUP_INTENT.test((opts.task || '').trim())) {
+  if (humanInput && WAKEUP_INTENT.test((opts.task || '').trim())) {
     const username = opts.user.username;
     const chatId = opts.user.id;
     const hadActive = activeTimers.size > 0;
@@ -758,7 +765,7 @@ function _runTaskInner(opts) {
 
   // Skip command — kill current task, let next queued task run automatically.
   // Unlike /stop (which is a dead-end), /skip advances the chat queue.
-  if (SKIP_TASK_INTENT.test((opts.task || '').trim())) {
+  if (humanInput && SKIP_TASK_INTENT.test((opts.task || '').trim())) {
     const username = opts.user.username;
     const chatId = opts.user.id;
     const stopped = stopUserTask(username, chatId, opts.user.audience, runThreadId);
@@ -781,7 +788,7 @@ function _runTaskInner(opts) {
   // for the previous task to finish, but it doesn't need to call the agent at all").
   // forceClaude means the user explicitly wants Claude (e.g. a "proработка" button tap on
   // one of these commands' replies) — respect that and fall through to the normal path.
-  if (!opts.forceClaude && isPreQueueQuickIntent((opts.task || '').trim())) {
+  if (humanInput && !opts.forceClaude && isPreQueueQuickIntent((opts.task || '').trim())) {
     const quick = getQuickAnswer(opts.task, opts.user.username, opts.user.workDir, false, opts.user.id, opts.user.telegramUserId, opts.user.audience || 'default', runThreadId);
     if (quick) {
       // Never invisible: an accepted task answered here leaves no other trace (#1479).
@@ -1777,7 +1784,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     text: task, source: 'quick', user: user.username, sessionId: activeSessionId || null,
     openrouterKey: secrets.OPENROUTER_API_KEY, ctx: { sessionExists },
   });
-  const quickAttempted = shouldAttemptQuickAnswer(forceClaude, task);
+  // Machine prompts (durable steps, GTD re-opens) never take a quick answer: an OpenCode
+  // step has forceClaude=false, so its prose prompt reached the quick-answer matcher.
+  const quickAttempted = !internalGtd && shouldAttemptQuickAnswer(forceClaude, task);
   const quickReply = quickAttempted ? await dispatchQuick() : null;
   routerShadow.record({ quick: !!quickReply, attempted: quickAttempted, slash: /^\//.test(String(task || '').trim()), forceClaude: !!forceClaude });
   if (quickReply) {
@@ -1997,9 +2006,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   const engine = acceptedEngine || profiles.getEngine(user.workDir, chatId);
 
   // Write per-user MCP config — gives Claude access only to this user's Chrome profile.
-  const mcpConfig = writeMcpConfig(user.workDir, user.username, {
+  // With isolation on (issue #1649) the file names only the MCP bridge client; the real
+  // server specs (with server-side env) stay in memory as bridgedServers.
+  const { mcpConfig, servers: bridgedServers } = writeRunMcpConfig(user.workDir, user.username, {
     userName: user.name, userHandle: user.username,
-  });
+  }, { bridged: isolationConfig().envAllowlist });
 
   // Strip ANTHROPIC_API_KEY so Claude uses OAuth from ~/.claude/.credentials.json.
   // The API key account is out of credits; OAuth (Mac subscription) has no per-token billing.
@@ -2152,7 +2163,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     restartShutdown: () => restartShutdown,
     activeTimers, tgEdit, tgSend, outputCallback, onProgress,
     consumePendingStop: () => consumePendingStop(user.username, activeSessionId),
-    engineBin, engineArgs, mcpConfig, ocProfileOverrides,
+    engineBin, engineArgs, mcpConfig, ocProfileOverrides, bridgedServers,
     cwd: codeCwd,
     // Watchdog step 1a (issue #942 [011]): heartbeat the pending-task journal on the
     // same 30s tick claude-runner.js already runs for the inactivity check, so a
