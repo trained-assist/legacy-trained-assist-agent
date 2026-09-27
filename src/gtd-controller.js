@@ -31,7 +31,12 @@ const { readTokenValue } = require('./token-value');
 const { DurableTaskStore } = require('./durable-task-store');
 const { criterionIdForItem } = require('./durable-task-plan');
 const { durableTaskDbPath, userWorkDir, projectDir: projectDirPath } = require('./data-paths');
-const { resolveStepExecution } = require('./playbook-executor');
+const { resolveStepExecution, planLevelMap } = require('./playbook-executor');
+
+function parsePolicy(task) {
+  try { return task && task.execution_policy_json ? JSON.parse(task.execution_policy_json) : null; }
+  catch { return null; }
+}
 const { executeHooks, parseHooks, resolveHookApproval } = require('./playbook-hooks');
 const { recoverDurableItem, retryFailedItem } = require('./durable-recovery');
 const {
@@ -473,16 +478,22 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     console.log(`[gtd-durable] fire item=${item.id.slice(0, 8)} task=${task.id.slice(0, 8)} tier=${item.current_tier}`);
     // Random suffix: an item can re-fire within the same ms (recovery retries) → PK collision.
     const executionId = `exec-${item.id.slice(0, 8)}-${now}-${crypto.randomBytes(3).toString('hex')}`;
-    store.startExecution({ id: executionId, task_id: task.id, task_item_id: item.id, session_id: sessionRow?.session_id || null, tier: item.current_tier });
+    // P3b: contract plans resolve the step's contract to a concrete engine/profile;
+    // legacy (non-contract) durable items keep the pre-P3b default engine. A plan's
+    // execution_policy.level_map overrides the level→engine table for that plan only.
+    const step = task.acceptance_criteria_json
+      ? resolveStepExecution(item, { levelMap: planLevelMap(parsePolicy(task)) })
+      : { executionKind: 'agent', engine: 'claude', ocProfile: null, ocRole: null, skipModels: [] };
+    // Record WHICH engine/profile/level actually ran the step — without it there is
+    // no way to see (or test) that different levels really run on different engines.
+    store.startExecution({
+      id: executionId, task_id: task.id, task_item_id: item.id, session_id: sessionRow?.session_id || null, tier: item.current_tier,
+      engine: step.engine || null, profile: step.ocProfile || null, model_level: step.modelLevel || null,
+      executor_role: item.executor_role || null,
+    });
 
     // P4: stage entry — fire stage.on_enter (carried by the stage's first item).
     await fireItemHooks(store, task, item, 'stage_enter', hookVars(), sinks, hooksApproved);
-
-    // P3b: contract plans resolve the step's contract to a concrete engine/profile;
-    // legacy (non-contract) durable items keep the pre-P3b default engine.
-    const step = task.acceptance_criteria_json
-      ? resolveStepExecution(item)
-      : { executionKind: 'agent', engine: 'claude', ocProfile: null, ocRole: null, skipModels: [] };
     // A durable step has no session chat but DOES have a profile workspace. Passing
     // it (instead of null) is both correct context and required: writeMcpConfig
     // path.join()s the workDir, so null crashed every real durable fire.

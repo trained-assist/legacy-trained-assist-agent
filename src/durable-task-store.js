@@ -688,16 +688,19 @@ class DurableTaskStore {
    * per-step budget reads attempt_count against `max_attempts`.
    */
   startExecution({ id, task_id, task_item_id = null, session_id = null,
-                   engine = null, model = null, tier = null }) {
+                   engine = null, model = null, tier = null,
+                   profile = null, model_level = null, executor_role = null }) {
     return this.db.transaction(() => {
       if (task_item_id) {
         this._prep(`UPDATE task_items SET attempt_count = attempt_count + 1, updated_at = ?
           WHERE id = ?`).run(nowMs(), task_item_id);
       }
       this._prep(`INSERT INTO executions
-          (id, task_id, task_item_id, session_id, engine, model, tier, status, started_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)`)
-        .run(id, task_id, task_item_id, session_id, engine, model, tier, nowMs());
+          (id, task_id, task_item_id, session_id, engine, model, tier, status, started_at,
+           profile, model_level, executor_role)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`)
+        .run(id, task_id, task_item_id, session_id, engine, model, tier, nowMs(),
+          profile, model_level, executor_role);
       return this.getExecution(id);
     })();
   }
