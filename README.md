@@ -458,6 +458,13 @@ gh pr create --fill                # opens PR; CI runs; auto-merges on green
 
 Branch protection requires the `ci` job to pass. PRs auto-merge (squash) when CI is green — no manual approval needed.
 
+### Requirements & status live in GitHub issues — not in a log file
+
+**This repo does not keep a requirements log** (overrides the global "docs/requirements-log.md" habit). `docs/requirements-log.md` is a frozen archive (2026-09-28): it duplicated issues, drifted from them (5 of 38 "planned" items were long closed) and every PR editing the same table was a merge-conflict magnet. Instead:
+- a requirement / feature / decision = a GitHub issue (epics like #1470 hold the plan); status = open/closed + a closing comment with the reason (incl. "rejected because …");
+- context worth keeping after `/clear` goes into the issue (comment) or the PR body — not a repo file;
+- open leftovers from the old log: #1652.
+
 ### After opening a PR — always write a checklist.md (default, unless told otherwise)
 
 **Rule: right after `gh pr create`, write/append `checklist.md` in the project root with 3 items, unless the user explicitly said not to track it:**
