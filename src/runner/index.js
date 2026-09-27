@@ -2247,8 +2247,30 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     fullOutput, lastAssistantMsg, claudeResult, claudeErrorText, engineSessionId, terminalSuccess,
     claudeUsage, opencodeUsage, opencodeBreakdown, claudeModel,
     lastActivity, exitCode, processSignal, processError, timedOut,
-    inactivityKill, outputPersistenceError, codexErrorMsg, sessionState,
+    inactivityKill, loopKilled, outputPersistenceError, codexErrorMsg, sessionState,
   } = engineResult;
+
+  // Loop guard (#1583): the engine kept repeating identical output/tool calls — the
+  // model is stuck, NOT making progress. Unlike a plain timeout this must NOT auto-
+  // continue (the continuation would just re-enter the same loop); fail the run with
+  // an explicit message so the user can retry differently (e.g. /switch2klod).
+  if (loopKilled) {
+    const partialText = fullOutput.text.trim();
+    if (activeSessionId && partialText) {
+      sessions.appendReply(user.workDir, activeSessionId, `[прервано: модель зациклилась]\n${partialText}`);
+      setCurrentSessionId(user.workDir, activeSessionId, chatId, audience, threadId);
+    }
+    const loopMsg = '⛔ Остановлено: модель зациклилась (повторяла одно и то же действие N раз, реальный вызов не выполнялся). Публикация не выполнена. Переключись на Claude: /switch2klod и повтори запрос.';
+    if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, loopMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, loopMsg, threadId));
+    else await tgSend(BOT_TOKEN, chatId, loopMsg, threadId);
+    _recordFailureAttempt(executionId, {
+      taskId, projectId, sessionId: activeSessionId, webExactSession, engine,
+      errorText: codexErrorMsg || 'loop guard: repeated identical output',
+      action: null,
+    });
+    executionHistory.finalizeExecution(executionId, 'FAILED');
+    return;
+  }
 
   // Timeout / inactivity kill → durable partial + auto-continuation.
   if (timedOut) {

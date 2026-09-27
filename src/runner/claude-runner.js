@@ -65,6 +65,17 @@ const editLanded = result => !!(result && result.ok && !result.skipped);
 const WARN_TIMEOUT_MS  = 38 * 60 * 1000; // 38 min — graceful SIGTERM + Telegram warning before hard kill
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 min silence → kill + auto-restart (all engines)
 
+// OpenCode loop guard (#1583): a degraded model can enter an "active" loop where it
+// keeps emitting output (so the inactivity kill never fires) but makes no real progress —
+// e.g. narrating "Публикую доку через publish_page." and calling `echo "PUBLISHING"`
+// ~270 times instead of invoking the actual MCP tool, until the 40-min timeout. Both
+// inactivity (no output) and the wall-clock cap are blind to this, so we detect the
+// repetition directly: the same assistant TEXT part (or the same tool+input pair) seen
+// REPEAT_LIMIT times in a row is treated as a stuck loop and killed early with a clear
+// error instead of burning the whole budget.
+const LOOP_GUARD_REPEAT_LIMIT = 6;
+const LOOP_GUARD_TEXT_MIN_LEN = 20; // ignore tiny echo fragments; count only meaningful repeats
+
 // Per-run hard timeout (P3a durable step budget, `execution_timeout_seconds`).
 // Clamped to the global cap so a step can only ever shorten, never extend, the
 // engine's wall-clock budget. The graceful warning fires 2 min before the kill,
@@ -394,6 +405,15 @@ async function runEngineProcess(opts) {
   let lastOutputAt = Date.now(); // updated on any raw stdout data for inactivity detection
   let inactivityKill = false;   // true when killed due to silence, not 40-min timeout
   let inactivityCheckTimer = null;
+  // Loop-guard state (#1583): last seen assistant text part + tool/input signature and
+  // their consecutive-repeat counters. Reset on any change. `loopKilled` mirrors the
+  // inactivityKill/timedOut pattern so the caller can distinguish a genuine loop from a
+  // timeout and reply accordingly (no auto-continuation for a loop — it would just loop).
+  let loopKilled = false;
+  let lastOcTextPart = null;
+  let ocTextRepeatCount = 0;
+  let lastOcToolSig = null;
+  let ocToolRepeatCount = 0;
 
   // Drain in-flight progress edits before posting a terminal message.
   const progressEdits = new Set();
@@ -591,6 +611,24 @@ async function runEngineProcess(opts) {
           if (event.type === 'text' && typeof event.part?.text === 'string') {
             fullOutput.text += event.part.text;
             lastAssistantMsg = fullOutput.text;
+            // Loop guard (#1583): a stuck model repeats the SAME assistant text part
+            // (e.g. "Публикую доку через publish_page.") over and over while emitting
+            // tool noise. Count consecutive identical non-trivial text parts; on the
+            // LIMIT-th repeat, kill the run with an explicit loop error.
+            const partText = event.part.text;
+            if (partText.length >= LOOP_GUARD_TEXT_MIN_LEN && partText === lastOcTextPart) {
+              ocTextRepeatCount++;
+              if (ocTextRepeatCount >= LOOP_GUARD_REPEAT_LIMIT && !loopKilled && !timedOut) {
+                loopKilled = true;
+                timedOut = true; // mirror inactivity: SIGTERM → on('close') rejects → caller sees the loop
+                console.warn(`[${taskId}] LOOP GUARD: opencode repeated identical text ${ocTextRepeatCount}x — SIGTERM`);
+                codexErrorMsg = `Loop guard: opencode повторил один и тот же текст ${ocTextRepeatCount} раз подряд (модель зациклилась, реальный MCP-вызов не выполняется). Публикация/действие не выполнены.`;
+                try { proc.kill('SIGTERM'); } catch {}
+              }
+            } else {
+              lastOcTextPart = partText;
+              ocTextRepeatCount = 1;
+            }
             scheduleStream();
           } else if (event.type === 'tool_use' && event.part) {
             // Progress visibility for opencode (issue: GLM sessions look frozen):
@@ -598,6 +636,25 @@ async function runEngineProcess(opts) {
             // track step_start as "model is thinking/working" to update lastActivity.
             const ocTool = event.part.tool || 'tool';
             const ocInput = event.part.state?.input || {};
+            // Loop guard (#1583): also catch the "busy" loop where the model hammers the
+            // SAME tool with the SAME input (e.g. `bash` + `echo "PUBLISHING"`) instead of
+            // making real progress. Signature = tool name + stable input string.
+            let ocInputSig = '';
+            try { ocInputSig = JSON.stringify(ocInput); } catch { ocInputSig = String(ocInput); }
+            const ocSig = `${ocTool}\u0000${ocInputSig}`;
+            if (ocSig === lastOcToolSig) {
+              ocToolRepeatCount++;
+              if (ocToolRepeatCount >= LOOP_GUARD_REPEAT_LIMIT && !loopKilled && !timedOut) {
+                loopKilled = true;
+                timedOut = true; // mirror inactivity: SIGTERM → on('close') rejects → caller sees the loop
+                console.warn(`[${taskId}] LOOP GUARD: opencode repeated identical tool call ${ocToolRepeatCount}x (${ocTool}) — SIGTERM`);
+                codexErrorMsg = `Loop guard: opencode повторил одинаковый вызов ${ocTool} ${ocToolRepeatCount} раз подряд (модель зациклилась). Действие не выполнено.`;
+                try { proc.kill('SIGTERM'); } catch {}
+              }
+            } else {
+              lastOcToolSig = ocSig;
+              ocToolRepeatCount = 1;
+            }
             const ocLabel = formatToolActivity(ocTool === 'bash' ? 'Bash' : ocTool === 'read' ? 'Read' : ocTool === 'write' ? 'Write' : ocTool === 'edit' ? 'Edit' : ocTool === 'glob' || ocTool === 'grep' ? 'WebSearch' : ocTool, ocInput);
             lastActivity = ocLabel;
             reportProgress(ocLabel);
@@ -617,6 +674,9 @@ async function runEngineProcess(opts) {
             // Track which agent is about to run so we can label its step_finish
             currentOcAgent = event.part?.name || null;
           } else if (event.type === 'step_finish') {
+            // Loop guard already killed this run — a trailing step_finish (already in
+            // the pipe) must not mark a loop-killed run as a success (#1583).
+            if (loopKilled) { continue; }
             terminalSuccess = true;
             claudeResult = fullOutput.text.trim() || null;
             const usage = event.part?.tokens;
@@ -891,7 +951,7 @@ async function runEngineProcess(opts) {
     fullOutput, lastAssistantMsg, claudeResult, claudeErrorText, engineSessionId, terminalSuccess,
     claudeUsage, opencodeUsage, opencodeBreakdown, claudeModel,
     lastActivity, exitCode, processSignal, processError, timedOut,
-    inactivityKill, outputPersistenceError, codexErrorMsg, sessionState,
+    inactivityKill, loopKilled, outputPersistenceError, codexErrorMsg, sessionState,
   };
 }
 
@@ -914,5 +974,5 @@ module.exports = {
   inputInspectionRows,
   controlKey,
   // constants exposed for tests
-  _const: { STREAM_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, STOP_BUTTON_AFTER_SECS, MAX_MSG_LEN, CLAUDE_TIMEOUT_MS, WARN_TIMEOUT_MS, INACTIVITY_TIMEOUT_MS },
+  _const: { STREAM_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, STOP_BUTTON_AFTER_SECS, MAX_MSG_LEN, CLAUDE_TIMEOUT_MS, WARN_TIMEOUT_MS, INACTIVITY_TIMEOUT_MS, LOOP_GUARD_REPEAT_LIMIT, LOOP_GUARD_TEXT_MIN_LEN },
 };
