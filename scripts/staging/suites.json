@@ -10,7 +10,6 @@
     "tests/mcp-action-routing.test.js",
     "tests/hh-cold-search-transport.test.js",
     "tests/unit/hh-proactive-endpoints.test.js",
-    "tests/mcp-skill-source-registry.test.js",
     "tests/unit/soft-continuation-journal.test.js",
     "tests/unit/hh-response-refresh.test.js",
     "tests/hh-notifications-off.test.js",
@@ -32,8 +31,6 @@
     "test/bot-registry.test.cjs",
     "test/reproject-sandbox.test.cjs",
     "test/chat-pinned-project.test.cjs",
-    "test/published-page-password.test.cjs",
-    "test/mcp-source-canary.test.cjs",
-    "test/mcp-action-approved-sources.test.cjs"
+    "test/published-page-password.test.cjs"
   ]
 }

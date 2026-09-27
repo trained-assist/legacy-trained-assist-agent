@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { mergeAdapterServers } = require('./mcp-source-runtime');
 const skillsEnforce = require('./skills/enforce');
 
 // Services whose cookies we know how to inject into Playwright
@@ -76,15 +75,10 @@ function buildStorageState(tokensDir) {
  * Writes per-user .mcp.json with Playwright MCP scoped to this user's Chrome profile.
  * If the user has captured service cookies (via Chrome extension), injects them via --storage-state.
  *
- * `extraServers` (optional): adapter server descriptors materialized by the host MCP
- * source runtime (src/mcp-source-runtime.js, PR2b) for this one run — e.g. an engineering
- * skill source. Merged in via mergeAdapterServers(), which never lets an extra server
- * shadow a core name (playwright, trained-skills).
- *
  * `siblingPaths` (optional, test seam): overrides for the sibling checkout entrypoints
  * below; production always uses the computed repo-relative paths.
  */
-function writeMcpConfig(workDir, userId, { userName, userHandle, extraServers, siblingPaths } = {}) {
+function writeMcpConfig(workDir, userId, { userName, userHandle, siblingPaths } = {}) {
   // Note: --user-data-dir creates a persistent context, which is incompatible
   // with --storage-state (Playwright limitation). We rely on --storage-state
   // for both cookie injection and session persistence. Per-user isolation is
@@ -180,44 +174,27 @@ function writeMcpConfig(workDir, userId, { userName, userHandle, extraServers, s
   };
 
   // Domain skill siblings (hh, freelance, engineering) live in their own repos
-  // checked out next to this one (hh was extracted in issue #942). A sibling is a
-  // *fallback*: when this run materializes a sealed/approved source for the same
-  // MCP server id (extraServers, from src/mcp-source-runtime.js), that sealed
-  // source wins and the sibling is not registered — otherwise the sibling name
-  // would shadow the adapter in mergeAdapterServers() below. With no sealed source
-  // for the profile (admin config empty, profile ineligible, or artifact
-  // unavailable) the sibling is registered, so rolling the admin config back
-  // restores the core path without a redeploy (issue #1470 P0.1c / #1511).
+  // checked out next to this one (deploy.sh syncs them and links them next to
+  // every release). They are the single source of each domain's tools (#1470).
   const siblingIndexes = {
     'hh-skills': path.join(__dirname, '..', '..', 'trained-assist-hh-skill', 'src', 'mcp-skills', 'index.js'),
     'freelance-skills': path.join(__dirname, '..', '..', 'trained-assist-freelance-skill', 'src', 'mcp-skills', 'index.js'),
     'engineering-skills': path.join(__dirname, '..', '..', 'trained-assist-engineering', 'src', 'mcp-skills', 'index.js'),
     ...(siblingPaths || {}),
   };
-  const sealedServerIds = new Set(Object.keys(extraServers || {}));
   // Profile skills (#1537 PR-B): only with workDir/skills.json; a sibling whose catalog
-  // section is off is not mounted (sealed source for that id included). No skills.json
+  // section is off is not mounted. No skills.json
   // or any error → plan null → legacy, nothing hidden.
   const hiddenSiblings = new Set(skillsPlan ? skillsPlan.hidden.siblings : []);
   for (const [serverId, indexPath] of Object.entries(siblingIndexes)) {
-    if (sealedServerIds.has(serverId)) continue;
     if (hiddenSiblings.has(serverId)) continue;
     if (fs.existsSync(indexPath)) {
       config.mcpServers[serverId] = { command: 'node', args: [indexPath], env: mcpToolEnv };
     }
   }
 
-  if (extraServers && hiddenSiblings.size > 0) {
-    extraServers = Object.fromEntries(Object.entries(extraServers).filter(([id]) => !hiddenSiblings.has(id)));
-  }
   if (skillsPlan) {
     console.log(`[skills] ${path.basename(workDir)}: sections=${skillsPlan.sections.join(',')} hidden sib=${skillsPlan.hidden.siblings.join('|') || '-'} mod=${skillsPlan.hidden.modules.length} dom=${skillsPlan.hidden.domains.length}`);
-  }
-
-  if (extraServers && Object.keys(extraServers).length > 0) {
-    const { merged, skipped } = mergeAdapterServers(config.mcpServers, extraServers);
-    config.mcpServers = merged;
-    if (skipped.length > 0) console.warn('[browser] extraServers skipped (core name shadow):', skipped.join(', '));
   }
 
   const configPath = path.join(workDir, '.mcp.json');

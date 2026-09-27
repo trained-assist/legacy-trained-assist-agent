@@ -9,12 +9,12 @@ const { resolve } = require('./resolve');
 const { loadCatalog, siblingIndexPath, readProfileSkills } = require('./catalog');
 
 // probe: {serverId: {file: bool|null} | null} from prompt-domains probeServers().
-function buildReadiness(catalog, { probe, extraServers, siblingExists } = {}) {
+function buildReadiness(catalog, { probe, siblingExists } = {}) {
   const exists = siblingExists || (p => !!p && fs.existsSync(p));
   const readiness = {};
   for (const [id, s] of Object.entries(catalog.servers || {})) {
     if (s.kind !== 'sibling') continue;
-    readiness[id] = exists(siblingIndexPath(catalog, id)) || !!(extraServers && id in extraServers);
+    readiness[id] = exists(siblingIndexPath(catalog, id));
   }
   for (const [id, mods] of Object.entries(probe || {})) {
     if (!mods) { readiness[`${id}/*`] = null; continue; }
@@ -39,13 +39,13 @@ function compare(resolved, actual) {
   return out;
 }
 
-function runShadow({ workDir, username, audience, mcpConfigPath, domainReport, extraServers, catalog, log = console.log } = {}) {
+function runShadow({ workDir, username, audience, mcpConfigPath, domainReport, catalog, siblingExists, log = console.log } = {}) {
   try {
     catalog = catalog || loadCatalog();
     let mcpServers = {};
     try { mcpServers = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf8')).mcpServers || {}; } catch { /* compare what we can */ }
     const report = domainReport || {};
-    const readiness = buildReadiness(catalog, { probe: report.probe, extraServers });
+    const readiness = buildReadiness(catalog, { probe: report.probe, siblingExists });
     const profileSkills = readProfileSkills(workDir);
     const resolved = resolve(catalog, profileSkills, readiness);
     const actual = {

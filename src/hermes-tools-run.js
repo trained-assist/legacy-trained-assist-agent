@@ -25,7 +25,6 @@ const { writeMcpConfig } = require('./browser');
 const { buildEngineCommand, runEngineProcess } = require('./runner/claude-runner');
 const { parseLlmJson } = require('./llm-client');
 const { loadUserTokens } = require('./user-tokens');
-const { getDefaultSourceRuntime } = require('./mcp-source-runtime');
 
 function hermesWorkDir(username) {
   const dir = path.join(os.homedir(), 'agent-tokens', String(username), 'hermes-tmp');
@@ -60,57 +59,36 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
   const workDir = hermesWorkDir(username);
   const id = taskId || `hermes-tools-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-  // Host MCP source runtime (PR2b, issue #1358) — same inert-by-default wiring as
-  // runner/index.js: no-op unless MCP_SKILL_SOURCES_CONFIG names an enabled source.
-  const sourceRuntime = getDefaultSourceRuntime();
-  let sourceRun = null;
-  if (sourceRuntime.enabled) {
-    try {
-      sourceRun = await sourceRuntime.prepareRun({
-        hostRunBinding: {
-          engineRunId: id, rootTaskId: id, profileId: username,
-          projectId: null, trigger: 'system', origin: 'mcp', resourceBindingVersion: 'v1',
-        },
-        runtimeDir: path.join(workDir, '.mcp-runs', id),
-      });
-    } catch (e) { console.warn('[hermes-tools-run] mcp source runtime prepareRun:', e.message); }
-  }
-
-  const mcpConfig = writeMcpConfig(workDir, username, { extraServers: sourceRun?.servers });
+  const mcpConfig = writeMcpConfig(workDir, username);
   const prompt = buildPrompt(task, context, outputSchema);
   const [engineBin, engineArgs] = buildEngineCommand({ engine, prompt, mcpConfig });
 
   const { ANTHROPIC_API_KEY: _stripped, ...cleanEnv } = process.env;
   const userTokens = loadUserTokens(username, username);
 
-  let result;
-  try {
-    result = await runEngineProcess({
-      engine,
-      taskId: id,
-      chatId: 'hermes',
-      thinkingStart: Date.now(),
-      msgId: null, // no Telegram message to edit — keeps this fully headless
-      BOT_TOKEN: '',
-      secrets: {},
-      user: { username, id: username, name: username, cwd: workDir, workDir },
-      cleanEnv,
-      userTokens,
-      sessionFilePath: null,
-      restartShutdown: () => false,
-      activeTimers: new Map(),
-      tgEdit: async () => {},
-      tgSend: async () => {},
-      outputCallback: null,
-      engineBin,
-      engineArgs,
-      cwd: workDir,
-      env: cleanEnv,
-      mcpConfig,
-    });
-  } finally {
-    if (sourceRun) sourceRun.release();
-  }
+  const result = await runEngineProcess({
+    engine,
+    taskId: id,
+    chatId: 'hermes',
+    thinkingStart: Date.now(),
+    msgId: null, // no Telegram message to edit — keeps this fully headless
+    BOT_TOKEN: '',
+    secrets: {},
+    user: { username, id: username, name: username, cwd: workDir, workDir },
+    cleanEnv,
+    userTokens,
+    sessionFilePath: null,
+    restartShutdown: () => false,
+    activeTimers: new Map(),
+    tgEdit: async () => {},
+    tgSend: async () => {},
+    outputCallback: null,
+    engineBin,
+    engineArgs,
+    cwd: workDir,
+    env: cleanEnv,
+    mcpConfig,
+  });
 
   const text = result.claudeResult || result.lastAssistantMsg || result.fullOutput?.text || '';
   if (!text.trim()) {

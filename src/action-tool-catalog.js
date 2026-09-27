@@ -1,19 +1,10 @@
 'use strict';
 
 // Pure tool-catalog + owner resolution for the headless transport (/action and
-// cron). It mirrors src/browser.js's session-side mount rule exactly, so one
-// profile is never served by two different copies of the same skill:
-//
-//   - an APPROVED external source that is enabled + eligible for the profile +
-//     has an available artifact suppresses the sibling that mounts the same
-//     mcpServerId — the sealed adapter wins, the sibling is the core fallback;
-//   - core is never shadowed;
-//   - any duplicate action name across the remaining core/sibling/approved
-//     sources is a CONFLICT with no implicit precedence (action-provider-
-//     registry v1 invariant, #1533).
-//
-// No fs/env/runtime access here: callers pass already-filtered sources, which
-// keeps the routing decision unit-testable without a config or a checkout.
+// cron): core tools + every present sibling domain repo (hh, freelance,
+// engineering). Core is never shadowed, and any duplicate action name across
+// sources is a CONFLICT with no implicit precedence (action-provider-registry v1
+// invariant, #1533). No fs/env access: callers pass the sources.
 
 function ownerLabel(bucket) {
   return bucket.kind === 'local' ? 'local' : bucket.id;
@@ -27,18 +18,11 @@ function conflict(name, first, second) {
 }
 
 // coreTools:       [{ name, ... }]
-// siblings:        [{ id, mcpServerId, tools: [{ name, ... }] }] — all present
-//                  siblings; the suppressed ones are dropped here.
-// approvedSources: [{ id, providerId, mcpServerId, actions: [{ name, ... }] }]
-//                  — only the ones enabled + eligible + available for the profile.
-function buildToolCatalog({ coreTools = [], siblings = [], approvedSources = [] } = {}) {
-  const sealedServerIds = new Set(approvedSources.map(s => s.mcpServerId).filter(Boolean));
+// siblings:        [{ id, mcpServerId, tools: [{ name, ... }] }] — all present siblings.
+function buildToolCatalog({ coreTools = [], siblings = [] } = {}) {
   const buckets = [
     { kind: 'local', id: 'local', tools: coreTools },
-    ...siblings
-      .filter(s => !sealedServerIds.has(s.mcpServerId))
-      .map(s => ({ kind: 'sibling', id: s.id, tools: s.tools || [] })),
-    ...approvedSources.map(s => ({ kind: 'approved', id: s.id, tools: s.actions || [], source: s })),
+    ...siblings.map(s => ({ kind: 'sibling', id: s.id, tools: s.tools || [] })),
   ];
 
   const owners = new Map();
@@ -47,7 +31,7 @@ function buildToolCatalog({ coreTools = [], siblings = [], approvedSources = [] 
     for (const tool of bucket.tools) {
       const existing = owners.get(tool.name);
       if (existing) throw conflict(tool.name, existing, bucket);
-      owners.set(tool.name, { kind: bucket.kind, id: bucket.id, source: bucket.source || null });
+      owners.set(tool.name, { kind: bucket.kind, id: bucket.id });
       tools.push(tool);
     }
   }

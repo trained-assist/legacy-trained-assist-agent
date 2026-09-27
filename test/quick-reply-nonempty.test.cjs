@@ -74,7 +74,7 @@ test('empty MCP tool results become an explicit notice', () => {
   }
   assert.equal(toolResultText('t', 'ok'), 'ok');
   assert.equal(toolResultText('t', { a: 1 }, { pretty: false }), '{"a":1}');
-  for (const f of ['src/mcp-skills/index.js', 'scripts/mcp-provider-adapter.js']) {
+  for (const f of ['src/mcp-skills/index.js']) {
     assert.match(fs.readFileSync(path.join(ROOT, f), 'utf8'), /toolResultText\(/, `${f} must route tools/call through toolResultText`);
   }
 });

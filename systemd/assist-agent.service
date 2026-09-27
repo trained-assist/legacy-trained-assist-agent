@@ -35,14 +35,6 @@ Environment=AGENT_DATA_DIR=/home/vova/agent-data
 # silently relocate them (identity ≠ location). See src/data-paths.js.
 Environment=USERS_DIR=/home/vova/users
 Environment=AGENT_TOKENS_DIR=/home/vova/agent-tokens
-# Approved MCP skill sources (#1271 / #1470 P0.1c). When an admin activates a
-# source in this config, the core adapter serves it for allowlisted profiles and
-# the sibling checkout is skipped (src/browser.js); profiles not in the source
-# allowlist keep the sibling fallback. Roll back core<->domain by re-activating
-# the retained config (<configPath>.<sha256>.previous) — no code change, no
-# redeploy. See docs/architecture/mcp-skill-sources.md.
-Environment=MCP_SKILLS_ROOT=/home/vova/mcp-skills
-Environment=MCP_SKILL_SOURCES_CONFIG=/home/vova/mcp-skills/config/mcp-skill-sources.json
 Environment=AGENT_PUBLIC_URL=https://136-65-7-197.sslip.io/agent
 Environment=HH_PLATFORM_URL=https://136-65-7-197.sslip.io/agent
 Environment=VACANCY_REMOTE_STORE_URL=https://platform.recruiter-assistant.ru
