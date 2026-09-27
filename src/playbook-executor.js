@@ -67,6 +67,21 @@ function loadLevelMap() {
  * @param {object} [opts.levelMap] override the level→engine/profile table.
  * @returns {{executionKind,engine,ocProfile,ocRole,skipModels,modelLevel,reason}}
  */
+// Per-plan override: execution_policy.level_map (same shape as PLAYBOOK_LEVEL_MAP)
+// replaces only the levels it names, on top of env/default. Lets one plan (e.g. the
+// playbook e2e harness) run its levels on different engines without touching prod.
+function planLevelMap(policy) {
+  const base = loadLevelMap();
+  const over = policy && typeof policy === 'object' ? policy.level_map : null;
+  if (!over || typeof over !== 'object') return base;
+  const merged = { ...base };
+  for (const level of LEVELS) {
+    const m = over[level];
+    if (m && typeof m === 'object' && (m.engine === 'opencode' || m.engine === 'claude' || m.engine === 'codex')) merged[level] = m;
+  }
+  return merged;
+}
+
 function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = null } = {}) {
   const map = levelMap || loadLevelMap();
   const executionKind = item && item.execution_kind === 'programmatic' ? 'programmatic' : 'agent';
@@ -101,4 +116,4 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
   };
 }
 
-module.exports = { resolveStepExecution, DEFAULT_LEVEL_MAP, ROLE_TO_OC, LEVELS, ROLES };
+module.exports = { resolveStepExecution, planLevelMap, DEFAULT_LEVEL_MAP, ROLE_TO_OC, LEVELS, ROLES };
