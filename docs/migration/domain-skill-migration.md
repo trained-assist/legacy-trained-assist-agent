@@ -37,7 +37,8 @@ revision and hid current tools from it.
 - [x] HH demo mode `demo_*` (`98-demo.js`) — still its own catalog section `demo`, addressed as `hh-skills/98-demo.js`
 - [x] quick-answer intents (`hh-intents.js`) and the vacancy-creation flow (`hh-vacancy-quick.js`)
 - [x] prompt domains `hh`, `hh.setup`, `hh-notify`
-- [ ] `97b-candidate-client-report` + `src/candidate-report.js`, `99-interview-analysis` + `95-video-analysis` (in-process coupling), `97b` also needs a publish API for domain repos
+- [x] candidate-for-client report `candidate_report_*` (`97-candidate-client-report.js`, `hh-candidate-report.js`); publishes via core `POST /internal/publish`
+- [ ] `99-interview-analysis` + `95-video-analysis` (in-process coupling)
 - Stays in core on purpose: HH OAuth (`/connect/hh/*`, `/hh-callback`, `connect-forms/hh.js`) — platform credential collection shared with other services
 
 ### sales-crm — `trained-assist-sales-skill`

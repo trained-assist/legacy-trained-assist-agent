@@ -41,7 +41,9 @@ const persona = require('../persona');
 const profiles = require('../profiles');
 const { savePassword: saveWebPassword, generatePassword: genWebPassword, generateMagicToken } = require('../web-auth');
 const { getUsageTotals } = require('../usage-store');
-const candidateReport = require('../candidate-report');
+// Candidate-for-client report library lives in hh-skill (#1470); without the checkout
+// the report quick answers simply do not apply.
+const candidateReport = hhLib('hh-candidate-report');
 
 // HH domain intent patterns — regexes live in trained-assist-hh-skill src/hh-intents.js
 // (issue #942 P2.1, #1470). Without the hh-skill checkout every HH intent is a
@@ -688,7 +690,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
   // which read the same file); everything around the notes file is answered instantly here.
   // Collecting-mode vacancy flow above wins: there «добавь в требования» means the vacancy.
   const reportAdd = task.trim().match(REPORT_NOTE_ADD_INTENT);
-  if (reportAdd && workDir) {
+  if (reportAdd && workDir && hhAvailable('hh-candidate-report')) {
     const isSlash = reportAdd[1].startsWith('/');
     const mid = reportAdd[2].trim();
     // "к профилю Чайка" → explicit report command, may create a new candidate.
@@ -713,7 +715,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
   }
 
   const reportShow = task.trim().match(REPORT_NOTE_SHOW_INTENT);
-  if (reportShow && workDir) {
+  if (reportShow && workDir && hhAvailable('hh-candidate-report')) {
     const hint = (reportShow[1] || reportShow[2] || '').trim();
     const found = candidateReport.resolveCandidate(workDir, hint);
     if (found.ambiguous) return `Под «${hint}» подходит несколько кандидатов: ${found.ambiguous.join(', ')}. Уточни имя.`;
