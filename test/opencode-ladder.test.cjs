@@ -266,17 +266,37 @@ test('recordFailure gives a transient Bad Request a SHORT shared per-model backo
   assert.equal(mod.resolveModel({ ladder: { build: ['flaky-model', 'sibling'] } }, 'p', 'build'), 'flaky-model');
 });
 
-test('deepseek-go profile: config-driven ladder, top rung deepseek-v4.1-flash, degrading to deepseek and mimo siblings on the same Go gateway', () => {
+// Replaced (owner decision 2026-09-27, issue #1589): the old test asserted the top rung was
+// deepseek-v4.1-flash and that EVERY rung stayed on the Go gateway. Both are superseded — the
+// owner asked for the two cheapest paid Go models first and the metered OpenRouter deepseek
+// fallback as the final rung (so a Go-gateway outage degrades to OpenRouter instead of dead-ending).
+test('deepseek-go profile: config-driven ladder, two cheapest paid Go models first, OpenRouter as the final fallback', () => {
   const routing = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'model-routing.json'), 'utf8'));
   const profile = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.opencode', 'profiles', 'deepseek-go.json'), 'utf8'));
   assert.equal(profile.ladderRef, 'deepseek-go', 'profile must be config-driven (ladderRef), not hardcode the model list');
   const ladder = routing.ladders['deepseek-go'];
   assert.ok(Array.isArray(ladder?.build) && ladder.build.length >= 2,
     'deepseek-go must carry a real ladder — the old single-uniform-model shape could only flip the gateway');
-  assert.equal(ladder.build[0], 'opencode-go/deepseek-v4.1-flash');
+  assert.equal(ladder.build[0], 'opencode-go/muse-spark-1.3-contributor',
+    'the ladder must lead with the cheapest paid Go model the owner named');
   assert.ok(ladder.build.includes('opencode-go/mimo-v2.6-flash'),
-    'the sibling alternative for a flaky deepseek rung must be a same-gateway model (mimo-v2.6-flash)');
-  for (const rung of ladder.build) assert.ok(rung.startsWith('opencode-go/'), `deepseek-go rung ${rung} must stay on the Go gateway`);
+    'the same-gateway sibling for a flaky rung must stay in the ladder (mimo-v2.6-flash)');
+  // Every rung but the last is on the Go gateway; the very last rung is the OpenRouter fallback.
+  assert.equal(ladder.build[ladder.build.length - 1], 'openrouter/deepseek/deepseek-v4-flash-0731',
+    'the ladder must end on the metered OpenRouter deepseek fallback so a Go outage never dead-ends');
+  for (const rung of ladder.build.slice(0, -1)) {
+    assert.ok(rung.startsWith('opencode-go/'), `deepseek-go rung ${rung} must stay on the Go gateway`);
+  }
+  // The dropped expensive leftover (issue #1467 report): -pro made plan/review far costlier.
+  for (const rung of ladder.build) {
+    assert.notEqual(rung, 'opencode-go/deepseek-v4-pro', 'the expensive deepseek-v4-pro rung was removed by owner request');
+  }
+  for (const role of ['plan', 'explore', 'general', 'review']) {
+    assert.deepEqual(ladder[role], ladder.build, `deepseek-go role ${role} must use the same cheap-first ladder as build`);
+  }
+  // With rungs 1..n-1 on one gateway (only one OpenRouter escape hatch), the ladder must fit the
+  // per-task escalation budget (MAX_LADDER_ATTEMPTS = 5) or the final rung is never reachable.
+  assert.ok(ladder.build.length <= 5, `deepseek-go ladder has ${ladder.build.length} rungs — exceeds MAX_LADDER_ATTEMPTS (5), the OpenRouter fallback would be unreachable`);
 });
 
 test('deepseek-openrouter profile: config-driven ladder on the OpenRouter gateway with a mimo sibling', () => {

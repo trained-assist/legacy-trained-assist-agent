@@ -136,11 +136,20 @@ The "Bad Request on the top rung" bug exposed the gap: when `opencode-go/deepsee
 intermittently rejected a request, there was nothing to degrade to within the gateway.
 
 Both profiles now reference a real per-role ladder on their own gateway via `ladderRef` (the
-ladder itself lives in `config/model-routing.json`), ending on a `mimo-v2.6-flash` sibling (the
-owner's chosen analogue for the flaky deepseek rung):
+ladder itself lives in `config/model-routing.json`):
 
-- `deepseek-go` (`ladderRef` in `deepseek-go.json`): `opencode-go/deepseek-v4.1-flash` →
-  `opencode-go/deepseek-v4-flash` (or `-v4-pro` for `plan`/`review`) → `opencode-go/mimo-v2.6-flash`
+- `deepseek-go` (`ladderRef` in `deepseek-go.json`, same ladder for every role):
+  `opencode-go/muse-spark-1.3-contributor` ($0.10/$0.20) → `opencode-go/gpt-6-luna` ($0.10/$0.50)
+  → `opencode-go/deepseek-v4.1-flash` ($0.15/$0.60) → `opencode-go/mimo-v2.6-flash` →
+  `openrouter/deepseek/deepseek-v4-flash-0731`.
+  2026-09-27 (owner: «сначала давай две самые дешёвые платные go … и потом уже финально open
+  router эта модель»; owner named the top model directly — Muse Spark 1.3 Contributor): the ladder
+  leads with the two cheapest paid Go models and ends on the metered OpenRouter deepseek fallback
+  (the same model `max`/`free` already trust), so a Go-gateway outage degrades to OpenRouter
+  instead of dead-ending. Dropped `opencode-go/deepseek-v4-pro` ($0.66/$1.98) in the same change —
+  the expensive leftover flagged in the #1467 report, which made `plan`/`review` 4x+ costlier than
+  the other roles for no requested benefit. Length is exactly 5 rungs = `MAX_LADDER_ATTEMPTS`, so
+  every rung is reachable within one task's escalation budget.
 - `deepseek-openrouter` (`ladderRef` in `deepseek-openrouter.json`):
   `openrouter/deepseek/deepseek-v4-flash-0731` → `openrouter/xiaomi/mimo-v2.6-flash`
   (2026-09-26: `openrouter/z-ai/glm-5.3-flash` dropped — it was the most expensive rung of this
