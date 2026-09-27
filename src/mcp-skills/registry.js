@@ -10,6 +10,10 @@ const defs = [];
 // so its listTools() is only setup tools; name gates in core (mcp-action) use this
 // static catalog and leave readiness to the per-user child (#1530).
 const allDefs = [];
+// Profile skills (#1537 PR-B): writeMcpConfig sets SKILLS_RESOLVED only for a profile with
+// workDir/skills.json; modules of its switched-off sections are not registered at all.
+// Unset/unreadable → null → legacy (every module, gated only by isReady()).
+const skillsHidden = require('../skills/enforce').readHidden(process.env.SKILLS_RESOLVED, { warn: console.error });
 
 // Auto-discover all tool files in tools/
 // Each module may export:
@@ -17,6 +21,7 @@ const allDefs = [];
 //   setupTools   — tool names always registered even when !isReady (for configure/status tools)
 for (const file of fs.readdirSync(toolsDir).filter(f => f.endsWith('.js')).sort()) {
   const mod = require(path.join(toolsDir, file));
+  const hidden = !!(skillsHidden && skillsHidden.modules.has(file));
   const ready = typeof mod.isReady === 'function' ? mod.isReady() : true;
   const setupSet = new Set(mod.setupTools || []);
 
@@ -25,6 +30,7 @@ for (const file of fs.readdirSync(toolsDir).filter(f => f.endsWith('.js')).sort(
       allDefs.push({ name, description: tool.description,
         inputSchema: tool.inputSchema || { type: 'object', properties: {} } });
     }
+    if (hidden) continue;
     if (!ready && !setupSet.has(name)) continue;
     if (handlers[name]) {
       console.error(`[registry] duplicate tool name: ${name} in ${file}`);

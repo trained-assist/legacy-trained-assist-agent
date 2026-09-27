@@ -16,6 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { readHidden } = require('../skills/enforce');
 
 const DOMAINS_DIR = __dirname;
 const PROBE = path.join(__dirname, 'probe.js');
@@ -83,7 +84,12 @@ function buildDomainBlock(mcpConfigPath, opts = {}) {
   try { servers = JSON.parse(fs.readFileSync(mcpConfigPath, 'utf8')).mcpServers || {}; }
   catch (e) { console.warn('[prompt-domains] read mcp config:', e.message); return ''; }
   const probe = opts.probe || probeServers(servers);
-  const picked = selectDomains(loadDomains(opts.dir), probe);
+  let picked = selectDomains(loadDomains(opts.dir), probe);
+  // Profile skills (#1537 PR-B): writeMcpConfig puts SKILLS_RESOLVED in the trained-skills
+  // env only for a profile with workDir/skills.json → drop domains of switched-off sections.
+  // No env / unreadable file → no filter (legacy).
+  const hidden = readHidden(servers['trained-skills']?.env?.SKILLS_RESOLVED);
+  if (hidden) picked = picked.filter(d => !hidden.domains.has(d.name));
   // opts.report: caller-owned object filled with what was decided (skills shadow, #1537).
   if (opts.report && typeof opts.report === 'object') Object.assign(opts.report, { probe, picked: picked.map(d => d.name) });
   if (!picked.length) return '';
