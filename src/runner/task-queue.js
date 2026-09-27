@@ -15,7 +15,14 @@ const admission = require('../core/admission').createAdmission();
 // tune via env without a code change.
 const MAX_CONCURRENT_TASKS = Math.max(1, Number(process.env.MAX_CONCURRENT_TASKS) || 6);
 // Soft free-RAM floor (MB). Below this we hold off spawning new tasks.
-const MIN_FREE_RAM_MB = Math.max(0, Number(process.env.MIN_FREE_RAM_MB) || 512);
+// MIN_FREE_RAM_MB=0 disables the watchdog (tests, dev machines — macOS os.freemem()
+// excludes page cache and reads far below 512MB even when RAM is plentiful).
+// `Number(x) || 512` used to turn an explicit 0 back into 512.
+const MIN_FREE_RAM_MB = (() => {
+  const raw = process.env.MIN_FREE_RAM_MB;
+  const n = raw === undefined || raw === '' ? NaN : Number(raw);
+  return Number.isFinite(n) ? Math.max(0, n) : 512;
+})();
 const RAM_POLL_MS = 2000;
 const RAM_WAIT_MAX_MS = 60000; // never deadlock — proceed after this even if low
 

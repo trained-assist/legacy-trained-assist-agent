@@ -1,7 +1,10 @@
-import { it, expect } from 'vitest';
+import { it as vitestIt, expect } from 'vitest';
 import { chromium } from 'playwright';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
+const { hasChromium } = require('./helpers/has-chromium.cjs');
+// Browser-only suite: skipped when Playwright Chromium isn't installed (CI installs it).
+const it = vitestIt.skipIf(!hasChromium);
 const { generateProactivePageHtml } = require('../src/domains/hh/lib').hhLib('hh-proactive-page');
 it('browser switches vacancies and persists monitor/archive actions with the displayed vacancy ID', async () => {
   const browser = await chromium.launch({ headless: true });
