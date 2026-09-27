@@ -103,10 +103,11 @@ function classifyError(text) {
 
 // Marks `model` skipped. ttlMs null => never auto-clears (config-class), matching the old
 // per-profile config-class contract.
-function markExhausted(profile, role, model, ttlMs) {
+function markExhausted(profile, role, model, ttlMs, errorText) {
   if (!model) return;
-  if (ttlMs == null) modelHealth.recordFailure(model, { class: 'config' });
-  else modelHealth.recordFailure(model, { class: 'quota', retryAfterMs: ttlMs });
+  const source = profile ? `runner:${profile}` : 'runner';
+  if (ttlMs == null) modelHealth.recordFailure(model, { class: 'config', errorText, source });
+  else modelHealth.recordFailure(model, { class: 'quota', retryAfterMs: ttlMs, errorText, source });
 }
 
 function clearExhausted(profile, role, model) {
@@ -135,7 +136,7 @@ function recordFailure(profile, role, model, errorText) {
     const retryAfterMs = e && e.skipUntil ? Math.max(0, Date.parse(e.skipUntil) - Date.now()) : null;
     return { class: 'transient', model, alertNeeded: false, retryAfterMs };
   }
-  markExhausted(profile, role, model, verdict.ttlMs);
+  markExhausted(profile, role, model, verdict.ttlMs, errorText);
   return { class: verdict.class, model, alertNeeded: verdict.class === 'config' };
 }
 
@@ -213,8 +214,22 @@ function recordSuccess(model) {
   modelHealth.recordSuccess(model);
 }
 
+// 1-based position of `model` in the profile's role ladder + ladder length — for the call log
+// (src/ladder-log.js: «какая по счёту модель вызвалась»). null when the profile can't be read.
+function rungPosition(profileName, role, model, profilesDir) {
+  try {
+    const dir = profilesDir || path.join(__dirname, '..', '.opencode', 'profiles');
+    const profileRaw = JSON.parse(fs.readFileSync(path.join(dir, `${profileName}.json`), 'utf8'));
+    const ladder = _roleLadder(profileRaw, role);
+    const idx = ladder.indexOf(model);
+    return { rung: idx >= 0 ? idx + 1 : null, rungsTotal: ladder.length, ladder: profileRaw.ladderRef || profileName };
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
-  ROLES, MAX_LADDER_ATTEMPTS, RETRY_FORCE_TTL_MS,
+  ROLES, rungPosition, MAX_LADDER_ATTEMPTS, RETRY_FORCE_TTL_MS,
   classifyError, resolveModel, buildOcProfileOverrides,
   markExhausted, clearExhausted, recordFailure, forceAdvance, recordSuccess,
   stateFile: modelHealth.stateFile,

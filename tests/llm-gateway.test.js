@@ -354,3 +354,63 @@ it('guard unit: tryParseJson is tolerant (fences, prose-wrapped, truncated)', ()
   expect(gw.tryParseJson('no json at all')).toBe(false);
   expect(gw.tryParseJson('{"a": truncat')).toBe(false);
 });
+
+// ── Ladder call/limit log (src/ladder-log.js) ─────────────────────────────────
+const ladderLog = require('../src/ladder-log');
+function readLines(file) {
+  try { return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)); }
+  catch { return []; }
+}
+
+it('call log: records which rung (1-based) answered, attempts and tier; log lives next to health file, not in prod', async () => {
+  expect(ladderLog.logDir().startsWith(root)).toBe(true);
+  fs.rmSync(ladderLog.logDir(), { recursive: true, force: true });
+  goHandler.fn = (req, res) => { res.writeHead(500).end('boom'); };
+  orHandler.fn = (req, res) => sse(res, [chunk('hello from rung-c'), done]);
+  const r = await callChat({ model: 'free-ladder', messages: [{ role: 'user', content: 'hi' }] });
+  expect(r.status).toBe(200);
+  expect(r.json()['x-ladder-rung-index']).toBe(3);
+  const [line] = readLines(ladderLog.callsFile());
+  expect(line.source).toBe('gateway');
+  expect(line.rung).toBe(3);
+  expect(line.rungsTotal).toBe(3);
+  expect(line.model).toBe('openrouter/org/rung-c:free');
+  expect(line.tier).toBe('free');
+  expect(line.reachedPaid).toBe(false);
+  expect(line.attempts.map(a => [a.rung, a.outcome])).toEqual([[1, 'error'], [2, 'error'], [3, 'ok']]);
+  expect(line.attempts[0].tier).toBe('subscription');
+});
+
+it('limit log: 429 on a rung is written to the SEPARATE limits file, even when the retry succeeds', async () => {
+  fs.rmSync(ladderLog.logDir(), { recursive: true, force: true });
+  let calls = 0;
+  goHandler.fn = (req, res) => {
+    calls++;
+    if (calls === 1) { res.writeHead(429, { 'retry-after': '0' }).end('Rate limit exceeded: free-models-per-day'); return; }
+    sse(res, [chunk('ok'), done]);
+  };
+  const r = await callChat({ model: 'free-ladder', messages: [{ role: 'user', content: 'hi' }] });
+  expect(r.status).toBe(200);
+  const limits = readLines(ladderLog.limitsFile());
+  expect(limits.length).toBe(1);
+  expect(limits[0].model).toBe('opencode-go/rung-a');
+  expect(limits[0].kind).toBe('daily_quota');
+  expect(limits[0].status).toBe(429);
+  const s = ladderLog.summary();
+  expect(s.calls).toBe(1);
+  expect(s.limits).toBe(1);
+  expect(s.byRung['gateway#1']).toBe(1);
+});
+
+it('all rungs fail ⇒ call logged as all_failed; 401 parks go through model-health into limits log', async () => {
+  fs.rmSync(ladderLog.logDir(), { recursive: true, force: true });
+  goHandler.fn = (req, res) => { res.writeHead(401).end('invalid key'); };
+  orHandler.fn = (req, res) => { res.writeHead(402).end('insufficient credits'); };
+  const r = await callChat({ model: 'free-ladder', messages: [{ role: 'user', content: 'hi' }] });
+  expect(r.status).toBe(502);
+  const [line] = readLines(ladderLog.callsFile());
+  expect(line.outcome).toBe('all_failed');
+  expect(line.rung).toBe(null);
+  const kinds = readLines(ladderLog.limitsFile()).map(l => l.kind);
+  expect(kinds).toContain('auth');
+});
