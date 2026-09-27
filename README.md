@@ -876,6 +876,18 @@ curl -s -X POST http://localhost:3000/run \
 
 To redirect output somewhere else (e.g. your own chat) during testing — just change `userId` to your chat ID. The `username` controls which files/tokens Claude sees; `userId` controls where the reply goes.
 
+> **Rule: if you start `node src/server.js` for testing, you must kill it when done.**
+> An agent session that backgrounds the server and then dies leaves an orphan (`PPID=1`)
+> whose stdout/stderr pipes are closed — historically this spun at ~90% CPU for days
+> (2026-09-27, 14 orphans → load average 28). Always background it as a job and clean up:
+> ```bash
+> node src/server.js & SRV=$!
+> # ... test against it ...
+> kill "$SRV" 2>/dev/null    # or: kill %1
+> ```
+> The `src/stream-gone.js` guard (`installCrashGuards()`) is a safety net for the
+> closed-pipe case, not a substitute for killing the process you started.
+
 ---
 
 ### Telegram API reference (what the agent uses)
