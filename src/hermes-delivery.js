@@ -7,12 +7,13 @@
 //     anything else, and
 // (2) sent straight to the originating Telegram chat/topic as its own reply.
 // Both steps are best-effort: a delivery failure never fails the tool call.
-// Web-origin runs (AGENT_CHAT_ID=0) get the file only — the web UI has no
+// Web-origin runs (chat id 0) get the file only — the web UI has no
 // out-of-band push path yet; the calling session still returns the result.
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { sendChatReply } = require('./mcp-skills/tools/94-tg-send');
 
 const TG_TEXT_LIMIT = 3800;
 
@@ -47,52 +48,24 @@ function saveResearch({ task, result, dir = researchDir(), now = new Date() }) {
   return mdPath;
 }
 
-function telegramTarget(env = process.env) {
-  const token = env.AGENT_BOT_TOKEN || '';
-  const chatId = env.AGENT_CHAT_ID || '';
-  if (!token || !chatId || chatId === '0' || chatId === 'hermes') return null;
-  const threadId = parseInt(env.AGENT_THREAD_ID || '', 10);
-  return { token, chatId, threadId: Number.isInteger(threadId) && threadId > 0 ? threadId : null };
-}
-
-async function tgCall(target, method, form, fetchImpl) {
-  const base = (process.env.TELEGRAM_API_URL || 'https://api.telegram.org').replace(/\/$/, '');
-  if (target.threadId) form.append('message_thread_id', String(target.threadId));
-  const res = await fetchImpl(`${base}/bot${target.token}/${method}`, { method: 'POST', body: form });
-  const data = await res.json().catch(() => ({}));
-  if (!data.ok) throw new Error(`Telegram ${method}: ${data.description || res.status}`);
-  return data.result;
-}
-
 // Short result → one text message; long → the .md as a document with a caption.
-async function deliverToChat({ task, result, filePath, env = process.env, fetchImpl = fetch }) {
-  const target = telegramTarget(env);
-  if (!target) return { delivered: false, reason: 'no telegram chat (web or headless run)' };
+async function deliverToChat({ task, result, filePath, target, fetchImpl }) {
   const header = `🔎 Hermes research готов\nЗадача: ${String(task).slice(0, 300)}`;
-  const body = JSON.stringify(result, null, 2);
-  const text = `${header}\n\n${body}`;
-  const form = new FormData();
-  form.append('chat_id', target.chatId);
-  if (text.length <= TG_TEXT_LIMIT) {
-    form.append('text', text);
-    await tgCall(target, 'sendMessage', form, fetchImpl);
-  } else {
-    form.append('caption', `${header}\nПолный результат — в файле (сохранён: ${filePath})`.slice(0, 1024));
-    form.append('document', new Blob([fs.readFileSync(filePath)], { type: 'text/markdown' }), path.basename(filePath));
-    await tgCall(target, 'sendDocument', form, fetchImpl);
-  }
-  return { delivered: true, channel: 'telegram' };
+  const text = `${header}\n\n${JSON.stringify(result, null, 2)}`;
+  const opts = { ...(target !== undefined ? { target } : {}), ...(fetchImpl ? { fetchImpl } : {}) };
+  if (text.length <= TG_TEXT_LIMIT) return sendChatReply({ text }, opts);
+  return sendChatReply({ document: { path: filePath, caption: `${header}\nПолный результат — в файле (сохранён: ${filePath})` } }, opts);
 }
 
 // Save first (durable), then deliver. Never throws.
-async function persistAndDeliver({ task, result, env = process.env, fetchImpl = fetch, dir }) {
+async function persistAndDeliver({ task, result, target, fetchImpl, dir }) {
   let savedTo = null;
   try { savedTo = saveResearch({ task, result, ...(dir ? { dir } : {}) }); }
   catch (e) { console.warn('[hermes-delivery] save failed:', e.message); }
   let delivery = { delivered: false, reason: 'not attempted' };
   try {
     if (savedTo || JSON.stringify(result).length + 400 <= TG_TEXT_LIMIT) {
-      delivery = await deliverToChat({ task, result, filePath: savedTo, env, fetchImpl });
+      delivery = await deliverToChat({ task, result, filePath: savedTo, target, fetchImpl });
     } else delivery = { delivered: false, reason: 'save failed and result too long for a text message' };
   } catch (e) {
     delivery = { delivered: false, reason: e.message };
@@ -101,4 +74,4 @@ async function persistAndDeliver({ task, result, env = process.env, fetchImpl = 
   return { saved_to: savedTo, ...delivery };
 }
 
-module.exports = { persistAndDeliver, saveResearch, deliverToChat, telegramTarget, researchDir, slugify };
+module.exports = { persistAndDeliver, saveResearch, deliverToChat, researchDir, slugify };

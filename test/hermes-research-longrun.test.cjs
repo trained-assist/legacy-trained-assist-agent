@@ -13,7 +13,7 @@ const os = require('node:os');
 
 const { writeOpencodeMcpConfig, codexMcpArgs, runEngineProcess, _const } = require('../src/runner/claude-runner');
 const { keepaliveFilePath, lastKeepaliveAt, withKeepalive } = require('../src/mcp-keepalive');
-const { persistAndDeliver, telegramTarget, researchDir } = require('../src/hermes-delivery');
+const { persistAndDeliver, researchDir } = require('../src/hermes-delivery');
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-longrun-'));
 
@@ -84,8 +84,8 @@ function fakeFetch(calls, ok = true) {
 
 test('result is saved to disk and sent to the originating Telegram topic', async () => {
   const dir = tmp(); const calls = [];
-  const env = { AGENT_BOT_TOKEN: 'tok', AGENT_CHAT_ID: '123', AGENT_THREAD_ID: '9' };
-  const r = await persistAndDeliver({ task: 'Найди X', result: { answer: 'да' }, env, fetchImpl: fakeFetch(calls), dir });
+  const target = { token: 'tok', chatId: '123', threadId: 9 };
+  const r = await persistAndDeliver({ task: 'Найди X', result: { answer: 'да' }, target, fetchImpl: fakeFetch(calls), dir });
   assert.equal(r.delivered, true);
   assert.ok(fs.readFileSync(r.saved_to, 'utf8').includes('"answer": "да"'));
   assert.ok(fs.existsSync(r.saved_to.replace(/\.md$/, '.json')));
@@ -97,20 +97,31 @@ test('result is saved to disk and sent to the originating Telegram topic', async
 
 test('long result goes as a document; Telegram failure never throws; web run is file-only', async () => {
   const dir = tmp(); const calls = [];
-  const env = { AGENT_BOT_TOKEN: 'tok', AGENT_CHAT_ID: '123' };
+  const target = { token: 'tok', chatId: '123', threadId: null };
   const big = { text: 'я'.repeat(5000) };
-  const r1 = await persistAndDeliver({ task: 't', result: big, env, fetchImpl: fakeFetch(calls), dir });
+  const r1 = await persistAndDeliver({ task: 't', result: big, target, fetchImpl: fakeFetch(calls), dir });
   assert.equal(r1.delivered, true);
   assert.equal(calls[0].method, 'sendDocument');
   assert.equal(calls[0].fields.message_thread_id, undefined);
 
-  const r2 = await persistAndDeliver({ task: 't', result: { a: 1 }, env, fetchImpl: fakeFetch([], false), dir });
+  const r2 = await persistAndDeliver({ task: 't', result: { a: 1 }, target, fetchImpl: fakeFetch([], false), dir });
   assert.equal(r2.delivered, false);
   assert.match(r2.reason, /chat not found/);
   assert.ok(r2.saved_to, 'file still saved when Telegram fails');
 
-  assert.equal(telegramTarget({ AGENT_BOT_TOKEN: 'tok', AGENT_CHAT_ID: '0' }), null, 'web runs (chatId 0) are not sent to Telegram');
-  assert.equal(telegramTarget({ AGENT_BOT_TOKEN: '', AGENT_CHAT_ID: '1' }), null);
+  const r3 = await persistAndDeliver({ task: 't', result: { a: 1 }, target: null, fetchImpl: fakeFetch(calls), dir });
+  assert.equal(r3.delivered, false, 'no chat target → file only');
+  assert.ok(r3.saved_to);
+});
+
+test('chat target: web runs (chat id 0) and headless runs are never sent to Telegram', () => {
+  const { spawnSync } = require('node:child_process');
+  const probe = (env) => JSON.parse(spawnSync(process.execPath, ['-e',
+    "console.log(JSON.stringify(require('./src/mcp-skills/tools/94-tg-send').chatTarget()))"],
+    { cwd: path.join(__dirname, '..'), env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' }).stdout);
+  assert.equal(probe({ AGENT_BOT_TOKEN: 'tok', AGENT_CHAT_ID: '0' }), null);
+  assert.equal(probe({ AGENT_BOT_TOKEN: '', AGENT_CHAT_ID: '5' }), null);
+  assert.deepEqual(probe({ AGENT_BOT_TOKEN: 'tok', AGENT_CHAT_ID: '5', AGENT_THREAD_ID: '3' }), { token: 'tok', chatId: '5', threadId: 3 });
 });
 
 test('research never lands inside a git checkout', () => {
