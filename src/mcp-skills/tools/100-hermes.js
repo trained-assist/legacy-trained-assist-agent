@@ -9,6 +9,8 @@
 
 const { hermesRun } = require('../../hermes-run');
 const { hermesRunWithTools } = require('../../hermes-tools-run');
+const { persistAndDeliver } = require('../../hermes-delivery');
+const { withKeepalive } = require('../../mcp-keepalive');
 
 const USER_ID = process.env.USER_ID || '';
 
@@ -96,7 +98,9 @@ module.exports = {
         'Используй, когда задаче нужно САМОЙ сходить в сеть (найти сайт, открыть страницу, свести ' +
         'несколько источников) — не просто обработать текст, который ты уже дал в context. Медленнее и ' +
         'дороже hermes_run (реальная CLI-сессия, не один LLM-вызов) — не гоняй его на задачах без реальной ' +
-        'потребности в интернете.',
+        'потребности в интернете. ДОЛГИЙ: обычно 1–10 минут — это нормально, просто дождись ответа, не ' +
+        'перезапускай и не дублируй вызов. Результат сам сохраняется в research/ (поле saved_to) и отдельным ' +
+        'сообщением уходит юзеру в Telegram (delivered) — не пересылай его целиком повторно, дай выводы.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -107,8 +111,10 @@ module.exports = {
         required: ['task', 'output_schema'],
       },
       handler: async ({ task, context, output_schema }) => {
-        const result = await hermesRunWithTools({ username: USER_ID, task, context, outputSchema: output_schema });
-        return { result };
+        const result = await withKeepalive(() =>
+          hermesRunWithTools({ username: USER_ID, task, context, outputSchema: output_schema }));
+        const delivery = await persistAndDeliver({ task, result });
+        return { result, ...delivery };
       },
     },
   },
