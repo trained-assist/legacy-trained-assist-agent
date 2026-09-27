@@ -22,7 +22,22 @@ test('buildDocument: two sections + truthful header (sizes, engine, session, not
   assert.match(doc, /Системный промпт: 3 символов · контекст\+задача: 6 символов/);
   assert.match(doc, /1\. СИСТЕМНЫЙ ПРОМПТ [\s\S]*SYS/);
   assert.match(doc, /2\. ПРОМПТ \(контекст \+ задача\) [\s\S]*PROMPT/);
-  assert.match(doc, /Не воспроизведено|здесь не воспроизведены/);
+  assert.match(doc, /0\. ЧТО ДОБАВЛЯЕТ ДВИЖОК/);
+});
+
+test('buildDocument: per-engine notes + MCP servers + resume flag', () => {
+  for (const [engine, marker] of [['claude', /ОТЛОЖЕННО[\s\S]*ToolSearch/], ['opencode', /tools\[\] каждого шага целиком/], ['codex', /tool_output_token_limit/]]) {
+    const doc = store.buildDocument({ taskId: 't1', engine, systemPrompt: 'S', prompt: 'P', mcpServers: ['trained-skills', 'hh-skills'], resumed: engine === 'claude' });
+    assert.match(doc, marker, engine);
+    assert.match(doc, /MCP-серверы: trained-skills, hh-skills/);
+    assert.match(doc, new RegExp(`продолжение сессии движка: ${engine === 'claude' ? 'да' : 'нет'}`));
+    for (const other of Object.keys(store.ENGINE_NOTES).filter(e => e !== engine)) {
+      assert.ok(!doc.includes(store.ENGINE_NOTES[other][0]), `${engine} doc must not carry ${other} notes`);
+    }
+  }
+  const unknown = store.buildDocument({ taskId: 't2', engine: 'hermes', systemPrompt: '', prompt: '' });
+  assert.match(unknown, /Движок неизвестен/);
+  assert.match(unknown, /MCP-серверы: —/);
 });
 
 test('writeInput/readInput round-trip inside workDir/.run-inputs, mode 0600', () => {

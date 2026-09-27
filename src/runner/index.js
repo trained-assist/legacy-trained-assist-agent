@@ -2108,6 +2108,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       systemPrompt: ocSystemPrompt || systemPromptText,
       prompt,
       createdAt: Date.now(),
+      mcpServers: (() => { try { return Object.keys(JSON.parse(fs.readFileSync(mcpConfig, 'utf8')).mcpServers || {}); } catch { return []; } })(),
+      resumed: !!resumeSessionId,
     }));
   } catch (e) { console.warn('[runner] run-input snapshot:', e.message); }
 

@@ -18,7 +18,30 @@ const KEEP = 30;
 
 const storeDir = workDir => path.join(workDir, '.run-inputs');
 
-function buildDocument({ taskId, engine, sessionId, systemPrompt, prompt, createdAt }) {
+// What each engine adds on top of what we hand it — the part the snapshot can't
+// reproduce verbatim, so it is named explicitly instead of a generic disclaimer.
+const ENGINE_NOTES = {
+  claude: [
+    'Claude Code: НАШ системный промпт ДОПИСЫВАЕТСЯ к встроенному системному промпту Claude Code',
+    '(--append-system-prompt-file) — встроенный (~десятки тысяч токенов: правила, описания Bash/Read/Edit…) здесь не показан.',
+    'MCP-инструменты подгружаются ОТЛОЖЕННО: модель видит только имена, схему тянет через ToolSearch по требованию.',
+    'resume: история прошлых ходов сессии передаётся движком целиком (обычно из кэша) — в «промпт» ниже она не входит.',
+  ],
+  opencode: [
+    'OpenCode: наш системный промпт склеен с промптом в ОДНО пользовательское сообщение (ниже — как есть);',
+    'поверх — собственный системный промпт OpenCode.',
+    'Схемы ВСЕХ инструментов подключённых MCP-серверов уходят в tools[] каждого шага целиком (без отложенной загрузки) —',
+    'это основная часть «вход всего» на opencode.',
+    'resume (--session): история сессии и результаты инструментов досылаются движком.',
+  ],
+  codex: [
+    'Codex: наш системный промпт склеен с промптом в одно сообщение; поверх — встроенные инструкции Codex.',
+    'Схемы MCP-инструментов передаются движком; вывод инструментов обрезается tool_output_token_limit.',
+    'resume (exec resume): история треда досылается движком.',
+  ],
+};
+
+function buildDocument({ taskId, engine, sessionId, systemPrompt, prompt, createdAt, mcpServers, resumed }) {
   const sys = systemPrompt || '';
   const pr = prompt || '';
   const at = new Date(createdAt || Date.now()).toISOString();
@@ -27,10 +50,13 @@ function buildDocument({ taskId, engine, sessionId, systemPrompt, prompt, create
     `Записан: ${at} · движок: ${engine || '?'} · сессия: ${sessionId || '(новая)'}`,
     `Системный промпт: ${sys.length} символов · контекст+задача: ${pr.length} символов`,
     '',
-    'Это всё, что агент передал модели в этот запуск: (1) системный промпт — роль/персона,',
-    'правила проекта, режим ответа; (2) промпт — контекстные секции, история сессии, задача.',
-    'Схемы MCP-инструментов и история с результатами инструментов собираются самим движком',
-    'и здесь не воспроизведены — но они тоже входят в «вход N токенов» в строке расхода.',
+    `MCP-серверы: ${Array.isArray(mcpServers) && mcpServers.length ? mcpServers.join(', ') : '—'} · продолжение сессии движка: ${resumed ? 'да' : 'нет'}`,
+    '',
+    'Ниже — всё, что агент передал движку: (1) системный промпт — роль/персона, правила проекта,',
+    'режим ответа; (2) промпт — контекстные секции, история сессии, задача.',
+    '',
+    '────────── 0. ЧТО ДОБАВЛЯЕТ ДВИЖОК (не показано ниже, но входит в «вход всего») ──────────',
+    ...(ENGINE_NOTES[engine] || ['Движок неизвестен: схемы инструментов и история добавляются им самим.']),
     '',
     '────────── 1. СИСТЕМНЫЙ ПРОМПТ ──────────',
     sys,
@@ -68,4 +94,4 @@ function readInput(workDir, taskId) {
   }
 }
 
-module.exports = { buildDocument, writeInput, readInput, TASK_ID_RE, KEEP };
+module.exports = { ENGINE_NOTES, buildDocument, writeInput, readInput, TASK_ID_RE, KEEP };
