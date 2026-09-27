@@ -219,7 +219,7 @@ try {
   });
 } catch (e) { console.error(`[hh] negotiations unavailable: ${e.message}`); }
 const { handleHhPublic, handleHhAuthed } = hhLib('hh-routes');
-const isHhPath = (pathname) => /^\/(?:api\/)?hh\//.test(pathname);
+const isHhPath = (pathname) => /^\/(?:(?:api\/)?hh\/|calltips-)/.test(pathname);
 
 // Host services for hh-routes. Module-level deps are bound here once; per-request
 // state (secrets) is added per call.
@@ -612,105 +612,8 @@ async function main() {
       return json(res, 200, { ok: true, username, password, magicUrl });
     }
 
-    // Scoped token for the Call Tips desktop app: bound to one profile, not the
-    // master AGENT_SECRET. Minted via the calltips_get_login MCP tool.
-    function calltipsHmac(profile) {
-      const { createHmac } = require('crypto');
-      const secret = process.env.AGENT_SECRET || '';
-      return createHmac('sha256', secret).update(`calltips:${profile}`).digest('hex').slice(0, 24);
-    }
-
-    // GET /calltips-session?profile=xxx&token=yyy — latest Call Tips session written by agent
-    // Call Tips app polls this to prefill candidate name, resume, job, and interview plan
-    // Auth: per-profile scoped token (calltipsHmac), NOT the master AGENT_SECRET — see calltips_get_login
-    if (req.method === 'GET' && url.pathname === '/calltips-session') {
-      const profile = url.searchParams.get('profile');
-      if (!profile || !/^[a-zA-Z0-9_-]+$/.test(profile))
-        return json(res, 400, { error: 'invalid profile' });
-      const calltipsToken = url.searchParams.get('token');
-      if (!calltipsToken || calltipsToken !== calltipsHmac(profile))
-        return json(res, 403, { error: 'invalid or missing token for this profile' });
-      // Call Tips session is written into the profile workspace (USERS_ROOT), not
-      // the legacy SYSTEM_ROOT/sessions tree — resolve via the canonical helper.
-      const filePath = path.join(userWorkDir(profile), 'calltips-latest.json');
-      try {
-        const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        return json(res, 200, data);
-      } catch {
-        return json(res, 404, { error: 'No Call Tips session prepared. Ask the agent: "подготовь план для звонка с [имя]"' });
-      }
-    }
-
-    // POST /calltips-tips — real-time coaching tip from transcript
-    // Body: { profile, token, transcript:[{speaker:'me'|'them',text}], candidateName, jobText, lang, plan }
-    // Returns: { dig, next, why }
-    // Auth: per-profile scoped token (calltipsHmac), NOT the master AGENT_SECRET — see calltips_get_login
-    if (req.method === 'POST' && url.pathname === '/calltips-tips') {
-      let body;
-      try { body = JSON.parse(await readBody(req)); }
-      catch { return json(res, 400, { error: 'bad json' }); }
-
-      const { transcript = [], candidateName = '', jobText = '', lang = 'ru', plan, profile, token: calltipsToken } = body;
-      if (!profile || !/^[a-zA-Z0-9_-]+$/.test(profile) || !calltipsToken || calltipsToken !== calltipsHmac(profile))
-        return json(res, 403, { error: 'invalid or missing token for this profile' });
-
-      const recent = transcript.slice(-20).map(l =>
-        `${l.speaker === 'me' ? 'Я' : 'Они'}: ${l.text}`
-      ).join('\n');
-
-      // Build plan context (unasked questions only)
-      const askedSet = new Set(body.askedQuestions || []);
-      const planCtx = plan?.sections?.flatMap(s =>
-        s.questions.map((q, i) => {
-          const id = `${s.category}-${i}`;
-          const mark = askedSet.has(id) ? '[✓]' : '[ ]';
-          return `${mark} ${q.text}`;
-        })
-      ).join('\n') || '';
-
-      const promptText = `Ты — помощник интервьюера в реальном времени. Слушаешь разговор и даёшь ОДИН острый уточняющий вопрос.
-
-ПРАВИЛО: зацепись за конкретное слово или деталь из последней реплики собеседника. Не оценивай — уточняй.
-Пример: собеседник сказал "делал лапароскопию" → "А когда вы выбираете открытую операцию вместо лапароскопии?"
-Пример: сказал "работал с PostgreSQL" → "Расскажите о самой сложной проблеме с индексами в PostgreSQL."
-
-Собеседник: ${candidateName || 'собеседник'}
-Тема: ${(jobText || '').slice(0, 300) || '(не указана)'}
-
-ПЛАН (незаданные вопросы):
-${planCtx || '(без плана)'}
-
-ПОСЛЕДНИЕ РЕПЛИКИ:
-${recent || '(пока нет)'}
-
-Верни ТОЛЬКО JSON:
-{"next":"Если в плане есть незаданный важный вопрос — задай его. Иначе пустая строка.","dig":"ГЛАВНОЕ: один острый уточняющий вопрос к последней реплике — зацепись за конкретную деталь. Всегда заполняй если есть реплики.","why":"Если ответ размытый — попроси конкретный пример. Иначе пустая строка."}
-Язык: ${lang === 'en' ? 'English' : 'русский'}.`;
-
-      const openrouterKey = secrets.OPENROUTER_API_KEY;
-      if (!openrouterKey) return json(res, 503, { error: 'OPENROUTER_API_KEY not configured' });
-
-      const tip = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${openrouterKey}`,
-        },
-        body: JSON.stringify({
-          model: 'google/gemini-2.5-flash',
-          max_tokens: 300,
-          messages: [{ role: 'user', content: promptText }],
-        }),
-        signal: AbortSignal.timeout(15000),
-      }).then(async (r) => {
-        const data = await r.json();
-        const text = data.choices?.[0]?.message?.content || '{}';
-        const clean = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
-        return JSON.parse(clean);
-      }).catch(() => ({ dig: '', next: '', why: '' }));
-
-      return json(res, 200, tip);
-    }
+    // Call Tips endpoints (/calltips-session, /calltips-tips) are served by hh-skill
+    // src/hh-routes.js via handleHhPublic above (#1470).
 
     // ── Auth: all endpoints require Bearer token ──────────────────────────────
     const auth = req.headers['authorization'] || '';
