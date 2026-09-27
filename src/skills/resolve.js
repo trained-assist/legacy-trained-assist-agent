@@ -1,0 +1,133 @@
+'use strict';
+// Skill sections × attributes resolver (issue #1537, PR-A).
+//
+// resolve(catalog, profileSkills, readiness) → what one run of one profile exposes.
+// Pure: no fs, no env, no clock. Callers load the catalog (src/skills/catalog.js),
+// read workDir/skills.json and gather readiness.
+//
+//   catalog        config/skill-catalog.json, plus `domains` {name: {server, module, when}}
+//                  (front matter of src/prompt-domains/*.md, attached by loadCatalog()).
+//   profileSkills  {enabled: [sectionId], disabled: [sectionId]} from workDir/skills.json,
+//                  or null → legacy mode: every section enabled = what the code exposes today.
+//   readiness      { '<server>': bool                  server attached / present on host,
+//                    '<server>/<module>': bool|null      module isReady() (null = unknown),
+//                    '<server>/*': null }                server attached but not probeable
+//
+// Section rules: `always` sections are always on. Otherwise a section is on when it or an
+// ancestor is in `enabled` and neither it nor any ancestor is in `disabled` (disabled wins,
+// a child cannot re-enable itself under a disabled parent).
+//
+// Output:
+//   sections       enabled section ids (catalog order)
+//   modules        '<server>/<module>' fully exposed (ready or readiness unknown)
+//   setupOnly      '<server>/<module>' in an enabled section but not ready → setup tools only
+//   siblings       sibling server ids to mount in .mcp.json
+//   promptDomains  prompt-domain names (same gating as prompt-domains selectDomains)
+//   pinned         {server: [tool]} always-listed tools of enabled + attached servers
+//   unknown        section ids in skills.json that the catalog doesn't know
+const LOCAL = 'trained-skills';
+
+function parentOf(id) {
+  const i = id.lastIndexOf('/');
+  return i < 0 ? null : id.slice(0, i);
+}
+
+function lineage(id) {
+  const out = [];
+  for (let cur = id; cur; cur = parentOf(cur)) out.push(cur);
+  return out;
+}
+
+function sectionEnabled(id, section, profileSkills) {
+  if (section.always) return true;
+  if (!profileSkills) return true; // legacy
+  const enabled = new Set(profileSkills.enabled || []);
+  const disabled = new Set(profileSkills.disabled || []);
+  const chain = lineage(id);
+  if (chain.some(s => disabled.has(s))) return false;
+  return chain.some(s => enabled.has(s));
+}
+
+function serverAttached(server, readiness) {
+  return server === LOCAL || readiness[server] === true;
+}
+
+// true | false | null(unknown) | undefined(module not shipped by that server)
+function moduleReady(server, mod, readiness) {
+  const key = `${server}/${mod}`;
+  if (key in readiness) return readiness[key];
+  if (readiness[`${server}/*`] === null) return null;
+  return undefined;
+}
+
+function resolve(catalog, profileSkills, readiness) {
+  readiness = readiness || {};
+  const servers = catalog.servers || {};
+  const sections = catalog.sections || {};
+  const domains = catalog.domains || {};
+  const ps = profileSkills && typeof profileSkills === 'object' ? profileSkills : null;
+
+  const out = {
+    mode: ps ? 'profile' : 'legacy',
+    sections: [], modules: [], setupOnly: [], siblings: [], promptDomains: [], pinned: {}, unknown: [],
+  };
+  if (ps) {
+    for (const id of [...(ps.enabled || []), ...(ps.disabled || [])]) {
+      if (!(id in sections) && !out.unknown.includes(id)) out.unknown.push(id);
+    }
+  }
+
+  const modules = new Set();
+  const setupOnly = new Set();
+  const siblings = new Set();
+  const domainNames = new Set();
+
+  for (const [id, section] of Object.entries(sections)) {
+    if (!sectionEnabled(id, section, ps)) continue;
+    out.sections.push(id);
+    for (const mod of section.modules || []) {
+      const key = `${LOCAL}/${mod}`;
+      (moduleReady(LOCAL, mod, readiness) === false ? setupOnly : modules).add(key);
+    }
+    for (const sib of section.siblings || []) {
+      if (!servers[sib] || servers[sib].kind !== 'sibling') continue;
+      if (serverAttached(sib, readiness)) siblings.add(sib);
+    }
+    for (const d of section.promptDomains || []) domainNames.add(d);
+    for (const [server, tools] of Object.entries(section.pinned || {})) {
+      if (!serverAttached(server, readiness)) continue;
+      const list = out.pinned[server] || (out.pinned[server] = []);
+      for (const t of tools) if (!list.includes(t)) list.push(t);
+    }
+  }
+
+  // Sibling modules come from readiness (the sibling ships its own module list).
+  for (const sib of siblings) {
+    for (const [key, val] of Object.entries(readiness)) {
+      if (!key.startsWith(sib + '/') || key === `${sib}/*`) continue;
+      (val === false ? setupOnly : modules).add(key);
+    }
+  }
+  // A module shared by several sections: ready in one = ready everywhere.
+  for (const m of modules) setupOnly.delete(m);
+
+  // Prompt domains: mirror src/prompt-domains selectDomains() exactly, restricted to
+  // domains owned by enabled sections whose server is attached for this run.
+  const attached = new Set([LOCAL, ...siblings]);
+  for (const name of Object.keys(domains).sort()) {
+    if (!domainNames.has(name)) continue;
+    const d = domains[name];
+    if (!attached.has(d.server)) continue;
+    const ready = moduleReady(d.server, d.module, readiness);
+    if (ready === undefined) continue;                 // module not shipped
+    if (ready === null) { if (d.when !== 'not-ready') out.promptDomains.push(name); continue; }
+    if (d.when === 'present' || (d.when === 'ready' ? ready : !ready)) out.promptDomains.push(name);
+  }
+
+  out.modules = [...modules].sort();
+  out.setupOnly = [...setupOnly].sort();
+  out.siblings = [...siblings].sort();
+  return out;
+}
+
+module.exports = { resolve, sectionEnabled, parentOf, LOCAL };
