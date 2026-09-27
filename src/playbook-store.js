@@ -30,7 +30,10 @@ const SYSTEM_PLAYBOOKS_DIR = path.join(REPO_ROOT, 'playbooks');
 // Known domain-skill sibling checkouts (see server.js HH_SKILL_SIBLING /
 // FREELANCE_SKILL_SIBLING). They are consulted only if present AND they carry a
 // playbooks/ dir, so an absent sibling is simply skipped.
-const DEFAULT_SIBLING_REPOS = ['trained-assist-engineering', 'trained-assist-freelance-skill', 'trained-assist-hh-skill'];
+// software-engineering-playbooks is the renamed trained-assist-engineering repo;
+// deploy.sh still links the checkout under the old name, a local clone may use
+// the new one — the first that exists wins for an id.
+const DEFAULT_SIBLING_REPOS = ['software-engineering-playbooks', 'trained-assist-engineering', 'trained-assist-freelance-skill', 'trained-assist-hh-skill'];
 
 const PLAYBOOK_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 

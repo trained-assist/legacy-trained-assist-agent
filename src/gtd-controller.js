@@ -35,9 +35,12 @@ const { resolveStepExecution } = require('./playbook-executor');
 const { executeHooks, parseHooks, resolveHookApproval } = require('./playbook-hooks');
 const { recoverDurableItem, retryFailedItem } = require('./durable-recovery');
 const {
-  evaluateItemValidationsModeAware, resolveValidationMode, getDefaultRegistry, DEFAULT_VALIDATION_MODE,
+  evaluateItemValidationsModeAware, evaluateItemValidations, resolveValidationMode, getDefaultRegistry, DEFAULT_VALIDATION_MODE,
   parseValidation, FASTPASS_SKIP_MODE, parseFastpassSkip,
 } = require('./playbook-validators');
+const {
+  parseWait, isActiveWait, startWait, decidePoll, nextDueAt, summarizeResults, resumeNote,
+} = require('./durable-wait');
 
 // ── Разумные дефолты (небольшие, но осмысленные) ────────────────────────────
 const DEFAULT_ETA_MIN = 60;   // через сколько минут после завершения проверить
@@ -165,11 +168,11 @@ const FRESH_CLAIM_GRACE_MS = 30 * 1000; // just-claimed items: let the claiming 
 // recorded as inconclusive — a broken check must not look like a pass.
 // `validationMode` (P3d-1b) selects whether an inconclusive deterministic verdict
 // may be decided by the injectable cheap LLM validator.
-async function recordItemValidations(store, { task, item, executionId, registry, projectDir, validationMode = DEFAULT_VALIDATION_MODE, llmValidate = null }) {
+async function recordItemValidations(store, { task, item, executionId, registry, projectDir, validationMode = DEFAULT_VALIDATION_MODE, llmValidate = null, planText = null }) {
   let results;
   try {
     results = await evaluateItemValidationsModeAware(item, {
-      task, profileId: task.profile_id, projectDir, registry, mode: validationMode, llmValidate,
+      task, profileId: task.profile_id, projectDir, registry, mode: validationMode, llmValidate, planText,
     });
   } catch (e) {
     results = [{ key: '*', status: 'inconclusive', subject: null, evidence: { reason: 'evaluator-error', error: e.message } }];
@@ -318,6 +321,107 @@ async function fireTaskHooks(store, task, event, vars, sinks, approved) {
 // own max_attempts / execution_timeout_seconds. delay_after_sec / wait_deadline_at
 // shape when the store hands the item out (see durable-task-store.completeItem /
 // expireWaitingDeadlines).
+// Evidence text of the plan's earlier steps — how a later check finds what an
+// earlier step produced (the PR URL "Open PR" printed, for "Wait for CI").
+const PLAN_TEXT_MAX_CHARS = 20_000;
+function planEvidenceText(store, task, item) {
+  try {
+    return store.listTaskItems(task.id, task.profile_id)
+      .filter(i => i.position < item.position && i.evidence_json)
+      .map(i => i.evidence_json)
+      .join('\n')
+      .slice(-PLAN_TEXT_MAX_CHARS);
+  } catch { return ''; }
+}
+
+// Every step is a fresh run with no memory of the plan. Hand it a compact digest
+// of what earlier steps reported (their replies end with an ИТОГ ШАГА block), the
+// most recent steps first-class, so step 9 knows the issue/PR/decisions of 1–8.
+const DIGEST_PER_STEP_CHARS = 900;
+const DIGEST_TOTAL_CHARS = 7000;
+function priorStepsDigest(store, task, item) {
+  let rows;
+  try {
+    rows = store.listTaskItems(task.id, task.profile_id)
+      .filter(i => i.position < item.position && (i.status === 'done' || i.status === 'skipped'));
+  } catch { return ''; }
+  if (!rows.length) return '';
+  const parts = [];
+  let total = 0;
+  for (const i of rows.slice().reverse()) {
+    let text = '';
+    try {
+      const ev = JSON.parse(i.evidence_json || '{}');
+      if (typeof ev.reply === 'string') text = ev.reply;
+      else if (Array.isArray(ev.validations)) text = ev.validations.map(v => `${v.key}=${v.status}`).join(', ');
+    } catch { text = ''; }
+    const marker = text.lastIndexOf('ИТОГ ШАГА');
+    text = (marker >= 0 ? text.slice(marker) : text.slice(-DIGEST_PER_STEP_CHARS)).replace(/DURABLE:\s*\w+.*$/gim, '').trim();
+    const line = `${i.position + 1}. ${i.title}${text ? `\n${text.slice(0, DIGEST_PER_STEP_CHARS)}` : ''}`;
+    if (total + line.length > DIGEST_TOTAL_CHARS) { parts.push(`… (ещё ${rows.length - parts.length} шаг(ов) раньше — task_get)`); break; }
+    parts.push(line);
+    total += line.length;
+  }
+  return ['[ИТОГИ ПРЕДЫДУЩИХ ШАГОВ ПЛАНА — от последнего к первому]', ...parts].join('\n\n');
+}
+
+// Durable wait poll (src/durable-wait.js). Runs BEFORE an execution is started,
+// so a poll never counts as an attempt or a fire. Returns:
+//   'parked' — still waiting, the item is back to `waiting` with its next due_at;
+//   'proceed' — the wait resolved; fall through to the normal step execution
+//               (a programmatic step re-checks + completes, an agent step re-runs
+//               with a resume note built from the resolved wait).
+async function pollDurableWait(store, { task, item, wait, now, registry, projectDir, planText }) {
+  const w = startWait(wait, now);
+  let results = null;
+  const condition = w.then === 'complete' ? parseValidation(item.validation_json) : w.until;
+  if (condition && Object.keys(condition).length && !w.woken_at) {
+    try {
+      // Deterministic only: a poll must never ask an LLM "is CI green yet?".
+      results = await evaluateItemValidations({ validation: condition, title: item.title, instructions: item.instructions, evidence_json: item.evidence_json },
+        { task, profileId: task.profile_id, projectDir, registry, planText });
+    } catch (e) {
+      results = [{ key: '*', status: 'inconclusive', evidence: { reason: 'evaluator-error', error: e.message } }];
+    }
+  }
+  let decision = decidePoll(w, results, now);
+  // A programmatic wait woken by someone just means "look again now".
+  if (w.then === 'complete' && decision === 'woken') {
+    const { woken_at, woken_by, wake_message, ...rest } = w;
+    store.parkItem(item.id, task.profile_id, { wait: { ...rest, last_poll_at: now }, dueAt: now });
+    return 'parked';
+  }
+  if (decision === 'keep') {
+    const polled = { ...w, last_poll_at: now, last_poll: results ? summarizeResults(results) : null };
+    const pending = results ? results.filter(r => r.status !== 'pass').map(r => `${r.key}=${r.status}`).join(', ') : 'timer/user';
+    store.parkItem(item.id, task.profile_id, { wait: polled, dueAt: nextDueAt(polled, now), lastError: `waiting: ${pending}` });
+    return 'parked';
+  }
+  if (w.then === 'complete') {
+    // satisfied → the normal programmatic path re-checks and completes the step
+    // (the wait stays active, so a flake there simply resumes waiting on retry);
+    // timeout / final fail → mark resolved so the failure path runs: recovery
+    // budget, then on_fail/task_failed hooks tell the owner.
+    if (decision === 'timeout' || decision === 'failed') {
+      store.setItemWait(item.id, task.profile_id, { ...w, resolved: decision, resolved_at: now, resolve_evidence: results ? summarizeResults(results) : null });
+      console.log(`[gtd-durable] wait ${decision} ${item.id.slice(0, 8)}`);
+    }
+    return 'proceed';
+  }
+  store.setItemWait(item.id, task.profile_id, {
+    ...w, resolved: decision, resolved_at: now,
+    resolve_evidence: results ? summarizeResults(results) : null,
+  });
+  console.log(`[gtd-durable] wait resolved ${item.id.slice(0, 8)}: ${decision}`);
+  return 'proceed';
+}
+
+// The last DURABLE marker wins — a reply may quote an earlier marker in prose.
+function lastDurableMarker(said) {
+  const all = [...String(said || '').matchAll(/DURABLE:\s*(done|failed|waiting)/gi)];
+  return all.length ? all[all.length - 1][1].toLowerCase() : null;
+}
+
 async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now(), maxFires = MAX_FIRES_PER_TICK, registry = null, llmValidate = null, classifier = null, ladder = null, hookSinks = null, approveHooks = null }) {
   const store = durableStore();
   const validators = registry || getDefaultRegistry();
@@ -354,6 +458,17 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       continue;
     }
 
+    // Durable wait: poll the condition cheaply; only a resolved wait executes.
+    const planText = planEvidenceText(store, task, item);
+    const pollProjectDir = task.project_id ? projectDirPath(task.profile_id, task.project_id) : userWorkDir(task.profile_id);
+    const activeWait = parseWait(item);
+    if (isActiveWait(activeWait)) {
+      const verdict = await pollDurableWait(store, {
+        task, item, wait: activeWait, now, registry: validators, projectDir: pollProjectDir, planText,
+      });
+      if (verdict === 'parked') continue;
+    }
+
     fired += 1;
     console.log(`[gtd-durable] fire item=${item.id.slice(0, 8)} task=${task.id.slice(0, 8)} tier=${item.current_tier}`);
     // Random suffix: an item can re-fire within the same ms (recovery retries) → PK collision.
@@ -381,7 +496,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     // verdict recorded, and the step completes only when every check passes.
     if (step.executionKind === 'programmatic') {
       const results = await recordItemValidations(store, {
-        task, item, executionId, registry: validators, projectDir: itemProjectDir, validationMode, llmValidate,
+        task, item, executionId, registry: validators, projectDir: itemProjectDir, validationMode, llmValidate, planText,
       });
       const allPass = results.length > 0 && results.every(r => r.status === 'pass');
       store.setItemEvidence(item.id, task.profile_id, {
@@ -421,9 +536,15 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       continue;
     }
 
+    const freshForPrompt = store.getTaskItem(item.id) || item;
+    const resumed = resumeNote(parseWait(freshForPrompt), now);
+    const digest = task.acceptance_criteria_json ? priorStepsDigest(store, task, item) : '';
     const prompt = [
       '[DURABLE TASK — auto-execution]',
+      resumed,
       `Task: ${task.goal}`,
+      `Plan id: ${task.id}`,
+      digest ? `\n${digest}\n` : '',
       `Step (${item.position + 1}/${store.progressSummary(task.id, task.profile_id).total}): ${item.title}`,
       `Step id: ${item.id}`,
       item.instructions ? `\nInstructions: ${item.instructions}` : '',
@@ -434,8 +555,12 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       'Режимы: "programmatic" — только детерминированные проверки; "programmatic+llm" — детерминированные + дешёвый LLM-судья; "programmatic+llm-fastpass" — самый мягкий.',
       'Настоятельно рекомендуется "programmatic+llm" (полная проверка) — особенно на дешёвых моделях: не пропускай проверку молча.',
       'Fast-pass — это ЗАПИСЫВАЕМЫЙ escape hatch, а не тихий обход. Только в режиме "programmatic+llm-fastpass" ты можешь пропустить проверку, если она слишком тяжёлая, ломает работу или нужен срочный фикс — добавь финальной строкой: VALIDATION: fastpass-skip: <причина>. Пропуск попадёт в audit trail с причиной.',
+      'Каждый шаг — новый ран без памяти: следующий шаг увидит только твой итог. Перед финальной строкой DURABLE дай блок «ИТОГ ШАГА» (≤10 строк): что сделано, ссылки (issue/PR/файлы/ветка), принятые решения, что важно следующему шагу.',
       'Выполни этот шаг. Если шаг выполнен и проверка прошла — ответь финальной строкой: DURABLE: done.',
       'Если шаг не удался — опиши ошибку и ответь финальной строкой: DURABLE: failed: <причина>.',
+      'Если шагу нужно ДОЖДАТЬСЯ чего-то внешнего (деплой, CI, креды/ответ пользователя, повтор ошибки в логах, другой план, просто время) — НЕ жди внутри рана и не проваливай шаг:',
+      'вызови task_item_wait(item_id: "<Step id>", until: {<validator>: <значение>} | awaiting_user: true | sleep_sec: N, timeout_sec, reason) и ответь финальной строкой: DURABLE: waiting.',
+      'План уснёт; сервер сам дёшево проверяет условие каждые poll_every_sec и перезапустит этот же шаг, когда оно выполнится, пользователь ответит или истечёт таймаут.',
     ].filter(Boolean).join('\n');
 
     const itemSnap = { ...item };
@@ -456,6 +581,34 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       stepTimeoutMs,
     }).then(async reply => {
       const said = typeof reply === 'string' ? reply : '';
+      if (lastDurableMarker(said) === 'waiting') {
+        // The agent parked the step on a durable wait (task_item_wait during the
+        // run). Not a failure: the attempt is refunded and nothing is completed.
+        const fresh = store.getTaskItem(itemSnap.id) || itemSnap;
+        const w = parseWait(fresh);
+        if (isActiveWait(w) && w.then === 'rerun') {
+          const waitNow = Date.now();
+          store.parkItem(itemSnap.id, task.profile_id, {
+            wait: w, dueAt: nextDueAt(w, waitNow), refundAttempt: true, lastError: `waiting: ${w.reason || 'condition'}`,
+          });
+          store.setItemEvidence(itemSnap.id, task.profile_id, {
+            evidence_json: JSON.stringify({ reply: said.slice(0, 4000), waiting: true }), completed_at: null,
+          });
+          store.finishExecution(executionId, { status: 'waiting' });
+          console.log(`[gtd-durable] item parked ${itemSnap.id.slice(0, 8)} until ${new Date(w.deadline_at).toISOString()}: ${w.reason || ''}`);
+          return;
+        }
+        // "waiting" without a registered wait is a protocol error — bounded like a failure.
+        const errText = 'DURABLE: waiting without task_item_wait (no wait registered)';
+        store.failItem(itemSnap.id, task.profile_id, { executionId, error: errText });
+        const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier, ladder });
+        store.finishExecution(executionId, { status: 'failed', error_class: rec.failureClass, error_text: errText });
+        if (!rec.recovered) {
+          await fireItemHooks(store, task, itemSnap, 'on_fail', hookVars({ error: errText }), sinks, hooksApproved);
+          await fireTaskHooks(store, task, 'task_failed', hookVars({ error: errText }), sinks, hooksApproved);
+        }
+        return;
+      }
       if (/DURABLE:\s*done/i.test(said)) {
         // P3d-1: record the step's validations (registered → verdict, self-reported
         // → inconclusive) + the reply as evidence BEFORE completing the item, so a
@@ -472,9 +625,11 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
             recordFastpassSkip(store, { task, item: freshItem, executionId, reason: skipReason });
             console.log(`[gtd-durable] fastpass skip ${itemSnap.id.slice(0, 8)}: ${skipReason}`);
           } else {
+            // The reply joins the plan text: a step that just opened a PR is
+            // validated (pr_opened / ci_green) against the URL it printed.
             await recordItemValidations(store, {
               task, item: itemSnap, executionId, registry: validators, projectDir: itemProjectDir,
-              validationMode: mode, llmValidate,
+              validationMode: mode, llmValidate, planText: `${planText}\n${said}`,
             });
           }
           store.setItemEvidence(itemSnap.id, task.profile_id, {

@@ -42,6 +42,7 @@ const promptDomains = require('../prompt-domains');
 // development-like task. Returns '' unless a playbook is actually available, so
 // profiles without one get a byte-identical prompt.
 const { buildDevPlaybookSuggestion } = require('../dev-task-playbook-suggestion');
+const { buildAwaitingUserNotice } = require('../durable-wait');
 const skillsShadow = require('../skills/shadow');
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
 // tg-stream.js (issue #942 P1.4). The module owns the format/send/edit
@@ -1963,7 +1964,13 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     ? buildDevPlaybookSuggestion({ task, profileId: user.username, audience: user.audience || 'default' })
     : '';
 
-  let baseContext = [currentTimeSection(), timeoutSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, playbookSuggestionSection, artifactsSection].filter(Boolean).join('\n\n');
+  // Durable steps parked on a user answer (task_item_wait awaiting_user): tell
+  // the chat run so the answer wakes the plan (task_item_wake). '' when none.
+  const awaitingUserSection = (!internalGtd && user?.username)
+    ? buildAwaitingUserNotice(user.username)
+    : '';
+
+  let baseContext = [currentTimeSection(), timeoutSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, playbookSuggestionSection, awaitingUserSection, artifactsSection].filter(Boolean).join('\n\n');
   if (sessionContext) baseContext = baseContext ? `${baseContext}\n\n${sessionContext}` : sessionContext;
   const currentTask = sessionContext ? `Пользователь: ${task}` : task;
   let prompt = baseContext ? `${baseContext}\n\n${currentTask}` : currentTask;

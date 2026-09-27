@@ -19,6 +19,7 @@
   "node": [
     "test/run-ingress.test.cjs",
     "test/gtd-durable-wiring.test.cjs",
+    "test/durable-wait.test.cjs",
     "test/intake-media-retention.test.cjs",
     "test/admission-status.test.cjs",
     "test/core-admission.test.cjs",

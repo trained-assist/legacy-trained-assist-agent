@@ -64,14 +64,24 @@ function inconclusive(reason, extra = {}) {
   return { status: 'inconclusive', subject: null, evidence: { reason, ...extra } };
 }
 
-// The PR URL may live anywhere the step carries text: title, instructions, or
-// evidence persisted by an earlier run.
+// The PR URL may live anywhere the step carries text: an explicit validation
+// value (`{"ci_green": "<PR url>"}` — what an agent's task_item_wait passes),
+// the step's title/instructions/evidence, the evidence of EARLIER steps of the
+// same plan (`ctx.planText` — "Open PR" records the URL, "Wait for CI" reads it;
+// the most recent URL wins there), and finally the task goal.
 function extractPrRef(ctx) {
+  const toRef = m => (m ? { owner: m[1], repo: m[2], number: m[3], url: m[0] } : null);
+  const v = ctx.validation;
+  const explicit = typeof v === 'string' ? v : (v && typeof v === 'object' && typeof v.pr === 'string' ? v.pr : null);
+  if (explicit && PR_REF_RE.test(explicit)) return toRef(explicit.match(PR_REF_RE));
   const item = ctx.item || {};
-  const raw = [item.title, item.instructions, item.evidence_json, ctx.task && ctx.task.goal]
-    .filter(Boolean).join('\n');
-  const m = raw.match(PR_REF_RE);
-  return m ? { owner: m[1], repo: m[2], number: m[3], url: m[0] } : null;
+  const own = [item.title, item.instructions, item.evidence_json].filter(Boolean).join('\n').match(PR_REF_RE);
+  if (own) return toRef(own);
+  if (typeof ctx.planText === 'string' && ctx.planText) {
+    const all = [...ctx.planText.matchAll(new RegExp(PR_REF_RE.source, 'g'))];
+    if (all.length) return toRef(all[all.length - 1]);
+  }
+  return toRef(String((ctx.task && ctx.task.goal) || '').match(PR_REF_RE));
 }
 
 // Default GitHub helpers delegate to gtd-controller (the checklist pre-check
@@ -112,7 +122,13 @@ function makeCiValidator({ ghToken, ghFetch, staging = false }) {
     const subject = { pr: ref.url, sha: pr.head.sha, staging };
     const evidence = { checks: runs.map(r => ({ name: r.name, status: r.status, conclusion: r.conclusion })) };
     const failing = runs.filter(r => !(r.status === 'completed' && r.conclusion === 'success'));
-    if (failing.length) return { status: 'fail', subject, evidence: { ...evidence, failing: failing.map(r => r.name) } };
+    // `final` marks a verdict that more waiting cannot change: every run finished
+    // and at least one is red. A durable wait wakes on it instead of polling a red
+    // CI to its timeout; runs still in progress are a plain (non-final) fail.
+    const pendingRuns = failing.filter(r => r.status !== 'completed');
+    if (failing.length) {
+      return { status: 'fail', subject, evidence: { ...evidence, failing: failing.map(r => r.name), final: pendingRuns.length === 0 } };
+    }
     if (staging) return { status: 'inconclusive', subject, evidence: { ...evidence, reason: 'staging-unverified' } };
     return { status: 'pass', subject, evidence };
   };
@@ -272,6 +288,80 @@ async function commandExitZero(ctx) {
     ? validation.timeout_ms : DEFAULT_COMMAND_TIMEOUT_MS;
   const cwd = ctx.projectDir || process.cwd();
   return runCommand(String(command), cwd, timeoutMs);
+}
+
+// credential_present — the profile has a stored credential for a service
+// (~/agent-tokens/<profile>/<service>, a non-empty file or directory). This is
+// what a step waiting for the user to connect GitHub / paste an API key polls.
+const SERVICE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+async function credentialPresent(ctx) {
+  const v = ctx.validation;
+  const service = typeof v === 'string' ? v : v && v.service;
+  if (!service || !SERVICE_RE.test(service) || service.includes('..')) return inconclusive('bad-service', { service: service || null });
+  if (!ctx.profileId) return inconclusive('no-profile');
+  const { tokenPath } = require('./data-paths');
+  const target = tokenPath(ctx.profileId, service);
+  const subject = { service };
+  try {
+    const stat = await fs.promises.stat(target);
+    if (stat.isDirectory()) {
+      const entries = await fs.promises.readdir(target);
+      return entries.length ? { status: 'pass', subject, evidence: { kind: 'dir', entries: entries.length } }
+        : { status: 'fail', subject, evidence: { reason: 'empty' } };
+    }
+    return stat.size > 0 ? { status: 'pass', subject, evidence: { kind: 'file' } }
+      : { status: 'fail', subject, evidence: { reason: 'empty' } };
+  } catch {
+    return { status: 'fail', subject, evidence: { reason: 'missing' } };
+  }
+}
+
+// http_ok — GET a URL; pass on 2xx, optionally also requiring `contains` in the
+// body (e.g. a /health endpoint that reports the deployed commit SHA). A network
+// error is inconclusive (retry on the next poll), a wrong status/body is a fail.
+const HTTP_TIMEOUT_MS = 15_000;
+function makeHttpOkValidator({ fetchImpl = (...a) => globalThis.fetch(...a) } = {}) {
+  return async function httpOk(ctx) {
+    const v = ctx.validation;
+    const url = typeof v === 'string' ? v : v && v.url;
+    if (!url || !/^https?:\/\//i.test(url)) return inconclusive('no-url');
+    const contains = v && typeof v === 'object' && v.contains != null ? String(v.contains) : null;
+    const subject = { url, contains };
+    let res;
+    let body = '';
+    try {
+      res = await fetchImpl(url, { redirect: 'follow', signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
+      body = await res.text();
+    } catch (e) {
+      return inconclusive('unreachable', { url, error: e.message });
+    }
+    const evidence = { http_status: res.status, body: body.slice(0, 500) };
+    if (!res.ok) return { status: 'fail', subject, evidence };
+    if (contains != null && !body.includes(contains)) return { status: 'fail', subject, evidence: { ...evidence, reason: 'text-not-found' } };
+    return { status: 'pass', subject, evidence };
+  };
+}
+
+// task_done — another durable plan (same profile) reached `done`. Lets a step
+// wait for a parallel plan (a research plan, a sibling feature) instead of polling
+// it by hand. A missing task is a fail; failed/cancelled is a fail with its status.
+function makeTaskDoneValidator({ getTask = null } = {}) {
+  return async function taskDone(ctx) {
+    const v = ctx.validation;
+    const taskId = typeof v === 'string' ? v : v && v.task_id;
+    if (!taskId) return inconclusive('no-task-id');
+    if (!ctx.profileId) return inconclusive('no-profile');
+    let task;
+    try {
+      const lookup = getTask || ((id, profileId) => {
+        const { durableStore } = require('./gtd-controller');
+        return durableStore().getTask(id, profileId);
+      });
+      task = lookup(taskId, ctx.profileId);
+    } catch (e) { return inconclusive('store-error', { error: e.message }); }
+    if (!task) return { status: 'fail', subject: { task_id: taskId }, evidence: { reason: 'not-found' } };
+    return { status: task.status === 'done' ? 'pass' : 'fail', subject: { task_id: taskId }, evidence: { task_status: task.status } };
+  };
 }
 
 // ── mode resolution (P3d-1b, per-step P3d-1c) ───────────────────────────────
@@ -448,7 +538,7 @@ function softenLlmVerdict(key, result, ctx) {
  * Build a registry of the initial validation keys. `ghToken` / `ghFetch` are
  * overridable so tests drive the GitHub validators with fakes.
  */
-function createDefaultRegistry({ ghToken = defaultGhToken, ghFetch = defaultGhFetch, gitInfo = defaultGitInfo } = {}) {
+function createDefaultRegistry({ ghToken = defaultGhToken, ghFetch = defaultGhFetch, gitInfo = defaultGitInfo, fetchImpl, getTask } = {}) {
   return {
     ci_green: makeCiValidator({ ghToken, ghFetch, staging: false }),
     ci_and_staging_green: makeCiValidator({ ghToken, ghFetch, staging: true }),
@@ -458,6 +548,9 @@ function createDefaultRegistry({ ghToken = defaultGhToken, ghFetch = defaultGhFe
     pr_opened: makePrOpenedValidator({ ghToken, ghFetch, gitInfo }),
     file_exists: fileExists,
     command_exit_zero: commandExitZero,
+    credential_present: credentialPresent,
+    http_ok: makeHttpOkValidator(fetchImpl ? { fetchImpl } : {}),
+    task_done: makeTaskDoneValidator({ getTask }),
   };
 }
 
@@ -489,14 +582,14 @@ function parseValidation(value) {
  * Evaluate every key declared by an item's `validation` object.
  * @returns {Promise<Array<{key,status,subject,evidence}>>}
  */
-async function evaluateItemValidations(item, { task = null, profileId = null, projectDir = null, registry = null } = {}) {
+async function evaluateItemValidations(item, { task = null, profileId = null, projectDir = null, registry = null, planText = null } = {}) {
   // task_items stores the contract as `validation_json`; accept a raw `validation`
   // object too so unit tests can pass items without a DB round-trip.
   const raw = item && item.validation_json != null ? item.validation_json : item && item.validation;
   const validation = parseValidation(raw);
   const results = [];
   for (const [key, value] of Object.entries(validation)) {
-    const ctx = { task, item, profileId, projectDir, validation: value, key };
+    const ctx = { task, item, profileId, projectDir, validation: value, key, planText };
     const res = await evaluateValidation(key, ctx, registry);
     results.push({ key, ...res });
   }
@@ -510,7 +603,7 @@ async function evaluateItemValidations(item, { task = null, profileId = null, pr
  */
 async function evaluateItemValidationsModeAware(item, {
   task = null, profileId = null, projectDir = null, registry = null,
-  mode = DEFAULT_VALIDATION_MODE, llmValidate = null,
+  mode = DEFAULT_VALIDATION_MODE, llmValidate = null, planText = null,
 } = {}) {
   const raw = item && item.validation_json != null ? item.validation_json : item && item.validation;
   const validation = parseValidation(raw);
@@ -519,7 +612,7 @@ async function evaluateItemValidationsModeAware(item, {
   let excerpts = null;
   const results = [];
   for (const [key, value] of entries) {
-    const ctx = { task, item, profileId, projectDir, validation: value, key };
+    const ctx = { task, item, profileId, projectDir, validation: value, key, planText };
     let res = await evaluateValidation(key, ctx, registry);
     if (useLlm && res.status === 'inconclusive') {
       if (excerpts === null) excerpts = collectDocExcerpts(projectDir);
@@ -536,7 +629,8 @@ module.exports = {
   createDefaultRegistry, getDefaultRegistry, evaluateValidation, evaluateItemValidations,
   evaluateItemValidationsModeAware, resolveValidationMode,
   parseValidation, collectDocExcerpts, buildLlmValidatorPrompt, makeLlmValidate, getDefaultLlmValidate,
-  makePrOpenedValidator, defaultGitInfo, gitRemoteRepo,
+  makePrOpenedValidator, defaultGitInfo, gitRemoteRepo, extractPrRef,
+  credentialPresent, makeHttpOkValidator, makeTaskDoneValidator,
   PR_REF_RE, DEFAULT_COMMAND_TIMEOUT_MS,
   VALIDATION_MODES, DEFAULT_VALIDATION_MODE, DEFAULT_VALIDATION_MODEL, LLM_VALIDATOR_TIMEOUT_MS,
   FASTPASS_SKIP_MODE, FASTPASS_SKIP_RE, parseFastpassSkip,

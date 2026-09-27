@@ -69,8 +69,10 @@ ok(/buildDevPlaybookSuggestion\(\{ task, profileId: user\.username/.test(runnerS
   'runner must call buildDevPlaybookSuggestion with the profile + task');
 ok(/\(!internalGtd && user\?\.username\)/.test(runnerSrc),
   'playbook suggestion must be gated off for durable steps (internalGtd)');
-ok(/playbookSuggestionSection, artifactsSection\]/.test(runnerSrc),
-  'playbook suggestion must be part of baseContext');
+ok(/playbookSuggestionSection, awaitingUserSection, artifactsSection\]/.test(runnerSrc),
+  'playbook suggestion + awaiting-user notice must be part of baseContext');
+ok(/buildAwaitingUserNotice\(user\.username\)/.test(runnerSrc),
+  'runner must inject the durable awaiting-user notice for the profile');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

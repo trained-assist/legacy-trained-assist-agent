@@ -33,6 +33,7 @@
       "required": ["title", "execution_kind", "validation"],
       "properties": {
         "title": { "type": "string", "minLength": 1 },
+        "step_type": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$", "description": "Id of the typed step in the playbook repo's step library (e.g. define-use-case, sandbox, archive). Informational: the library's sub-steps are already rendered into instructions." },
         "instructions": { "type": "string" },
         "execution_kind": { "enum": ["agent", "programmatic"] },
         "executor_role": { "type": ["string", "null"], "enum": ["researcher", "developer", "reviewer", "verifier", null] },
@@ -40,6 +41,16 @@
         "context_budget": { "type": ["string", "null"], "enum": ["small", "medium", "large", null] },
         "validation": { "type": "object", "minProperties": 1 },
         "delay_after_sec": { "type": "integer", "minimum": 0 },
+        "wait": {
+          "type": "object",
+          "description": "Durable wait (programmatic steps only): poll this step's own validation every poll_every_sec, without spending attempts, until it passes or timeout_sec expires (then the step fails and on_fail/task_failed fire).",
+          "additionalProperties": false,
+          "required": ["poll_every_sec", "timeout_sec"],
+          "properties": {
+            "poll_every_sec": { "type": "integer", "minimum": 60 },
+            "timeout_sec": { "type": "integer", "minimum": 60, "maximum": 2592000 }
+          }
+        },
         "max_attempts": { "type": "integer", "minimum": 1 },
         "execution_timeout_seconds": { "type": "integer", "minimum": 1 },
         "on_complete": { "$ref": "#/$defs/hookList" },

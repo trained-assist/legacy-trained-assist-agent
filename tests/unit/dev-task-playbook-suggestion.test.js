@@ -51,11 +51,43 @@ describe('isDevelopmentTask heuristic', () => {
   it('DEV_TASK_RE is exported and stable', () => expect(DEV_TASK_RE).toBeInstanceOf(RegExp));
 });
 
+describe('engineering playbook family (software-engineering-playbooks)', () => {
+  const familyStore = {
+    resolve: id => (['feature', 'debugging', 'new-software'].includes(id) ? { id, version: 1, scope: 'system', source: 'sibling' } : null),
+  };
+
+  it('offers every family member that resolves, with a one-line hint each', () => {
+    const section = buildDevPlaybookSuggestion({
+      task: 'почини баг — бот не отправляет уведомление', profileId: 'alice', audience: 'default',
+      store: familyStore, env: {},
+    });
+    for (const id of ['feature', 'debugging', 'new-software']) expect(section).toContain(`\`${id}\``);
+    expect(section).toContain('playbook_run');
+    expect(section).toContain('task_update status=active');
+    expect(section).toMatch(/НИКОГДА не запускай/);
+  });
+
+  it('lists only the members that resolve', () => {
+    const partial = { resolve: id => (['feature', 'debugging'].includes(id) ? { id } : null) };
+    const section = buildDevPlaybookSuggestion({
+      task: 'сделай фичу: экспорт', profileId: 'alice', audience: 'default', store: partial, env: {},
+    });
+    expect(section).toContain('`debugging`');
+    expect(section).not.toContain('`new-software`');
+  });
+
+  it('is empty when the default family playbook is not available', () => {
+    expect(buildDevPlaybookSuggestion({
+      task: 'сделай фичу: экспорт', profileId: 'alice', audience: 'default', store: unavailableStore, env: {},
+    })).toBe('');
+  });
+});
+
 describe('buildDevPlaybookSuggestion boundaries', () => {
   it('returns the offer for a dev task when the playbook resolves', () => {
     const section = buildDevPlaybookSuggestion({
       task: 'поставь изменение X', profileId: 'alice', audience: 'default',
-      store: availableStore, env: {},
+      store: availableStore, env: { AUDIENCE_DEFAULT_PLAYBOOK: JSON.stringify({ default: 'development' }) },
     });
     expect(section).toContain('development');
     expect(section).toContain('ba_development_playbook');
