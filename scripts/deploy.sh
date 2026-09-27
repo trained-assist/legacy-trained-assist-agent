@@ -127,8 +127,7 @@ sync_sibling_checked() {
 
 # Domain skill repos (#1470): one checkout per sibling next to core, synced to main
 # behind the MCP contract check, and linked into <releases>/ — releases resolve a
-# sibling as <release>/../<repo> (browser.js / skill-siblings.js: 2 levels up from
-# src/; 61-dev.js engineeringLibPath: 4 levels up from src/mcp-skills/tools/).
+# sibling as <release>/../<repo> (browser.js / skill-siblings.js: 2 levels up from src/).
 # Keep this list in sync with SKILL_SIBLINGS in src/skill-siblings.js.
 ensure_sibling() {
   local repo="$1" dir="$2" url
