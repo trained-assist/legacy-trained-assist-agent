@@ -274,7 +274,7 @@ test('deepseek profile: one config-driven ladder — Go mimo → Go deepseek-v4.
   assert.equal(routing.ladders['deepseek-openrouter'], undefined, 'the toggle halves are gone (2026-09-27)');
   const ladder = routing.ladders.deepseek;
   assert.deepEqual(ladder.build, ['opencode-go/mimo-v2.6-flash', 'opencode-go/deepseek-v4.1-flash',
-    'openrouter/deepseek/deepseek-v4-flash-0731', 'openrouter/google/gemini-2.5-flash-lite', 'openrouter/xiaomi/mimo-v2.6-flash'],
+    'openrouter/deepseek/deepseek-v4-flash-0731', 'openrouter/inclusionai/ling-3.0-flash', 'openrouter/xiaomi/mimo-v2.6-flash'],
     'order set by the owner: Go first, then a paid OpenRouter tail of three vendors');
   const firstOr = ladder.build.findIndex(m => m.startsWith('openrouter/'));
   for (const rung of ladder.build.slice(0, firstOr)) assert.ok(rung.startsWith('opencode-go/'), `rung ${rung} must be on Go`);
