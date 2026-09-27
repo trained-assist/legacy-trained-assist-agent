@@ -53,11 +53,32 @@ test('missing sibling: exports throw a clear error instead of crashing at requir
   } finally { console.error = origError; restore(); }
 });
 
-test('core entry modules load without the hh-skill sibling', () => {
-  const r = spawnSync(process.execPath, ['-e', "require('./src/handlers/hh');require('./src/runner/intent-engine');"], {
-    cwd: ROOT, encoding: 'utf8', timeout: 60_000,
-    env: { ...process.env, HH_SKILL_DIR: path.join(os.tmpdir(), 'no-such-hh-skill-' + process.pid) },
+test('server starts and serves core routes without the hh-skill sibling; only /hh/* fails', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hh-lib-server-'));
+  const port = 13000 + (process.pid % 2000);
+  const { spawn } = require('child_process');
+  const proc = spawn(process.execPath, ['src/server.js'], {
+    cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, PORT: String(port), SECRETS_SOURCE: 'env', TELEGRAM_BOT_TOKEN: 'test-tg', AGENT_SECRET: 's3cret',
+      USERS_DIR: path.join(tmp, 'users'), AGENT_DATA_DIR: path.join(tmp, 'data'), AGENT_TOKENS_DIR: path.join(tmp, 'tokens'),
+      NODE_ENV: 'test', HH_SKILL_DIR: path.join(tmp, 'no-such-hh-skill') },
   });
-  assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stderr, /\[hh-lib\] hh-\S+ unavailable/);
+  let out = '';
+  try {
+    await new Promise((resolve, reject) => {
+      const onData = c => { out += c; if (out.includes('listening on')) resolve(); };
+      proc.stdout.on('data', onData); proc.stderr.on('data', onData);
+      proc.on('exit', code => reject(new Error(`server exited ${code}\n${out}`)));
+      setTimeout(() => reject(new Error(`server did not start in 20s\n${out}`)), 20_000);
+    });
+    assert.match(out, /\[hh-lib\] hh-\S+ unavailable/);
+    const health = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal(health.status, 200);
+    const hh = await fetch(`http://127.0.0.1:${port}/hh/review?username=u`);
+    assert.ok(hh.status >= 500, `expected HH route to fail, got ${hh.status}`);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200, 'server survives a failed HH request');
+  } finally {
+    proc.kill('SIGTERM');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

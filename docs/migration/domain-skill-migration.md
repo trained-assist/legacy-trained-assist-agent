@@ -83,7 +83,8 @@ this epic's — the matrix only records where each domain stands.
 - [x] **schedulable: yes** — `hh_proactive_search` declares `[user, cron, durable_task]` (#1489 §1.3)
 - [ ] move the dedicated HH timer onto cron-service (#1489 S7.1)
 - [ ] cutover `serving: core -> domain` for the wider recruiting profile set (P0.1c follow-up — widen the config `profiles` allowlist; sandbox is already on the sealed path)
-- [x] remove duplicated `src/hh-*.js` — core consumers (`handlers/hh.js`, `runner/*`, `server.js`, `93-calltips`) load HH code from the hh-skill sibling via `src/domains/hh/lib.js` `hhLib()`; core keeps no copies (#1470 P1.3)
+- [x] remove duplicated `src/hh-*.js` — core consumers (`runner/*`, `server.js`, `93-calltips`) load HH code from the hh-skill sibling via `src/domains/hh/lib.js` `hhLib()`; core keeps no copies (#1470 P1.3)
+- [x] HH HTTP routes (`/hh/*`, `/api/hh/*`) live in hh-skill `src/hh-routes.js`; core `server.js` only mounts them via `hhLib('hh-routes')` (#1470)
 
 State: **dual** (domain canary-mounted to sandbox, core serves everyone).
 

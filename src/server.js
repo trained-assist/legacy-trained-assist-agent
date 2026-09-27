@@ -19,7 +19,6 @@ const path = require('path');
 const { loadSecrets } = require('./secrets');
 const { webAuth, signJwt, setTokenCookie, clearTokenCookie, switchProfileCookie, savePassword, checkPassword, generatePassword, generateMagicToken, consumeMagicToken, listAuthedProfiles } = require('./web-auth');
 const { handleWebRoute } = require('./web-routes');
-const { handleHhPublic, handleHhAuthed } = require('./handlers/hh');
 const { handleConnect } = require('./handlers/connect');
 const { handleWeb } = require('./handlers/web');
 const { runTask, generateConnectLink, getQuickAnswer, getPendingTasks, clearPendingTask, interruptForRestart, reconcileSoftContinuations, MAX_RESUME_ATTEMPTS } = require('./runner');
@@ -207,33 +206,34 @@ function scheduleNalogExpiryChecks(secrets) {
 // Populated once in main() after loadSecrets(). Read by hh-negotiations.js via getSecretsCache().
 let _secretsCache = null;
 
-// HH negotiations/messages/background-scoring — trained-assist-hh-skill src/hh-negotiations.js, via hhLib (issue #942 P0.3, #1470).
-// The HH HTTP client lives in hh-utils (single implementation, issue #942 P0.4).
-// refreshHhToken (OAuth refresh) also lives in hh-utils; readChatId stays inline
-// (used by many other handlers here).
-// readChatId is defined inline here too (used by many other handlers).
-const {
-  fetchAllHhNegotiations, fetchDiscardedNegotiations, getHhDiscardedWithCache, hhCacheFile, getHhNegotiationsWithCache,
-  syncHhMessagesToHistory, runHhScoringForUser,
-  buildProactiveUrlForScheduler, scheduleHhBackgroundScoring,
-} = createHhNegotiations({
-  refreshHhToken: (...a) => refreshHhToken(...a),
-  readChatId,
-  getSecretsCache: () => _secretsCache,
-});
+// HH domain — negotiations cache, background scoring and the /hh/* + /api/hh/* HTTP
+// routes all live in trained-assist-hh-skill (src/hh-negotiations.js, src/hh-routes.js),
+// reached via hhLib (#942, #1470). A missing/broken hh-skill checkout only disables HH:
+// createHhNegotiations throws, hhNeg stays empty and core keeps serving everything else.
+let hhNeg = {};
+try {
+  hhNeg = createHhNegotiations({
+    refreshHhToken: (...a) => refreshHhToken(...a),
+    readChatId,
+    getSecretsCache: () => _secretsCache,
+  });
+} catch (e) { console.error(`[hh] negotiations unavailable: ${e.message}`); }
+const { handleHhPublic, handleHhAuthed } = hhLib('hh-routes');
+const isHhPath = (pathname) => /^\/(?:api\/)?hh\//.test(pathname);
 
-// Deps for the HH handler module (issue #942 P3.1). Module-level deps are bound
-// here once; per-request state (secrets, _secretsCache) is injected per call.
+// Host services for hh-routes. Module-level deps are bound here once; per-request
+// state (secrets) is added per call.
 const hhCtx = {
   readChatId,
   BASE_USERS_DIR,
   PORT,
+  runMcpTool,
   getSecretsCache: () => _secretsCache,
-  getHhNegotiationsWithCache,
-  syncHhMessagesToHistory,
-  fetchAllHhNegotiations,
-  getHhDiscardedWithCache,
-  hhCacheFile,
+  getHhNegotiationsWithCache: hhNeg.getHhNegotiationsWithCache,
+  syncHhMessagesToHistory: hhNeg.syncHhMessagesToHistory,
+  fetchAllHhNegotiations: hhNeg.fetchAllHhNegotiations,
+  getHhDiscardedWithCache: hhNeg.getHhDiscardedWithCache,
+  hhCacheFile: hhNeg.hhCacheFile,
 };
 
 // GTD controller tick: fire due check-backs for workrun tasks the user asked us
@@ -490,7 +490,7 @@ async function main() {
     // CORS preflight for browser-facing endpoints (no auth needed for OPTIONS)
 
     // ── HH browser-facing + proactive endpoints (no AGENT_SECRET — authenticated by HH token file / HMAC) ──
-    if (await handleHhPublic(req, url, res, { ...hhCtx, secrets }) !== false) return;
+    if (isHhPath(url.pathname) && await handleHhPublic(req, url, res, { ...hhCtx, secrets }) !== false) return;
 
 
     // ── HH browser-facing endpoints (no AGENT_SECRET — authenticated by HH token file) ──
@@ -1900,7 +1900,7 @@ ${recent || '(пока нет)'}
 
 
     // ── ATS Template Editor (BEHIND Bearer gate) ──────────────────────────────
-    if (await handleHhAuthed(req, url, res, { ...hhCtx, secrets }) !== false) return;
+    if (isHhPath(url.pathname) && await handleHhAuthed(req, url, res, { ...hhCtx, secrets }) !== false) return;
 
 
     // POST /playwright-fetch moved to the RU edge service (src/ru-edge.js) — the
@@ -2041,7 +2041,7 @@ ${recent || '(пока нет)'}
   setInterval(drivePoll, 2 * 60 * 1000);
 
   scheduleNalogExpiryChecks(secrets);
-  scheduleHhBackgroundScoring();
+  if (hhNeg.scheduleHhBackgroundScoring) hhNeg.scheduleHhBackgroundScoring();
 // Cold search runs on the generic cron (#1489 S7.1): one job per vacancy, managed by
 // hh_proactive_schedule in hh-skill. No HH timer in core.
   if (process.env.TEST_MODE !== '1') scheduleGtdController(secrets);
