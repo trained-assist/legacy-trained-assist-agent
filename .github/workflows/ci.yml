@@ -23,11 +23,13 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci --include=dev
-      - name: Check out domain skill siblings next to core (hh, sales)
+      - name: Check out domain skill siblings next to core (hh, sales, engineering)
         run: |
           for repo in trained-assist-hh-skill trained-assist-sales-skill; do
             git clone --quiet --depth 1 "https://github.com/trained-assist/$repo.git" "$GITHUB_WORKSPACE/../$repo"
           done
+          # Repo renamed to software-engineering-playbooks; the sibling dir keeps the old name.
+          git clone --quiet --depth 1 https://github.com/trained-assist/software-engineering-playbooks.git "$GITHUB_WORKSPACE/../trained-assist-engineering"
       - name: Install Chromium for response review scenario
         run: npx playwright install --with-deps chromium
       - name: Replay mandatory user scenarios
@@ -54,11 +56,13 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
-      - name: Check out domain skill siblings next to core (hh, sales)
+      - name: Check out domain skill siblings next to core (hh, sales, engineering)
         run: |
           for repo in trained-assist-hh-skill trained-assist-sales-skill; do
             git clone --quiet --depth 1 "https://github.com/trained-assist/$repo.git" "$GITHUB_WORKSPACE/../$repo"
           done
+          # Repo renamed to software-engineering-playbooks; the sibling dir keeps the old name.
+          git clone --quiet --depth 1 https://github.com/trained-assist/software-engineering-playbooks.git "$GITHUB_WORKSPACE/../trained-assist-engineering"
       - name: Syntax check
         run: npm run check
       - name: Testkit syntax check

@@ -2,8 +2,8 @@
 
 // HH domain code lives in trained-assist-hh-skill (epic #1470) — the single
 // source of truth. Core reaches it here, from the sibling checkout that
-// deploy.sh already syncs and links next to every release (same pattern as
-// 61-dev.js → trained-assist-engineering). No copies of hh-*.js in core.
+// deploy.sh already syncs and links next to every release. No copies of
+// hh-*.js in core.
 //
 //   <releases>/<sha>/src/domains/hh/lib.js  →  <releases>/trained-assist-hh-skill/src
 //

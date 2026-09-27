@@ -23,7 +23,7 @@ applies to every clone without per-machine setup):
   `MERGED` or (already-pushed-once) `OPEN` state on GitHub, forcing a fresh
   branch instead of amending a submitted PR.
 
-`dev_workspace_setup` (`src/mcp-skills/tools/61-dev.js`) already installs
+`dev_workspace_setup` (`trained-assist/software-engineering-playbooks` `src/mcp-skills/tools/61-dev.js`, served by the `engineering-skills` sibling since #1631) already installs
 these hooks into **any** repo it clones or updates via `installGitHooks()` —
 this is not limited to repos created through `dev_new_repo`. Practical
 implication: the fix for an existing, already-cloned dev workspace lands the
