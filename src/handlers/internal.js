@@ -47,11 +47,58 @@ async function handleInternal(req, url, res, ctx) {
     // a cron-skill job without spawning Claude.
     // POST /internal/gtd/tick — run one GTD/durable tick right now (same code path and
     // re-entrancy guard as the 5-min timer). Used by scripts/e2e/playbooks-e2e.js.
+    // Optional body {accelerate: {plan_id, profile}}: that plan's waiting steps poll now.
     if (req.method === 'POST' && url.pathname === '/internal/gtd/tick') {
       const gtdTickNow = getGtdTickNow();
       if (!gtdTickNow) return json(res, 409, { ok: false, error: 'gtd tick not scheduled on this process' });
+      let body = {};
+      try { const raw = await readBody(req); body = raw ? JSON.parse(raw) : {}; } catch { return json(res, 400, { error: 'bad json' }); }
+      let accelerated = 0;
+      if (body && body.accelerate && body.accelerate.plan_id) {
+        try { accelerated = require('../durable-e2e').accelerateWaits(body.accelerate.plan_id, body.accelerate.profile); }
+        catch (e) { return json(res, e.status || 400, { error: e.message }); }
+      }
       await gtdTickNow();
-      return json(res, 200, { ok: true, heartbeat: require('../gtd-controller').tickHeartbeat() });
+      return json(res, 200, { ok: true, accelerated, heartbeat: require('../gtd-controller').tickHeartbeat() });
+    }
+
+    // ── Playbook e2e API (driven by scripts/e2e/playbooks-e2e.js --remote) ──────────
+    // POST /internal/e2e/plans {profile, playbook_id, goal, level_map?}   → start a plan
+    // GET  /internal/e2e/plans?profile=                                   → list plans
+    // GET  /internal/e2e/plans/:id?profile=                               → step report
+    // POST /internal/e2e/plans/:id/cancel {profile}                       → cancel
+    // POST /internal/durable/items/:id/wake {profile, message}            → answer a waiting step
+    if (url.pathname === '/internal/e2e/plans' || url.pathname.startsWith('/internal/e2e/plans/')
+      || /^\/internal\/durable\/items\/[^/]+\/wake$/.test(url.pathname)) {
+      const e2e = require('../durable-e2e');
+      const readJson = async () => { const raw = await readBody(req); return raw ? JSON.parse(raw) : {}; };
+      try {
+        if (req.method === 'POST' && url.pathname === '/internal/e2e/plans') {
+          const b = await readJson();
+          return json(res, 200, e2e.startPlan({ profile: b.profile, playbookId: b.playbook_id, goal: b.goal, levelMap: b.level_map || null }));
+        }
+        if (req.method === 'GET' && url.pathname === '/internal/e2e/plans') {
+          return json(res, 200, { plans: e2e.listPlans(url.searchParams.get('profile')) });
+        }
+        const cancel = /^\/internal\/e2e\/plans\/([^/]+)\/cancel$/.exec(url.pathname);
+        if (req.method === 'POST' && cancel) {
+          const b = await readJson();
+          return json(res, 200, e2e.cancelPlan(decodeURIComponent(cancel[1]), b.profile));
+        }
+        const one = /^\/internal\/e2e\/plans\/([^/]+)$/.exec(url.pathname);
+        if (req.method === 'GET' && one) {
+          return json(res, 200, e2e.planReport(decodeURIComponent(one[1]), url.searchParams.get('profile')));
+        }
+        const wake = /^\/internal\/durable\/items\/([^/]+)\/wake$/.exec(url.pathname);
+        if (req.method === 'POST' && wake) {
+          const b = await readJson();
+          return json(res, 200, e2e.wakeStep(decodeURIComponent(wake[1]), b.profile, b.message ?? null));
+        }
+      } catch (e) {
+        if (e instanceof SyntaxError) return json(res, 400, { error: 'bad json' });
+        return json(res, e.status || 500, { error: e.message });
+      }
+      return json(res, 405, { error: 'method not allowed' });
     }
 
     if (req.method === 'GET' && url.pathname === '/internal/gtd-status') {

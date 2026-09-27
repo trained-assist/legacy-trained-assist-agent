@@ -1,49 +1,35 @@
 #!/usr/bin/env node
 'use strict';
 
-// End-to-end harness for the engineering playbooks (feature / debugging / new-software).
+// Live end-to-end driver for the engineering playbooks (feature / debugging / new-software).
 //
-// Runs against the REAL durable executor: this script only compiles a playbook into a
-// plan (same path as the playbook_run MCP tool), activates it and reports; the server's
-// GTD tick (every 5 min) executes the steps with real engines. Run it on the VM that
-// hosts the server (same AGENT_DATA_DIR / USERS_DIR / AGENT_TOKENS_DIR).
+// Runs against the REAL durable executor. Two backends, same commands:
+//   • local  (default): on the VM that hosts the server — calls src/durable-e2e.js and
+//                       ticks http://127.0.0.1:$PORT (AGENT_SECRET from env or ~/secrets.env)
+//   • remote (--remote https://host/agent): from anywhere (a Mac, CI) over the
+//                       /internal/e2e/* API with AGENT_SECRET — no SSH needed
 //
-// The plan carries execution_policy.level_map, so its levels run on the engines under
-// test without touching the prod-wide PLAYBOOK_LEVEL_MAP. Default for e2e:
-//   doctor → opencode "deepseek" (standard), master/bachelor → opencode "free".
+//   start  --playbook new-software --goal "…" [--profile playbooks-e2e] [--level-map '{…}']
+//   status <plan> | report <plan> [--json] [--verbose] | list | cancel <plan> | kick
+//   wake   <step-id> --message "…"                      — answer a step waiting for the user
+//   run    <plan> [--every 20] [--stall-min 15] [--auto-answer "…"] [--auto-merge] [--record out.json]
+//          drive the plan: tick (and poll this plan's waits now) in a loop; act where a human
+//          would — answer awaiting_user steps, merge a green PR the plan waits on (via gh);
+//          stop on done / failed / stall; print the report; optionally save it for replay.
 //
-//   node scripts/e2e/playbooks-e2e.js start  --playbook new-software --goal "…" [--profile playbooks-e2e] [--level-map '{…}']
-//   node scripts/e2e/playbooks-e2e.js status <taskId> [--profile …]
-//   node scripts/e2e/playbooks-e2e.js report <taskId> [--profile …] [--json]
-//   node scripts/e2e/playbooks-e2e.js list [--profile …]
-//   node scripts/e2e/playbooks-e2e.js cancel <taskId> [--profile …]
-//   node scripts/e2e/playbooks-e2e.js kick                      — run one server tick now
-//   node scripts/e2e/playbooks-e2e.js run <taskId> [--every 20] [--stall-min 15]
-//        drive the plan: kick the tick in a loop, make this plan's waiting steps poll
-//        now (their condition is still checked for real), print step transitions,
-//        stop on done / failed / stall, then print the report.
-//
-// Quality of what the agents build is NOT the point — the point is that the process
-// runs end to end and every failure is visible in the report.
+// Default e2e level map: doctor → opencode deepseek, master/bachelor → opencode free.
+// Quality of what the agents build is NOT the point — that the process runs end to end
+// and every failure is visible is.
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const { durableStore } = require(path.join(ROOT, 'src', 'gtd-controller'));
-const { PlaybookStore } = require(path.join(ROOT, 'src', 'playbook-store'));
-const { compilePlaybook } = require(path.join(ROOT, 'src', 'playbook-compiler'));
-const { planLevelMap, resolveStepExecution } = require(path.join(ROOT, 'src', 'playbook-executor'));
-
 const DEFAULT_PROFILE = 'playbooks-e2e';
-const DEFAULT_LEVEL_MAP = {
-  doctor: { engine: 'opencode', ocProfile: 'deepseek' },
-  master: { engine: 'opencode', ocProfile: 'free' },
-  bachelor: { engine: 'opencode', ocProfile: 'free' },
-};
-const E2E_PREAMBLE = 'Это автоматический e2e-тест процесса. Пользователь недоступен: НЕ спрашивай его и НЕ уходи в awaiting_user — '
-  + 'принимай разумные допущения и записывай их в итог шага. ';
+const DEFAULT_AUTO_ANSWER = 'Это автоматический e2e: пользователь недоступен. Прими разумное допущение, запиши его в итог шага и продолжай.';
+const PR_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g;
 
 function parseArgs(argv) {
   const out = { _: [] };
@@ -59,140 +45,6 @@ function parseArgs(argv) {
   return out;
 }
 
-function fmtDur(ms) {
-  if (ms == null) return '—';
-  const s = Math.round(ms / 1000);
-  return s < 90 ? `${s}s` : `${Math.round(s / 60)}m`;
-}
-
-function findTask(store, taskId, profile) {
-  const task = store.getTask(taskId, profile);
-  if (task) return task;
-  // accept a short id prefix
-  const row = store.db.prepare('SELECT * FROM durable_tasks WHERE profile_id = ? AND id LIKE ?').get(profile, `${taskId}%`);
-  if (!row) throw new Error(`plan ${taskId} not found for profile ${profile}`);
-  return row;
-}
-
-function start(args) {
-  const profile = args.profile || DEFAULT_PROFILE;
-  const playbookId = args.playbook;
-  const goal = args.goal;
-  if (!playbookId || !goal) throw new Error('start needs --playbook and --goal');
-  const levelMap = args['level-map'] ? JSON.parse(args['level-map']) : DEFAULT_LEVEL_MAP;
-
-  const playbook = new PlaybookStore({ profileId: profile }).get(playbookId);
-  if (!playbook) throw new Error(`playbook ${playbookId} not found (sibling repo checked out next to the agent?)`);
-  const compiled = compilePlaybook(playbook, { goal: E2E_PREAMBLE + goal });
-  const store = durableStore();
-  const { task, items } = store.createPlan({
-    profile_id: profile,
-    goal: compiled.goal,
-    user_value: compiled.user_value,
-    acceptance_criteria: compiled.acceptance_criteria,
-    items: compiled.items,
-    hooks: compiled.hooks,
-    playbook_id: playbook.id,
-    playbook_version: playbook.version,
-    execution_policy: { level_map: levelMap, e2e: true },
-  });
-  store.updateTask(task.id, profile, { status: 'active' });
-
-  // Show how each step will be routed under this plan's level map.
-  const map = planLevelMap({ level_map: levelMap });
-  console.log(`plan ${task.id} (${playbook.id}@${playbook.version}) active for profile ${profile}`);
-  for (const it of items) {
-    const r = resolveStepExecution(it, { levelMap: map });
-    console.log(`  ${String(it.position + 1).padStart(2)}. ${it.title}  →  ${r.executionKind === 'programmatic' ? 'programmatic' : `${r.engine}/${r.ocProfile || '-'} (${r.modelLevel}, ${r.ocRole || '-'})`}`);
-  }
-  console.log('\nThe server tick picks it up within ~5 min. Watch with: status / report');
-}
-
-function collect(store, task) {
-  const items = store.listTaskItems(task.id, task.profile_id);
-  const execs = store.db.prepare('SELECT * FROM executions WHERE task_id = ? ORDER BY started_at').all(task.id);
-  const byItem = new Map();
-  for (const e of execs) {
-    if (!byItem.has(e.task_item_id)) byItem.set(e.task_item_id, []);
-    byItem.get(e.task_item_id).push(e);
-  }
-  return items.map(it => {
-    const ex = byItem.get(it.id) || [];
-    const engines = [...new Set(ex.map(e => `${e.engine || '?'}/${e.profile || '-'}${e.model_level ? `@${e.model_level}` : ''}`))];
-    const first = ex[0]; const last = ex[ex.length - 1];
-    let wait = null;
-    try { wait = it.wait_json ? JSON.parse(it.wait_json) : null; } catch { /* ignore */ }
-    return {
-      n: it.position + 1, stage: it.stage, title: it.title, status: it.status, kind: it.execution_kind,
-      level: it.minimum_model_level, current_level: it.current_model_level, attempts: it.attempt_count,
-      executions: ex.length, engines,
-      duration_ms: first ? ((last.finished_at || Date.now()) - first.started_at) : null,
-      last_error: it.last_error || (last && last.error_text) || null,
-      failure_class: it.last_failure_class || null, recovery: it.last_recovery_action || null,
-      wait,
-      summary: stepSummary(it.evidence_json),
-    };
-  });
-}
-
-// The step's own «ИТОГ ШАГА» block (what later steps see), from its recorded reply.
-function stepSummary(evidenceJson) {
-  if (!evidenceJson) return null;
-  let text = evidenceJson;
-  try { const ev = JSON.parse(evidenceJson); text = ev.reply || JSON.stringify(ev); } catch { /* raw */ }
-  const i = text.lastIndexOf('ИТОГ ШАГА');
-  return (i >= 0 ? text.slice(i) : text).replace(/DURABLE:[^\n]*/g, '').trim().slice(0, 600) || null;
-}
-
-function status(args) {
-  const profile = args.profile || DEFAULT_PROFILE;
-  const store = durableStore();
-  const task = findTask(store, args._[1], profile);
-  const rows = collect(store, task);
-  const counts = rows.reduce((m, r) => { m[r.status] = (m[r.status] || 0) + 1; return m; }, {});
-  const cur = rows.find(r => !['done', 'skipped'].includes(r.status));
-  console.log(`${task.id.slice(0, 8)} ${task.playbook_id} ${task.status} | ${Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(' ')}`);
-  if (cur) console.log(`current: ${cur.n}. ${cur.title} [${cur.status}] ${cur.engines.join(', ')}${cur.last_error ? ` — ${String(cur.last_error).slice(0, 160)}` : ''}`);
-}
-
-function report(args) {
-  const profile = args.profile || DEFAULT_PROFILE;
-  const store = durableStore();
-  const task = findTask(store, args._[1], profile);
-  const rows = collect(store, task);
-  if (args.json) { console.log(JSON.stringify({ task, steps: rows }, null, 2)); return; }
-  console.log(`# e2e report — ${task.playbook_id} ${task.id}`);
-  console.log(`status: ${task.status} | created ${new Date(task.created_at).toISOString()}\n`);
-  console.log('| # | stage | step | status | level | ran on | runs | time | error |');
-  console.log('|---|---|---|---|---|---|---|---|---|');
-  for (const r of rows) {
-    const lvl = r.kind === 'programmatic' ? 'prog' : `${r.level}${r.current_level && r.current_level !== r.level ? `→${r.current_level}` : ''}`;
-    const err = r.last_error ? String(r.last_error).replace(/\s+/g, ' ').replace(/\|/g, '/').slice(0, 140) : '';
-    console.log(`| ${r.n} | ${r.stage} | ${r.title} | ${r.status}${r.wait ? ' ⏳' : ''} | ${lvl} | ${r.engines.join(', ') || '—'} | ${r.executions} | ${fmtDur(r.duration_ms)} | ${err} |`);
-  }
-  const engineSet = new Set(rows.flatMap(r => r.engines));
-  console.log(`\nengines used: ${[...engineSet].join(', ') || '—'}`);
-  if (args.verbose) {
-    for (const r of rows.filter(x => x.summary)) console.log(`\n## ${r.n}. ${r.title}\n${r.summary}`);
-  }
-}
-
-function list(args) {
-  const profile = args.profile || DEFAULT_PROFILE;
-  const store = durableStore();
-  for (const t of store.listTasks(profile)) {
-    console.log(`${t.id}  ${t.playbook_id || '-'}  ${t.status}  ${new Date(t.created_at).toISOString()}  ${String(t.goal).replace(E2E_PREAMBLE, '').slice(0, 70)}`);
-  }
-}
-
-function cancel(args) {
-  const profile = args.profile || DEFAULT_PROFILE;
-  const store = durableStore();
-  const task = findTask(store, args._[1], profile);
-  store.updateTask(task.id, profile, { status: 'cancelled' });
-  console.log(`cancelled ${task.id}`);
-}
-
 function agentSecret() {
   if (process.env.AGENT_SECRET) return process.env.AGENT_SECRET;
   try {
@@ -201,66 +53,198 @@ function agentSecret() {
   } catch { return null; }
 }
 
-async function kickOnce() {
-  const port = process.env.PORT || 8080;
+// ── backends ─────────────────────────────────────────────────────────────────
+function httpBackend(base) {
   const secret = agentSecret();
   if (!secret) throw new Error('AGENT_SECRET not in env or ~/secrets.env');
-  const res = await fetch(`http://127.0.0.1:${port}/internal/gtd/tick`, {
-    method: 'POST', headers: { Authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(120_000),
-  });
-  if (!res.ok) throw new Error(`tick HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  return res.json();
+  const call = async (method, p, body) => {
+    const res = await fetch(`${base.replace(/\/$/, '')}${p}`, {
+      method,
+      headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    });
+    const text = await res.text();
+    let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text.slice(0, 200) }; }
+    if (!res.ok) throw new Error(`${method} ${p} → HTTP ${res.status}: ${data.error || text.slice(0, 200)}`);
+    return data;
+  };
+  const q = profile => `profile=${encodeURIComponent(profile)}`;
+  return {
+    start: (o) => call('POST', '/internal/e2e/plans', { profile: o.profile, playbook_id: o.playbookId, goal: o.goal, level_map: o.levelMap }),
+    report: (id, profile) => call('GET', `/internal/e2e/plans/${encodeURIComponent(id)}?${q(profile)}`),
+    list: async (profile) => (await call('GET', `/internal/e2e/plans?${q(profile)}`)).plans,
+    cancel: (id, profile) => call('POST', `/internal/e2e/plans/${encodeURIComponent(id)}/cancel`, { profile }),
+    wake: (itemId, profile, message) => call('POST', `/internal/durable/items/${encodeURIComponent(itemId)}/wake`, { profile, message }),
+    tick: (accelerate) => call('POST', '/internal/gtd/tick', accelerate ? { accelerate } : {}),
+  };
 }
 
-async function kick() {
-  const r = await kickOnce();
+function localBackend() {
+  const e2e = require(path.join(ROOT, 'src', 'durable-e2e'));
+  const http = httpBackend(`http://127.0.0.1:${process.env.PORT || 8080}`);
+  return {
+    start: async (o) => e2e.startPlan(o),
+    report: async (id, profile) => e2e.planReport(id, profile),
+    list: async (profile) => e2e.listPlans(profile),
+    cancel: async (id, profile) => e2e.cancelPlan(id, profile),
+    wake: async (itemId, profile, message) => e2e.wakeStep(itemId, profile, message),
+    tick: (accelerate) => http.tick(accelerate), // the tick must run inside the server process
+  };
+}
+
+// ── printing ─────────────────────────────────────────────────────────────────
+function fmtDur(ms) {
+  if (ms == null) return '—';
+  const s = Math.round(ms / 1000);
+  return s < 90 ? `${s}s` : `${Math.round(s / 60)}m`;
+}
+
+function currentLine(r) {
+  const cur = r.current;
+  if (!cur) return 'all steps finished';
+  return `${cur.n}. ${cur.title} [${cur.status}${cur.wait && cur.wait.awaiting_user ? ' · awaiting user' : ''}] ${cur.engines.join(', ')}${cur.last_error ? ` — ${String(cur.last_error).replace(/\s+/g, ' ').slice(0, 160)}` : ''}`;
+}
+
+function printReport(r, { verbose = false } = {}) {
+  console.log(`# e2e report — ${r.plan.playbook} ${r.plan.id}`);
+  console.log(`status: ${r.plan.status} | created ${new Date(r.plan.created_at).toISOString()} | ${Object.entries(r.counts).map(([k, v]) => `${k}:${v}`).join(' ')}\n`);
+  console.log('| # | stage | step | status | level | ran on | runs | time | error |');
+  console.log('|---|---|---|---|---|---|---|---|---|');
+  for (const s of r.steps) {
+    const lvl = s.kind === 'programmatic' ? 'prog' : `${s.level}${s.current_level && s.current_level !== s.level ? `→${s.current_level}` : ''}`;
+    const err = s.last_error ? String(s.last_error).replace(/\s+/g, ' ').replace(/\|/g, '/').slice(0, 140) : '';
+    console.log(`| ${s.n} | ${s.stage} | ${s.title} | ${s.status}${s.wait ? ' ⏳' : ''} | ${lvl} | ${s.engines.join(', ') || '—'} | ${s.executions} | ${fmtDur(s.duration_ms)} | ${err} |`);
+  }
+  console.log(`\nengines used: ${[...new Set(r.steps.flatMap(s => s.engines))].join(', ') || '—'}`);
+  if (verbose) for (const s of r.steps.filter(x => x.summary)) console.log(`\n## ${s.n}. ${s.title}\n${s.summary}`);
+}
+
+// ── acting where a human would ───────────────────────────────────────────────
+function latestPr(report) {
+  const urls = report.steps.flatMap(s => [s.summary || '', JSON.stringify(s.wait || {})].join('\n').match(PR_RE) || []);
+  return urls.length ? urls[urls.length - 1] : null;
+}
+
+// The plan waits on a merge the repo cannot do itself (no auto-merge): merge a PR
+// whose checks are all green, like the owner would. Uses the local `gh` auth.
+function tryAutoMerge(report) {
+  const cur = report.current;
+  if (!cur || cur.status !== 'waiting' && cur.status !== 'pending') return null;
+  const waitsOnMerge = (cur.wait && cur.wait.until && Object.hasOwn(cur.wait.until, 'merged')) || /смерж|merged/i.test(cur.title);
+  if (!waitsOnMerge) return null;
+  const pr = latestPr(report);
+  if (!pr) return null;
+  try {
+    const info = JSON.parse(execFileSync('gh', ['pr', 'view', pr, '--json', 'state,statusCheckRollup'], { encoding: 'utf8' }));
+    if (info.state !== 'OPEN') return null;
+    const checks = info.statusCheckRollup || [];
+    const green = checks.length > 0 && checks.every(c => (c.conclusion || c.state) === 'SUCCESS');
+    if (!green) return null;
+    execFileSync('gh', ['pr', 'merge', pr, '--squash'], { stdio: 'ignore' });
+    return pr;
+  } catch (e) { console.log(`auto-merge ${pr}: ${e.message.split('\n')[0]}`); return null; }
+}
+
+// ── commands ─────────────────────────────────────────────────────────────────
+async function start(b, a) {
+  const out = await b.start({
+    profile: a.profile || DEFAULT_PROFILE, playbookId: a.playbook, goal: a.goal,
+    levelMap: a['level-map'] ? JSON.parse(a['level-map']) : null,
+  });
+  console.log(`plan ${out.plan.id} (${out.plan.playbook}) active for profile ${out.plan.profile}`);
+  for (const r of out.routing) console.log(`  ${String(r.n).padStart(2)}. ${r.title}  →  ${r.route}`);
+  console.log('\nDrive it with: run <plan>');
+}
+
+async function status(b, a) {
+  const r = await b.report(a._[1], a.profile || DEFAULT_PROFILE);
+  console.log(`${r.plan.id.slice(0, 8)} ${r.plan.playbook} ${r.plan.status} | ${Object.entries(r.counts).map(([k, v]) => `${k}:${v}`).join(' ')}`);
+  console.log(`current: ${currentLine(r)}`);
+}
+
+async function report(b, a) {
+  const r = await b.report(a._[1], a.profile || DEFAULT_PROFILE);
+  if (a.json) console.log(JSON.stringify(r, null, 2)); else printReport(r, { verbose: !!a.verbose });
+}
+
+async function list(b, a) {
+  for (const p of await b.list(a.profile || DEFAULT_PROFILE)) {
+    console.log(`${p.id}  ${p.playbook || '-'}  ${p.status}  ${new Date(p.created_at).toISOString()}  ${p.goal.slice(0, 70)}`);
+  }
+}
+
+async function cancel(b, a) { console.log(JSON.stringify(await b.cancel(a._[1], a.profile || DEFAULT_PROFILE))); }
+
+async function kick(b) {
+  const r = await b.tick(null);
   console.log(`tick ok, last finish ${r.heartbeat && r.heartbeat.lastFinishAt ? new Date(r.heartbeat.lastFinishAt).toISOString() : '—'}`);
 }
 
-function snapshot(rows) {
-  return rows.map(r => `${r.n}:${r.status}`).join(' ');
+async function wake(b, a) {
+  console.log(JSON.stringify(await b.wake(a._[1], a.profile || DEFAULT_PROFILE, a.message || DEFAULT_AUTO_ANSWER)));
 }
 
-async function run(args) {
-  const profile = args.profile || DEFAULT_PROFILE;
-  const every = Number(args.every || 20) * 1000;
-  const stallMs = Number(args['stall-min'] || 15) * 60 * 1000;
-  const store = durableStore();
-  const task = findTask(store, args._[1], profile);
-  let last = ''; let lastChange = Date.now();
+async function run(b, a) {
+  const profile = a.profile || DEFAULT_PROFILE;
+  const every = Number(a.every || 20) * 1000;
+  const stallMs = Number(a['stall-min'] || 15) * 60 * 1000;
+  const autoAnswer = a['auto-answer'] === true ? DEFAULT_AUTO_ANSWER : a['auto-answer'] || null;
+  const planId = a._[1];
   const started = Date.now();
+  let last = ''; let lastChange = Date.now(); let r = null;
+  const answered = new Set();
   for (;;) {
-    // e2e acceleration: this plan's parked steps poll on the next tick instead of in
-    // poll_every_sec. Their wait condition is still evaluated for real.
-    store.db.prepare(`UPDATE task_items SET due_at = ? WHERE task_id = ? AND status = 'waiting'`).run(Date.now(), task.id);
-    try { await kickOnce(); } catch (e) { console.log(`kick failed: ${e.message}`); }
-    const t = store.getTask(task.id, profile);
-    const rows = collect(store, t);
-    const snap = snapshot(rows);
+    try { await b.tick({ plan_id: planId, profile }); } catch (e) { console.log(`tick failed: ${e.message}`); }
+    try { r = await b.report(planId, profile); } catch (e) { console.log(`report failed: ${e.message}`); await sleep(every); continue; }
+    const snap = r.steps.map(s => `${s.n}:${s.status}`).join(' ');
     if (snap !== last) {
-      const cur = rows.find(r => !['done', 'skipped'].includes(r.status));
-      const mins = ((Date.now() - started) / 60000).toFixed(1);
-      console.log(`[+${mins}m] ${t.status} | ${cur ? `${cur.n}. ${cur.title} [${cur.status}] ${cur.engines.join(', ')}${cur.last_error ? ` — ${String(cur.last_error).slice(0, 140)}` : ''}` : 'all steps finished'}`);
+      console.log(`[+${((Date.now() - started) / 60000).toFixed(1)}m] ${r.plan.status} | ${currentLine(r)}`);
       last = snap; lastChange = Date.now();
     }
-    if (['done', 'failed', 'cancelled'].includes(t.status)) break;
-    if (rows.some(r => r.status === 'failed')) { console.log('a step failed'); break; }
-    if (Date.now() - lastChange > stallMs) { console.log(`stalled ${args['stall-min'] || 15} min`); break; }
-    await new Promise(res => setTimeout(res, every));
+    // act where a human would
+    const cur = r.current;
+    if (autoAnswer && cur && cur.status === 'waiting' && cur.wait && cur.wait.awaiting_user && !answered.has(`${cur.id}:${cur.attempts}`)) {
+      answered.add(`${cur.id}:${cur.attempts}`);
+      try { await b.wake(cur.id, profile, autoAnswer); console.log(`  ↳ answered step ${cur.n} (awaiting user)`); }
+      catch (e) { console.log(`  ↳ answer failed: ${e.message}`); }
+    }
+    if (a['auto-merge']) {
+      const merged = tryAutoMerge(r);
+      if (merged) console.log(`  ↳ merged ${merged} (green CI, no auto-merge in repo)`);
+    }
+    if (['done', 'failed', 'cancelled'].includes(r.plan.status)) break;
+    if (r.steps.some(s => s.status === 'failed')) { console.log('a step failed'); break; }
+    if (Date.now() - lastChange > stallMs) { console.log(`stalled ${a['stall-min'] || 15} min`); break; }
+    await sleep(every);
   }
-  report({ ...args, verbose: true });
+  if (r) {
+    printReport(r, { verbose: true });
+    if (a.record) {
+      fs.writeFileSync(a.record, JSON.stringify({ recorded_at: new Date().toISOString(), ...r }, null, 2));
+      console.log(`\nrecorded → ${a.record}`);
+    }
+    if (r.plan.status !== 'done') process.exitCode = 1;
+  }
 }
 
-const COMMANDS = { start, status, report, list, cancel, kick, run };
+function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+const COMMANDS = { start, status, report, list, cancel, kick, wake, run };
 
 if (require.main === module) {
   const args = parseArgs(process.argv.slice(2));
   const cmd = COMMANDS[args._[0]];
   if (!cmd) {
-    console.error('usage: playbooks-e2e.js start|status|report|list|cancel … (see header)');
+    console.error('usage: playbooks-e2e.js start|status|report|list|cancel|kick|wake|run … [--remote https://host/agent] (see header)');
     process.exit(2);
   }
-  Promise.resolve().then(() => cmd(args)).then(() => process.exit(0), e => { console.error(e.message); process.exit(1); });
+  let backend;
+  try { backend = args.remote ? httpBackend(String(args.remote)) : localBackend(); }
+  catch (e) { console.error(e.message); process.exit(1); }
+  Promise.resolve().then(() => cmd(backend, args)).then(
+    () => process.exit(process.exitCode || 0),
+    e => { console.error(e.message); process.exit(1); });
 }
 
-module.exports = { DEFAULT_LEVEL_MAP, E2E_PREAMBLE, collect };
+module.exports = { parseArgs, latestPr, tryAutoMerge, httpBackend };
