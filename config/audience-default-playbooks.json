@@ -3,7 +3,7 @@
   "playbooks": {
     "freelance": "freelance-project-spec",
     "exhibition": "exhibition-catalog-to-sales-site",
-    "development": "development",
-    "default": "development"
+    "development": "feature",
+    "default": "feature"
   }
 }

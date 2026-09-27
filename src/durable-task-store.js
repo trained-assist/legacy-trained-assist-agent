@@ -140,12 +140,13 @@ class DurableTaskStore {
           delay_after_sec: item.delay_after_sec ?? 0 });
         this._prep(`UPDATE task_items SET stage=?, instructions=?, execution_kind=?, executor_role=?,
           minimum_model_level=?, current_model_level=?, context_budget=?, validation_json=?,
-          max_attempts=?, execution_timeout_seconds=?, hooks_json=? WHERE id=?`)
+          max_attempts=?, execution_timeout_seconds=?, hooks_json=?, wait_json=? WHERE id=?`)
           .run(item.stage ?? null, item.instructions ?? null, item.execution_kind,
             item.executor_role ?? null, item.minimum_model_level ?? null, item.minimum_model_level ?? null,
             item.context_budget ?? null, JSON.stringify(item.validation), item.max_attempts ?? 3,
             item.execution_timeout_seconds ?? 600,
-            item.hooks == null ? null : JSON.stringify(item.hooks), itemId);
+            item.hooks == null ? null : JSON.stringify(item.hooks),
+            item.wait == null ? null : JSON.stringify({ then: 'complete', ...item.wait }), itemId);
       });
       if (session_id) this.attachSession(id, session_id, profile_id);
       return { task: this.getTask(id, profile_id), items: this.listTaskItems(id, profile_id) };
@@ -443,6 +444,67 @@ class DurableTaskStore {
    * is terminal for the item budget and visible to the recovery slice (P3c).
    * Returns the number of items expired.
    */
+  /**
+   * Durable wait (see src/durable-wait.js): park an item as `waiting` until
+   * `dueAt` with its wait state in `wait_json`. A park is not a failure, so
+   * `refundAttempt` gives back the attempt startExecution counted for the run
+   * that asked to wait — waiting three times must not exhaust max_attempts.
+   * wait_deadline_at is cleared: the wait's own deadline lives in wait_json and
+   * is enforced by the poll, not by expireWaitingDeadlines.
+   */
+  parkItem(id, profileId, { wait, dueAt, refundAttempt = false, lastError = null } = {}) {
+    return this.db.transaction(() => {
+      const item = this._itemOwnedBy(id, profileId);
+      if (!item) return null;
+      const now = nowMs();
+      this._prep(`UPDATE task_items SET status = 'waiting', due_at = ?, wait_deadline_at = NULL,
+          wait_json = ?, last_error = ?, updated_at = ?,
+          attempt_count = CASE WHEN ? THEN MAX(0, attempt_count - 1) ELSE attempt_count END
+          WHERE id = ?`)
+        .run(dueAt, wait == null ? null : JSON.stringify(wait), lastError, now, refundAttempt ? 1 : 0, id);
+      this._bump(item.task_id);
+      return this.getTaskItem(id);
+    })();
+  }
+
+  /** Replace an item's wait state without changing its status (e.g. clear it after a wake). */
+  setItemWait(id, profileId, wait) {
+    if (!this._itemOwnedBy(id, profileId)) return null;
+    this._prep('UPDATE task_items SET wait_json = ?, updated_at = ? WHERE id = ?')
+      .run(wait == null ? null : JSON.stringify(wait), nowMs(), id);
+    return this.getTaskItem(id);
+  }
+
+  /**
+   * Wake a waiting item now (a user answered, or someone knows the condition
+   * holds). The next tick re-checks it; for an agent wait the message is handed
+   * to the resumed run. Only a parked item (waiting + wait_json) can be woken.
+   */
+  wakeItem(id, profileId, { message = null, by = 'user' } = {}) {
+    return this.db.transaction(() => {
+      const item = this._itemOwnedBy(id, profileId);
+      if (!item) return { error: 'item not found (or not owned by this profile)' };
+      if (item.status !== 'waiting' || !item.wait_json) return { error: `item is not waiting (status=${item.status})` };
+      let wait;
+      try { wait = JSON.parse(item.wait_json); } catch { wait = {}; }
+      const now = nowMs();
+      wait = { ...wait, woken_at: now, woken_by: by, wake_message: message == null ? null : String(message).slice(0, 4000) };
+      this._prep('UPDATE task_items SET wait_json = ?, due_at = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(wait), now, now, id);
+      this._bump(item.task_id);
+      return { item: this.getTaskItem(id) };
+    })();
+  }
+
+  /** Items parked on a user answer, for the chat-context notice. Profile-scoped. */
+  listItemsAwaitingUser(profileId) {
+    return this._prep(`SELECT i.id, i.title, i.wait_json, t.goal, t.id AS task_id FROM task_items i
+      JOIN durable_tasks t ON t.id = i.task_id
+      WHERE t.profile_id = ? AND t.status = 'active' AND i.status = 'waiting' AND i.wait_json IS NOT NULL
+      ORDER BY i.updated_at DESC LIMIT 20`).all(profileId)
+      .filter(row => { try { return JSON.parse(row.wait_json).awaiting_user === true; } catch { return false; } });
+  }
+
   expireWaitingDeadlines(now = nowMs()) {
     return this.db.transaction(() => {
       const rows = this._prep(`SELECT id, task_id FROM task_items

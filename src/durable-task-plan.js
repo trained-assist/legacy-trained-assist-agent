@@ -16,6 +16,13 @@ const itemSchema = {
     delay_after_sec: { type: 'integer', minimum: 0 },
     max_attempts: { type: 'integer', minimum: 1 },
     execution_timeout_seconds: { type: 'integer', minimum: 1 },
+    wait: {
+      type: 'object',
+      properties: {
+        poll_every_sec: { type: 'integer', minimum: 60 },
+        timeout_sec: { type: 'integer', minimum: 60 },
+      },
+    },
   },
 };
 function validateItem(item) {
@@ -28,6 +35,15 @@ function validateItem(item) {
   if (!item.validation || typeof item.validation !== 'object' || Array.isArray(item.validation) || !Object.keys(item.validation).length) throw new Error('item validation required');
   for (const key of ['delay_after_sec', 'max_attempts', 'execution_timeout_seconds']) {
     if (item[key] != null && (!Number.isSafeInteger(item[key]) || item[key] < (key === 'delay_after_sec' ? 0 : 1))) throw new Error(`invalid ${key}`);
+  }
+  // A declared wait polls the step's own validations until they pass — only a
+  // programmatic step has validations a poll can evaluate without a model.
+  if (item.wait != null) {
+    if (item.execution_kind !== 'programmatic') throw new Error('wait is only allowed on programmatic steps');
+    if (typeof item.wait !== 'object' || Array.isArray(item.wait)) throw new Error('invalid wait');
+    for (const key of ['poll_every_sec', 'timeout_sec']) {
+      if (!Number.isSafeInteger(item.wait[key]) || item.wait[key] < 60) throw new Error(`invalid wait.${key}`);
+    }
   }
 }
 

@@ -22,6 +22,12 @@ const { validateHooks, TASK_HOOK_EVENTS } = require('./playbook-hooks');
 
 const { substitute } = _internal;
 
+// Deterministic validator keys a durable wait can poll. Lazy: the validators
+// module is only needed for playbooks that declare a wait.
+function waitableKeys() {
+  return Object.keys(require('./playbook-validators').getDefaultRegistry());
+}
+
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_TIMEOUT_SECONDS = 600;
 
@@ -111,6 +117,16 @@ function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null
       const itemHooks = compileItemHooks(stage, step, stepIndex, steps.length);
       if (itemHooks) item.hooks = itemHooks;
       if (step.instructions) item.instructions = substitute(step.instructions, renderVars);
+      if (step.wait) {
+        // A declared wait polls the step's validation deterministically; a key
+        // with no validator could never pass — reject it now, not at timeout.
+        const unknown = Object.keys(step.validation || {}).filter(k => !waitableKeys().includes(k));
+        if (unknown.length) {
+          throw playbookError('COMPILE_INVALID',
+            `шаг «${item.title}»: wait требует детерминированных валидаторов, неизвестно: ${unknown.join(', ')}`);
+        }
+        item.wait = { poll_every_sec: step.wait.poll_every_sec, timeout_sec: step.wait.timeout_sec };
+      }
       try {
         validateItem(item);
       } catch (error) {

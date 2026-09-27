@@ -13,22 +13,22 @@
 //   2. file AUDIENCE_DEFAULT_PLAYBOOK_CONFIG — JSON {version, playbooks:{...}}
 //   3. built-in DEFAULT_AUDIENCE_PLAYBOOKS
 // A per-audience miss falls back to the map's "default" entry, then to
-// "development" — a suggestion is never null and never an arbitrary string.
+// "feature" — a suggestion is never null and never an arbitrary string.
 
 const fs = require('fs');
 const path = require('path');
 
 const DEFAULT_CONFIG_PATH = path.resolve(__dirname, '..', 'config', 'audience-default-playbooks.json');
 
-const FALLBACK_PLAYBOOK_ID = 'development';
+const FALLBACK_PLAYBOOK_ID = 'feature';
 
 // Built-in map mirrors config/audience-default-playbooks.json. Kept in code so a
 // missing/removed config file never disables the suggestion.
 const DEFAULT_AUDIENCE_PLAYBOOKS = Object.freeze({
   freelance: 'freelance-project-spec',
   exhibition: 'exhibition-catalog-to-sales-site',
-  development: 'development',
-  default: 'development',
+  development: 'feature',
+  default: 'feature',
 });
 
 const PLAYBOOK_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
