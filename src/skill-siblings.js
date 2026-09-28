@@ -18,6 +18,9 @@ const SKILL_SIBLINGS = [
   { id: 'engineering', repo: 'trained-assist-engineering', mcpServerId: 'engineering-skills' },
   { id: 'sales', repo: 'trained-assist-sales-skill', mcpServerId: 'sales-skills' },
   { id: 'documents', repo: 'trained-assist-documents-skill', mcpServerId: 'documents-skills' },
+  // Speech (Ф0, #1779): the one recognition tool. Core keeps the ffmpeg/ledger chain
+  // and delegates the engine here (src/mcp-skills/tools/95-video-analysis.js).
+  { id: 'speech', repo: 'trained-assist-speech-skill', mcpServerId: 'speech-skills' },
 ];
 
 const DEFAULT_ROOT = path.join(__dirname, '..', '..');
