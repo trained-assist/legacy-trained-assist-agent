@@ -7,6 +7,9 @@ const {
   contentRewrite,
   buildOutputSchema,
   validateFields,
+  validateDocument,
+  normalizeDoc,
+  extractHeadings,
   detectSlop,
   countChars,
   normalizeFields,
@@ -47,6 +50,19 @@ function fakeLlm(responses) {
     () => contentRewrite({ username: 'u', fields: FIELDS }, { llmCall: fakeLlm(['{}']), apiKey: null, readOrKey: () => null }),
     'no OpenRouter key → rejected'
   );
+
+  // ── mode selection: exactly one input per call ──────────────────────────────
+  await throws(() => normalizeFields([]), 'empty fields rejected (mode fields)');
+  await throws(
+    () => contentRewrite({ username: 'u' }, { llmCall: fakeLlm(['{}']), apiKey: 'k' }),
+    'no input → rejected'
+  );
+  await throws(
+    () => contentRewrite({ username: 'u', fields: FIELDS, markdown: '# x' }, { llmCall: fakeLlm(['{}']), apiKey: 'k' }),
+    'fields + markdown together → rejected'
+  );
+  await throws(() => normalizeDoc(''), 'empty markdown rejected');
+  await throws(() => normalizeDoc('# ok', { min_chars: 10, max_chars: 5 }), 'doc min>max rejected');
 
   // ── countChars: code points, not UTF-16 units ───────────────────────────────
   ok(countChars('abc') === 3, 'countChars ascii');
@@ -159,6 +175,96 @@ function fakeLlm(responses) {
     };
     await contentRewrite({ fields: FIELDS }, { llmCall: llm, apiKey: 'k' });
     ok(seen[0] >= 4000, `max_tokens covers the reasoning budget (got ${seen[0]})`);
+  }
+
+  // ── document mode: markdown in → text out, structure machine-checked ───────
+  const DRAFT = '# Как продавать на выставках\n\nВступление про выставки.\n\n## Подготовка\n\nТекст про подготовку.';
+  {
+    const docOut = { text: '# Как продавать на выставках\n\nЖивое вступление.\n\n## Подготовка\n\nЖивой текст.' };
+    const llm = fakeLlm([JSON.stringify(docOut)]);
+    const r = await contentRewrite({ markdown: DRAFT }, { llmCall: llm, apiKey: 'k' });
+    ok(r.mode === 'document' && r.ok === true, 'document mode → mode reported, ok');
+    ok(r.text === docOut.text, 'document text returned whole');
+    ok(r.chars === countChars(docOut.text), 'document chars counted');
+    ok(r.fields === undefined, 'document result has no fields array');
+    ok(extractHeadings(DRAFT).length === 2, 'extractHeadings finds both levels');
+  }
+
+  // ── document: missing / extra / reordered headings are violations ───────────
+  {
+    const base = normalizeDoc(DRAFT, {});
+    ok(validateDocument(base, { text: DRAFT }).length === 0, 'identical structure → no violations');
+    const noH = validateDocument(base, { text: 'Просто текст без заголовков.' });
+    ok(noH.some((v) => v.kind === 'missing_heading'), 'dropped heading → missing_heading');
+    const extraH = validateDocument(base, { text: `${DRAFT}\n\n## Новый раздел` });
+    ok(extraH.some((v) => v.kind === 'extra_heading'), 'new heading → extra_heading');
+    const reorderedText = '## Подготовка\n\nТекст.\n\n# Как продавать на выставках\n\nВступление.';
+    const reo = validateDocument(base, { text: reorderedText });
+    ok(reo.some((v) => v.kind === 'heading_order'), 'reordered headings → heading_order');
+    const off = normalizeDoc(DRAFT, { preserve_headings: false });
+    ok(validateDocument(off, { text: 'Без заголовков.' }).length === 0, 'preserve_headings:false skips heading checks');
+  }
+
+  // ── document: whole-doc char range enforced machine-side ────────────────────
+  {
+    const doc = normalizeDoc(DRAFT, { min_chars: 10, max_chars: 40 });
+    const v = validateDocument(doc, { text: 'x'.repeat(41) });
+    ok(v.some((x) => x.kind === 'too_long' && x.key === 'text' && x.max_chars === 40), 'doc too_long detected');
+    ok(validateDocument(doc, { text: 'коротко' }).some((x) => x.kind === 'too_short'), 'doc too_short detected');
+    ok(validateDocument(doc, { text: '' }).some((x) => x.kind === 'missing'), 'empty doc → missing');
+  }
+
+  // ── document: violation → retry on the cheap model with the exact fix hint ──
+  {
+    const good = { text: DRAFT };
+    const llm = fakeLlm([
+      JSON.stringify({ text: `${DRAFT}\n\n## Новый лишний раздел` }),
+      JSON.stringify(good),
+    ]);
+    const r = await contentRewrite({ markdown: DRAFT }, { llmCall: llm, apiKey: 'k' });
+    ok(r.attempts === 2 && r.models[1] === DEFAULT_RETRY_MODEL, 'doc violation → retry on cheap model');
+    ok(r.ok === true && r.violations.length === 0, 'doc retry fixed the violation');
+    ok(llm.calls[1].messages[1].content.includes('лишний заголовок'), 'doc retry prompt names the heading');
+  }
+
+  // ── document: honest failure — no truncation, violations reported ───────────
+  {
+    const llm = fakeLlm([JSON.stringify({ text: `${DRAFT}\n\n## Новый лишний раздел` })]);
+    const r = await contentRewrite({ markdown: DRAFT, max_attempts: 2 }, { llmCall: llm, apiKey: 'k' });
+    ok(r.ok === false && r.violations.some((v) => v.kind === 'extra_heading'), 'doc keeps violating → ok false');
+    ok(r.text.includes('## Новый лишний раздел'), 'doc text kept whole — no silent truncation');
+  }
+
+  // ── document: style_guard applies to the whole text ─────────────────────────
+  {
+    const slop = '# Заголовок\n\nВ мире, где всё меняется, продажи растут.';
+    const clean = '# Заголовок\n\nКонкретные продажи растут.';
+    const llm = fakeLlm([JSON.stringify({ text: slop }), JSON.stringify({ text: clean })]);
+    const r = await contentRewrite({ markdown: DRAFT.replace('# Как продавать на выставках', '# Заголовок').replace('\n\n## Подготовка\n\nТекст про подготовку.', '') }, { llmCall: llm, apiKey: 'k' });
+    ok(r.attempts === 2, 'doc slop triggers retry when style_guard on');
+    ok(r.style_warnings.length === 0, 'doc slop cleared after retry');
+    const llm2 = fakeLlm([JSON.stringify({ text: slop })]);
+    const r2 = await contentRewrite({ markdown: '# Заголовок', style_guard: false }, { llmCall: llm2, apiKey: 'k' });
+    ok(r2.attempts === 1 && r2.style_warnings.length === 0, 'doc style_guard off → no retry');
+    ok(r2.style_guard === false, 'doc style_guard reported as off');
+  }
+
+  // ── document: max_tokens scales with draft length, floor 4000 ───────────────
+  {
+    const seen = [];
+    const llm = async (_k, _m, _msg, maxTokens) => {
+      seen.push(maxTokens);
+      return JSON.stringify({ text: DRAFT });
+    };
+    await contentRewrite({ markdown: DRAFT }, { llmCall: llm, apiKey: 'k' });
+    ok(seen[0] >= 4000, `doc max_tokens covers reasoning (got ${seen[0]})`);
+    const seenLong = [];
+    const llmLong = async (_k, _m, _msg, maxTokens) => {
+      seenLong.push(maxTokens);
+      return JSON.stringify({ text: `${DRAFT}\n\n${'Длинный текст документа. '.repeat(400)}` });
+    };
+    await contentRewrite({ markdown: `${DRAFT}\n\n${'Длинный текст документа. '.repeat(400)}` }, { llmCall: llmLong, apiKey: 'k' });
+    ok(seenLong[0] > seen[0], 'doc max_tokens grows with input length');
   }
 
   console.log(`\ncontent-rewrite: ${pass} passed, ${fail} failed`);
