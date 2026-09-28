@@ -6,8 +6,17 @@
 //    detectPlanInAnswer (yes/no → generic «Действуй дальше по плану») +
 //    detectMenuInAnswer (2-4 alternatives). It returns the concrete actions the
 //    answer itself proposes («Создать PR», «Задеплоить на RU»), each backed by a
-//    verbatim quote from the answer. A label whose quote is not found in the text
-//    is dropped — buttons are only ever extracted, never invented.
+//    verbatim quote from the answer.
+//
+//    Label policy (owner decision, incident 2026-09-28 second round): the label is a SHORT
+//    FORMULATION of the step (≤ MAX_LABEL chars), not a verbatim copy of the answer's phrasing.
+//    The previous rule required the label to appear in the text verbatim — buttons then read as
+//    awkward word-for-word echoes of the prose («жёстко», per the owner). The tap itself only
+//    sends the button index (act|sid|n) and the session re-reads its own answer, so the label is
+//    display-only: free wording is safe.
+//
+//    What stays grounded is the ACTION: quote must be a verbatim fragment of the answer, so a
+//    button can only ever be extracted from a step the answer really proposed — never invented.
 // 2. paragraphize: a wall of text (long, almost no blank lines) is re-split into
 //    paragraphs/lists by the LLM; the result is accepted only if it kept the
 //    words of the original (coverage guard), otherwise the original goes out.
@@ -23,6 +32,14 @@ function norm(s) {
   return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
+// Truncate to `max` chars on a word boundary (a cut half-word reads as a typo on a button).
+function cutWords(s, max) {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const sp = cut.lastIndexOf(' ');
+  return (sp > 10 ? cut.slice(0, sp) : cut).trim();
+}
+
 // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last) — throws when every rung
 // failed so callers keep their existing fail-soft catch.
 async function callJson({ apiKey, system, user, maxTokens, timeoutMs, source }) {
@@ -32,16 +49,16 @@ async function callJson({ apiKey, system, user, maxTokens, timeoutMs, source }) 
 }
 
 const ACTIONS_SYSTEM = [
-  'Ты читаешь финальный ответ ассистента пользователю и извлекаешь из него КОНКРЕТНЫЕ действия,',
-  'которые ассистент сам предлагает выполнить СЛЕДУЮЩИМ шагом и которые пользователь может',
-  'одобрить одной кнопкой («Создать PR», «Задеплоить», «Запустить тест на staging»,',
-  '«Вариант Б: переписать на воркер»). Если ответ — план из нескольких шагов, это ОДНО действие',
-  'с ярлыком, называющим суть плана («Сделать шаги 1–3: …»), а не кнопка на каждый шаг.',
-  'Если ответ предлагает выбор из альтернатив — по кнопке на альтернативу.',
-  'НЕ действия: итог уже сделанного, факты, вопрос без предложения, общие фразы',
-  '(«продолжить», «обсудить», «уточнить»), служебные /команды и управление чеклистом.',
-  `Максимум ${MAX_ACTIONS}. Ярлык — повелительное, 2-5 слов, по-русски, без номеров и эмодзи.`,
-  'Для каждого действия дай quote — ДОСЛОВНЫЙ фрагмент ответа (5-15 слов), где оно предложено.',
+  'Ты читаешь финальный ответ ассистента пользователю. Если ассистент предлагает следующие',
+  'шаги или выбор — верни их списком.',
+  `Каждый ярлык — КРАТКАЯ формулировка шага, до ${MAX_LABEL} символов, по-русски, своими словами;`,
+  'не копируй дословно фразы ответа.',
+  'Если ответ — план из нескольких шагов, это ОДНО действие с ярлыком про суть плана.',
+  'Если ответ предлагает выбор из альтернатив — по ярлыку на каждую альтернативу.',
+  'НЕ действия: итог уже сделанного, факты, вопрос без предложения, общие фразы,',
+  'служебные /команды и управление чеклистом.',
+  'Для каждого действия дай quote — ДОСЛОВНЫЙ фрагмент ответа (5-15 слов), где оно предложено:',
+  'кнопка ставится только на реально предложенный шаг.',
   'Ответь СТРОГО JSON: {"kind":"plan"|"menu"|"actions"|"none","actions":[{"label":"…","quote":"…"}]}.',
   'Сомневаешься → {"kind":"none","actions":[]}.',
 ].join(' ');
@@ -76,21 +93,25 @@ function validateActions(obj, text) {
   const seen = new Set();
   const actions = [];
   for (const a of obj.actions) {
-    const label = String(a?.label || '').replace(/^[\d.)\s]+/, '').replace(/[«»"]/g, '').trim();
-    const quote = norm(a?.quote);
-    if (!label || label.length > MAX_LABEL * 2) continue;
-    if (/^\/|чеклист/i.test(label)) continue;
+    const rawLabel = String(a?.label || '').replace(/^[\d.)\s]+/, '').replace(/[«»"“”]/g, '').trim();
+    const rawQuote = String(a?.quote || '').trim();
+    if (/^\/|чеклист/i.test(rawLabel)) continue;
     // Grounding: the quote (or, if the model trimmed it, most of its words) must be in the text.
+    const quote = norm(rawQuote);
     if (!quote || quote.split(' ').length < 2) continue;
     if (!hay.includes(quote)) {
       const words = quote.split(' ').filter(w => w.length > 3);
       const hit = words.filter(w => hay.includes(w)).length;
       if (!words.length || hit / words.length < 0.8) continue;
     }
+    // The action must be grounded (quote in the text) — that is the «never invent a button»
+    // invariant. The label itself is free wording (short formulation), see header.
+    const label = cutWords(rawLabel, MAX_LABEL);
+    if (!label) continue;
     const k = norm(label);
     if (seen.has(k)) continue;
     seen.add(k);
-    actions.push({ label: label.slice(0, MAX_LABEL), quote: a.quote });
+    actions.push({ label, quote: a.quote });
     if (actions.length >= MAX_ACTIONS) break;
   }
   return actions.length ? { kind, actions } : { kind: 'none', actions: [] };
@@ -159,4 +180,4 @@ async function paragraphize(text, apiKey, { timeoutMs = 12000 } = {}) {
   }
 }
 
-module.exports = { extractAnswerActions, validateActions, actionsMarkup, paragraphize, isWallOfText, coverage };
+module.exports = { extractAnswerActions, validateActions, actionsMarkup, paragraphize, isWallOfText, coverage, ACTIONS_SYSTEM };

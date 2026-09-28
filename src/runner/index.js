@@ -1353,7 +1353,7 @@ async function updateContextPin(token, chatId, workDir, card, botPinnedMsgId = n
   let entry = store.chats[key] || null;
   const save = (next) => {
     store.chats[key] = next;
-    fs.writeFileSync(pinFile, JSON.stringify(store));
+    atomicJson(pinFile, store);
   };
 
   // Seed from bot's authoritative pinned message when this chat has no local state.
@@ -1521,8 +1521,11 @@ async function detectMenuInAnswer(text, apiKey, { timeoutMs = 10000 } = {}) {
     'НЕ меню: единая последовательность шагов одного плана, вопрос да/нет,',
     'список фактов без выбора, один рекомендованный вариант без альтернатив.',
     'Служебные команды /command и управление чеклистом НЕ являются меню вариантов.',
-    'Если это меню — верни короткие ярлыки (2-4 слова, БЕЗ номеров и слова "вариант"),',
-    'по одному на альтернативу, в порядке появления в тексте.',
+    // Ярлык — краткая формулировка альтернативы (≤40 символов), как и в answer-actions:
+    // дословное копирование фраз ответа на кнопках читается жёстко (решение владельца
+    // 2026-09-28); тап шлёт только номер, сессия читает свой же ответ — ярлык display-only.
+    'Если это меню — верни для каждой альтернативы краткий ярлык (до 40 символов, по-русски,',
+    'своими словами), в порядке появления в тексте.',
     'Ответь СТРОГО JSON: {"menu": true, "labels": ["...", "..."]} или {"menu": false}.',
     'Сомневаешься → menu:false.',
   ].join(' ');
@@ -1831,7 +1834,15 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   //     (created if missing). Never asks; the result becomes the chat's current project.
   let boundProjectId = null;
   let pinProject = false; // explicit user choice → becomes the chat's pinned project (#1312)
-  try {
+  // A durable plan step (#1752 P0-a) runs in its PLAN's project, exactly: cwd = that
+  // folder (where its file checks look), without touching the chat's current/pinned
+  // project — a background step must never move the user's chat to another project.
+  const durableProjectDir = resumeSink && resumeSink.kind === 'durable' && projectId
+    ? projects.resolveProjectDir(user.workDir, projectId) : null;
+  if (durableProjectDir) {
+    boundProjectId = projectId;
+    user.cwd = durableProjectDir;
+  } else try {
     const continuing = !!(sessionExists && activeSessionId);
     const s = continuing ? sessions.getSession(user.workDir, activeSessionId) : null;
     const r = projects.resolveRunProject(user.workDir, {

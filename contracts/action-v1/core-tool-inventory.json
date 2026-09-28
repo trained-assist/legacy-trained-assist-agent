@@ -15,7 +15,8 @@
     "22-connect.js",
     "22-ru-browser.js",
     "23-credentials-form.js",
-    "84-artifacts.js"
+    "84-artifacts.js",
+    "99c-search-searxng.js"
   ],
   "mixed": [
     "04-cron.js",
@@ -31,6 +32,7 @@
     "95-illustrate.js",
     "95-video-analysis.js",
     "96-label.js",
-    "97-publish.js"
+    "97-publish.js",
+    "97b-site-deploy.js"
   ]
 }

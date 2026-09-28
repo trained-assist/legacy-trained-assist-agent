@@ -25,6 +25,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { atomicJson } = require('./atomic-json');
 
 const STORE_FILE = 'gtd-orphans.json';
 const REMIND_AFTER_MS = 30 * 60 * 1000;
@@ -47,7 +48,7 @@ function loadStore(workDir) {
 function saveStore(workDir, store) {
   try {
     fs.mkdirSync(workDir, { recursive: true });
-    gtd()._atomicWrite(storePath(workDir), JSON.stringify(store, null, 2));
+    atomicJson(storePath(workDir), store, { space: 2 });
     return true;
   } catch (e) { console.error('[orphan-checklists] save:', e.message); return false; }
 }

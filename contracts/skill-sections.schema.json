@@ -1,0 +1,124 @@
+{
+  "$id": "urn:trained-assist:skill-sections:v1",
+  "title": "Domain skill-section manifest (config/skill-sections.json in a sibling repo)",
+  "description": "What a domain repo contributes to core's skill catalog (#1753). Core owns section ids, the tree, 'always' and servers/audienceDefaults; the domain owns the payload of its own server only. Contract: docs/domain-section-manifest.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "server",
+    "sections"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "server": {
+      "$ref": "#/$defs/serverId"
+    },
+    "sections": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/sectionId"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/section"
+      }
+    }
+  },
+  "$defs": {
+    "serverId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "sectionId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)*$"
+    },
+    "module": {
+      "description": "File name in the sibling's src/mcp-skills/tools/, without server prefix — the manifest only ever describes its own server.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*\\.js$"
+    },
+    "promptDomain": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*(\\.[a-z0-9_-]+)*$"
+    },
+    "toolName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "section": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mount": {
+          "description": "Mount the whole server when the section is enabled (core catalog 'siblings'): modules of this server that no section lists are exposed too, per the server's own readiness.",
+          "type": "boolean"
+        },
+        "modules": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/module"
+          }
+        },
+        "promptDomains": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/promptDomain"
+          }
+        },
+        "pinned": {
+          "description": "Tools of this server always listed when the section is enabled.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/toolName"
+          }
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "modules"
+          ],
+          "properties": {
+            "modules": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "promptDomains"
+          ],
+          "properties": {
+            "promptDomains": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "mount"
+          ],
+          "properties": {
+            "mount": {
+              "const": true
+            }
+          }
+        }
+      ]
+    }
+  }
+}

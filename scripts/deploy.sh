@@ -36,6 +36,7 @@ ENGINEERING_DIR="${ENGINEERING_DIR:-$AGENT_HOME/trained-assist-engineering}"
 FREELANCE_SKILL_DIR="${FREELANCE_SKILL_DIR:-$AGENT_HOME/trained-assist-freelance-skill}"
 SALES_SKILL_DIR="${SALES_SKILL_DIR:-$AGENT_HOME/trained-assist-sales-skill}"
 DOCUMENTS_SKILL_DIR="${DOCUMENTS_SKILL_DIR:-$AGENT_HOME/trained-assist-documents-skill}"
+SPEECH_SKILL_DIR="${SPEECH_SKILL_DIR:-$AGENT_HOME/trained-assist-speech-skill}"
 export REPO_DIR RELEASES_DIR CURRENT_LINK SERVICE
 
 if [ "${ASSIST_DEPLOY_LOCKED:-}" != 1 ]; then
@@ -148,6 +149,7 @@ ensure_sibling trained-assist-engineering "$ENGINEERING_DIR"
 ensure_sibling trained-assist-freelance-skill "$FREELANCE_SKILL_DIR"
 ensure_sibling trained-assist-sales-skill "$SALES_SKILL_DIR"
 ensure_sibling trained-assist-documents-skill "$DOCUMENTS_SKILL_DIR"
+ensure_sibling trained-assist-speech-skill "$SPEECH_SKILL_DIR"
 
 # Core no longer ships the gdrive/doc-export/deck tools (#1470) — they live only in
 # trained-assist-documents-skill. `ensure_sibling` warns and continues on a failed clone,
@@ -156,6 +158,14 @@ ensure_sibling trained-assist-documents-skill "$DOCUMENTS_SKILL_DIR"
 # release is activated: exiting here leaves the previous release serving, no rollback.
 if [ ! -f "$RELEASES_DIR/trained-assist-documents-skill/src/mcp-skills/index.js" ]; then
   echo "❌ trained-assist-documents-skill checkout is missing — refusing to deploy (gdrive/doc-export/deck would vanish)" >&2
+  exit 1
+fi
+
+# Same reasoning for speech: after the Ф0 extraction core no longer owns a Deepgram
+# engine, so a missing checkout would silently break every video_analyze_batch. Exit
+# before the release is activated → the previous release keeps serving.
+if [ ! -f "$RELEASES_DIR/trained-assist-speech-skill/src/mcp-skills/index.js" ]; then
+  echo "❌ trained-assist-speech-skill checkout is missing — refusing to deploy (video_analyze_batch would lose recognition)" >&2
   exit 1
 fi
 

@@ -24,37 +24,54 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const https = require('https');
 const { spawn } = require('child_process');
 
 const USER_ID = process.env.USER_ID || '';
 
-function tokenBase() {
-  return process.env.AGENT_TOKENS_DIR || path.join(os.homedir(), 'agent-tokens');
+// ── Распознавание речи — в trained-assist-speech-skill (Ф0) ───────────────────
+// Ядро больше НЕ знает, КАК распознаёт: движок распознавания и хранение ключа
+// вынесены в sibling-репозиторий, здесь остаётся только обвязка (ffmpeg -vn, ledger
+// идемпотентности, чейн в interview_analyze). Резолв, как у hh: лениво, при вызове —
+// отсутствующий checkout валит только шаг распознавания типизированной ошибкой,
+// а не весь MCP-сервер.
+const SPEECH_TOOL_MODULE = 'src/mcp-skills/tools/10-speech.js';
+const SPEECH_UNAVAILABLE = {
+  error: 'speech_skill_unavailable',
+  hint: 'Sibling trained-assist-speech-skill не подключён на хосте (scripts/deploy.sh ensure_sibling) — ' +
+    'распознавание речи недоступно.',
+};
+
+function speechTools() {
+  const { presentSiblings } = require('../../skill-siblings');
+  if (!presentSiblings().some(s => s.id === 'speech')) return null;
+  try {
+    const tools = require('../../domains/sibling-lib').siblingLib('speech', SPEECH_TOOL_MODULE).tools;
+    return tools && tools.speech_transcribe && tools.speech_status && tools.speech_set_key ? tools : null;
+  } catch {
+    return null;
+  }
 }
 
-// Постоянное хранилище ключа Deepgram (переживает сессии), по одному на юзера.
-function keyDir() {
-  const dir = path.join(tokenBase(), USER_ID, 'deepgram');
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-const KEY_FILE = () => path.join(keyDir(), 'key.txt');
-
-function loadDeepgramKey() {
-  if (process.env.DEEPGRAM_KEY) return process.env.DEEPGRAM_KEY.trim();
-  try { return fs.readFileSync(KEY_FILE(), 'utf-8').trim(); } catch { return ''; }
+async function speechKeyPresent() {
+  const tools = speechTools();
+  if (!tools) return { present: false, available: false };
+  try {
+    const s = await tools.speech_status.handler({});
+    return { present: !!(s && s.key_present), available: true };
+  } catch {
+    return { present: false, available: true };
+  }
 }
 
 // Видимая пользователю рабочая директория (~/users/<USER_ID>). Пишем сюда, а не в
 // служебную agent-data — иначе транскрипты «пропадают» в невидимой юзеру папке
 // (ровно тот баг, что ловили: инструмент отчитывался «получил транскрипты», но их
-// не было там, где юзер их ждал).
+// не было там, где юзер их ждал). Корень — только через data-paths (USERS_DIR),
+// тут раньше был неверный env AGENT_USERS_DIR (#1735 step 1).
 function userWorkspace() {
-  const usersRoot = process.env.AGENT_USERS_DIR || path.join(os.homedir(), 'users');
   if (USER_ID) {
-    const ws = path.join(usersRoot, USER_ID);
+    const ws = require('../../data-paths').userWorkDir(USER_ID);
     try { if (fs.existsSync(ws)) return ws; } catch { /* ignore */ }
   }
   return '';
@@ -200,47 +217,10 @@ function extractAudio(input, outPath) {
   });
 }
 
-// ── Deepgram (pre-recorded) ──────────────────────────────────────────────────
-
-function deepgramTranscribe(key, audioBuf, language) {
-  return new Promise((resolve, reject) => {
-    const qs = new URLSearchParams({
-      model: 'nova-2',
-      smart_format: 'true',
-      punctuate: 'true',
-      paragraphs: 'true',
-    });
-    if (language && language !== 'auto') qs.set('language', language);
-    else qs.set('detect_language', 'true');
-    const req = https.request({
-      hostname: 'api.deepgram.com',
-      path: `/v1/listen?${qs.toString()}`,
-      method: 'POST',
-      headers: {
-        Authorization: `Token ${key}`,
-        'Content-Type': 'audio/ogg',
-        'Content-Length': audioBuf.length,
-      },
-      timeout: 300000,
-    }, (res) => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        try {
-          const d = JSON.parse(data);
-          const alt = d?.results?.channels?.[0]?.alternatives?.[0];
-          const text = String(alt?.paragraphs?.transcript || alt?.transcript || '').trim();
-          if (!text) return reject(new Error('Deepgram вернул пустой транскрипт (тишина/не распознано) — не кэшируем, повтор перепробует'));
-          resolve(text);
-        } catch { reject(new Error(`Deepgram parse error: ${data.slice(0, 300)}`)); }
-      });
-    });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('Deepgram timeout')); });
-    req.write(audioBuf);
-    req.end();
-  });
-}
+// ── Speech ────────────────────────────────────────────────────────────────────
+// Распознавание делает trained-assist-speech-skill: speech_transcribe читает сам файл,
+// поэтому сюда пробрасывается ПУТЬ к аудио, а не буфер. Здесь этот блок оставлен
+// как единственный мост — сам движок (HTTP к Deepgram, ретраи, выбор модели) живёт в скиле.
 
 // Тот же движок разбора, что и для готовых транскриптов — не переизобретаем.
 // interview_analyze lives in trained-assist-hh-skill (#1470); resolved lazily through the
@@ -279,9 +259,11 @@ module.exports = {
         required: ['key'],
       },
       handler: async ({ key }) => {
-        if (!key || !key.trim()) throw new Error('key пустой');
-        fs.writeFileSync(KEY_FILE(), key.trim(), 'utf-8');
-        return { saved: true, path: KEY_FILE(), hint: 'Ключ сохранён. Теперь video_analyze_batch может расшифровывать.' };
+        // Легаси-алиас (T6): имя осмысленно только с video_analyze_batch, поэтому оно
+        // живёт здесь, но делает ровно то же, что speech_set_key, — и пишет тот же файл.
+        const tools = speechTools();
+        if (!tools) return SPEECH_UNAVAILABLE;
+        return tools.speech_set_key.handler({ key });
       },
     },
 
@@ -294,6 +276,7 @@ module.exports = {
         'контексту (пустая папка audio/ = норма, аудио чистится после расшифровки, это НЕ «работа потеряна»).',
       inputSchema: { type: 'object', properties: { out_dir: { type: 'string', description: 'Опц.: та же папка, что передавалась в video_analyze_batch (для проверки конкретного каталога).' } } },
       handler: async ({ out_dir } = {}) => {
+        const keyState = await speechKeyPresent();
         const dir = workDir(out_dir);
         const tdir = path.join(dir, 'transcripts');
         const adir = path.join(dir, 'analysis');
@@ -354,7 +337,7 @@ module.exports = {
         parts.push('Папка audio/ пустая — это норма (аудио удаляется после расшифровки), НЕ признак потери работы.');
 
         return {
-          deepgram_key_set: !!loadDeepgramKey(),
+          deepgram_key_set: keyState.present,
           ffmpeg: true,
           complete,
           expected_total: expected.length,
@@ -371,7 +354,8 @@ module.exports = {
           note: 'Это состояние прочитано С ДИСКА. Отчитывайся пользователю по нему, не по своей памяти. ' +
             'Пустая audio/ — норма (аудио чистится после расшифровки), не «потеря работы».' +
             (ledgerSlugs.length ? '' : ' Леджер пачки отсутствует (эти файлы могли быть сделаны прежним пайплайном) — expected_total выведен из файлов на диске.'),
-          hint: loadDeepgramKey() ? undefined : 'Ключ Deepgram не задан — вызови video_set_deepgram_key(key).',
+          hint: !keyState.available ? SPEECH_UNAVAILABLE.hint
+            : keyState.present ? undefined : 'Ключ Deepgram не задан — вызови video_set_deepgram_key(key).',
         };
       },
     },
@@ -403,8 +387,10 @@ module.exports = {
         required: ['videos'],
       },
       handler: async ({ videos, criteria, language, model, max_items, out_dir, transcribe_only, force }) => {
-        const key = loadDeepgramKey();
-        if (!key) {
+        const tools = speechTools();
+        if (!tools) return SPEECH_UNAVAILABLE;
+        const keyState = await speechKeyPresent();
+        if (!keyState.present) {
           return {
             error: 'deepgram_key_missing',
             hint: 'Ключ Deepgram не задан. Вызови video_set_deepgram_key(key) и повтори.',
@@ -440,9 +426,13 @@ module.exports = {
               const src = await resolveSource(item.source);
               const audioPath = path.join(dir, 'audio', `${slug}.ogg`);
               await extractAudio(src, audioPath);
-              const audioBuf = fs.readFileSync(audioPath);
-              r.audio_bytes = audioBuf.length;
-              transcript = await deepgramTranscribe(key, audioBuf, language || 'ru');
+              try { r.audio_bytes = fs.statSync(audioPath).size; } catch { /* буфер больше не нужен */ }
+              // Делегирование: скил читает файл сам, нам нужен только текст.
+              const tr = await tools.speech_transcribe.handler({ source: audioPath, language: language || 'ru' });
+              if (!tr || typeof tr !== 'object' || tr.error) {
+                throw new Error(`speech: ${tr && tr.error ? tr.error : 'нет ответа'}${tr && tr.hint ? ` — ${tr.hint}` : ''}`);
+              }
+              transcript = String(tr.text || '');
               fs.writeFileSync(txtPath, transcript, 'utf-8');
               fs.unlinkSync(audioPath); // аудио — промежуточное, чистим
               r.transcribed = 'ok';

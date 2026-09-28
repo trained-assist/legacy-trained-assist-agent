@@ -18,6 +18,25 @@ const { suggestPlaybookForAudience } = require('../../audience-default-playbook'
 
 const authoring = createPlaybookAuthoring();
 
+let _batchStore = null;
+function batchStore() {
+  if (!_batchStore) {
+    const { DurableTaskStore } = require('../../durable-task-store');
+    _batchStore = new DurableTaskStore(require('../../data-paths').durableTaskDbPath());
+  }
+  return _batchStore;
+}
+
+// What the last run of this profile actually resolved (src/skills/shadow.js writes it with real
+// probed readiness). Missing/unreadable → null: playbook_health then computes from skills.json.
+function readResolvedSkills(profileId) {
+  try {
+    const { userWorkDir } = require('../../data-paths');
+    const rec = JSON.parse(require('fs').readFileSync(require('path').join(userWorkDir(profileId), '.skills-resolved.json'), 'utf8'));
+    return rec && rec.resolved && Array.isArray(rec.resolved.modules) ? rec : null;
+  } catch { return null; }
+}
+
 // Authoring rejects a missing profile loudly; playbook_run must do the same so
 // an unscoped call can never resolve a different profile's playbooks.
 function requireUser(ctx) {
@@ -69,6 +88,36 @@ module.exports = {
         const store = new PlaybookStore({ profileId: ctx?.userId });
         return suggestPlaybookForAudience(audience, { store });
       },
+    },
+
+    playbook_health: {
+      description:
+        'Check whether a playbook actually reaches THIS profile («доехал ли плейбук»): file resolves and compiles, ' +
+        'the agent has a route to it from a plain request (prompt-domain playbook_run pointer / audience map / ' +
+        'dev auto-offer / launcher), its declared requires {sections, tools} exist, and those sections/tools are ' +
+        'enabled for the caller profile in this run. Omit id to check every visible playbook. Read-only, offline, ' +
+        'no LLM. Use it to answer "а у меня этот плейбук виден?" or before promising a playbook to the user.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Playbook id; omit to check all playbooks visible to the profile' },
+          audience: { type: 'string', description: 'Also check that the id is the default for this audience' },
+        },
+      },
+      handler: safe(async ({ id, audience } = {}, ctx) => {
+        const profileId = requireUser(ctx);
+        const { checkPlaybookReachability } = require('../../playbook-reachability');
+        const resolved = readResolvedSkills(profileId);
+        const ids = id ? [id] : new PlaybookStore({ profileId }).list().playbooks.map(p => p.id);
+        const reports = ids.map(pid => checkPlaybookReachability(pid, {
+          profileId, audience, ...(resolved ? { resolved: resolved.resolved } : {}),
+        }));
+        return {
+          ok: reports.every(r => r.ok),
+          exposure_source: resolved ? `.skills-resolved.json (${resolved.at})` : 'computed from skills.json (no run record yet)',
+          reports: reports.map(r => ({ id: r.id, ok: r.ok, rows: r.rows })),
+        };
+      }),
     },
 
     playbook_get: {
@@ -227,6 +276,108 @@ module.exports = {
           summary: { stages: playbook.stages.length, items: compiled.items.length },
           render: renderPlaybook(playbook, { ...(vars || {}), input: goal, goal }),
         };
+      }),
+    },
+
+    // ── Meta-playbooks: batch / fanout (#1752) ──────────────────────────────
+    playbook_run_batch: {
+      description:
+        'Run ONE playbook over N elements as a batch («вот 5 выставок — прогони все»): one durable parent plan with a ' +
+        'fanout step spawns every element as its own child plan (playbook_run of playbook_id, own project per element), ' +
+        'watches them on the durable tick, and on every finished/failed/stuck child asks a cheap supervisor model to pick ' +
+        'one action (continue / retry the failed step / skip element / pause the whole batch on a systemic failure / ' +
+        'escalate to the owner). No concurrency cap: children fire into free host slots. The owner chat gets one line per ' +
+        'finished element, every pause/escalation and a final summary. Call it once the user agreed to run the batch — it ' +
+        'starts immediately. Track with playbook_batch_status, steer with playbook_batch_control.',
+      inputSchema: {
+        type: 'object',
+        required: ['playbook_id', 'items'],
+        properties: {
+          playbook_id: { type: 'string', description: 'Child playbook, e.g. "exhibition-catalog-to-sales-site"' },
+          items: {
+            type: 'array', minItems: 1,
+            items: {
+              anyOf: [
+                { type: 'string', description: 'Goal of the element (e.g. the exhibition URL)' },
+                { type: 'object', required: ['goal'], properties: {
+                  goal: { type: 'string' }, name: { type: 'string', description: 'Human name — also the element project name' },
+                  key: { type: 'string', description: 'Stable id inside the batch' }, vars: { type: 'object' } } },
+              ],
+            },
+          },
+          title: { type: 'string', description: 'Batch title for notifications' },
+          skip_stages: { type: 'array', items: { type: 'string' }, description: 'Child playbook stage ids NOT run inside the batch (e.g. live at-stand work)' },
+          exclusive_stages: { type: 'array', items: { type: 'string' }, description: 'Stages that touch a shared external resource: only one child at a time inside such a stage' },
+          project_type: { type: 'string', description: 'Project type for each element project (e.g. "expo"); default generic' },
+          project_mode: { type: 'string', enum: ['per_item', 'parent'], description: 'per_item (default): own project per element' },
+          concurrency: { type: 'integer', minimum: 1, description: 'Optional cap on elements in flight. Omit = no cap (host slots decide)' },
+          max_child_retries: { type: 'integer', minimum: 0, description: 'Supervisor retries per element (default 1)' },
+          project_id: { type: 'string', description: 'Project the batch (parent plan) belongs to' },
+          session_id: { type: 'string', description: 'Current session id (AGENT_SESSION_ID) — its chat receives batch notifications' },
+        },
+      },
+      handler: safe(async (args, ctx) => {
+        const profileId = requireUser(ctx);
+        const playbook = new PlaybookStore({ profileId }).get(args.playbook_id);
+        if (!playbook) throw playbookError('PLAYBOOK_NOT_FOUND', `плейбук «${args.playbook_id}» не найден`);
+        const fanout = require('../../playbook-fanout');
+        const elements = fanout.normalizeElements(args.items);
+        // Fail fast: every element must compile before anything is spawned.
+        for (const el of elements) compilePlaybook(playbook, { goal: el.goal, vars: el.vars || {} });
+        const { userWorkDir } = require('../../data-paths');
+        const projects = require('../../projects');
+        if (args.project_id && !projects.getProject(userWorkDir(profileId), args.project_id)) {
+          throw playbookError('PROJECT_NOT_FOUND', `проект «${args.project_id}» не найден`);
+        }
+        let owner = null;
+        const sid = args.session_id || process.env.AGENT_SESSION_ID || null;
+        if (sid) {
+          const sess = require('../../session-store').getSession(userWorkDir(profileId), sid);
+          const chatId = sess ? (sess.liveChatId ?? sess.ownerChatId) : null;
+          if (chatId != null) owner = { chatId, audience: sess.audience || 'default', threadId: sess.threadId || null };
+        }
+        const res = fanout.createBatch(batchStore(), {
+          profileId, playbook, elements, title: args.title || null, projectId: args.project_id || null, owner,
+          skipStages: args.skip_stages || [], exclusiveStages: args.exclusive_stages || [],
+          projectType: args.project_type || 'generic', projectMode: args.project_mode || 'per_item',
+          concurrency: args.concurrency ?? null,
+          maxChildRetries: Number.isInteger(args.max_child_retries) ? args.max_child_retries : undefined,
+        });
+        return {
+          batch_task_id: res.task.id, status: res.task.status, title: res.state.config.title,
+          elements: res.state.elements.map(e => ({ key: e.key, name: e.name, goal: e.goal, status: e.status })),
+          notifications_to: owner ? 'launching chat' : 'profile owner chat',
+          note: 'Пачка активна: элементы стартуют на ближайшем тике движка (≤5 мин), дальше шаги идут сразу друг за другом.',
+        };
+      }),
+    },
+
+    playbook_batch_status: {
+      description: 'Status of a batch started by playbook_run_batch: every element with its child plan, progress (steps done/total), current or failed step, supervisor journal. Read-only.',
+      inputSchema: { type: 'object', required: ['batch_task_id'], properties: { batch_task_id: { type: 'string' } } },
+      handler: safe(async ({ batch_task_id }, ctx) => {
+        const profileId = requireUser(ctx);
+        return require('../../playbook-fanout').batchStatus(batchStore(), batch_task_id, profileId);
+      }),
+    },
+
+    playbook_batch_control: {
+      description: 'Steer a batch: action=resume (the systemic cause is fixed or the owner answered: un-pauses every element and wakes every step waiting for the owner with `message`), retry (re-run the failed step of element `key`), skip (drop element `key` with a reason), add (one more element: goal + optional name, spawned on the next tick).',
+      inputSchema: {
+        type: 'object', required: ['batch_task_id', 'action'],
+        properties: {
+          batch_task_id: { type: 'string' },
+          action: { type: 'string', enum: ['resume', 'retry', 'skip', 'add'] },
+          key: { type: 'string', description: 'Element key (for retry/skip)' },
+          reason: { type: 'string' },
+          goal: { type: 'string', description: 'Goal of the element to add (action=add)' },
+          name: { type: 'string', description: 'Name of the element to add (action=add)' },
+          message: { type: 'string', description: 'Owner answer handed to every woken element (action=resume)' },
+        },
+      },
+      handler: safe(async ({ batch_task_id, action, key, reason, goal, name, message }, ctx) => {
+        const profileId = requireUser(ctx);
+        return require('../../playbook-fanout').controlBatch(batchStore(), batch_task_id, profileId, { action, key, reason, goal, name, message });
       }),
     },
 

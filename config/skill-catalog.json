@@ -7,7 +7,8 @@
     "freelance-skills": { "kind": "sibling", "repo": "trained-assist-freelance-skill" },
     "engineering-skills": { "kind": "sibling", "repo": "trained-assist-engineering" },
     "sales-skills": { "kind": "sibling", "repo": "trained-assist-sales-skill" },
-    "documents-skills": { "kind": "sibling", "repo": "trained-assist-documents-skill" }
+    "documents-skills": { "kind": "sibling", "repo": "trained-assist-documents-skill" },
+    "speech-skills": { "kind": "sibling", "repo": "trained-assist-speech-skill" }
   },
   "audienceDefaults": {
     "recruiter": { "enabled": ["recruiting"] }
@@ -20,7 +21,7 @@
         "00-meta.js", "01-session-history.js", "02-chat-history.js", "03-context-store.js",
         "04-cron.js", "05-session.js", "06-reproject.js", "21-browser-session.js",
         "22-connect.js", "22-ru-browser.js", "23-credentials-form.js", "84-artifacts.js",
-        "94-tg-send.js", "97-publish.js", "100-hermes.js", "101-durable-tasks.js", "102-playbooks.js",
+        "94-tg-send.js", "97-publish.js", "97b-site-deploy.js", "99c-search-searxng.js", "100-hermes.js", "101-durable-tasks.js", "102-playbooks.js",
         "103-content-rewrite.js"
       ],
       "promptDomains": ["cron"]
@@ -37,6 +38,7 @@
     },
     "recruiting/interview": {
       "title": "Интервью и видео",
+      "siblings": ["speech-skills"],
       "modules": ["hh-skills/99-interview-analysis.js", "95-video-analysis.js"]
     },
     "recruiting/company": {

@@ -1,5 +1,7 @@
 const fs = require('fs');
 const path = require('path');
+const { listProfiles, writeMode } = require('./data-paths');
+const { atomicJson } = require('./atomic-json');
 const TTL_MS = 48 * 60 * 60 * 1000;
 
 function releaseIntakeRefs(baseDir, username, ids, extra = {}, now = Date.now()) {
@@ -11,9 +13,7 @@ function releaseIntakeRefs(baseDir, username, ids, extra = {}, now = Date.now())
     try {
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
       const next = { ...meta, ...extra, buffered: false, releasedAt: now };
-      const tmp = `${metaPath}.${process.pid}.${now}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(next), { mode: 0o600 });
-      fs.renameSync(tmp, metaPath);
+      atomicJson(metaPath, next, writeMode(0o600));
       released++;
     } catch (e) {
       if (e.code === 'ENOENT') missing++;
@@ -45,9 +45,8 @@ function purgeIntakeMedia(baseDir, now = Date.now()) {
   } catch (e) { if (e.code !== 'ENOENT') return 0; }
   // restart-intents.sqlite removed in simplification — SQLite intent retention no longer needed
 
-  for (const profile of fs.readdirSync(baseDir, { withFileTypes: true })) {
-    if (!profile.isDirectory()) continue;
-    const dir = path.join(baseDir, profile.name, 'media', 'intake');
+  for (const profileName of listProfiles(baseDir)) {
+    const dir = path.join(baseDir, profileName, 'media', 'intake');
     try {
       // Do not follow a profile's symlink into an unrelated directory.
       if (fs.lstatSync(path.dirname(dir)).isSymbolicLink() || !fs.lstatSync(dir).isDirectory() || fs.lstatSync(dir).isSymbolicLink()) continue;
@@ -62,7 +61,7 @@ function purgeIntakeMedia(baseDir, now = Date.now()) {
     // preserves unseen gateway retries (buffered=true / no releasedAt) forever,
     // while web/gateway flows that have durably accepted + materialized the ref
     // can retire their original after the same 48h safety window.
-    const store = path.join(baseDir, profile.name, 'media', 'intake-store');
+    const store = path.join(baseDir, profileName, 'media', 'intake-store');
     try {
       if (!fs.existsSync(store) || fs.lstatSync(store).isSymbolicLink() || !fs.lstatSync(store).isDirectory()) continue;
       for (const entry of fs.readdirSync(store, { withFileTypes: true })) {

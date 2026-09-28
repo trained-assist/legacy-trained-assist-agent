@@ -77,7 +77,8 @@ function truncate(s, n) {
 /** Normalize one opencode `part` into a display-friendly event. */
 function normalizePart(data) {
   if (!data || typeof data !== 'object') return null;
-  const ev = { kind: data.type, at: data.time?.created || data.time?.start || null };
+  // Tool parts carry their time in state.time.start, not in a top-level `time`.
+  const ev = { kind: data.type, at: data.time?.created || data.time?.start || data.state?.time?.start || null };
   switch (data.type) {
     case 'reasoning':
       ev.text = truncate(data.text || '', MAX_REASONING);

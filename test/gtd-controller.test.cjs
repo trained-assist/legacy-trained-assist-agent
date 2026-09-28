@@ -431,9 +431,9 @@ function ok(c, m) { c ? (pass++) : (fail++, console.log('FAIL:', m)); }
   ok(backoff.status === 'open' && backoff.dueAt >= beforeReal + 30 * 60 * 1000 - 5000,
     `backoff: next dueAt measured from completion time, not stale fire-now (got ${backoff.dueAt}, expected >= ${beforeReal + 30 * 60 * 1000 - 5000})`);
 
-  // 23. Atomic write survives + cleans up: _atomicWrite leaves no leftover .tmp file
-  // and writes complete valid JSON (fsync'd tmp → rename). listGtd must ignore any
-  // tmp artifacts and only surface the real record.
+  // 23. Atomic write survives + cleans up: writeGtd (via atomic-json/atomicText)
+  // leaves no leftover .tmp file and writes complete valid JSON (fsync'd tmp →
+  // rename). listGtd must ignore any tmp artifacts and only surface the real record.
   const wd15 = fs.mkdtempSync(path.join(os.tmpdir(), 'gtd15-'));
   const gtdSub15 = path.join(wd15, 'gtd');
   fs.mkdirSync(gtdSub15, { recursive: true });

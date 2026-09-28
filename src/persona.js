@@ -5,6 +5,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const { writeMode } = require('./data-paths');
+const { atomicText } = require('./atomic-json');
 
 const FILE = 'persona.md';
 const MAX_LEN = 8000; // guard against pasting a whole book into the system prompt
@@ -39,7 +41,7 @@ function load(workDir) {
 function save(workDir, text) {
   fs.mkdirSync(workDir, { recursive: true });
   const clean = String(text).trim().slice(0, MAX_LEN);
-  fs.writeFileSync(personaPath(workDir), clean + '\n', { mode: 0o600 });
+  atomicText(personaPath(workDir), clean + '\n', writeMode(0o600));
   return clean;
 }
 
@@ -72,7 +74,7 @@ function buildSystemPromptFile(workDir, basePromptFile, audience = 'default') {
       `\n\n# РОЛЬ И ЛИЧНОСТЬ АССИСТЕНТА (${source})\n` +
       text + '\n';
     const out = path.join(workDir, '.system-prompt.txt');
-    fs.writeFileSync(out, merged, { mode: 0o660 }); // group = the run's slot (issue #1649)
+    atomicText(out, merged, writeMode(0o660)); // group = the run's slot (issue #1649)
     return out;
   } catch (e) {
     console.warn('[persona] merge failed:', e.message);

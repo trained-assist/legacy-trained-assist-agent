@@ -8,6 +8,7 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const { validateItem, declaredValidations, criterionIdForItem } = require('./durable-task-plan');
+const { atomicText } = require('./atomic-json');
 
 const TASK_STATUSES = ['draft', 'paused', 'blocked', 'active', 'done', 'failed', 'cancelled'];
 const ITEM_STATUSES = ['pending', 'running', 'waiting', 'done', 'failed', 'skipped'];
@@ -595,7 +596,7 @@ class DurableTaskStore {
       JOIN durable_tasks t ON t.id = i.task_id
       WHERE t.profile_id = ? AND t.status = 'active' AND i.status = 'waiting' AND i.wait_json IS NOT NULL
       ORDER BY i.updated_at DESC LIMIT 20`).all(profileId)
-      .filter(row => { try { return JSON.parse(row.wait_json).awaiting_user === true; } catch { return false; } });
+      .filter(row => { try { const w = JSON.parse(row.wait_json); return w.awaiting_user === true && !w.woken_at; } catch { return false; } });
   }
 
   expireWaitingDeadlines(now = nowMs()) {
@@ -844,9 +845,7 @@ class DurableTaskStore {
     const dir = path.join(projectDir, '.trained-assist', 'tasks', taskId);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'checklist.md');
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, md);
-    fs.renameSync(tmp, file); // atomic-ish on same fs
+    atomicText(file, md);
     return file;
   }
 

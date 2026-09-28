@@ -40,6 +40,7 @@ const PORT = process.env.PORT || 3001;
 // Single source of truth (src/data-paths.js) — do not re-derive from HOME.
 const BASE_USERS_DIR = dataPaths.USERS_ROOT;
 const userWorkDir = dataPaths.userWorkDir;
+const workspacePath = dataPaths.workspacePath;
 
 // RU-IP edge (src/ru-edge.js, issue #1288) — thin RU-only service holding the
 // nalog.ru/ESIA Playwright login (geo-blocked outside Russia). This agent never
@@ -99,6 +100,7 @@ try { RUNTIME_REVISION = require('./release-info').getReleaseSha(); if (RUNTIME_
 const { classifyMessage, CLASSIFY_MAX_AGE_MS } = require('./classify-message');
 const { checkCompleteness } = require('./intake-gate');
 const { startShadow: startInputRouterShadow } = require('./input-router');
+const notifyProfileModule = require('./notify-profile');
 
 function readChatId(username) {
   try { return fs.readFileSync(path.join(dataPaths.TOKENS_ROOT, String(username), '.chatid'), 'utf8').trim() || null; }
@@ -214,6 +216,10 @@ const isHhPath = (pathname) => /^\/(?:(?:api\/)?hh\/|calltips-)/.test(pathname);
 // state (secrets) is added per call.
 const hhCtx = {
   readChatId,
+  // Audience-aware profile notify (#1754) — deps injected here so the module stays
+  // testable; server secrets are read at call time (loaded once in main()).
+  notifyProfile: (username, text, extra) =>
+    notifyProfileModule(username, text, { ...extra, secrets: _secretsCache || {}, readChatId, userWorkDir }),
   BASE_USERS_DIR,
   PORT,
   runMcpTool,
@@ -248,6 +254,11 @@ function scheduleGtdController(secrets) {
     return gtd.runDue({
     secrets, baseUsersDir: BASE_USERS_DIR, isTaskRunning: (_username, sessionId) => isSessionRunning(sessionId), runTask, getSession,
     canRunSession: (_username, _sessionId) => true,
+    // #1752: durable steps fire into FREE engine slots only (running + queued < cap).
+    freeSlots: () => {
+      const q = require('./runner/task-queue');
+      return q.MAX_CONCURRENT_TASKS - q._runningTasks() - q._slotWaiters.length;
+    },
   }).catch(err => console.error('[gtd] tick error:', err.message));
   };
   gtdTickNow = run;
@@ -598,6 +609,7 @@ async function main() {
         url.pathname !== '/web/project-create' &&
         url.pathname !== '/web/sessions-list' && url.pathname !== '/web/session-get' &&
         url.pathname !== '/web/session-trace' &&
+        url.pathname !== '/web/session-digest' &&
         url.pathname !== '/web/intake-file-bearer' &&
         url.pathname !== '/web/run-bearer' && url.pathname !== '/web/reply-bearer' &&
         url.pathname !== '/web/reproject-preview' && url.pathname !== '/web/reproject-adjust' &&
@@ -742,7 +754,7 @@ async function main() {
       const ifId = url.searchParams.get('id');
       if (!ifUsername || !/^[a-zA-Z0-9_-]{1,64}$/.test(ifUsername)) return json(res, 400, { error: 'invalid username' });
       if (!ifId || !/^[a-f0-9]{16,64}$/.test(ifId)) return json(res, 400, { error: 'invalid id' });
-      const storeDir = path.join(BASE_USERS_DIR, ifUsername, 'media', 'intake-store', ifId);
+      const storeDir = workspacePath(ifUsername, 'media', 'intake-store', ifId);
       if (req.method === 'PUT') {
         const rawName = url.searchParams.get('name') || 'file';
         const safeName = path.basename(rawName).replace(/[^a-zA-Z0-9._\-() ]/g, '_').slice(0, 200);
@@ -866,7 +878,7 @@ async function main() {
       const { userId, query } = payload;
       if (!userId || !query) return json(res, 400, { error: 'missing fields' });
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(userId))) return json(res, 400, { error: 'invalid userId' });
-      const workDir = path.join(BASE_USERS_DIR, String(userId));
+      const workDir = workspacePath(String(userId));
       const start = Date.now();
       const answer = getQuickAnswer(String(query), String(userId), workDir) || null;
       return json(res, 200, { answer, ms: Date.now() - start });
@@ -1169,7 +1181,7 @@ async function main() {
         return json(res, 400, { error: 'params must be an object' });
       }
 
-      const workDir = path.join(BASE_USERS_DIR, username);
+      const workDir = workspacePath(username);
       fs.mkdirSync(workDir, { recursive: true });
 
       try {

@@ -400,6 +400,16 @@ async function runEngineProcess(opts) {
       ...(engine === 'opencode' && (mcpConfig || ocProfileOverrides) ? { OPENCODE_CONFIG: writeOpencodeMcpConfig(user.workDir || os.tmpdir(), mcpConfig, ocProfileOverrides) } : {}),
       // Engine credential for the `ladder` provider (src/opencode-ladder-provider.js, #1687).
       ...(engine === 'opencode' ? ocLadderTokenEnv() : {}),
+      // OpenCode ships a built-in `websearch` tool, but registers it ONLY when the model's
+      // provider is `opencode`/`opencode-go` or one of these flags is set — never for our
+      // `openrouter`/`ladder` providers (verified in opencode 1.18.31: the registry gate is
+      // `provider===opencode || provider===opencode-go || enableExa || enableParallel`).
+      // Without this flag an opencode run has NO search at all: only `webfetch` (a URL it
+      // already knows). That is why `hermes_research` produced reports with zero URLs —
+      // its prompt promised «встроенный веб-поиск» that was never there (triage 2026-09-28).
+      // Exa's endpoint needs no API key; `OPENCODE_ENABLE_PARALLEL` stays off — the parallel
+      // provider is picked first when both are set and we have no key for it.
+      ...(engine === 'opencode' ? { OPENCODE_ENABLE_EXA: '1' } : {}),
   };
   // T0 hardening (issue #1649): with AGENT_ENV_ALLOWLIST / AGENT_RUN_AS_USERS the engine
   // gets an allowlisted env (no server secrets), MCP goes through the run-token bridge,

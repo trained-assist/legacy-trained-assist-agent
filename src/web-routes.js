@@ -5,6 +5,7 @@ const { listSessions, getSession, getCurrentSessionId } = require('./session-sto
 const { isTaskRunning, isSessionRunning, isSessionQueuedFor, runTask, stopSessionTask } = require('./runner');
 const { userWorkDir, SYSTEM_ROOT } = require('./data-paths');
 const { readTrace } = require('./session-trace');
+const { getDigestFor } = require('./session-digest');
 const { newWebSessionId, webCanaryEnabled } = require('./core/web-conversation');
 
 // Per-task SSE emitters: taskId → EventEmitter
@@ -210,6 +211,23 @@ async function handleWebRoute(req, url, res, secrets) {
 
     const result = listSessionsFor(username, url.searchParams.get('limit') || '20');
     return json(res, 200, result), true;
+  }
+
+  // ── GET /web/session/:id/digest — «📋 Сжатый лог» (pass A + B) ────────────
+  // Cookie twin of POST /web/session-digest, same auth model as trace. Must be
+  // matched BEFORE the generic /web/session/:id branch below, whose startsWith
+  // would otherwise swallow the two-segment path. First call may take seconds
+  // (one cheap LLM pass) — the UI shows «Собираю…» meanwhile; results are
+  // cached on disk, later calls are instant.
+  if (req.method === 'GET' && p.match(/^\/web\/session\/[^/]+\/digest$/)) {
+    const username = webAuth(req, secrets.WEB_JWT_SECRET);
+    if (!username) return json(res, 401, { error: 'unauthorized' }), true;
+
+    const sessionId = p.split('/')[3];
+    if (!sessionId || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) return json(res, 400, { error: 'invalid session id' }), true;
+
+    const digest = await getDigestFor(username, sessionId);
+    return json(res, 200, digest), true;
   }
 
   // ── GET /web/session/:id — full session with messages ────────────────────

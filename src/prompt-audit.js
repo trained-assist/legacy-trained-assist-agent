@@ -15,6 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicText } = require('./atomic-json');
 
 const AUDIT_FILE = 'prompt-audit.jsonl';
 const MAX_LOG_LINES = 2000;
@@ -58,6 +59,10 @@ function adherenceFlags(result, { mode = null } = {}) {
     clarify_question: /\?\s*$/.test(text) || /(?:вариант|варианты|можешь выбрать|A\/B\/C|а\/б\/в)/i.test(text) ? 1 : 0,
     // Critical rules: never mention the operator email / "через Claude".
     forbidden_mentions: /через\s+Claude/i.test(text) || /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(text) ? 1 : 0,
+    // "The reader is not a developer" — internal refs leaked to the user: repo/home
+    // paths with an extension (src/..., ~/...), PR/issue numbers, bare commit hashes.
+    // Heuristic: published-URL slugs without a file extension don't match.
+    internal_refs: /(?:[a-z0-9_.-]+\/)+[a-z0-9_.-]+\.[a-z0-9]{1,5}\b|~\/[\w./-]+|\b(?:PR|issue|MR)\s*#?\d+\b|\b[0-9a-f]{7}\b/i.test(text) ? 1 : 0,
   };
 }
 
@@ -80,7 +85,7 @@ function recordPromptAudit(workDir, entry) {
     const lines = loadAudit(workDir);
     lines.push(JSON.stringify(entry));
     if (lines.length > MAX_LOG_LINES) lines.splice(0, lines.length - MAX_LOG_LINES);
-    fs.writeFileSync(auditPath(workDir), lines.join('\n') + (lines.length ? '\n' : ''), { mode: 0o600 });
+    atomicText(auditPath(workDir), lines.join('\n') + (lines.length ? '\n' : ''), { mode: 0o600 });
   } catch (e) {
     console.error('[prompt-audit] recordPromptAudit error:', e.message);
   }

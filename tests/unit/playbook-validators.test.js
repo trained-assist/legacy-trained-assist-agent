@@ -9,7 +9,7 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const {
-  createDefaultRegistry, evaluateValidation, evaluateItemValidations, parseValidation,
+  createDefaultRegistry, evaluateValidation, evaluateItemValidations, parseValidation, checkRunsGreen,
 } = require('../../src/playbook-validators');
 
 const item = (over = {}) => ({
@@ -125,6 +125,73 @@ describe('playbook-validators', () => {
     const inconclusive = await evaluateValidation('ci_green', { item: item(), profileId: 'u1' }, empty);
     expect(inconclusive.status).toBe('inconclusive');
     expect(inconclusive.evidence.reason).toBe('no-check-runs');
+  });
+
+  it('ci_green treats conditionally-skipped jobs as green, not as failures', async () => {
+    // autofix runs only on a red PR, notify-merge-queue only on a push to main,
+    // close-original only on autofix PRs — every PR in the repo carries them as
+    // skipped, and counting them as red made ci_green fail on a fully green PR.
+    const registry = createDefaultRegistry({
+      ghToken: () => 'token',
+      ghFetch: async (url) => {
+        if (url.endsWith('/pulls/7')) return { head: { sha: 'abc' } };
+        if (url.endsWith('/commits/abc/check-runs')) {
+          return { check_runs: [
+            { name: 'ci', status: 'completed', conclusion: 'success' },
+            { name: 'staging-gate', status: 'completed', conclusion: 'success' },
+            { name: 'merge', status: 'completed', conclusion: 'success' },
+            { name: 'deploy-gcp', status: 'completed', conclusion: 'success' },
+            { name: 'autofix', status: 'completed', conclusion: 'skipped' },
+            { name: 'notify-merge-queue', status: 'completed', conclusion: 'skipped' },
+            { name: 'close-original', status: 'completed', conclusion: 'skipped' },
+          ] };
+        }
+        return null;
+      },
+    });
+    const r = await evaluateValidation('ci_green', { item: item(), profileId: 'u1', validation: true }, registry);
+    expect(r.status).toBe('pass');
+    expect(r.evidence.failing).toBeUndefined();
+  });
+
+  it('ci_green keeps a red run red next to skips, and never passes on skips alone', async () => {
+    const red = createDefaultRegistry({
+      ghToken: () => 'token',
+      ghFetch: async (url) => url.endsWith('/pulls/7')
+        ? { head: { sha: 'abc' } }
+        : { check_runs: [
+            { name: 'ci', status: 'completed', conclusion: 'failure' },
+            { name: 'autofix', status: 'completed', conclusion: 'skipped' },
+          ] },
+    });
+    const fail = await evaluateValidation('ci_green', { item: item(), profileId: 'u1' }, red);
+    expect(fail.status).toBe('fail');
+    expect(fail.evidence.failing).toEqual(['ci']); // the skip is not "failing"
+    expect(fail.evidence.final).toBe(true);
+
+    const allSkipped = createDefaultRegistry({
+      ghToken: () => 'token',
+      ghFetch: async (url) => url.endsWith('/pulls/7')
+        ? { head: { sha: 'abc' } }
+        : { check_runs: [
+            { name: 'autofix', status: 'completed', conclusion: 'skipped' },
+            { name: 'notify-merge-queue', status: 'completed', conclusion: 'skipped' },
+          ] },
+    });
+    const inconclusive = await evaluateValidation('ci_green', { item: item(), profileId: 'u1' }, allSkipped);
+    expect(inconclusive.status).toBe('inconclusive'); // no evidence is not green
+    expect(inconclusive.evidence.reason).toBe('all-runs-skipped');
+  });
+
+  it('checkRunsGreen: shared verdict for the validator and the checklist precheck', () => {
+    const run = (conclusion, status = 'completed') => ({ name: conclusion, status, conclusion });
+    expect(checkRunsGreen([run('success'), run('skipped')])).toBe(true);
+    expect(checkRunsGreen([run('success'), run('neutral')])).toBe(true);
+    expect(checkRunsGreen([run('failure'), run('skipped')])).toBe(false);
+    expect(checkRunsGreen([run(null, 'in_progress')])).toBe(false);
+    expect(checkRunsGreen([run('skipped'), run('skipped')])).toBe(null);
+    expect(checkRunsGreen([])).toBe(null);
+    expect(checkRunsGreen(null)).toBe(null);
   });
 
   it('ci_green is inconclusive without a PR url or without a github token', async () => {

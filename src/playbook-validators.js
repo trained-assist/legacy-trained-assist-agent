@@ -99,10 +99,32 @@ function defaultGhFetch(url, token) {
   return _ghFetch(url, token);
 }
 
+// Terminal conclusions that are NOT a failure: `skipped`/`neutral` belong to
+// CONDITIONAL jobs (autofix only runs on a red PR, notify-merge-queue only on a
+// push to main, close-original only on autofix PRs) — they are green-by-design,
+// and counting them as red made every ci_green verdict in a repo with such jobs
+// fail forever (PR #1782: ci+staging-gate+merge+deploy all success, verdict
+// fail on 3 skips). Failure/timed_out/cancelled/stale/action_required stay red.
+const GREEN_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
+
+// One shared verdict over check-runs / workflow-runs, used by the ci_green
+// validator and by gtd-controller's checklist precheck — the rule must live in
+// exactly one place, or the two drift and one of them blacks out again.
+//   true  — at least one run succeeded and none is red or unfinished
+//   false — a run is red or still running
+//   null  — no evidence: no runs at all, or every run skipped/neutral
+function checkRunsGreen(runs) {
+  if (!Array.isArray(runs) || !runs.length) return null;
+  if (runs.some(r => !(r.status === 'completed' && GREEN_CONCLUSIONS.has(r.conclusion)))) return false;
+  if (!runs.some(r => r.status === 'completed' && r.conclusion === 'success')) return null;
+  return true;
+}
+
 // ci_green / ci_and_staging_green — every check-run on the PR head must be
-// completed+success. With no check-runs or no PR URL the answer is inconclusive,
-// not pass: "no evidence" is not "green". The staging half has no shared health
-// endpoint yet, so a green CI with `staging:true` stays inconclusive.
+// completed with a non-failing conclusion. With no check-runs, no PR URL, or a
+// head where EVERY run skipped (nothing actually ran), the answer is
+// inconclusive, not pass: "no evidence" is not "green". The staging half has no
+// shared health endpoint yet, so a green CI with `staging:true` stays inconclusive.
 function makeCiValidator({ ghToken, ghFetch, staging = false }) {
   return async function ciValidator(ctx) {
     const ref = extractPrRef(ctx);
@@ -132,13 +154,17 @@ function makeCiValidator({ ghToken, ghFetch, staging = false }) {
     if (!runs.length) return inconclusive('no-check-runs', { pr: ref.url, sha: pr.head.sha });
     const subject = { pr: ref.url, sha: pr.head.sha, staging };
     const evidence = { source, checks: runs.map(r => ({ name: r.name, status: r.status, conclusion: r.conclusion })) };
-    const failing = runs.filter(r => !(r.status === 'completed' && r.conclusion === 'success'));
+    const failing = runs.filter(r => !(r.status === 'completed' && GREEN_CONCLUSIONS.has(r.conclusion)));
     // `final` marks a verdict that more waiting cannot change: every run finished
     // and at least one is red. A durable wait wakes on it instead of polling a red
     // CI to its timeout; runs still in progress are a plain (non-final) fail.
     const pendingRuns = failing.filter(r => r.status !== 'completed');
     if (failing.length) {
       return { status: 'fail', subject, evidence: { ...evidence, failing: failing.map(r => r.name), final: pendingRuns.length === 0 } };
+    }
+    // Nothing actually ran (every run skipped/neutral) — no evidence, so no pass.
+    if (checkRunsGreen(runs) !== true) {
+      return inconclusive('all-runs-skipped', { pr: ref.url, sha: pr.head.sha });
     }
     if (staging) return { status: 'inconclusive', subject, evidence: { ...evidence, reason: 'staging-unverified' } };
     return { status: 'pass', subject, evidence };
@@ -605,6 +631,8 @@ function createDefaultRegistry({ ghToken = defaultGhToken, ghFetch = defaultGhFe
     credential_present: credentialPresent,
     http_ok: makeHttpOkValidator(fetchImpl ? { fetchImpl } : {}),
     task_done: makeTaskDoneValidator({ getTask }),
+    // #1752: a fanout step is joined — every element of the batch done or skipped.
+    fanout_joined: require('./playbook-fanout').makeFanoutJoinedValidator(),
   };
 }
 
@@ -686,7 +714,7 @@ module.exports = {
   createDefaultRegistry, getDefaultRegistry, evaluateValidation, evaluateItemValidations,
   evaluateItemValidationsModeAware, resolveValidationMode,
   parseValidation, collectDocExcerpts, buildLlmValidatorPrompt, makeLlmValidate, getDefaultLlmValidate,
-  makePrOpenedValidator, defaultGitInfo, gitRemoteRepo, extractPrRef,
+  makePrOpenedValidator, defaultGitInfo, gitRemoteRepo, extractPrRef, checkRunsGreen,
   credentialPresent, makeHttpOkValidator, makeTaskDoneValidator,
   PR_REF_RE, DEFAULT_COMMAND_TIMEOUT_MS,
   VALIDATION_MODES, DEFAULT_VALIDATION_MODE, DEFAULT_VALIDATION_MODEL, LLM_VALIDATOR_TIMEOUT_MS,

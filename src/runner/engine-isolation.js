@@ -37,6 +37,7 @@ function serversFromConfigFile(mcpConfig) {
 // may carry mode 0600 — that mode is the ACL mask, so the slot could not read them.
 // Rewriting a file keeps its old mode, hence an explicit chmod before every run.
 function shareEngineInputs(workDir, candidates) {
+  if (process.env.GCS_WORKSPACE_SYNC) return; // GCS objects have no mode bits (#1735 step 5)
   const root = path.resolve(workDir) + path.sep;
   for (const c of candidates) {
     if (typeof c !== 'string' || !path.isAbsolute(c) || !path.resolve(c).startsWith(root)) continue;
