@@ -223,7 +223,7 @@ const FRESH_CLAIM_GRACE_MS = 30 * 1000; // just-claimed items: let the claiming 
 // The per-step attempt budget (P3a) and the recovery-policy ladder (P3c) both
 // live in src/durable-recovery.js now — every failure branch below classifies the
 // error, asks recovery-policy.js what to do, and maps that onto an existing
-// mechanism (re-pend / model-ladder / provider flip / engine fallback), bounded
+// mechanism (re-pend / model-level bump / engine fallback), bounded
 // by max_attempts and DEFAULT_RECOVERY_BUDGET.
 
 // Evaluate an item's declared validations through the registry and persist each
@@ -517,7 +517,7 @@ function lastDurableMarker(said) {
   return all.length ? all[all.length - 1][1].toLowerCase() : null;
 }
 
-async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now(), maxFires = MAX_FIRES_PER_TICK, registry = null, llmValidate = null, classifier = null, ladder = null, hookSinks = null, approveHooks = null, engineHealth = null }) {
+async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now(), maxFires = MAX_FIRES_PER_TICK, registry = null, llmValidate = null, classifier = null, hookSinks = null, approveHooks = null, engineHealth = null }) {
   const healthOf = engineHealth || (engine => require('./engine-health').getEngineHealth(engine));
   const store = durableStore();
   const validators = registry || getDefaultRegistry();
@@ -620,7 +620,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
         const errText = `programmatic validation not passed: ${failedKeys || 'no validations'}`;
         store.failItem(item.id, task.profile_id, { executionId, error: errText });
         const rec = await recoverDurableItem({
-          store, task, itemId: item.id, errorText: errText, classifier, ladder,
+          store, task, itemId: item.id, errorText: errText, classifier,
           escalate: false, retryDelayMs: FRESH_CLAIM_GRACE_MS,
         });
         store.finishExecution(executionId, {
@@ -692,7 +692,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       ? item.execution_timeout_seconds * 1000 : null;
     const settleCtx = {
       store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText,
-      sinks, hooksApproved, hookVars, classifier, ladder,
+      sinks, hooksApproved, hookVars, classifier,
     };
     runTask({
       taskId: `durable-${task.profile_id}-${item.id.slice(0, 8)}-${fireNow}`,
@@ -705,7 +705,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       // healed onto a chat pointer, never moves the chat's live session.
       sessionId: planSessionId(task), webExactSession: true,
       task: prompt, forceClaude: step.engine === 'claude', engine: step.engine, secrets, internalGtd: true,
-      ocProfile: step.ocProfile || null, ocRole: step.ocRole || null, contextSkipModels: step.skipModels,
+      ocProfile: step.ocProfile || null, ocRole: step.ocRole || null,
       stepTimeoutMs,
       // Resume sink (#1671): lets a run cut off by a restart be resumed in the SAME
       // engine session, with its reply settled by settleDurableReply.
@@ -721,7 +721,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
 // Called from runDueDurable's .then — and, after a restart, from
 // resumeDurableReply with a context rebuilt from ids.
 async function settleDurableReply(ctx, reply) {
-  const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier, ladder } = ctx;
+  const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier } = ctx;
   const said = typeof reply === 'string' ? reply : '';
   if (lastDurableMarker(said) === 'waiting') {
     // The agent parked the step on a durable wait (task_item_wait during the
@@ -743,7 +743,7 @@ async function settleDurableReply(ctx, reply) {
     // "waiting" without a registered wait is a protocol error — bounded like a failure.
     const errText = 'DURABLE: waiting without task_item_wait (no wait registered)';
     store.failItem(itemSnap.id, task.profile_id, { executionId, error: errText });
-    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier, ladder });
+    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier });
     store.finishExecution(executionId, { status: 'failed', error_class: rec.failureClass, error_text: errText });
     if (!rec.recovered) {
       await fireItemHooks(store, task, itemSnap, 'on_fail', hookVars({ error: errText }), sinks, hooksApproved);
@@ -798,7 +798,7 @@ async function settleDurableReply(ctx, reply) {
     await fireItemHooks(store, task, itemSnap, 'stage_exit', hookVars(), sinks, hooksApproved);
   } else if (/DURABLE:\s*failed/i.test(said)) {
     store.failItem(itemSnap.id, task.profile_id, { executionId, error: said.slice(0, 500) });
-    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: said, classifier, ladder, quality: true });
+    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: said, classifier, quality: true });
     store.finishExecution(executionId, {
       status: 'failed', error_class: rec.failureClass,
       error_text: `${rec.action || 'terminal'}: ${said}`.slice(0, 500),
@@ -815,7 +815,7 @@ async function settleDurableReply(ctx, reply) {
     // must classify as AUTH (fallback ladder), not as a quality miss.
     const errText = `no DURABLE terminal marker in reply: ${said.slice(-300)}`;
     store.failItem(itemSnap.id, task.profile_id, { executionId, error: errText.slice(0, 500) });
-    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier, ladder, quality: true });
+    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier, quality: true });
     store.finishExecution(executionId, {
       status: 'failed', error_class: rec.failureClass,
       error_text: `${rec.action || 'terminal'}: no marker`.slice(0, 500),
@@ -837,14 +837,14 @@ async function settleDurableReply(ctx, reply) {
 }
 
 async function settleDurableCrash(ctx, e) {
-  const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier, ladder } = ctx;
+  const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier } = ctx;
   console.error(`[gtd-durable] runTask ${itemSnap.id.slice(0, 8)}:`, e.message);
   store.failItem(itemSnap.id, task.profile_id, { executionId, error: e.message.slice(0, 500) });
   // Engine/env crash: same bounded recovery as a marker failure, but without
   // tier escalation (a crash is not an item-quality signal) and with the
   // crash-retry backoff; after the budgets are spent the item stays failed.
   const rec = await recoverDurableItem({
-    store, task, itemId: itemSnap.id, errorText: e.message, classifier, ladder,
+    store, task, itemId: itemSnap.id, errorText: e.message, classifier,
     retryDelayMs: 5 * 60 * 1000, escalate: false,
   });
   store.finishExecution(executionId, {
@@ -874,7 +874,7 @@ function durableSettleContext({ taskId, itemId, executionId }, { secrets = {}, s
     sinks: hookSinks || defaultHookSinks({ secrets, store, task }),
     hooksApproved: resolveHookApproval(task, null),
     hookVars: (extra = {}) => ({ goal: task.goal, stage: item.stage ?? null, error: null, ...extra }),
-    classifier: null, ladder: null,
+    classifier: null,
   };
 }
 

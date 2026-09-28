@@ -1,81 +1,35 @@
 # OpenCode Configuration
 
-`base.json` + a profile from `profiles/` → `~/.config/opencode/opencode.json` (via `infra/opencode-switch-profile.sh`).
+`base.json` (MCP servers, the read-only `review` agent) + the profile's model routing →
+`~/.config/opencode/opencode.json` (via `infra/opencode-switch-profile.sh`, machine-wide baseline).
+Real task runs get the same shape per-invocation through `OPENCODE_CONFIG`
+(`writeOpencodeMcpConfig` in `src/runner/claude-runner.js`).
 
-## Profiles
+## Models: the llm-ladder worker (issue #1687)
 
-Consolidated from 6 to 4 in issue #1061 — each profile is now a **ladder** of models per agent
-role (`build`/`plan`/`explore`/`general`/`review`), not one fixed model. `src/opencode-ladder.js`
-resolves the ladder per invocation, degrading to the next rung on quota/rate-limit errors and
-skipping rungs that need one-time manual account setup (e.g. Go "Global regions"). See
-`MODEL-LADDER.md` for the current rung order and the reasoning behind it.
+OpenCode runs use ONE provider, `ladder` — the trained-assist-llm-ladder Cloudflare Worker
+(`https://llm-ladder.trainedassist.store/v1`, openai-compatible, key `{env:OPENCODE_LADDER_TOKEN}`,
+which the runner injects per run). The model id per role is the worker's ladder id with the role:
+`ladder/deepseek:build`, `ladder/doctor:review`, `ladder/free:plan`.
 
-| Profile | Use case |
-|---------|----------|
-| `max` | Default — top rung is OpenCode Go (GPT-6/5.6 Luna family), degrades down to paid DeepSeek. Needs `OPENCODE_GO_API_KEY` (GCP only, see below) for its top rungs. |
-| `value` | Economical but not free — DeepSeek/GLM/Qwen ladder |
-| `free` | Zero cost — only `:free`-tier models, cycles through several |
-| `russian` | Russian-language tasks (recruiting and beyond) — GigaChat Pro/Ultra/Max ladder |
+Rung order, failover, per-model health, OpenCode Go key rotation and the paid OpenRouter tail all
+live **only in the worker** (`config/ladders.json` in trained-assist/trained-assist-llm-ladder).
+This repo keeps no ladder: `src/opencode-ladder-provider.js` only maps a profile to a ladder name.
+If the worker is unreachable, the run fails with `worker_unreachable`; if every rung fails, with
+`ladder_exhausted` — no in-process fallback.
 
-The old `quality`/`mimo`/`lavish-luna`/`russian-recruiter` profiles were folded into `max`/`value`/
-`russian`'s ladders as rungs rather than staying standalone profiles — `/oc_quality` etc. now
-returns a redirect message instead of switching (see `OC_PROFILE_INTENT` in
-`src/runner/intent-engine.js`).
+| Profile | Worker ladder | Note |
+|---------|---------------|------|
+| `deepseek` | `deepseek` | default (`src/profiles.js`); playbook `bachelor`/`master` |
+| `doctor` | `doctor` | playbook `doctor` fallback after claude → codex |
+| `free` | `free` | cheap/free rungs |
+| `max` | `doctor` | the old "strongest Go models" ladder |
+| `value` | `deepseek` | the old cheap OpenRouter/GigaChat ladder |
+| `russian` | `deepseek` | GigaChat ladder dropped; keeps its strict Russian reviewer prompt |
+| `research` | — | `hermes_research`: pinned `openrouter/google/gemini-2.5-flash`, no ladder |
 
-Switch: `./infra/opencode-switch-profile.sh <profile>` (or set `OPENCODE_PROFILE` in `secrets.env`)
-sets the machine-wide baseline (first rung of each role) — actual per-task invocations resolve
-the full ladder via `src/opencode-ladder.js` and override this per-invocation. `/oc_<profile>`
-in Telegram switches per-profile instead (see `src/runner/intent-engine.js`).
-
-## `deepseek` — the default profile: one ladder, Go first (2026-09-27)
-
-Every chat without an explicit choice runs on `deepseek` (`src/profiles.js`). It is ONE per-role
-ladder (`.opencode/profiles/deepseek.json` → `ladderRef: deepseek` in `config/model-routing.json`):
-
-`opencode-go/mimo-v2.6-flash` → `opencode-go/deepseek-v4.1-flash` ($0.15/$0.60)
-→ paid OpenRouter tail: **`deepseek/deepseek-v4-flash-0731`** → **`inclusionai/ling-3.0-flash`** →
-**`xiaomi/mimo-v2.6-flash`** (three vendors; ling-3.0-flash $0.021/$0.063, mimo 8–11s via OpenRouter so last).
-Same ladder for every role.
-
-Order set by the owner 2026-09-27: «MiMo-V2.6-Flash → DeepSeek V4.1 Flash → … → далее openrouter»
-(supersedes #1589's cheapest-first order; `gpt-6-luna` dropped, `deepseek-v4-pro` stays out).
-`muse-spark-1.3-contributor` was removed the same day — owner: «беда с моделью, удаляем».
-
-How it degrades and comes back — no manual switch anywhere:
-
-- **A flaky Go rung** ("Bad Request", 5xx) — retried on the model's own backoff (15s → 30s → 60s …),
-  then the next Go rung. Each model keeps its own backoff counter.
-- **A Go key hits its limit / is rejected** — `src/opencode-go-keys.js` rotates `auth.json` to the
-  other key (two keys: `OPENCODE_GO_API_KEYS`) and the task retries on Go.
-- **Both keys parked** — the runner skips every `opencode-go/*` rung of the ladder until the
-  earliest key heals (≤15 min for a quota hit, 1 h for a rejected key), so the ladder serves its
-  OpenRouter last rung. When the skip lapses the Go rungs are picked again automatically.
-
-History: until 2026-09-27 `deepseek` was a "logical" profile resolved through a VM-wide
-go/openrouter toggle (`deepseek-go.json` / `deepseek-openrouter.json`, `/oc_go`, `/oc_openrouter`,
-`~/.config/opencode/go-mode.json`). A manual `/oc_openrouter` never expired — it was left on (and
-re-set by `npm test` runs on the VM, whose test hit the live toggle file) and drained the OpenRouter
-balance. The toggle, both halves and the pin commands were removed.
-
-| Command | Effect |
-|---------|--------|
-| `/oc_deepseek`, `/oc_ds`, `/oc_go`, `/oc_ds_go` | Select `deepseek` for *your* profile |
-| `/oc_openrouter`, `/oc_ds_or` | No switch any more — replies that OpenRouter is only the automatic last rung |
-
-## OpenCode Go credential (max profile)
-
-`opencode/*` (Zen) and `opencode-go/*` (Go) are separate providers with separate billing —
-a Zen API key does NOT unlock Go models and vice versa. `max.json`'s top rungs use
-`opencode-go/*`, which needs a Go subscription service-account key.
-
-OpenCode has no env-var auth for either of these providers — only `opencode auth login`
-(interactive, browser OAuth) writes `~/.local/share/opencode/auth.json`, which doesn't work
-on a headless VM. Instead, `infra/opencode-switch-profile.sh` writes that file directly from
-the `OPENCODE_GO_API_KEY` secret (see `infra/env-manifest.json`) on every deploy, merging it
-with whatever auth.json already has so other providers' credentials survive.
-
-Get the key from opencode.ai → Go-Subscription → create a service account (not the personal
-OAuth key — that one is tied to interactive login and isn't meant for automation).
+Switch: `/oc_<profile>` in Telegram (per profile, `src/runner/intent-engine.js`), or
+`./infra/opencode-switch-profile.sh <profile>` / `OPENCODE_PROFILE` for the machine baseline.
 
 ## MCP in OpenCode
 

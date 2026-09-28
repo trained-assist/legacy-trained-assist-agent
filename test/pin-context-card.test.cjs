@@ -11,9 +11,6 @@ function ok(c, m) { c ? (pass++) : (fail++, console.log('FAIL:', m)); }
 // AGENT_TOKENS_ROOT must be set before requiring user-tokens/runner (module-load-time const).
 const tokensRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pin-card-tokens-'));
 process.env.AGENT_TOKENS_ROOT = tokensRoot;
-// Issue #1467: ladder health is now read from ~/.config/opencode/model-health.json (per-model,
-// shared). Isolate it so a real VM's backoff state cannot change which rung this test resolves.
-process.env.OPENCODE_MODEL_HEALTH_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pin-card-health-')), 'model-health.json');
 
 const { _pin } = require('../src/runner');
 const { buildContextCard } = _pin;
@@ -53,11 +50,8 @@ function withFakeConnectedService(username) {
 
   const card = buildContextCard(username, wd, 42);
   ok(/⚙️ OpenCode · free/.test(card), `pin shows this workDir's own oc profile (free), got: ${card}`);
-  // free's top rung is resolved through the ladder (issue #1061 Фаза 1-2), not a stale
-  // ocCfg.model read — profiles.json no longer has a top-level `model` field.
-  // xiaomi/mimo-v2.5:free (the previous top rung) was removed as a dead model in #1164 —
-  // nemotron-3-super-120b-a12b:free is now first in the ladder.
-  ok(/nemotron-3-super-120b-a12b/.test(card), `pin shows free's actual resolved model, got: ${card}`);
+  // free runs on the llm-ladder worker's `free` ladder (issue #1687) — the pin names that model id.
+  ok(/ladder\/free:build/.test(card), `pin shows free's worker ladder model, got: ${card}`);
   fs.unlinkSync(staleFile);
 }
 

@@ -9,12 +9,9 @@ for (const [key, child] of Object.entries({ AGENT_DATA_DIR: 'data', USERS_DIR: '
   mkdirSync(directory, { recursive: true });
   process.env[key] = directory;
 }
-// Same for OpenCode's live state (key pool, model health — the ladder log lives next to it) — see
-// scripts/run-cjs-tests.js for the 2026-09-27 incident this prevents.
-for (const [key, file] of Object.entries({
-  OPENCODE_GO_KEYS_STATE_FILE: 'go-keys-state.json',
-  OPENCODE_GO_AUTH_FILE: 'auth.json', OPENCODE_MODEL_HEALTH_FILE: 'model-health.json',
-})) process.env[key] = join(root, file);
+// Same for OpenCode's ladder log — see scripts/run-cjs-tests.js for the 2026-09-27 incident this
+// prevents.
+process.env.LADDER_LOG_DIR = join(root, 'ladder-log');
 // Provider keys from the developer's shell must not leak into tests (CI has none) — a test that
 // needs one sets it explicitly.
 for (const key of ['OPENROUTER_API_KEY', 'OPENCODE_GO_API_KEYS', 'OPENCODE_GO_API_KEY', 'LLM_LADDER_TOKEN']) delete process.env[key];
