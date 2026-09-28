@@ -113,7 +113,11 @@ function splitBuffer(buf, sep) {
 }
 
 async function main() {
-  const secrets = await loadSecrets();
+  // auditBots:false — this process never delivers to a registry audience; it
+  // sends only via the classic TELEGRAM_BOT_TOKEN (nalog login + vacancy
+  // apply notifications). RECRUITER/FREELANCE tokens are legitimately absent
+  // on this box, so their "delivery will fail" warning would be pure noise.
+  const secrets = await loadSecrets({ auditBots: false });
 
   const server = http.createServer(async (req, res) => {
     try {
