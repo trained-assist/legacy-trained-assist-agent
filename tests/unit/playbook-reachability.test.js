@@ -27,9 +27,17 @@ function playbook(id) {
   };
 }
 
-function write(dir, id) {
+function write(dir, id, extra = {}) {
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${id}.json`), JSON.stringify(playbook(id)));
+  writeFileSync(join(dir, `${id}.json`), JSON.stringify({ ...playbook(id), ...extra }));
+}
+
+// A sibling tools dir defining expo_find_participants in 85-expo.js.
+function toolsDir() {
+  const d = join(root, 'trained-assist-sales-skill', 'src', 'mcp-skills', 'tools');
+  mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, '85-expo.js'), 'module.exports = { tools: {\n  expo_find_participants: {\n    handler: async () => ({}) } } };\n');
+  return [{ dir: d, server: 'sales-skills' }];
 }
 
 const catalog = {
@@ -152,4 +160,54 @@ describe('checkPlaybookReachability', () => {
     expect(status(run('demo-pb', { domains: [pointer], audience: 'exhibition', audienceMap: { exhibition: 'demo-pb' } }), 'audience-map')).toBe('pass');
     expect(status(run('demo-pb', { domains: [pointer], audience: 'freelance' }), 'audience-map')).toBe('fail');
   });
+
+  describe('requires {sections, tools}', () => {
+    const declare = extra => write(join(root, 'trained-assist-sales-skill', 'playbooks'), 'demo-pb', extra);
+
+    it('is valid in the schema and warns when not declared', () => {
+      expect(status(run('demo-pb', { domains: [pointer] }), 'requires')).toBe('warn');
+      declare({ requires: { sections: ['flexi-expo'], tools: ['expo_find_participants'] } });
+      const r = run('demo-pb', { domains: [pointer], toolDirs: toolsDir() });
+      expect(status(r, 'resolve')).toBe('pass');
+      expect(status(r, 'requires')).toBe('pass');
+      expect(r.rows.find(x => x.gate === 'requires').detail).toMatch(/expo_find_participants←sales-skills\/85-expo\.js/);
+    });
+
+    it('fails an unknown section or a tool no module defines', () => {
+      declare({ requires: { sections: ['no-such-section'], tools: ['ghost_tool'] } });
+      const r = run('demo-pb', { domains: [pointer], toolDirs: toolsDir() });
+      expect(status(r, 'requires')).toBe('fail');
+      expect(r.rows.find(x => x.gate === 'requires').detail).toMatch(/no-such-section.*ghost_tool/);
+    });
+
+    it('per profile: a declared section off is a hard FAIL even without a pointer', () => {
+      declare({ requires: { sections: ['flexi-expo'], tools: ['expo_find_participants'] } });
+      const r = run('demo-pb', {
+        audienceMap: { exhibition: 'demo-pb' }, toolDirs: toolsDir(), profileId: 'someone', readiness,
+        profileSkills: { enabled: ['company'], disabled: [] },
+      });
+      expect(status(r, 'section-enabled')).toBe('fail');
+      expect(r.ok).toBe(false);
+    });
+
+    it('per profile: declared section on + tool module exposed → chain closes', () => {
+      declare({ requires: { sections: ['flexi-expo'], tools: ['expo_find_participants'] } });
+      const r = run('demo-pb', {
+        domains: [pointer], toolDirs: toolsDir(), profileId: 'someone',
+        resolved: { sections: ['core', 'flexi-expo'], modules: ['sales-skills/85-expo.js'], setupOnly: [], siblings: ['sales-skills'], promptDomains: ['expo'] },
+      });
+      expect(r.rows.filter(x => x.status === 'fail')).toEqual([]);
+      expect(r.rows.find(x => x.gate === 'tools-visible').detail).toMatch(/1\/1/);
+    });
+
+    it('per profile: live resolved record with the tool module hidden → FAIL', () => {
+      declare({ requires: { sections: ['flexi-expo'], tools: ['expo_find_participants'] } });
+      const r = run('demo-pb', {
+        domains: [pointer], toolDirs: toolsDir(), profileId: 'someone',
+        resolved: { sections: ['core', 'flexi-expo'], modules: [], setupOnly: [], siblings: ['sales-skills'], promptDomains: ['expo'] },
+      });
+      expect(status(r, 'tools-visible')).toBe('fail');
+    });
+  });
 });
+
