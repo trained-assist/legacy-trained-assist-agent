@@ -74,6 +74,11 @@ function planWorkspaceLabel(task) {
   return `plan-${String(task.id).slice(0, 8)}`;
 }
 
+// The session every step of a plan runs in (and resumes into after a restart).
+function planSessionId(task) {
+  return `s-plan-${String(task.id).slice(0, 8)}`;
+}
+
 function parsePolicy(task) {
   try { return task && task.execution_policy_json ? JSON.parse(task.execution_policy_json) : null; }
   catch { return null; }
@@ -657,6 +662,11 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       user: { id: null, name: task.profile_id, username: task.profile_id, workDir },
       // P3b: forceClaude is only meaningful for a Claude step (it widens context +
       // skips quick answers). An OpenCode step must not be treated as Claude.
+      // One session per PLAN (#playbooks-e2e): without it a chat-less step fell onto the
+      // profile's current chat session — every plan of the profile queued behind one
+      // admission lane and mixed contexts with the user's chat. Exact session: never
+      // healed onto a chat pointer, never moves the chat's live session.
+      sessionId: planSessionId(task), webExactSession: true,
       task: prompt, forceClaude: step.engine === 'claude', engine: step.engine, secrets, internalGtd: true,
       ocProfile: step.ocProfile || null, ocRole: step.ocRole || null,
       stepTimeoutMs,
@@ -1597,7 +1607,7 @@ module.exports = {
   readChecklist, trackedChecklist, checklistSummary, computeMaxIterations,
   checklistCheapPrecheck, writeChecklistDone, mirrorGtdChecklist, CHECKLIST_API_BASE, checklistAutologinUrl,
   _ghToken, _ghFetch,
-  durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
+  durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem, planSessionId,
   settleDurableReply, resumeDurableReply, resumeDurableCrash, durableSettleContext, planWorkspaceLabel,
   tickHeartbeat, countOpenLegacy, durableItemCounts,
   DEFAULT_ETA_MIN, DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP, ETA_MAX_CLAMP,

@@ -172,6 +172,33 @@ test('with AGENT_ENV_ALLOWLIST=1 the engine sees no server-only env, MCP keeps i
   }
 });
 
+test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + config env refs), nothing else', async () => {
+  process.env.AGENT_ENV_ALLOWLIST = '1';
+  const svcHome = fs.mkdtempSync(path.join(tmpRoot, 'svc-oc-'));
+  fs.mkdirSync(path.join(svcHome, '.config', 'opencode'), { recursive: true });
+  fs.writeFileSync(path.join(svcHome, '.config', 'opencode', 'opencode.json'),
+    JSON.stringify({ provider: { gigachat: { options: { apiKey: '${GIGACHAT_TOKEN}' } }, other: { options: { apiKey: '{env:OTHER_PROVIDER_KEY}' } } } }));
+  process.env.AGENT_SERVICE_HOME = svcHome;
+  try {
+    const outDir = fs.mkdtempSync(path.join(tmpRoot, 'oc-'));
+    const opts = baseOpts(outDir, fakeEngine(outDir));
+    opts.engine = 'opencode';
+    opts.cleanEnv = { ...SERVER_ENV, GIGACHAT_TOKEN: 'gc-key', OTHER_PROVIDER_KEY: 'other-key' };
+    const r = await runEngineProcess(opts);
+    assert.equal(r.exitCode, 0);
+    const env = parseEnvFile(path.join(outDir, 'engine.env'));
+    assert.equal(env.OPENROUTER_API_KEY, 'srv-openrouter', 'opencode needs its OpenRouter key');
+    assert.equal(env.GIGACHAT_TOKEN, 'gc-key', '${VAR} reference in the opencode config');
+    assert.equal(env.OTHER_PROVIDER_KEY, 'other-key', '{env:VAR} reference in the opencode config');
+    for (const k of ['AGENT_SECRET', 'TELEGRAM_BOT_TOKEN', 'DEEPGRAM_API_KEY', 'INN_DADATA_SECRET', 'SOME_SERVER_ONLY_SETTING']) assert.ok(!(k in env), `${k} dropped`);
+    // claude runs on OAuth — no provider key passes for it
+    assert.deepEqual(iso.engineCredentialNames('claude'), []);
+  } finally {
+    delete process.env.AGENT_ENV_ALLOWLIST;
+    delete process.env.AGENT_SERVICE_HOME;
+  }
+});
+
 function bridgeHandshake(socketPath, token, server) {
   return new Promise((resolve, reject) => {
     let data = '';

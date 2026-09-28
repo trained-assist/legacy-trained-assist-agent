@@ -92,7 +92,7 @@ const SERVER_ONLY_ENV = new Set([
  * Keeps allowlisted names, the current profile's token names, and `extra`;
  * server-only names are always dropped.
  */
-function buildAgentEnv(fullEnv, { userTokenNames = [], extra = {} } = {}) {
+function buildAgentEnv(fullEnv, { userTokenNames = [], extra = {}, engineCredentialNames = [] } = {}) {
   const tokenNames = new Set(userTokenNames);
   const out = {};
   for (const [k, v] of Object.entries(fullEnv || {})) {
@@ -105,7 +105,30 @@ function buildAgentEnv(fullEnv, { userTokenNames = [], extra = {} } = {}) {
     if (v == null || SERVER_ONLY_ENV.has(k)) continue;
     out[k] = String(v);
   }
+  // The engine's own model-provider keys (engineCredentialNames): without them the engine
+  // cannot call its models at all. Deliberately allowed past the server-only list.
+  for (const k of engineCredentialNames) {
+    if (fullEnv?.[k] != null && fullEnv[k] !== '') out[k] = String(fullEnv[k]);
+  }
   return out;
+}
+
+// Env names an engine reads its model-provider credentials from.
+// opencode: the built-in OpenRouter provider reads OPENROUTER_API_KEY, and custom
+// providers in its config files reference env vars as {env:NAME} or ${NAME}
+// (e.g. gigachat → ${GIGACHAT_TOKEN}); every such reference is followed.
+// codex: OPENAI_API_KEY when it runs on an API key. claude: OAuth, nothing from env.
+const ENV_REF_RE = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+function engineCredentialNames(engine, { configFiles = [] } = {}) {
+  if (engine === 'codex') return ['OPENAI_API_KEY'];
+  if (engine !== 'opencode') return [];
+  const names = new Set(['OPENROUTER_API_KEY']);
+  for (const f of configFiles) {
+    let text = '';
+    try { text = fs.readFileSync(f, 'utf8'); } catch { continue; }
+    for (const m of text.matchAll(ENV_REF_RE)) names.add(m[1] || m[2]);
+  }
+  return [...names];
 }
 
 // ── Slot pool (cross-process lock files) ─────────────────────────────────────
@@ -377,6 +400,7 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
 module.exports = {
   isolationConfig,
   buildAgentEnv,
+  engineCredentialNames,
   ENGINE_ENV_ALLOW,
   SERVER_ONLY_ENV,
   acquireSlot,
