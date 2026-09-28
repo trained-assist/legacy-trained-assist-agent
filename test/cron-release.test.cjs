@@ -18,8 +18,12 @@ const path = require('node:path');
 
 const HELLO = path.join(__dirname, '..', 'ops', 'lib', 'cron-release.sh');
 
-function sh(script, env = {}) {
-  return spawnSync('sh', ['-c', script], {
+// `sh` by default: the helpers must stay POSIX-clean (on the Ubuntu CI runner
+// `sh` is dash — stricter than macOS bash, which is the point). The pipefail
+// test below opts into `bash`, because that is the shell the cron wrappers
+// actually declare (#!/usr/bin/env bash) and dash has no pipefail at all.
+function sh(script, env = {}, shell = 'sh') {
+  return spawnSync(shell, ['-c', script], {
     encoding: 'utf8',
     env: { PATH: process.env.PATH, HOME: os.tmpdir(), ...env },
   });
@@ -103,6 +107,7 @@ test('neither helper ever exits non-zero (wrappers run under set -euo pipefail)'
   const r = sh(
     `set -euo pipefail; ${load(master, checkout)}; cron_banner "x" "${path.join(root, 'nowhere')}"; cron_app_dir >/dev/null; echo SURVIVED`,
     { HOME: root },
+    'bash',
   );
   assert.equal(r.status, 0, `status=${r.status} stderr=${r.stderr}`);
   assert.match(r.stdout, /SURVIVED/);
