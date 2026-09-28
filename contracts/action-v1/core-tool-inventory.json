@@ -10,6 +10,7 @@
     "100-hermes.js",
     "101-durable-tasks.js",
     "102-playbooks.js",
+    "103-content-rewrite.js",
     "21-browser-session.js",
     "22-connect.js",
     "22-ru-browser.js",
