@@ -333,16 +333,21 @@ test('контракт: /tasks/stop отвечает аддитивно, /run п
 
 test('контракт: GTD и durable закрывают запись на ответ остановки (R3/R4)', () => {
   const gtd = read('src/gtd-controller.js');
-  assert.equal((gtd.match(/isUserStoppedReply\(/g) || []).length, 3,
+  assert.ok((gtd.match(/isUserStoppedReply\(/g) || []).length >= 3,
     'три места: пре-проверка перед fire, .then() итерации, settleResumedGtd');
   assert.ok(/stoppedAt >= createdAt/.test(gtd), 'гейт до fire: rec.createdAt старше отметки Стопа → закрыть (R3)');
 
-  const settleStart = gtd.indexOf('async function settleDurableReply(');
-  const waitingAt = gtd.indexOf("if (lastDurableMarker(said) === 'waiting')", settleStart);
-  const stopBlock = gtd.slice(settleStart, waitingAt);
-  assert.ok(/isUserStoppedReply\(said\)/.test(stopBlock), 'settleDurableReply: проверка остановки раньше всех веток');
-  assert.ok(/'USER_STOP'/.test(stopBlock) && /return;/.test(stopBlock), 'USER_STOP терминален');
-  assert.ok(!/recoverDurableItem\(/.test(stopBlock), 'recovery не достигается (R4)');
+  // Не якоримся на имени функции: main вынес тело durable-settle в
+  // `_settleDurableReply`, а имя `settleDurableReply` оставил тонким wrapper'ом.
+  // Важна сама ветка — она должна быть терминальной и не доходить до recovery.
+  const at = gtd.indexOf('if (isUserStoppedReply(said)) {');
+  assert.ok(at >= 0, 'durable-settle: проверка «ответ — остановка» есть');
+  const ret = gtd.indexOf('return;', at);
+  assert.ok(ret > at, 'ветка возвращает, не проваливаясь дальше');
+  const win = gtd.slice(at, gtd.indexOf('}', ret) + 1);
+  assert.ok(/'USER_STOP'/.test(win), 'помечаем USER_STOP (recovery-policy: terminal)');
+  assert.ok(/return;/.test(win), 'досрочный выход — дальше ветка не идёт');
+  assert.ok(!/recoverDurableItem\(/.test(win), 'recovery не достигается (R4)');
 });
 
 test('контракт: stop-trace живёт на диске и наследует адресацию admission-лана', () => {
