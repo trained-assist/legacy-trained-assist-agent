@@ -208,12 +208,19 @@ function buildDigest({ events, messages } = {}) {
   const totals = timelineMs(events);
   let activities = activitiesFromTotals(totals);
   if (!activities.length && messages.length > 1) {
-    // No engine trace — the conversation itself is the timeline.
-    const ats = messages.map(m => m.at).filter(a => typeof a === 'number');
-    if (ats.length >= 2) {
-      const span = Math.round((Math.max(...ats) - Math.min(...ats)) / MIN);
-      if (span > 0) activities = [{ family: 'messages', minutes: span, label: FAMILY_LABELS.messages }];
+    // No engine trace — the conversation itself is the timeline. Cap each
+    // consecutive gap at MAX_IDLE_GAP_MS, exactly like timelineMs does for the
+    // trace: a thread that spans days must not report days of "work". Long
+    // pauses between replies are idle time, not activity.
+    const ats = messages.map(m => m.at).filter(a => typeof a === 'number').sort((a, b) => a - b);
+    let ms = 0;
+    for (let i = 0; i < ats.length - 1; i++) {
+      const delta = ats[i + 1] - ats[i];
+      if (delta <= 0) continue;
+      ms += Math.min(delta, MAX_IDLE_GAP_MS);
     }
+    const minutes = Math.round(ms / MIN);
+    if (minutes > 0) activities = [{ family: 'messages', minutes, label: FAMILY_LABELS.messages }];
   }
 
   const raw = [];
