@@ -306,6 +306,14 @@ test('ops script: dry run is the default and changes nothing', () => {
   assert.match(r.stdout, /169\.254\.0\.0\/16 -j REJECT/);
   assert.match(r.stdout, /AGENT_RUN_AS_USERS=ta-agent-1,ta-agent-2/);
   assert.deepEqual(fs.readdirSync(home), [], 'nothing created');
+  // gate preparation mirrors src/agent-isolation.js gatePrepareCommands
+  const home2 = fs.mkdtempSync(path.join(tmpRoot, 'ops2-'));
+  fs.mkdirSync(path.join(home2, 'users', 'alice'), { recursive: true });
+  const r2 = spawnSync('bash', [script, '--service-user', 'svc', '--service-home', home2, '--slots', '1', '--skip-sa-review', '--skip-engines'], { encoding: 'utf8' });
+  const want = iso.gatePrepareCommands(iso.isolationConfig({ AGENT_RUN_AS_GROUP: 'ta-agents', AGENT_SERVICE_USER: 'svc' }), path.join(home2, 'users', 'alice'));
+  const printed = r2.stdout.replace(/\\/g, ''); // dry run prints argv with printf %q
+  for (const argv of want) assert.ok(printed.includes(`[dry-run] ${argv.join(' ')}`), `script prepares like the runner: ${argv.join(' ')}\n${r2.stdout}`);
+  assert.ok(!fs.existsSync(path.join(home2, 'users', 'alice', iso.GATE_MARKER)), 'dry run does not mark');
   const bad = spawnSync('bash', [script, '--service-user', 'svc', '--apply'], { encoding: 'utf8' });
   if (process.getuid && process.getuid() !== 0) assert.notEqual(bad.status, 0, '--apply refuses without root');
 });
