@@ -77,6 +77,21 @@ const ENGINE_ENV_ALLOW = new Set([
 ]);
 const ENGINE_ENV_ALLOW_PREFIXES = ['LC_', 'CLAUDE_CODE_'];
 
+// Names glibc's loader strips from the environment of every setuid program
+// (sysdeps/generic/unsecvars.h, applied under AT_SECURE before main()). sudo is
+// setuid, so these never reach the slot through the process env — whatever sudoers
+// says, sudo itself never sees them (issue #1791: TMPDIR vanished this way and every
+// slot fell back to the shared /tmp). Allowlisted ones travel as sudo argv
+// assignments instead (see sudoArgv). Only non-secret names may ever be allowlisted
+// from this list: argv is visible in `ps`.
+const GLIBC_SETUID_STRIPPED_ENV = new Set([
+  'GCONV_PATH', 'GETCONF_DIR', 'HOSTALIASES', 'LD_AUDIT', 'LD_DEBUG', 'LD_DEBUG_OUTPUT',
+  'LD_DYNAMIC_WEAK', 'LD_HWCAP_MASK', 'LD_LIBRARY_PATH', 'LD_ORIGIN_PATH', 'LD_PRELOAD',
+  'LD_PROFILE', 'LD_SHOW_AUXV', 'LD_USE_LOAD_BIAS', 'LOCALDOMAIN', 'LOCPATH', 'MALLOC_TRACE',
+  'NIS_PATH', 'NLSPATH', 'RESOLV_HOST_CONF', 'RES_OPTIONS', 'TMPDIR', 'TZDIR',
+]);
+const ARGV_ENV = [...ENGINE_ENV_ALLOW].filter(k => GLIBC_SETUID_STRIPPED_ENV.has(k));
+
 // Server-only names that must never reach an engine even if some other rule
 // (e.g. a profile token file with a colliding name) would admit them.
 const SERVER_ONLY_ENV = new Set([
@@ -348,7 +363,13 @@ function readClaudeAccessToken(serviceHome = os.homedir()) {
   } catch { return null; }
 }
 
-function stageEngineHome(engine, workDir, { serviceHome = os.homedir() } = {}) {
+// TMPDIR of a run: <home>/tmp/<slot>. Per slot, not per profile: two runs of one
+// profile may overlap, and each clears its own dir on release (clearSlotTmp) — a
+// shared dir would delete the other run's files. A slot is leased exclusively, so
+// <slot> is unique among live runs.
+function engineTmpDir(workDir, slot) { return path.join(engineHomeDir(workDir), 'tmp', slot || 'run'); }
+
+function stageEngineHome(engine, workDir, { serviceHome = os.homedir(), slot } = {}) {
   const home = engineHomeDir(workDir);
   fs.mkdirSync(home, { recursive: true, mode: 0o770 });
   const staged = [];
@@ -364,7 +385,7 @@ function stageEngineHome(engine, workDir, { serviceHome = os.homedir() } = {}) {
     staged.push({ ...item, dest, original: content });
   }
   writeAgentGitConfig(home, serviceHome);
-  const tmp = path.join(home, 'tmp'); // not the shared /tmp: other slots could read it
+  const tmp = engineTmpDir(workDir, slot); // not the shared /tmp: other slots could read it
   fs.mkdirSync(tmp, { recursive: true, mode: 0o770 });
   const env = { HOME: home, TMPDIR: tmp };
   if (engine === 'claude') {
@@ -433,9 +454,29 @@ function resolveBin(bin, envPath = process.env.PATH || '') {
 }
 
 // argv for running `bin args…` as `slot`. The env travels through the process
-// environment (sudoers: !env_reset for the slot users), never through argv.
-function sudoArgv(cfg, slot, bin, args) {
-  return [cfg.sudoBin, ['-n', '-u', slot, '--', resolveBin(bin), ...args]];
+// environment (sudoers: !env_reset for the slot users) — except the allowlisted
+// names glibc strips from setuid programs (ARGV_ENV, i.e. TMPDIR): sudo would never
+// see those, so they go as `NAME=value` assignments, which sudo applies itself.
+function sudoArgv(cfg, slot, bin, args, env = {}) {
+  const assign = ARGV_ENV.filter(k => env[k] != null && env[k] !== '').map(k => `${k}=${env[k]}`);
+  return [cfg.sudoBin, ['-n', '-u', slot, ...assign, '--', resolveBin(bin), ...args]];
+}
+
+// Temp files of a run: the engine (opencode/bun) unpacks a ~5.5 MB native lib per
+// start, plus whatever tools write. /tmp was wiped by reboots; the profile's tmp is
+// persistent, so it is emptied on every release — and, on lease, the leftovers of
+// a crashed run of this slot plus day-old dirs of other slots. Run AS the slot
+// (it owns those files; no privileged rm inside a dir slots can write), while the
+// gate is still open; best effort.
+function clearSlotTmp(cfg, slot, tmpDir, { exec, stale = false } = {}) {
+  const runAsSlot = (argv) => runCmd([cfg.sudoBin, '-n', '-u', slot, '--', ...argv], exec);
+  try { runAsSlot(['find', tmpDir, '-xdev', '-mindepth', '1', '-delete']); }
+  catch (e) { if (fs.existsSync(tmpDir)) console.warn(`[isolation] ${slot}: could not clear ${tmpDir}: ${e.message}`); }
+  if (!stale) return;
+  try {
+    runAsSlot(['find', path.dirname(tmpDir), '-xdev', '-mindepth', '1', '-maxdepth', '1', '!', '-name', path.basename(tmpDir),
+      '-mmin', '+1440', '-exec', 'rm', '-rf', '--one-file-system', '{}', '+']);
+  } catch (e) { console.warn(`[isolation] ${slot}: could not sweep stale temp dirs in ${path.dirname(tmpDir)}: ${e.message}`); }
 }
 
 /**
@@ -449,8 +490,10 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
   const gates = gateDirs(workDir, cwd);
   let stage = { env: {}, staged: [] };
   let aclPaths = [];
+  let gateOpen = false;
   const undo = () => {
     reapSlot(cfg, slot, { exec });
+    if (gateOpen && stage.env.TMPDIR) clearSlotTmp(cfg, slot, stage.env.TMPDIR, { exec });
     if (aclPaths.length) shareSlotFiles(cfg, slot, gates, { exec }); // while the gate is still open
     revokePaths(cfg, slot, aclPaths, { exec });
     fs.rmSync(journalPath(cfg, slot), { force: true });
@@ -458,7 +501,7 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
   try {
     reapSlot(cfg, slot, { exec });
     recoverSlot(cfg, slot, { exec });
-    stage = stageEngineHome(engine, workDir, { serviceHome });
+    stage = stageEngineHome(engine, workDir, { serviceHome, slot });
     for (const gate of gates) { prepareGate(cfg, gate, { exec }); shareServiceFiles(cfg, gate, { exec }); fixSlotFileMasks(cfg, gate, { exec }); }
     const traverse = [...new Set([...gates, ...reach].flatMap(p => ancestorDirs(p, serviceHome)))]
       .filter(d => !gates.includes(d));
@@ -466,18 +509,22 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
     fs.writeFileSync(journalPath(cfg, slot), JSON.stringify({ pid: process.pid, paths: aclPaths }), { mode: 0o600 });
     for (const d of traverse) runCmd([cfg.setfaclBin, '-m', `u:${slot}:x`, d], exec);
     for (const gate of gates) runCmd(gateOpenCommand(cfg, gate, slot), exec);
+    gateOpen = true;
+    clearSlotTmp(cfg, slot, stage.env.TMPDIR, { exec, stale: true });
   } catch (e) {
     undo();
     releaseSlotLock(cfg, slot);
     throw e;
   }
   let released = false;
+  const runEnv = { ...stage.env, USER: slot, LOGNAME: slot };
   return {
     slot,
     gates,
     aclPaths,
-    env: { ...stage.env, USER: slot, LOGNAME: slot },
-    spawnArgv: (bin, args) => sudoArgv(cfg, slot, bin, args),
+    env: runEnv,
+    // env: the final engine env; defaults to this run's own part (HOME/TMPDIR/…).
+    spawnArgv: (bin, args, env = runEnv) => sudoArgv(cfg, slot, bin, args, env),
     release() {
       if (released) return;
       released = true;
@@ -494,6 +541,8 @@ module.exports = {
   engineCredentialNames,
   ENGINE_ENV_ALLOW,
   SERVER_ONLY_ENV,
+  GLIBC_SETUID_STRIPPED_ENV,
+  ARGV_ENV,
   acquireSlot,
   releaseSlotLock,
   tryLockSlot,
@@ -509,6 +558,8 @@ module.exports = {
   reapSlot,
   shareSlotFiles,
   engineHomeDir,
+  engineTmpDir,
+  clearSlotTmp,
   engineStagePlan,
   stageEngineHome,
   syncBackEngineHome,
