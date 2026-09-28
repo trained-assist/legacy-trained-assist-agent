@@ -31,6 +31,7 @@ const { readTokenValue } = require('./token-value');
 const { DurableTaskStore } = require('./durable-task-store');
 const { criterionIdForItem } = require('./durable-task-plan');
 const { durableTaskDbPath, userWorkDir, projectDir: projectDirPath, listProfiles } = require('./data-paths');
+const { isBgNotifyEnabled, readBgNotify } = require('./bg-notify');
 const { atomicText } = require('./atomic-json');
 const { logDefect } = require('./playbook-defects-log');
 const { resolveStepExecution, planLevelMap } = require('./playbook-executor');
@@ -126,6 +127,10 @@ const FIRE_LEASE_MS = 45 * 60 * 1000; // > CLAUDE_TIMEOUT_MS (40м); переж�
 // продублируют выстрел. Модульный флаг сериализует проходы: пока один идёт,
 // следующий тик — no-op (лог), запись подождёт своей очереди на следующем тике.
 let _tickInFlight = false;
+// Delivery secrets for the background step notices (owner 29.09). Set per pass by
+// runDueDurable: reconcileOrphanedRunning runs synchronously inside
+// claimNextDurableItem and cannot take them as an argument. null = no send.
+let _bgSecrets = null;
 
 // Heartbeat (issue #512 pt.3): the tick lives inside an in-process setInterval
 // (server.js scheduleGtdController) — if it ever silently stopped firing
@@ -186,7 +191,8 @@ const RUNNING_ORPHAN_GRACE_MS = 45 * 60 * 1000; // mirrors FIRE_LEASE_MS
 // 'running' item is an orphan and goes back to the queue now, not after the
 // 45-min grace. Its open execution rows are closed as interrupted.
 function reconcileOrphanedRunning(store = durableStore(), { now = Date.now(), graceMs = RUNNING_ORPHAN_GRACE_MS, exceptItemIds = null } = {}) {
-  const rows = store.db.prepare(`SELECT i.id, i.updated_at FROM task_items i
+  const rows = store.db.prepare(`SELECT i.id, i.updated_at, i.title, t.profile_id, t.goal
+    FROM task_items i
     JOIN durable_tasks t ON t.id = i.task_id
     WHERE i.status = 'running' AND t.status = 'active'`).all();
   const cutoff = now - graceMs;
@@ -203,6 +209,10 @@ function reconcileOrphanedRunning(store = durableStore(), { now = Date.now(), gr
           error_text = 'interrupted by server restart' WHERE task_item_id = ? AND status = 'running'`)
         .run(now, row.id);
     }
+    // Owner 29.09: «если что-то прервалось — тоже прервалось». A step cut off by a
+    // restart is exactly the silence he is worried about, so say it out loud.
+    void bgNotice(_bgSecrets, { profile_id: row.profile_id, goal: row.goal },
+      `🔁 Прервано рестартом: шаг «${String(row.title || '').replace(/\s+/g, ' ').slice(0, 80)}» вернулся в очередь`);
   }
   return rows.filter(r => (r.updated_at || 0) <= cutoff && !except.has(r.id)).length;
 }
@@ -373,6 +383,50 @@ function resolveOwnerTarget(store, task) {
   return null;
 }
 
+// ── Background step notifications (owner 29.09) ─────────────────────────────
+// Unlike a plan's `notify` hook (declared per plan, needs consent) this is a
+// standing per-profile preference: «шаг начат / шаг готов / прервано», so the
+// owner can watch the playbooks run instead of wondering whether the executor
+// died. Off by default — no flag means no send; a failed send never fails a step.
+async function bgNotice(secrets, task, text) {
+  try {
+    if (!task?.profile_id || !isBgNotifyEnabled(task.profile_id)) return { sent: false, reason: 'disabled' };
+    const flag = readBgNotify(task.profile_id) || {};
+    const owner = resolveOwnerTarget(durableStore(), task);
+    const target = flag.chatId != null
+      ? { chatId: flag.chatId, audience: flag.audience || owner?.audience || 'default', threadId: flag.threadId ?? owner?.threadId ?? null }
+      : owner;
+    if (!target) return { sent: false, reason: 'no_chat_id' };
+    const routeSecrets = require('./bot-delivery').deliverySecrets(secrets || {}, target.audience || 'default');
+    const token = routeSecrets?.TELEGRAM_BOT_TOKEN || routeSecrets?.BOT_TOKEN;
+    if (!token) return { sent: false, reason: 'no_bot_token' };
+    await _tgNotify(token, target.chatId, String(text), target.threadId || null);
+    return { sent: true };
+  } catch (e) {
+    console.warn('[gtd] bg-notify:', e.message);
+    return { sent: false, reason: e.message };
+  }
+}
+
+async function bgStep(secrets, task, item, kind, detail = '') {
+  try {
+    if (!task?.profile_id || !isBgNotifyEnabled(task.profile_id)) return;
+    let total = '?';
+    try { total = durableStore().progressSummary(task.id, task.profile_id).total; } catch { /* legacy row */ }
+    const title = String(item?.title || '').replace(/\s+/g, ' ').slice(0, 80);
+    const head = `${kind} (шаг ${Number(item?.position ?? 0) + 1}/${total}): ${title}`;
+    await bgNotice(secrets, task, detail ? `${head}\n${String(detail).slice(0, 240)}` : head);
+  } catch (e) { console.warn('[gtd] bg-notify:', e.message); }
+}
+
+async function bgTask(secrets, task, kind, detail = '') {
+  try {
+    if (!task?.profile_id || !isBgNotifyEnabled(task.profile_id)) return;
+    const goal = String(task.goal || '').replace(/\s+/g, ' ').slice(0, 160);
+    await bgNotice(secrets, task, detail ? `${kind}: ${goal}\n${String(detail).slice(0, 240)}` : `${kind}: ${goal}`);
+  } catch (e) { console.warn('[gtd] bg-notify:', e.message); }
+}
+
 // Default sinks. `notify` reuses the audience-aware bot delivery; check /
 // create_issue / publish only run when a caller injects a sink (this slice does
 // not reimplement GitHub/publish orchestration — no transport configured means
@@ -535,6 +589,7 @@ function lastDurableMarker(said) {
 async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now(), maxFires = MAX_FIRES_PER_TICK, registry = null, llmValidate = null, classifier = null, hookSinks = null, approveHooks = null, engineHealth = null }) {
   const healthOf = engineHealth || (engine => require('./engine-health').getEngineHealth(engine));
   const store = durableStore();
+  _bgSecrets = secrets; // background step notices need the route inside reconcile()
   const validators = registry || getDefaultRegistry();
   // A programmatic step that fails is retried synchronously inside this pass
   // (no engine round-trip). Its re-pended due_at lands in the same tick, so
@@ -633,6 +688,8 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       executor_role: item.executor_role || null,
       provider: step.degradedFrom ? `fallback-from-${step.degradedFrom}` : null,
     });
+    // Background step notifications (owner 29.09): opt-in only, never blocks a step.
+    void bgStep(secrets, task, item, '▶️ Шаг начат');
 
     // P4: stage entry — fire stage.on_enter (carried by the stage's first item).
     await fireItemHooks(store, task, item, 'stage_enter', hookVars(), sinks, hooksApproved);
@@ -660,6 +717,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
         store.completeItem(item.id, task.profile_id, { executionId });
         store.finishExecution(executionId, { status: 'success' });
         console.log(`[gtd-durable] programmatic item done: ${item.id.slice(0, 8)}`);
+        void bgStep(secrets, task, item, '✅ Шаг готов');
         // P4: step completed → on_complete, and stage_exit on the stage's last item.
         await fireItemHooks(store, task, item, 'on_complete', hookVars(), sinks, hooksApproved);
         await fireItemHooks(store, task, item, 'stage_exit', hookVars(), sinks, hooksApproved);
@@ -675,9 +733,12 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
           status: 'failed', error_class: rec.failureClass,
           error_text: `${rec.action || 'terminal'}: ${failedKeys}`.slice(0, 500),
         });
-        if (rec.recovered) console.log(`[gtd-durable] programmatic recovery ${item.id.slice(0, 8)} ${rec.failureClass}→${rec.action} (${rec.attempts}/${rec.maxAttempts})`);
-        else {
+        if (rec.recovered) {
+          console.log(`[gtd-durable] programmatic recovery ${item.id.slice(0, 8)} ${rec.failureClass}→${rec.action} (${rec.attempts}/${rec.maxAttempts})`);
+          void bgStep(secrets, task, item, '⚠️ Шаг не удался — повтор', `попытка ${rec.attempts}/${rec.maxAttempts}: ${errText}`);
+        } else {
           console.log(`[gtd-durable] programmatic item failed, ${rec.reason} (${rec.attempts}/${rec.maxAttempts}) class=${rec.failureClass}: ${item.id.slice(0, 8)}`);
+          void bgStep(secrets, task, item, '🛑 Шаг не удался (бюджет исчерпан)', errText);
           // P4: terminal step failure → on_fail + task_failed.
           await fireItemHooks(store, task, item, 'on_fail', hookVars({ error: errText }), sinks, hooksApproved);
           await fireTaskHooks(store, task, 'task_failed', hookVars({ error: errText }), sinks, hooksApproved);
@@ -685,9 +746,11 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       }
       const settled = settleTaskCompletion(store, task);
       if (settled === 'done') {
+        void bgTask(secrets, task, '🏁 Задача готова');
         await fireTaskHooks(store, task, 'task_done', hookVars(), sinks, hooksApproved);
       } else if (settled === 'blocked') {
         const fresh = store.getTask(task.id, task.profile_id) || task;
+        void bgTask(secrets, task, '⛔ Задача не завершена — проверки не пройдены', fresh.blocker_reason || 'finalization blocked');
         await fireTaskHooks(store, task, 'task_failed', hookVars({ error: fresh.blocker_reason || 'finalization blocked' }), sinks, hooksApproved);
       }
       continue;
@@ -743,7 +806,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       ? item.execution_timeout_seconds * 1000 : null;
     const settleCtx = {
       store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText,
-      sinks, hooksApproved, hookVars, classifier,
+      sinks, hooksApproved, hookVars, classifier, secrets,
     };
     runTask({
       taskId: `durable-${task.profile_id}-${item.id.slice(0, 8)}-${fireNow}`,
@@ -776,7 +839,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
 // Called from runDueDurable's .then — and, after a restart, from
 // resumeDurableReply with a context rebuilt from ids.
 async function _settleDurableReply(ctx, reply) {
-  const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier } = ctx;
+  const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier, secrets } = ctx;
   const said = typeof reply === 'string' ? reply : '';
   // R4 / SS-04: «⛔ Остановлено…» — волеизъявление пользователя, а не провал шага.
   // Раньше ответ без DURABLE-маркера уходил в recoverDurableItem, и остановленный
@@ -896,15 +959,17 @@ async function _settleDurableReply(ctx, reply) {
   // Keep the task row's revision ticking so projections/UI notice progress.
   const settled = settleTaskCompletion(store, task);
   if (settled === 'done') {
+    void bgTask(secrets, task, '🏁 Задача готова');
     await fireTaskHooks(store, task, 'task_done', hookVars(), sinks, hooksApproved);
   } else if (settled === 'blocked') {
     const fresh = store.getTask(task.id, task.profile_id) || task;
+    void bgTask(secrets, task, '⛔ Задача не завершена — проверки не пройдены', fresh.blocker_reason || 'finalization blocked');
     await fireTaskHooks(store, task, 'task_failed', hookVars({ error: fresh.blocker_reason || 'finalization blocked' }), sinks, hooksApproved);
   }
 }
 
 async function _settleDurableCrash(ctx, e) {
-  const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier } = ctx;
+  const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier, secrets } = ctx;
   console.error(`[gtd-durable] runTask ${itemSnap.id.slice(0, 8)}:`, e.message);
   store.failItem(itemSnap.id, task.profile_id, { executionId, error: e.message.slice(0, 500) });
   // Engine/env crash: same bounded recovery as a marker failure, but without
@@ -937,10 +1002,32 @@ function afterDurableSettle(ctx) {
   kickDurable();
 }
 async function settleDurableReply(ctx, reply) {
-  try { return await _settleDurableReply(ctx, reply); } finally { afterDurableSettle(ctx); }
+  let out;
+  try { out = await _settleDurableReply(ctx, reply); } finally { afterDurableSettle(ctx); }
+  await bgAfterStep(ctx);
+  return out;
 }
 async function settleDurableCrash(ctx, e) {
-  try { return await _settleDurableCrash(ctx, e); } finally { afterDurableSettle(ctx); }
+  let out;
+  try { out = await _settleDurableCrash(ctx, e); } finally { afterDurableSettle(ctx); }
+  await bgAfterStep(ctx);
+  return out;
+}
+
+// Post-settle step notice — ONE place for an agent step's outcome, so every
+// terminal branch (done / failed+retry / failed terminal / parked-waiting /
+// user stop / crash) is reported without repeating the message in each branch.
+async function bgAfterStep(ctx) {
+  try {
+    if (!ctx?.task?.profile_id || !isBgNotifyEnabled(ctx.task.profile_id)) return;
+    const fresh = ctx.store.getTaskItem(ctx.itemSnap.id);
+    if (!fresh) return;
+    const detail = String(fresh.last_error || '').trim().slice(0, 240);
+    if (fresh.status === 'done') return bgStep(ctx.secrets, ctx.task, ctx.itemSnap, '✅ Шаг готов');
+    if (fresh.status === 'failed') return bgStep(ctx.secrets, ctx.task, ctx.itemSnap, '🛑 Шаг не удался', detail);
+    if (fresh.status === 'pending') return bgStep(ctx.secrets, ctx.task, ctx.itemSnap, '⚠️ Шаг не удался — повтор', detail);
+    if (fresh.status === 'waiting') return bgStep(ctx.secrets, ctx.task, ctx.itemSnap, '⏸ Шаг ждёт');
+  } catch (e) { console.warn('[gtd] bg-notify:', e.message); }
 }
 
 function durableSettleContext({ taskId, itemId, executionId }, { secrets = {}, store = durableStore(), registry = null, llmValidate = null, hookSinks = null } = {}) {
@@ -958,6 +1045,7 @@ function durableSettleContext({ taskId, itemId, executionId }, { secrets = {}, s
     hooksApproved: resolveHookApproval(task, null),
     hookVars: (extra = {}) => ({ goal: task.goal, stage: item.stage ?? null, error: null, ...extra }),
     classifier: null,
+    secrets,
   };
 }
 
