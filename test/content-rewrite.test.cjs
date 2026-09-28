@@ -148,6 +148,19 @@ function fakeLlm(responses) {
     ok(r.models[1] === DEFAULT_RETRY_MODEL, 'recovery uses cheap model');
   }
 
+  // ── thinking-model budget: max_tokens must cover reasoning, not only the JSON ─
+  // Live smoke 28.09: gemini-2.5-pro spent 0.5–1.5k tokens on reasoning before the
+  // content; a narrow budget returned empty content (looked like a model failure).
+  {
+    const seen = [];
+    const llm = async (_k, model, messages, maxTokens) => {
+      seen.push(maxTokens);
+      return JSON.stringify({ title: 'Продажи на выставках', sub: 'Автоматизируем сбор контактов' });
+    };
+    await contentRewrite({ fields: FIELDS }, { llmCall: llm, apiKey: 'k' });
+    ok(seen[0] >= 4000, `max_tokens covers the reasoning budget (got ${seen[0]})`);
+  }
+
   console.log(`\ncontent-rewrite: ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
