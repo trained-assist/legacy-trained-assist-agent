@@ -249,6 +249,11 @@ function scheduleGtdController(secrets) {
     return gtd.runDue({
     secrets, baseUsersDir: BASE_USERS_DIR, isTaskRunning: (_username, sessionId) => isSessionRunning(sessionId), runTask, getSession,
     canRunSession: (_username, _sessionId) => true,
+    // #1752: durable steps fire into FREE engine slots only (running + queued < cap).
+    freeSlots: () => {
+      const q = require('./runner/task-queue');
+      return q.MAX_CONCURRENT_TASKS - q._runningTasks() - q._slotWaiters.length;
+    },
   }).catch(err => console.error('[gtd] tick error:', err.message));
   };
   gtdTickNow = run;
