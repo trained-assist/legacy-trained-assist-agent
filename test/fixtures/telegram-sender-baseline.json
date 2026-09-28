@@ -31,11 +31,7 @@
    "env_bot_token": 2,
    "removeIn": "PR5"
   },
-  "src/misha-bot.js": {
-   "telegram_api": 1,
-   "removeIn": "PR8"
-  },
-  "src/ru-edge.js": {
+   "src/ru-edge.js": {
    "telegram_api": 2,
    "removeIn": "adapter"
   },
