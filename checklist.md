@@ -48,3 +48,9 @@ Goal: token access and engine env allowlist (P0 C1-C3) — единый резо
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1801
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
+
+Goal: profile maintenance lock + POST /internal/flush-profile — safety precondition for running the migration LIVE (#1784 G1+G2)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1812
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
