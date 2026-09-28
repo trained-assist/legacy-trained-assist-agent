@@ -314,6 +314,31 @@ if [ -x "$RELEASE_DIR/ops/cron/install.sh" ]; then
   fi
 fi
 
+# claude-oauth-refresh block: installed from THIS release, so its wrapper path
+# points at ~/agent-master instead of wherever someone last ran the installer
+# from (2026-09-28: a checkout run left both entries on ~/trained-assist-agent,
+# and that checkout sat on a stale feature branch — the cron then ran code that
+# was never deployed).
+echo "==> Installing claude-oauth-refresh cron..."
+if sh "$RELEASE_DIR/scripts/install-claude-token-refresh.sh"; then
+  echo "  claude-oauth-refresh cron installed"
+else
+  echo "  ⚠️  claude-oauth-refresh cron install failed"
+fi
+
+# Audit: every crontab entry must execute through the stable ~/agent-master
+# symlink. Anything else means a scheduled job can run code this deploy did NOT
+# ship (a checkout on an arbitrary branch) — exactly the class of bug that hides
+# for days because nothing errors. Warn loudly; never block the deploy on it.
+echo "==> Auditing crontab for non-release paths..."
+CRON_AUDIT=$(crontab -l 2>/dev/null | grep -E '^[^#]' | grep -v 'agent-master/' | grep -E 'trained-assist-agent|agent-releases/' || true)
+if [ -n "$CRON_AUDIT" ]; then
+  echo "  ⚠️  CRON RUNS NON-RELEASE CODE — these entries do not go through ~/agent-master:"
+  printf '%s\n' "$CRON_AUDIT" | sed 's/^/     /'
+else
+  echo "  all crontab entries run through ~/agent-master"
+fi
+
 echo "==> Garbage-collecting old releases..."
 release_gc "$RELEASES_DIR" 3
 
