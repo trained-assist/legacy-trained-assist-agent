@@ -81,7 +81,13 @@ async function prepareEngineSpawn({ engine, taskId, user, cwd, engineEnv, engine
       env: { ...engineEnv, AGENT_RUN_TOKEN: runToken },
       cwd,
     });
-    if (config.runAs) isoRun = await iso.prepareIsolatedRun(config, { workDir: user.workDir, cwd, engine, reach: [socket] });
+    // Engineering worktrees (cwd outside the profile) share git objects with mirrors
+    // under the data dir that a slot cannot reach; until that access is designed those
+    // runs stay on the service user — still with the allowlisted env and the bridge.
+    const wd = path.resolve(user.workDir);
+    const cwdInProfile = !cwd || path.resolve(cwd) === wd || path.resolve(cwd).startsWith(wd + path.sep);
+    if (config.runAs && !cwdInProfile) console.log(`[isolation] ${taskId}: cwd outside the profile (${cwd}) — allowlist only, no run-as`);
+    if (config.runAs && cwdInProfile) isoRun = await iso.prepareIsolatedRun(config, { workDir: user.workDir, cwd, engine, reach: [socket] });
     if (isoRun) shareEngineInputs(user.workDir, [...(engineArgs || []), engineEnv.OPENCODE_CONFIG]);
     const configFiles = engine === 'opencode'
       ? [path.join(config.serviceHome || os.homedir(), '.config', 'opencode', 'opencode.json'), engineEnv.OPENCODE_CONFIG].filter(Boolean)
