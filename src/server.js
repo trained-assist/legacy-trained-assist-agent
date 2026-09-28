@@ -101,7 +101,7 @@ let GIT_COMMIT = 'unknown';
 try { RUNTIME_REVISION = require('./release-info').getReleaseSha(); if (RUNTIME_REVISION) GIT_COMMIT = RUNTIME_REVISION.slice(0, 7); } catch {}
 
 const { classifyMessage, CLASSIFY_MAX_AGE_MS } = require('./classify-message');
-const { checkCompleteness } = require('./intake-gate');
+const { checkCompleteness, loadLastAssistant } = require('./intake-gate');
 const { startShadow: startInputRouterShadow } = require('./input-router');
 const notifyProfileModule = require('./notify-profile');
 
@@ -1391,7 +1391,7 @@ async function main() {
       const body = await readBody(req);
       let payload;
       try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid json' }); }
-      const { text } = payload;
+      const { text, username, chatId, threadId } = payload;
       if (typeof text !== 'string') return json(res, 400, { error: 'missing text' });
       // #1542 P1: router SHADOW next to the legacy completeness gate — never awaited.
       const routerShadow = startInputRouterShadow({
@@ -1399,13 +1399,17 @@ async function main() {
         openrouterKey: secrets.OPENROUTER_API_KEY,
       });
       try {
-        const result = await checkCompleteness(text, secrets.OPENROUTER_API_KEY);
+        // The continuation verdict needs the assistant's last line in THIS chat
+        // (owner 29.09: «продолжай» counts only when the previous answer makes the
+        // continuation obvious). Missing username/chatId → text-only, conservative.
+        const lastAssistant = loadLastAssistant({ username, chatId, threadId });
+        const result = await checkCompleteness(text, secrets.OPENROUTER_API_KEY, { lastAssistant });
         routerShadow.record({ completeness: result?.level || null, complete: !!result?.complete });
         return json(res, 200, result);
       } catch (e) {
         console.error('[intake-gate] error:', e.message);
         routerShadow.record({ completeness: 'error', complete: false });
-        return json(res, 200, { level: 'insufficient', complete: false }); // preserve intake; manual launch remains available
+        return json(res, 200, { level: 'insufficient', complete: false, delayMs: null, announce: null }); // preserve intake; manual launch remains available
       }
     }
 
