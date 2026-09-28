@@ -113,6 +113,26 @@ test('buildDigest: fixed trace → fixed minutes per tool family + PI split', ()
   assert.deepEqual(buildDigest({ events: traceEvents(), messages: SESSION_MESSAGES }), d);
 });
 
+test('buildDigest: messages-only fallback caps idle gaps — days of thread ≠ days of «Переписка»', () => {
+  const { buildDigest } = digestMod();
+  const DAY = 24 * 60 * MIN;
+  // Two replies a minute apart, then a 4-day pause, then another minute apart.
+  const d = buildDigest({ events: [], messages: [
+    { role: 'user', content: 'a', at: T0 },
+    { role: 'assistant', content: 'b', at: T0 + MIN },
+    { role: 'user', content: 'c', at: T0 + 4 * DAY },
+    { role: 'assistant', content: 'd', at: T0 + 4 * DAY + MIN },
+  ] });
+  // 1 + min(4 days → 120) + 1 = 122 — the pause contributes its cap, not 5760.
+  assert.equal(minutesOf(d, 'messages'), 122);
+  // A purely empty-of-activity thread (one gap far above the cap) is capped too.
+  const quiet = buildDigest({ events: [], messages: [
+    { role: 'user', content: 'hi', at: T0 },
+    { role: 'assistant', content: 'hi', at: T0 + 10 * DAY },
+  ] });
+  assert.equal(minutesOf(quiet, 'messages'), 120);
+});
+
 // ── Slice 3: pass B contract ──────────────────────────────────────────────
 test('familyOf: MCP tools come prefixed with their server name', () => {
   const { familyOf } = digestMod();
@@ -210,6 +230,41 @@ test('getDigestFor: session without an opencode trace degrades to a messages-onl
   const again = await getDigestFor('bob', 's_claude', { llm: async () => '{"activities":[],"summary":"Записал телефон."}' });
   assert.equal(again.cached, false);
   assert.equal(again.summary, 'Записал телефон.', 'next click retries the LLM once it is back');
+});
+
+test('getDigestFor: a cache written by an older digest format is not trusted', async () => {
+  const crypto = require('node:crypto');
+  const { userWorkDir } = require('../src/data-paths');
+  const { getDigestFor, freshnessKey } = digestMod();
+  const wd = userWorkDir('carol');
+  fs.mkdirSync(path.join(wd, 'sessions'), { recursive: true });
+  const messages = [
+    { role: 'user', content: 'привет', at: T0 },
+    { role: 'assistant', content: 'привет', at: T0 + MIN },
+  ];
+  fs.writeFileSync(path.join(wd, 'sessions', 's_old.json'), JSON.stringify({ id: 's_old', messages }));
+
+  // A cache entry from BEFORE the format version existed: content-only key,
+  // carrying the number the buggy pass A produced («Переписка 999999 минут»).
+  const legacyKey = crypto.createHash('sha1')
+    .update(`0|0|2|${T0 + MIN}`).digest('hex').slice(0, 16);
+  assert.notEqual(freshnessKey([], messages), legacyKey, 'the versioned key must differ from the legacy one');
+  fs.writeFileSync(path.join(wd, 'sessions', 's_old.digest.json'), JSON.stringify({
+    key: legacyKey, createdAt: Date.now(),
+    digest: {
+      ok: true, engine: null, sessionId: 's_old',
+      activities: [{ family: 'messages', minutes: 999999, label: 'Переписка' }],
+      artifacts: { pi: [], attributes: [], other: [] },
+      summary: 'закэшированное враньё', degraded: false, cached: false, ttlMs: 1,
+    },
+  }));
+
+  let llmCalls = 0;
+  const r = await getDigestFor('carol', 's_old', { llm: async () => { llmCalls++; return '{"activities":[],"summary":"свежая сводка"}'; } });
+  assert.equal(r.cached, false, 'stale cache from another format version must not be served');
+  assert.equal(llmCalls, 1, 'recompute spends the one LLM call');
+  assert.equal(r.summary, 'свежая сводка');
+  assert.equal(minutesOf(r, 'messages'), 1, 'numbers come from the current format, not from the cache');
 });
 
 // ── Slice 4: wiring of the endpoint twins (same pattern as trace) ──────────

@@ -27,6 +27,12 @@ const { readTrace } = require('./session-trace');
 
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]+$/;
 const DIGEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// Bump whenever pass A/B semantics change (idle-gap caps, detectors, labels).
+// The freshness key is content-only, so without a format version a stale
+// cache keeps serving the OLD numbers for up to TTL — a fixed bug that still
+// shows the wrong value on screen for days. Version is part of the key → one
+// bump invalidates every cached digest at once.
+const DIGEST_FORMAT_VERSION = 2;
 const MIN = 60 * 1000;
 const MAX_IDLE_GAP_MS = 120 * MIN;   // one event never claims more than 2h of "work"
 const MAX_VALUE = 500;               // chars per artifact value
@@ -208,12 +214,19 @@ function buildDigest({ events, messages } = {}) {
   const totals = timelineMs(events);
   let activities = activitiesFromTotals(totals);
   if (!activities.length && messages.length > 1) {
-    // No engine trace — the conversation itself is the timeline.
-    const ats = messages.map(m => m.at).filter(a => typeof a === 'number');
-    if (ats.length >= 2) {
-      const span = Math.round((Math.max(...ats) - Math.min(...ats)) / MIN);
-      if (span > 0) activities = [{ family: 'messages', minutes: span, label: FAMILY_LABELS.messages }];
+    // No engine trace — the conversation itself is the timeline. Cap each
+    // consecutive gap at MAX_IDLE_GAP_MS, exactly like timelineMs does for the
+    // trace: a thread that spans days must not report days of "work". Long
+    // pauses between replies are idle time, not activity.
+    const ats = messages.map(m => m.at).filter(a => typeof a === 'number').sort((a, b) => a - b);
+    let ms = 0;
+    for (let i = 0; i < ats.length - 1; i++) {
+      const delta = ats[i + 1] - ats[i];
+      if (delta <= 0) continue;
+      ms += Math.min(delta, MAX_IDLE_GAP_MS);
     }
+    const minutes = Math.round(ms / MIN);
+    if (minutes > 0) activities = [{ family: 'messages', minutes, label: FAMILY_LABELS.messages }];
   }
 
   const raw = [];
@@ -372,7 +385,7 @@ function freshnessKey(events, messages) {
   const lastEventAt = events.length ? Math.max(...events.map(e => (typeof e.at === 'number' ? e.at : 0))) : 0;
   const lastMsgAt = messages.length ? Math.max(...messages.map(m => (typeof m.at === 'number' ? m.at : 0))) : 0;
   const h = crypto.createHash('sha1')
-    .update(`${events.length}|${lastEventAt}|${messages.length}|${lastMsgAt}`);
+    .update(`v${DIGEST_FORMAT_VERSION}|${events.length}|${lastEventAt}|${messages.length}|${lastMsgAt}`);
   return h.digest('hex').slice(0, 16);
 }
 
@@ -445,5 +458,6 @@ module.exports = {
   buildDigest,
   parseDigestJson,
   summarizeDigest,
+  freshnessKey,
   getDigestFor,
 };
