@@ -117,15 +117,18 @@ function buildAgentEnv(fullEnv, { userTokenNames = [], extra = {}, engineCredent
 }
 
 // Env names an engine reads its model-provider credentials from.
-// opencode: the built-in OpenRouter provider reads OPENROUTER_API_KEY, and custom
-// providers in its config files reference env vars as {env:NAME} or ${NAME}
-// (e.g. gigachat → ${GIGACHAT_TOKEN}); every such reference is followed.
+// opencode: the built-in OpenRouter provider reads OPENROUTER_API_KEY; the built-in
+// OpenCode Go / Zen providers read OPENCODE_API_KEY (research runs on
+// opencode-go/mimo-v2.6-flash — the box stores it as OPENCODE_GO_API_KEY, mapped in
+// runEngineProcess); and custom providers in its config files reference env vars as
+// {env:NAME} or ${NAME} (e.g. gigachat → ${GIGACHAT_TOKEN}); every such reference is
+// followed.
 // codex: OPENAI_API_KEY when it runs on an API key. claude: OAuth, nothing from env.
 const ENV_REF_RE = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 function engineCredentialNames(engine, { configFiles = [] } = {}) {
   if (engine === 'codex') return ['OPENAI_API_KEY'];
   if (engine !== 'opencode') return [];
-  const names = new Set(['OPENROUTER_API_KEY']);
+  const names = new Set(['OPENROUTER_API_KEY', 'OPENCODE_API_KEY']);
   for (const f of configFiles) {
     let text = '';
     try { text = fs.readFileSync(f, 'utf8'); } catch { continue; }
