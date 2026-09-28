@@ -33,13 +33,16 @@ module.exports = {
   tools: {
     content_rewrite: {
       description:
-        'Контент-примитив: переписать поля текста по ЖЁСТКОМУ контракту (роль + диапазоны длины) ' +
-        'сильной моделью с машинной валидацией и честным ретраем. Возвращает поля с фактической ' +
-        'длиной, violations (нарушения диапазона/пропуски/лишние ключи), style_warnings (AI-slop) и ' +
-        'attempts. Не обрезает молча: если после ретрая контракт не соблюдён — отдаёт violations как есть. ' +
-        'По умолчанию модель google/gemini-2.5-pro, ретрай — дешёвая deepseek/deepseek-v4-flash-0731 ' +
-        '(хорошо пишет по-русски). style_guard (анти-slop, «не LLM-стиль») включён по умолчанию — ' +
-        'отключи style_guard:false, если для твоей задачи нужен сырой вывод.',
+        'Контент-примитив: переписать текст по ЖЁСТКОМУ контракту сильной моделью с машинной валидацией ' +
+        'и честным ретраем. ДВА режима — ровно один инпут за вызов: ' +
+        '(1) fields — поля JSON (роль + min_chars/max_chars по каждому); ' +
+        '(2) markdown — один длинный документ целиком (deck.md, отчёт, лендинг), проверяются длина ' +
+        'документа и сохранность заголовков (preserve_headings). ' +
+        'Возвращает text/поля с фактической длиной, violations (нарушения диапазона/структуры/пропуски/лишние ключи), ' +
+        'style_warnings (AI-slop) и attempts. Не обрезает молча: если после ретрая контракт не соблюдён — ' +
+        'отдаёт violations как есть. По умолчанию модель google/gemini-2.5-pro, ретрай — дешёвая ' +
+        'deepseek/deepseek-v4-flash-0731 (хорошо пишет по-русски). style_guard (анти-slop, «не LLM-стиль») ' +
+        'включён по умолчанию — отключи style_guard:false, если нужен сырой вывод.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -50,7 +53,28 @@ module.exports = {
           fields: {
             type: 'array',
             items: FIELD_SCHEMA,
-            description: 'Поля контракта. key уникальны; min_chars/max_chars проверяются машинно.',
+            description:
+              'Режим полей. Поля контракта: key уникальны; min_chars/max_chars проверяются машинно. ' +
+              'Ровно одно из fields|markdown.',
+          },
+          markdown: {
+            type: 'string',
+            description:
+              'Режим документа: весь текст целиком (markdown). Заголовки сохраняются дословно ' +
+              '(preserve_headings). Ровно одно из fields|markdown.',
+          },
+          min_chars: {
+            type: 'number',
+            description: 'Режим документа: минимум символов на весь документ (машинная проверка).',
+          },
+          max_chars: {
+            type: 'number',
+            description: 'Режим документа: максимум символов на весь документ (машинная проверка).',
+          },
+          preserve_headings: {
+            type: 'boolean',
+            description:
+              'Режим документа: сохранять заголовки черновика дословно и в том же порядке. По умолчанию true.',
           },
           style_guard: {
             type: 'boolean',
@@ -65,9 +89,8 @@ module.exports = {
           },
           max_attempts: { type: 'number', description: 'Сколько попыток (дефолт 2).' },
           temperature: { type: 'number', description: 'Температура (дефолт 0.7).' },
-          schema: { type: 'object', description: 'Опц.: override JSON Schema (для сложных структур).' },
+          schema: { type: 'object', description: 'Опц.: override JSON Schema (только режим полей).' },
         },
-        required: ['fields'],
       },
       handler: async (args, ctx) => {
         const username = (ctx && ctx.userId) || USER_ID;
