@@ -31,6 +31,20 @@ function serversFromConfigFile(mcpConfig) {
   } catch { return {}; }
 }
 
+// Files the service wrote for the engine (system prompt, MCP config, opencode config)
+// may carry mode 0600 — that mode is the ACL mask, so the slot could not read them.
+// Rewriting a file keeps its old mode, hence an explicit chmod before every run.
+function shareEngineInputs(workDir, candidates) {
+  const root = path.resolve(workDir) + path.sep;
+  for (const c of candidates) {
+    if (typeof c !== 'string' || !path.isAbsolute(c) || !path.resolve(c).startsWith(root)) continue;
+    try {
+      const st = fs.statSync(c);
+      if (st.isFile() && (st.mode & 0o060) !== 0o060) fs.chmodSync(c, (st.mode & 0o777) | 0o060);
+    } catch { /* not ours / gone — the engine will report it */ }
+  }
+}
+
 /**
  * @param {object} p
  * @param {string} p.engine
@@ -43,7 +57,7 @@ function serversFromConfigFile(mcpConfig) {
  * @param {string} [p.mcpConfig]
  * @returns {Promise<{env:object, wrap:(bin:string,args:string[])=>[string,string[]], release:()=>void, isolated:boolean, runAs:string|null}>}
  */
-async function prepareEngineSpawn({ engine, taskId, user, cwd, engineEnv, userTokens, bridgedServers, mcpConfig, config = iso.isolationConfig() }) {
+async function prepareEngineSpawn({ engine, taskId, user, cwd, engineEnv, engineArgs = [], userTokens, bridgedServers, mcpConfig, config = iso.isolationConfig() }) {
   if (!config.envAllowlist) {
     return { env: engineEnv, wrap: (bin, args) => [bin, args], release() {}, isolated: false, runAs: null };
   }
@@ -68,6 +82,7 @@ async function prepareEngineSpawn({ engine, taskId, user, cwd, engineEnv, userTo
       cwd,
     });
     if (config.runAs) isoRun = await iso.prepareIsolatedRun(config, { workDir: user.workDir, cwd, engine, reach: [socket] });
+    if (isoRun) shareEngineInputs(user.workDir, [...(engineArgs || []), engineEnv.OPENCODE_CONFIG]);
     const configFiles = engine === 'opencode'
       ? [path.join(config.serviceHome || os.homedir(), '.config', 'opencode', 'opencode.json'), engineEnv.OPENCODE_CONFIG].filter(Boolean)
       : [];
@@ -84,4 +99,4 @@ async function prepareEngineSpawn({ engine, taskId, user, cwd, engineEnv, userTo
   }
 }
 
-module.exports = { prepareEngineSpawn, bridgeDir };
+module.exports = { prepareEngineSpawn, bridgeDir, shareEngineInputs };
