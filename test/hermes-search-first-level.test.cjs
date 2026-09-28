@@ -20,10 +20,16 @@ const SERP = JSON.stringify({
 });
 
 function withEnv(overrides, fn) {
-  const keys = ['FREE_SEARCH_BACKEND', 'SEARXNG_URL', 'HERMES_PREFETCH_SEARCH'];
+  // Cooldowns (search_serp_free) are module state that outlives one test — keep them off so a
+  // blocked upstream in one test never makes a later test skip the backend.
+  const keys = [
+    'FREE_SEARCH_BACKEND', 'SEARXNG_URL', 'HERMES_PREFETCH_SEARCH',
+    'FREE_SEARCH_DDG_COOLDOWN_MS', 'FREE_SEARCH_SEARXNG_COOLDOWN_MS', 'FREE_SEARCH_BRAVE_COOLDOWN_MS',
+  ];
   const saved = {};
   for (const k of keys) { saved[k] = process.env[k]; delete process.env[k]; }
   Object.assign(process.env, overrides);
+  for (const k of keys.slice(3)) if (process.env[k] === undefined) process.env[k] = '0';
   const done = (v) => {
     for (const k of keys) {
       if (saved[k] === undefined) delete process.env[k];

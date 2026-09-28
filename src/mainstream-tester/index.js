@@ -118,11 +118,14 @@ async function main() {
 
   // 4. Run test cycles
   let totalBugs = 0;
+  let totalDriverErrors = 0;
   for (let i = 0; i < maxRuns; i++) {
     console.log(`\n[mainstream] ══════ Run ${i + 1}/${maxRuns} ══════`);
     fakeTg.reset();
     const result = await orchestrator.startRun();
-    totalBugs += result.bugs.length;
+    const driverErrors = result.bugs.filter(b => b.type === 'driver_error').length;
+    totalBugs += result.bugs.length - driverErrors;
+    totalDriverErrors += driverErrors;
 
     if (i < maxRuns - 1) await new Promise(r => setTimeout(r, 5_000));
   }
@@ -141,7 +144,7 @@ async function main() {
     }
   } catch {}
 
-  console.log(`\n[mainstream] All done. Total bugs: ${totalBugs}`);
+  console.log(`\n[mainstream] All done. Total bugs: ${totalBugs} (product) + ${totalDriverErrors} driver errors`);
   console.log(`[mainstream] Bug log: ${orchestrator.bugsFile}`);
   console.log(`[mainstream] State: ${orchestrator.stateFile}`);
 }
