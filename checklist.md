@@ -1,5 +1,5 @@
-Goal: Recruiting web hub — UX spec + nginx whitelist (PR for #1733/#1743); implementation lives in trained-assist-hh-skill #1742
+Goal: Audience-aware notifyProfile — hub launch push actually reaches Telegram (bug found by #1742 prod smoke)
 
-- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1745
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1757
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
