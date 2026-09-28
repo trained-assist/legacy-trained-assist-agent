@@ -1,14 +1,14 @@
-Goal: Audience-aware notifyProfile via shared sendChatReply — hub launch push actually reaches Telegram (#1754)
+Goal: «Стоп» реально останавливает задачу — kill дерева процессов под run-as изоляцией + trace-тумбстоун + гейт на каждой точке спавна
 
-- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1761
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1800
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
 
-Goal: non-atomic workspace writes → atomicJson/atomicText (#1735 step 2)
+Goal: register trained-assist-search-skill as the search-skills sibling — вынос веб-поиска из ядра, шаг 1: репо с search_serp_free создано, 6 точек регистрации, копия в core пока остаётся (#1792, #1470)
 
-- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1765
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1803
 - [ ] Merged to main
-- [ ] Deployed to prod — verified live
+- [ ] Deployed to prod — verified live (search-skills в .mcp.json, ensure_sibling в журнале деплоя)
 
 Goal: Speech skill extraction — sibling trained-assist-speech-skill + delegate recognition from core (#1779)
 

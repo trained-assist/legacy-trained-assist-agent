@@ -43,6 +43,12 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
       belongsToConversation: require('../src/session-store').belongsToConversation,
     },
     fromLegacyTelegram: () => null, sessionShadow: { shadowCompare: () => null },
+    // Stop-trace gate (spec §2а): the harness exercises admission, not stopping.
+    // Stubs keep the gate inert — no tombstone on disk, never blocks.
+    traceIdFor: () => 'tg:stub',
+    isRunStopped: () => false,
+    STOP_NOT_STARTED_MSG: '⛔ Остановлено до начала выполнения.',
+    liveRuns: new Map(),
     admission: {
       isBusy: () => !!gate,
       run: (_scopes, fn) => gate ? gate.promise.then(fn) : Promise.resolve().then(fn),

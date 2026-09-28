@@ -104,6 +104,14 @@ function systemFlagsDir() {
   return path.join(SYSTEM_ROOT, 'system-flags');
 }
 
+// Durable «Стоп» tombstones — one file per stopped trace (dialog/session address;
+// spec: docs/user-scenarios/core/02-stop-and-supplement.md §2/§2а). Server-wide,
+// not per-profile: the runner checks them on every spawn attempt and a restarted
+// process must see the Stop that happened before the restart (K14).
+function stoppedTracesDir() {
+  return path.join(SYSTEM_ROOT, 'stopped-traces');
+}
+
 
 function pendingTaskPath(taskId) {
   return path.join(SYSTEM_ROOT, 'pending-tasks', `${taskId}.json`);
@@ -194,6 +202,7 @@ module.exports = {
   projectDir,
   executionHistoryPath,
   systemFlagsDir,
+  stoppedTracesDir,
   pendingTaskPath,
   sessionIndexPath,
   sessionFilePath,
