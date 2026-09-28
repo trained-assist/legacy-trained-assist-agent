@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { atomicJson } = require('./atomic-json');
 
 // Per-user profile: about, preferences, etc.
 // Stored in user's workDir as profile.json
@@ -11,7 +12,7 @@ function load(workDir) {
 
 function save(workDir, data) {
   fs.mkdirSync(workDir, { recursive: true });
-  fs.writeFileSync(path.join(workDir, 'profile.json'), JSON.stringify(data, null, 2));
+  atomicJson(path.join(workDir, 'profile.json'), data, { space: 2 });
 }
 
 function toContext(profile, workDir) {

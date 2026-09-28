@@ -39,10 +39,12 @@ const TOKENS_ROOT = process.env.AGENT_TOKENS_DIR || process.env.AGENT_TOKENS_ROO
 
 // ── Workspace mode bits ───────────────────────────────────────────────────────
 // When the workspace is synced to GCS (GCS_WORKSPACE_SYNC), POSIX mode bits are
-// meaningless — GCS objects have no permissions model. Workspace writers pass no
-// mode at all instead of pretending one will stick. Unset = unchanged behavior.
+// meaningless — GCS objects have no permissions model. Writers then get an
+// explicit `mode: undefined` ("no mode") instead of pretending one will stick;
+// the atomic writers (atomic-json.js) pass it straight to open(). Unset =
+// unchanged behavior.
 function writeMode(mode) {
-  return process.env.GCS_WORKSPACE_SYNC ? undefined : { mode };
+  return { mode: process.env.GCS_WORKSPACE_SYNC ? undefined : mode };
 }
 
 // ── Per-user Claude workspace (USERS_ROOT) ────────────────────────────────────
