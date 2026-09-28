@@ -1057,6 +1057,25 @@ GitHub branch protection is not available on this private repo (free plan), so t
 - **pre-push** blocks pushing to `main`/`master`, and blocks pushing *again* to a branch that already has an OPEN pull request. **PRs are immutable**: once a branch is submitted as a PR, don't amend/force-push it — open a new branch and a new PR for further changes, even to fix CI. This is what keeps sessions from colliding on the same branch/PR.
 - Both have a documented emergency override env var (`ALLOW_PROTECTED_COMMIT=1` / `ALLOW_PR_UPDATE=1`) for the rare intentional exception — always explain why in the commit/PR when used.
 
+### Co-authored-by: правильные имена моделей
+
+Каждый коммит, сделанный AI-агентом, должен содержать `Co-authored-by` с реальным именем модели и агента. Не выдумывай имена — смотри какой моделью/агентом ты работаешь в текущей сессии.
+
+**Формат (одна или несколько моделей):**
+```
+Co-authored-by: <Agent> via <Model1> <Model2> ... <noreply@<domain>>
+```
+
+**Примеры:**
+```
+Co-authored-by: opencode via MiMo V2.5 <noreply@opencode.ai>
+Co-authored-by: opencode via MiMo V2.5 / MiMo V2.6-Flash / DeepSeek V4.1 Flash <noreply@opencode.ai>
+Co-authored-by: Claude Code via Claude Opus 4.6 <noreply@anthropic.com>
+Co-authored-by: Codex via GPT-5.4-mini <noreply@openai.com>
+```
+
+**Как определить свою модель:** в промпте сессии или заголовке терминала видно агента (`opencode`, `claude`, `codex`) и модель. Если не уверен — спроси у пользователя. Если моделей несколько (субагенты, роутер) — перечисли через `/`.
+
 ### Спавн сессии на реализацию issue — дешёвый агент, не claude
 
 Реализацию issue запускать **отдельной сессией** через Session Manager (не внутренним субагентом):
