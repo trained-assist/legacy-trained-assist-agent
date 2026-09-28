@@ -123,7 +123,7 @@ test('computePlan: disabled child, unknown sections, unlisted things never hidde
   const p = computePlan(catalog, { enabled: ['recruiting'], disabled: ['recruiting/hh'], });
   // hh-skills stays mounted for the recruiting-level candidate report; the HH modules
   // of the disabled recruiting/hh are hidden one by one. sales stays: recruiting/company.
-  assert.deepStrictEqual(p.hidden.siblings, ['engineering-skills', 'freelance-skills']);
+  assert.deepStrictEqual(p.hidden.siblings, ['documents-skills', 'engineering-skills', 'freelance-skills']);
   assert.ok(p.hidden.modules.includes('hh-skills/90-hh.js') && !p.hidden.modules.includes('hh-skills/97-candidate-client-report.js'));
   assert.ok(p.hidden.domains.includes('hh') && !p.hidden.domains.includes('cron'));
   const all = computePlan(catalog, { enabled: Object.keys(catalog.sections) });

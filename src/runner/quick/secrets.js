@@ -8,8 +8,22 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { listConnectedServices, revokeService, getSecretsLog, SERVICE_DISPLAY } = require('../../user-tokens');
-const { deleteServiceAccount: deleteGdriveSA } = require('../../mcp-skills/tools/50-gdrive');
+const { siblingLib } = require('../../domains/sibling-lib');
 const { fuzzyInfoIntent } = require('./fuzzy');
+
+// The GCP Service Account delete moved to the documents domain repo (#1470) — core no
+// longer vendors domain code. Resolved per call: siblingLib hands back a throwing stub
+// when the checkout is missing, and the local token file is the source of truth for a
+// revoke, so a missing sibling must skip the GCP delete, never break the reply.
+function deleteGdriveSA(userId) {
+  let del;
+  try { del = siblingLib('documents', 'src/gdrive/google-auth').deleteServiceAccount; }
+  catch (e) {
+    console.error(`[gdrive-revoke] documents-skill SA delete unavailable: ${e.message}`);
+    return Promise.resolve({ deleted: false, reason: 'documents-skill unavailable' });
+  }
+  return Promise.resolve(del(userId));
+}
 
 const SECRETS_LIST_INTENT   = /^\/secrets_list$|список.{0,15}подключённых|какие.{0,15}подключ|покажи.{0,15}сервис|мои.{0,15}доступ/i;
 const SECRETS_LOG_INTENT    = /^\/secrets_log$|история.{0,15}доступ|лог.{0,15}секрет|обращени.{0,15}секрет/i;
