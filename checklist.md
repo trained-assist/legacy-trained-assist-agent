@@ -42,3 +42,9 @@ Goal: research-поиск в интернете — 4 способа парал�
 - [ ] C2 — restrict engine environment to the reviewed allowlist
 - [ ] C3 — remove user-to-service secret fallbacks and service-key leaks
 
+
+Goal: token access and engine env allowlist (P0 C1-C3) — единый резолвер токен-корня, ENGINE_TOKEN_FILES, тесты на оба env-имени
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1801
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
