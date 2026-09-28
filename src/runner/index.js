@@ -33,17 +33,16 @@ const { hhLib, hhAvailable } = require('../domains/hh/lib');
 const { writeVacancyState } = hhLib('hh-vacancy');
 // Read on every run — no hh-skill checkout → no vacancy state (core keeps working).
 const readVacancyState = (workDir) => (hhAvailable('hh-vacancy') ? hhLib('hh-vacancy').readVacancyState(workDir) : null);
-const persona = require('../persona');
 const profiles = require('../profiles');
 const { TOKENS_ROOT } = require('../data-paths');
 const answerRouter = require('../answer-router');
-const promptDomains = require('../prompt-domains');
+const { assembleSystemPrompt } = require('./system-prompt');
 // Slice C of #1573: offer the audience-default playbook at the start of a
 // development-like task. Returns '' unless a playbook is actually available, so
 // profiles without one get a byte-identical prompt.
 const { buildDevPlaybookSuggestion } = require('../dev-task-playbook-suggestion');
 const { buildAwaitingUserNotice } = require('../durable-wait');
-const skillsShadow = require('../skills/shadow');
+
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
 // tg-stream.js (issue #942 P1.4). The module owns the format/send/edit
 // primitives; runner.js keeps orchestration (queueing, retries around them).
@@ -1382,43 +1381,6 @@ async function detectMenuInAnswer(text, apiKey, { timeoutMs = 10000 } = {}) {
   }
 }
 
-// Builds a runtime capabilities addendum for OpenCode system prompt.
-// OpenCode uses non-Claude models that don't auto-read CLAUDE.md, so we inject what's available.
-function buildOcCapabilitiesBlock(secrets) {
-  const lines = ['## Возможности системы (runtime)'];
-
-  if (secrets && secrets.DEEPGRAM_API_KEY) {
-    lines.push(
-      '',
-      '**Транскрибация аудио:** доступна (Deepgram nova-2)',
-      '• Поддерживает русский и другие языки',
-      '• Форматы: mp3, wav, ogg, m4a, голосовые сообщения Telegram',
-      '• Быстро, точнее Whisper, с пунктуацией и разбивкой по абзацам',
-      '• Пользователь присылает аудиофайл → бот транскрибирует → текст попадает к тебе',
-    );
-  }
-
-  if (secrets && secrets.OPENROUTER_API_KEY) {
-    lines.push(
-      '',
-      '**Распознавание изображений:** доступно (Gemini 2.5 Flash)',
-      '• Ты сам не видишь картинки — но текст/описание с фото уже распознан заранее',
-      '• Присланное фото приходит вместе с заметкой «[Файл сохранён: …]» и, если что-то распозналось,',
-      '  блоком «[Распознано на изображении: …]» прямо под ней — читай его, отдельно открывать файл не нужно',
-      '• Если блока с распознаванием нет — на фото не нашлось ни текста, ни узнаваемой сцены',
-    );
-  }
-
-  lines.push(
-    '',
-    '**Инструменты (MCP):** доступны только compress-on-input и Neon (Postgres).',
-    'Кастомные скилы (HH, Weeek, nalog, gdrive и др.) для OpenCode НЕ подключены.',
-    'Для задач с кастомными скилами пользователь должен переключиться на Claude (/switch2klod).',
-  );
-
-  return lines.join('\n');
-}
-
 // Provider alternation for the unified crash-retry paths below (resume-after-restart and the
 // generic mid-task incomplete retry) — issue: owner asked for "another LLM provider on retry,
 // alternating" in addition to the plain backoff, not just on the existing quota/config-classified
@@ -2016,76 +1978,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // The API key account is out of credits; OAuth (Mac subscription) has no per-token billing.
   const { ANTHROPIC_API_KEY: _stripped, ...cleanEnv } = process.env;
 
-  const basePromptFile = path.join(__dirname, '..', 'agent-system-prompt.txt');
-  // Merge the user's per-profile persona into the system prompt (returns base file if none set).
-  let systemPromptFile = persona.buildSystemPromptFile(user.workDir, basePromptFile, user.audience);
-  // Fold the bound project's PROFILE.md (domain rules) on top of the persona-merged prompt.
-  try {
-    const profileTxt = boundProjectId ? projects.profileText(user.workDir, boundProjectId) : null;
-    if (profileTxt) {
-      const meta = projects.getProject(user.workDir, boundProjectId);
-      const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
-      const merged = baseTxt +
-        `\n\n# ПРОЕКТ: ${meta ? meta.name : boundProjectId} (${meta ? meta.label : 'project'}) — доменные правила\n` +
-        profileTxt + '\n';
-      const out = path.join(user.workDir, '.system-prompt.txt');
-      fs.writeFileSync(out, merged, { mode: 0o660 }); // group = the run's slot (issue #1649)
-      systemPromptFile = out;
-    }
-  } catch (e) { console.warn('[runner] project profile merge:', e.message); }
-
-  // Domain skill rules (src/prompt-domains): only for skills this user actually has —
-  // gated by the same isReady() as the tools in .mcp.json (system-prompt diet).
-  const domainReport = {};
-  try {
-    const domainBlock = promptDomains.buildDomainBlock(mcpConfig, { report: domainReport });
-    if (domainBlock) {
-      const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
-      const out = path.join(user.workDir, '.system-prompt.txt');
-      fs.writeFileSync(out, baseTxt + '\n\n' + domainBlock, { mode: 0o660 }); // group = the run's slot (issue #1649)
-      systemPromptFile = out;
-    }
-  } catch (e) { console.warn('[runner] prompt domains:', e.message); }
-
-  // Skills shadow (#1537 PR-A): resolve the skill catalog and log its diff against what
-  // was just exposed above. Observation only — runShadow never throws, changes nothing.
-  try {
-    skillsShadow.runShadow({ workDir: user.workDir, username: user.username, audience: user.audience,
-      mcpConfigPath: mcpConfig, domainReport });
-  } catch { /* never affects the run */ }
-
-  // Answer router: вставить блок режима в системный промпт для этого хода.
-  //  • clarify (транзиентно, этот ход) → блок вопросов, приоритетнее deep.
-  //  • deep (sticky, из durable-сайдкара) → снять cap «2-3 предложения».
-  //  • иначе → one-shot, промпт без изменений.
-  try {
-    const deepSticky = answerRouter.readMode(user.workDir, activeSessionId)?.mode === 'deep';
-    // internalGtd ходы — уже «дожим до конца», им oneshot-гард про research не нужен.
-    // Но если это internalGtd ВНУТРИ deep-сессии, кнопка «Действуй дальше» всё равно
-    // программно подавлена (см. §C ниже) — предупреждаем Claude отдельной заметкой,
-    // иначе он пишет про кнопку, которой не будет (баг от 2026-09-15).
-    const block = explicitMode === 'clarify' ? answerRouter.buildClarifyBlock()
-                : deepSticky && internalGtd   ? answerRouter.buildDeepBlock() + '\n' + answerRouter.buildGtdNoButtonNote()
-                : deepSticky                  ? answerRouter.buildDeepBlock()
-                : internalGtd                 ? null
-                : answerRouter.buildOneshotBlock();
-    if (block) {
-      const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
-      const merged = baseTxt + '\n' + block + '\n';
-      const out = path.join(user.workDir, '.system-prompt.txt');
-      fs.writeFileSync(out, merged, { mode: 0o660 }); // group = the run's slot (issue #1649)
-      systemPromptFile = out;
-    }
-  } catch (e) { console.warn('[runner] answer-router block:', e.message); }
-
-  const systemPromptText = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
-
-  // OpenCode uses non-Claude models (DeepSeek, GigaChat, etc.) that don't auto-read CLAUDE.md.
-  // Inject a runtime capabilities block so they know what's actually available.
-  const ocCapBlock = engine === 'opencode' ? buildOcCapabilitiesBlock(secrets) : '';
-  const ocSystemPrompt = ocCapBlock
-    ? (systemPromptText ? `${systemPromptText}\n\n${ocCapBlock}` : ocCapBlock)
-    : systemPromptText;
+  // System prompt for this run: base + persona, bound project's PROFILE.md, prompt-domain
+  // rules, answer-router mode block, OpenCode capabilities (src/runner/system-prompt.js).
+  const { systemPromptFile, systemPromptText, ocCapBlock, ocSystemPrompt } = assembleSystemPrompt({
+    user, boundProjectId, mcpConfig, activeSessionId, explicitMode, internalGtd, engine, secrets,
+  });
 
   // «Посмотреть инпут»: persist the REAL model input for this run (system prompt +
   // context/task, exactly what the engine receives) keyed by taskId, so the
