@@ -75,14 +75,12 @@ async function handleApi(req, url, res, ctx) {
       const { getUsageLog } = require('../usage-store');
       // Usage logs live in each profile's workspace (USERS_ROOT/<u>/usage.json),
       // not the legacy SYSTEM_ROOT/sessions tree.
-      const sessionsDir = dataPaths.USERS_ROOT;
       const totals = { tasks: 0, input: 0, output: 0, cost_usd: 0 };
       const byDate = {};   // date → { model → { input, output, cost, tasks } }
       const byUser = {};   // username → { tasks, input, output, cost_usd }
       try {
-        const users = fs.existsSync(sessionsDir) ? fs.readdirSync(sessionsDir) : [];
-        for (const username of users) {
-          const workDir = path.join(sessionsDir, username);
+        for (const username of dataPaths.listProfiles()) {
+          const workDir = dataPaths.userWorkDir(username);
           if (!fs.statSync(workDir).isDirectory()) continue;
           const log = getUsageLog(workDir);
           if (!log || !log.length) continue;

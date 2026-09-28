@@ -30,7 +30,7 @@ const crypto = require('crypto');
 const { readTokenValue } = require('./token-value');
 const { DurableTaskStore } = require('./durable-task-store');
 const { criterionIdForItem } = require('./durable-task-plan');
-const { durableTaskDbPath, userWorkDir, projectDir: projectDirPath } = require('./data-paths');
+const { durableTaskDbPath, userWorkDir, projectDir: projectDirPath, listProfiles } = require('./data-paths');
 const { logDefect } = require('./playbook-defects-log');
 const { resolveStepExecution, planLevelMap } = require('./playbook-executor');
 
@@ -135,8 +135,7 @@ function tickHeartbeat() { return { ..._tickHeartbeat }; }
 
 // Cheap backlog counters for the heartbeat endpoint — no LLM/network, just what's on disk/in the DB.
 function countOpenLegacy(baseUsersDir) {
-  let users = [];
-  try { users = fs.readdirSync(baseUsersDir).filter(u => /^[a-zA-Z0-9_-]+$/.test(u)); } catch { return { open: 0, profiles: 0 }; }
+  const users = listProfiles(baseUsersDir).filter(u => /^[a-zA-Z0-9_-]+$/.test(u));
   let open = 0;
   for (const username of users) {
     open += listGtd(path.join(baseUsersDir, username)).filter(r => r && r.status === 'open').length;
@@ -1585,8 +1584,7 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
     });
   } catch (e) { console.error('[orphan-checklists] tick error:', e.message); }
 
-  let users = [];
-  try { users = fs.readdirSync(baseUsersDir).filter(u => /^[a-zA-Z0-9_-]+$/.test(u)); } catch { return; }
+  const users = listProfiles(baseUsersDir).filter(u => /^[a-zA-Z0-9_-]+$/.test(u));
 
   // Flatten + sort by dueAt (oldest-overdue-first) BEFORE applying MAX_FIRES_PER_TICK.
   // fs.readdirSync order is filesystem-arbitrary but stable across ticks — without this
