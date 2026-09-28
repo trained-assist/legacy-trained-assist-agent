@@ -63,8 +63,9 @@ module.exports = {
 
     task_create: {
       description:
-        'Create a new durable task (a goal tracked across sessions/restarts in SQLite, ' +
-        'not a JSON checklist.md). Supply user_value, acceptance_criteria and items to atomically persist a draft plan. Scoped to the caller\'s profile.',
+        'Create a new durable task (a goal tracked across sessions/restarts in SQLite; its checklist.md under ' +
+        '.trained-assist/tasks/<id>/ is a generated projection of the plan — do not keep a separate root checklist.md ' +
+        'for the same work). Supply user_value, acceptance_criteria and items to atomically persist a draft plan. Scoped to the caller\'s profile.',
       inputSchema: {
         type: 'object',
         required: ['goal'],
@@ -217,7 +218,7 @@ module.exports = {
       description:
         'Update a durable task\'s goal/status/project_id. A contract plan (created by playbook_run/task_create with ' +
         'acceptance_criteria) starts as a draft and is not executed until you set status="active" — that is the ' +
-        'explicit activation step. Setting a contract plan to "done" goes through the finalization gate: every ' +
+        'activation step (or create it active via playbook_run activate=true when the user already agreed to the task). Setting a contract plan to "done" goes through the finalization gate: every ' +
         'declared criterion validation must have a matching passing result, otherwise the update is rejected with ' +
         'what is still unmet.',
       inputSchema: {

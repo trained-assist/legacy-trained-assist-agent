@@ -1176,6 +1176,18 @@ async function scheduleFromChecklist({ workDir, sessionId, chatId, username, pro
   if (!checklist || !checklist.items.length || !checklist.items.some(i => !i.done)) return null;
   const existing = readGtd(workDir, sessionId);
   if (existing && existing.status === 'open') return existing; // уже трекается — не сбрасываем прогресс/backoff
+  // Один трекер на работу (#1719): у сессии есть активный durable-план → его ведёт
+  // durable-исполнитель со своей проекцией; второй GTD-цикл по корневому
+  // checklist.md гонял бы ту же работу параллельно. Ошибка стора → fail-open.
+  if (username) {
+    try {
+      const plan = durableStore().activeTaskForSession(String(username), sessionId);
+      if (plan) {
+        console.warn(`[gtd] skip(checklist): session=${sessionId} has active durable plan ${plan.id}`);
+        return null;
+      }
+    } catch (e) { console.warn('[gtd] active-plan check:', e.message); }
+  }
   const chatIdStr = chatId != null ? String(chatId) : null;
 // Dedup by projectDir: same checklist.md already tracked by another session
   const projectConflict = listGtd(workDir).find(r => r.status === 'open' && r.projectDir === projectDir && r.sessionId !== sessionId);
