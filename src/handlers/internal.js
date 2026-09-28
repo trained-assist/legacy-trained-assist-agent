@@ -68,7 +68,8 @@ async function handleInternal(req, url, res, ctx) {
     // GET  /internal/e2e/plans/:id?profile=                               → step report
     // POST /internal/e2e/plans/:id/cancel {profile}                       → cancel
     // POST /internal/durable/items/:id/wake {profile, message}            → answer a waiting step
-    if (url.pathname === '/internal/e2e/plans' || url.pathname.startsWith('/internal/e2e/plans/')
+    // GET  /internal/e2e/defects?profile=&plan=&kind=                     → playbook defects log
+    if (url.pathname === '/internal/e2e/plans' || url.pathname.startsWith('/internal/e2e/plans/') || url.pathname === '/internal/e2e/defects'
       || /^\/internal\/durable\/items\/[^/]+\/wake$/.test(url.pathname)) {
       const e2e = require('../durable-e2e');
       const readJson = async () => { const raw = await readBody(req); return raw ? JSON.parse(raw) : {}; };
@@ -76,6 +77,10 @@ async function handleInternal(req, url, res, ctx) {
         if (req.method === 'POST' && url.pathname === '/internal/e2e/plans') {
           const b = await readJson();
           return json(res, 200, e2e.startPlan({ profile: b.profile, playbookId: b.playbook_id, goal: b.goal, levelMap: b.level_map || null }));
+        }
+        if (req.method === 'GET' && url.pathname === '/internal/e2e/defects') {
+          const { readDefects } = require('../playbook-defects-log');
+          return json(res, 200, { defects: readDefects({ profileId: url.searchParams.get('profile') || null, taskId: url.searchParams.get('plan') || null, kind: url.searchParams.get('kind') || null }) });
         }
         if (req.method === 'GET' && url.pathname === '/internal/e2e/plans') {
           return json(res, 200, { plans: e2e.listPlans(url.searchParams.get('profile')) });

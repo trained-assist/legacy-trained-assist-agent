@@ -105,19 +105,19 @@ function scriptedEngine({ calls, killOnce = null, onStep = null }) {
   };
 }
 
-async function drive(G, taskId, { runTask, registry, restartOn = null, maxTicks = 200 }) {
+async function drive(G, taskId, { runTask, registry, restartOn = null, maxTicks = 200, llmValidate = null, notify = null }) {
   const store = G.durableStore();
   for (let i = 0; i < maxTicks; i++) {
     store.db.prepare(`UPDATE task_items SET due_at = ? WHERE task_id = ? AND status = 'waiting'`).run(Date.now(), taskId);
     await G.runDueDurable({
       secrets: {}, now: Date.now(), isTaskRunning: () => false, registry, runTask,
-      llmValidate: async () => ({ status: 'pass', subject: null, evidence: { reason: 'offline e2e judge' } }),
-      hookSinks: { notify: async () => {} },
+      llmValidate: llmValidate || (async () => ({ status: 'pass', subject: null, evidence: { reason: 'offline e2e judge' } })),
+      hookSinks: { notify: notify || (async () => {}) },
     });
     await drain();
     if (restartOn && restartOn()) G.reconcileOrphanedRunning(store, { graceMs: 0 });
     const t = store.getTask(taskId, PROFILE);
-    if (t.status === 'done') return t;
+    if (t.status === 'done' || t.status === 'blocked') return t;
   }
   return store.getTask(taskId, PROFILE);
 }
@@ -349,6 +349,64 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     expect(store.getTask(task.id, PROFILE).status).toBe('done');
     const doc = calls.filter(x => /^Варианты решения/.test(x.title)).map(x => x.engine);
     expect(doc).toEqual(['codex']);
+  }, 30_000);
+
+  it('soft finalization: semantic checks the judge rejects do not block — logged as unconfirmed', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { readDefects } = require('../../src/playbook-defects-log.js');
+    const { task } = startPlan(G, 'feature');
+    const t = await drive(G, task.id, { runTask: scriptedEngine({ calls: [] }), registry: fakeGitHub(),
+      llmValidate: async () => ({ status: 'fail', subject: null, evidence: { reason: 'judge says no' } }) });
+    expect(t.status).toBe('done'); // red checks (pr_opened, ci_green, merged…) passed deterministically
+    const d = readDefects({ taskId: task.id });
+    expect(d.length).toBeGreaterThan(0);
+    expect(d.every(x => x.kind === 'unconfirmed')).toBe(true);
+    expect(d.map(x => x.validator)).not.toContain('ci_green');
+  }, 30_000);
+
+  it('strict finalization: the same run is blocked (never a silent stall) and the owner is told', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { readDefects } = require('../../src/playbook-defects-log.js');
+    const { PlaybookStore } = require('../../src/playbook-store.js');
+    const { compilePlaybook } = require('../../src/playbook-compiler.js');
+    const pb = new PlaybookStore({ profileId: PROFILE }).get('feature');
+    const c = compilePlaybook(pb, { goal: 'strict' });
+    const store = G.durableStore();
+    const { task } = store.createPlan({ profile_id: PROFILE, goal: c.goal, user_value: c.user_value,
+      acceptance_criteria: c.acceptance_criteria, items: c.items, hooks: c.hooks, playbook_id: pb.id, playbook_version: pb.version,
+      execution_policy: { level_map: LEVEL_MAP, hooks_approved: true, finalization: 'strict' } });
+    store.updateTask(task.id, PROFILE, { status: 'active' });
+    const told = [];
+    const t = await drive(G, task.id, { runTask: scriptedEngine({ calls: [] }), registry: fakeGitHub(),
+      llmValidate: async () => ({ status: 'fail', subject: null, evidence: { reason: 'judge says no' } }),
+      notify: async ({ text }) => { told.push(text); } });
+    expect(t.status).toBe('blocked');
+    expect(store.getTask(task.id, PROFILE).blocker_reason).toMatch(/unmet checks/);
+    expect(told.some(x => /unmet checks/.test(x))).toBe(true);
+    expect(readDefects({ taskId: task.id, kind: 'blocked' }).length).toBeGreaterThan(0);
+  }, 30_000);
+
+  it('an agent may close its current step as an exception — no judge, logged, plan goes on', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { readDefects } = require('../../src/playbook-defects-log.js');
+    const { task } = startPlan(G, 'feature');
+    const judged = [];
+    const onStep = async ({ title, stepId, tools }) => {
+      if (!/^Наблюдение после релиза/.test(title)) return;
+      const r = await tools.task_item_exception.handler({ item_id: stepId, reason: 'CLI без прода — наблюдать нечего' }, { userId: PROFILE });
+      expect(r.error).toBeUndefined();
+    };
+    const t = await drive(G, task.id, { runTask: scriptedEngine({ calls: [], onStep }), registry: fakeGitHub(),
+      llmValidate: async (ctx) => { judged.push(ctx.item.title); return { status: 'pass', subject: null, evidence: {} }; } });
+    expect(t.status).toBe('done');
+    expect(judged.some(x => /^Наблюдение после релиза/.test(x))).toBe(false); // no judge for an exception
+    const ex = readDefects({ taskId: task.id, kind: 'exception' });
+    expect(ex).toHaveLength(1);
+    expect(ex[0]).toMatchObject({ step: expect.stringMatching(/^Наблюдение/), reason: 'CLI без прода — наблюдать нечего', playbook: 'feature' });
+    // guard: a step that is not running cannot be excepted
+    const tools = require('../../src/mcp-skills/tools/101-durable-tasks.js').tools;
+    const [first] = G.durableStore().listTaskItems(task.id, PROFILE);
+    expect((await tools.task_item_exception.handler({ item_id: first.id, reason: 'x' }, { userId: PROFILE })).error).toMatch(/running/);
   }, 30_000);
 
   it('a step killed by a restart is re-queued and completes', async () => {
