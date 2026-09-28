@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const skillsEnforce = require('./skills/enforce');
 const { SKILL_SIBLINGS, siblingPaths: siblingPathsOf } = require('./skill-siblings');
+const { engineeringWorkspaceRoot, engineeringMirrorsRoot } = require('./data-paths');
 
 // Services whose cookies we know how to inject into Playwright
 const COOKIE_DOMAINS = {
@@ -154,6 +155,11 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths } 
     ...(process.env.GCP_REGION      ? { GCP_REGION:      process.env.GCP_REGION }      : {}),
     ...(userName       ? { AGENT_USER_NAME:    userName }       : {}),
     ...(userHandle     ? { AGENT_USER_HANDLE: userHandle }     : {}),
+    // Engineering workspaces + mirrors inside this profile (issue #1649, src/data-paths.js).
+    ...(userId ? {
+      ENGINEERING_WORKSPACE_ROOT: engineeringWorkspaceRoot(String(userId)),
+      ENGINEERING_MIRRORS_ROOT: engineeringMirrorsRoot(String(userId)),
+    } : {}),
     // Registry (src/mcp-skills/registry.js) skips the catalog modules hidden by this file.
     ...(skillsFile ? { SKILLS_RESOLVED: skillsFile } : {}),
     // NO AGENT_SESSION_FILE here: .mcp.json is ONE file per profile, rewritten by every run,

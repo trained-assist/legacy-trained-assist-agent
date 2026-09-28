@@ -94,6 +94,17 @@ test('bridged MCP config on disk carries no server env; real specs stay in memor
   }
 });
 
+test('engineering workspaces + mirrors are inside the profile, handed to MCP by env', () => {
+  const workDir = fs.mkdtempSync(path.join(tmpRoot, 'eng-'));
+  const { buildMcpConfig } = require('../src/browser');
+  const dp = require('../src/data-paths');
+  const env = buildMcpConfig(workDir, 'alice', {}).mcpServers['trained-skills'].env;
+  const profile = dp.userWorkDir('alice');
+  assert.equal(env.ENGINEERING_WORKSPACE_ROOT, path.join(profile, 'engineering-workspaces'));
+  assert.equal(env.ENGINEERING_MIRRORS_ROOT, path.join(profile, 'engineering-mirrors'));
+  assert.ok(dp.engineeringWorkspacesDir('alice').startsWith(profile + path.sep), 'nothing under the shared data dir');
+});
+
 // ── runEngineProcess end-to-end with the allowlist + bridge ───────────────────
 
 const fakeMcp = writeExe(path.join(tmpRoot, 'fake-mcp.js'), `#!/usr/bin/env node
