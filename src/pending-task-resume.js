@@ -7,6 +7,8 @@
 //              the resume closes the web mutation receipt
 //   telegram — a chat task (legacy entries: identified by userId)
 // null → nowhere to deliver the result, not resumable.
+const { userWorkDir } = require('./data-paths');
+
 const WEB_TASK_RE = /^(.+)-web-([A-Za-z0-9_-]+)$/;
 function resumeSinkOf(p) {
   if (!p) return null;
@@ -33,4 +35,20 @@ function isTaskResumable(p, now, windowMs) {
   return (now - p.startedAt) < windowMs;
 }
 
-module.exports = { isTaskResumable, resumeSinkOf, WEB_TASK_RE };
+// Read-time workspace resolution for a journaled task (epic #1789 P1).
+//
+// Identity ≠ location (see the header of src/data-paths.js): the journal
+// identifies the task's profile by username/profileId and NEVER by a machine
+// path, so a profile copied to another directory — or another VM — still
+// resumes in its new home. The workspace path is derived here, never trusted
+// from the record.
+//
+// Legacy (pre-P1) records carry an absolute `workDir` written by the old
+// runner. It is only consulted when the record has no profile identity, so
+// those journals keep resuming; anything with a username resolves by identity.
+function resolvePendingWorkDir(p) {
+  if (p && p.username) return userWorkDir(p.username);
+  return (p && p.workDir) || null;
+}
+
+module.exports = { isTaskResumable, resumeSinkOf, resolvePendingWorkDir, WEB_TASK_RE };
