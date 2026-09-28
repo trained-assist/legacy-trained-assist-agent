@@ -1,0 +1,396 @@
+# profile-clean-list.yaml — M1 clean list for profile migration (#1784).
+#
+# ONE definition of the profile boundary: this file drives the M0 inventory
+# classifier (scripts/profile-migrate/classifier.cjs), and later becomes the
+# profile .gitignore whitelist (#1715 B.2). Do not fork the logic.
+#
+# Schema (deliberately a strict YAML subset — parsed by the fail-loud parser in
+# classifier.cjs, no YAML library dependency):
+#
+#   version: <int>                    schema version, bumped on incompatible change
+#   rules:
+#     - pattern: <glob>               relative to the profile root
+#       action: DELETE|ARCHIVE|MOVE|DEDUP|SYSTEM|KEEP
+#       reason: "<why>"               required, human-readable
+#       when: git-repo                optional precondition (see below)
+#
+# Matching semantics:
+#   * pattern WITHOUT "/"  → matched against the entry NAME at any depth
+#     (node_modules matches ./node_modules and projects/x/node_modules;
+#      *.log matches any file named *.log anywhere)
+#   * pattern WITH "/"     → anchored at the profile root
+#     (**/expo-pipeline/**/*.html matches projects/<slug>/expo-pipeline/a.html)
+#   * A rule matches a file if it matches the file itself OR ANY ancestor
+#     directory — so a matched directory classifies its whole subtree.
+#   * when: git-repo → the rule only applies while inside a working copy
+#     (a directory, at any depth, that contains .git — file or dir).
+#   * FIRST matching rule in file order wins; no match → UNKNOWN.
+#     Put specific rules above general ones.
+#
+# Actions follow the M1 table of epic #1784:
+#   DELETE  regenerable (caches, node_modules, logs, html scrape caches)
+#   ARCHIVE sessions / working copies (M2/M3 decide the details)
+#   MOVE    media originals → blob store, *.ref.json stays in place (M4)
+#   DEDUP   duplicate content (sha256) — content-based, not path-based:
+#           no path rule uses it yet; duplicates are detected by hashing (M5)
+#   SYSTEM  telemetry / durable engine state → system store, not the profile
+#   KEEP    the profile's text image (md/txt/csv/json, persona, contexts, playbooks)
+#   UNKNOWN everything else — NEVER deleted, only reported (epic principle 2)
+#
+# Provenance is marked per rule: "[M1]" = the epic's table verbatim;
+# "[observed]" = a 2026-09-28 VM scan (ssh vova@136.65.7.197) instance of the
+# same table category. Anything needing a human judgement call stays UNKNOWN
+# on purpose — grow this list from the report's top-unclassified patterns.
+
+version: 1
+
+rules:
+  # ── DELETE: regenerable ──────────────────────────────────────────────────
+  - pattern: node_modules
+    action: DELETE
+    reason: "[M1] regenerable dependency tree"
+
+  - pattern: .agent-home/.cache
+    action: DELETE
+    reason: "[M1] agent-home cache (ms-playwright, fontconfig, gh, …) — regenerable"
+
+  - pattern: .agent-home/.npm
+    action: DELETE
+    reason: "[M1] npm cache inside the agent HOME — regenerable"
+
+  - pattern: .npm
+    action: DELETE
+    reason: "[M1] npm cache (profile-as-HOME) — regenerable, any depth"
+
+  - pattern: ms-playwright
+    action: DELETE
+    reason: "[M1] Playwright browser binaries — regenerable, any depth"
+
+  - pattern: .tmp
+    action: DELETE
+    reason: "[M1] temp dir"
+
+  - pattern: .mcp-runs
+    action: DELETE
+    reason: "[M1] per-run MCP scratch — regenerable"
+
+  - pattern: .run-inputs
+    action: DELETE
+    reason: "[M1] per-run inputs — regenerable"
+
+  - pattern: .playwright-mcp
+    action: DELETE
+    reason: "[M1] Playwright MCP scratch — regenerable"
+
+  - pattern: restart-v2
+    action: DELETE
+    reason: "[M1] restart scratch — regenerable"
+
+  - pattern: "*-tmp"
+    action: DELETE
+    reason: "[observed] temp dirs (hermes-tmp) — ephemeral, any depth"
+
+  - pattern: tmp
+    action: DELETE
+    reason: "[observed] temp dirs (.agent-home/tmp) — ephemeral, any depth"
+
+  - pattern: "*.log"
+    action: DELETE
+    reason: "[M1] logs — regenerable, any depth"
+
+  - pattern: logs
+    action: DELETE
+    reason: "[M1] log directories"
+
+  - pattern: log
+    action: DELETE
+    reason: "[observed] log dirs (.agent-home/.local/share/opencode/log) — regenerable"
+
+  - pattern: .inn-cache
+    action: DELETE
+    reason: "[M1] INN lookup html cache — regenerable"
+
+  - pattern: "**/expo-pipeline/**/*.html"
+    action: DELETE
+    reason: "[M1] expo-pipeline scrape html caches — regenerable"
+
+  - pattern: "**/gc_export/**/*.html"
+    action: DELETE
+    reason: "[observed] GetCourse export html cache (efi) — regenerable scrape output"
+
+  - pattern: __pycache__
+    action: DELETE
+    reason: "[observed] Python bytecode cache — regenerable, any depth"
+
+  - pattern: "*.pyc"
+    action: DELETE
+    reason: "[observed] Python bytecode — regenerable, any depth"
+
+  - pattern: "*.pyo"
+    action: DELETE
+    reason: "[observed] Python bytecode — regenerable, any depth"
+
+  # Chrome user-data-dir caches (~380 MB across 3 profiles, observed 2026-09-28):
+  # downloaded model/cert/TTS/hyphenation data and page caches — regenerable.
+  # Deliberately NOT covered: `chrome/` itself and `chrome/Default` (Cookies,
+  # Login Data, Account Web Data, Local State) — credential stores stay UNKNOWN
+  # for the C1–C4 token extraction, per epic precondition.
+  - pattern: chrome/component_crx_cache
+    action: DELETE
+    reason: "[observed] Chrome extension download cache — regenerable"
+
+  - pattern: chrome/WasmTtsEngine
+    action: DELETE
+    reason: "[observed] Chrome downloaded TTS engine — regenerable"
+
+  - pattern: chrome/segmentation_platform
+    action: DELETE
+    reason: "[observed] Chrome downloaded segmentation profiles — regenerable"
+
+  - pattern: "chrome/Safe Browsing"
+    action: DELETE
+    reason: "[observed] Chrome Safe Browsing lists — regenerable"
+
+  - pattern: chrome/optimization_guide_model_store
+    action: DELETE
+    reason: "[observed] Chrome downloaded ML models (.tflite) — regenerable"
+
+  - pattern: chrome/OnDeviceHeadSuggestModel
+    action: DELETE
+    reason: "[observed] Chrome downloaded suggestion model — regenerable"
+
+  - pattern: chrome/hyphen-data
+    action: DELETE
+    reason: "[observed] Chrome hyphenation data — regenerable"
+
+  - pattern: chrome/CertificateRevocation
+    action: DELETE
+    reason: "[observed] Chrome certificate revocation lists — regenerable"
+
+  - pattern: "chrome/BrowserMetrics*"
+    action: DELETE
+    reason: "[observed] Chrome metrics pma files — regenerable telemetry"
+
+  - pattern: chrome/Default/GPUCache
+    action: DELETE
+    reason: "[observed] Chrome GPU cache — regenerable"
+
+  - pattern: chrome/Default/Cache
+    action: DELETE
+    reason: "[observed] Chrome page cache — regenerable"
+
+  - pattern: claude-in-chrome
+    action: DELETE
+    reason: "[observed] Claude-in-Chrome extension assets — re-downloaded by the extension"
+
+  # ── SYSTEM: telemetry / durable engine state → system store ─────────────
+  - pattern: usage.json
+    action: SYSTEM
+    reason: "[M1] usage telemetry — belongs to the system store, not the profile"
+
+  - pattern: prompt-audit.jsonl
+    action: SYSTEM
+    reason: "[M1] prompt audit trail — belongs to the system store, not the profile"
+
+  - pattern: .agent-home/.local/share/opencode/opencode.db*
+    action: SYSTEM
+    reason: "[observed] durable engine state (OpenCode SQLite db + wal/shm) — SYSTEM row: durable-состояние, не профиль"
+
+  - pattern: .agent-home/.local/share/opencode/tool-output
+    action: SYSTEM
+    reason: "[observed] engine-side tool-output store — engine state, not profile text"
+
+  # ── ARCHIVE: sessions (M2) ──────────────────────────────────────────────
+  - pattern: sessions
+    action: ARCHIVE
+    reason: "[M1] session files (sessions/, .agent-home/.claude/sessions) → M2"
+
+  - pattern: .agent-home/.claude/projects
+    action: ARCHIVE
+    reason: "[observed] Claude Code session transcripts — the sessions/ class, → M2"
+
+  # ── ARCHIVE: working copies (M3 decides clean → DELETE / dirty → ARCHIVE)
+  # Applies inside any git working copy (dir containing .git at any depth):
+  # engineering-workspaces/**, engineering-mirrors/**, projects/<slug>/<clone>.
+  - pattern: "**"
+    action: ARCHIVE
+    when: git-repo
+    reason: "[M1] git working copy / clone — M3: clean → DELETE, dirty → archive bundle"
+
+  # ── MOVE: media originals → blob store (M4), *.ref.json stays ───────────
+  - pattern: "**/media/intake-store"
+    action: MOVE
+    reason: "[observed] content-addressed intake blob store (<sha>/data + meta.json) → R2, same treatment as media originals"
+
+  - pattern: "*.docx"
+    action: MOVE
+    reason: "[observed] binary document original → blob store (git per-file cap is 1 MB, M6)"
+
+  - pattern: "*.doc"
+    action: MOVE
+    reason: "[observed] binary document original → blob store (M6)"
+
+  - pattern: "*.xlsx"
+    action: MOVE
+    reason: "[observed] binary document original → blob store (M6)"
+
+  - pattern: "*.xls"
+    action: MOVE
+    reason: "[observed] binary document original → blob store (M6)"
+
+  - pattern: "*.pptx"
+    action: MOVE
+    reason: "[observed] binary document original → blob store (M6)"
+
+  - pattern: "*.ppt"
+    action: MOVE
+    reason: "[observed] binary document original → blob store (M6)"
+
+  - pattern: "*.pdf"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json (docs/MEDIA-R2.md)"
+
+  - pattern: "*.png"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.jpg"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.jpeg"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.gif"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.webp"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.bmp"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.tif"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.tiff"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.heic"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.mp3"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.wav"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.ogg"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.opus"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.m4a"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.flac"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.mp4"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.mov"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json (observed: 1.1 GB interview video)"
+
+  - pattern: "*.mkv"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.webm"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.avi"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.m4v"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  - pattern: "*.3gp"
+    action: MOVE
+    reason: "[M1] media original → R2 blob store, leave *.ref.json"
+
+  # DEDUP (M5) is content-based (sha256 across profile/media/projects), so it
+  # has no path rule here — the action exists in the schema for phase M5:
+  #   - pattern: media/**
+  #     action: DEDUP
+  #     reason: "blob-store copy is canonical; local copies become *.ref.json"
+
+  # ── KEEP: the profile's text image ──────────────────────────────────────
+  - pattern: "*.md"
+    action: KEEP
+    reason: "[M1] text image (notes, checklists, playbooks, docs)"
+
+  - pattern: "*.mdx"
+    action: KEEP
+    reason: "[M1] text image (docs)"
+
+  - pattern: "*.txt"
+    action: KEEP
+    reason: "[M1] text image (notes, transcripts)"
+
+  - pattern: "*.csv"
+    action: KEEP
+    reason: "[M1] text image (project data)"
+
+  - pattern: "*.tsv"
+    action: KEEP
+    reason: "[M1] text image (project data)"
+
+  - pattern: "*.json"
+    action: KEEP
+    reason: "[M1] text image (project state, profile config)"
+
+  - pattern: "*.jsonl"
+    action: KEEP
+    reason: "[M1] text image (append-only records; prompt-audit.jsonl is SYSTEM above)"
+
+  - pattern: "*.yml"
+    action: KEEP
+    reason: "[M1] text image (configs)"
+
+  - pattern: "*.yaml"
+    action: KEEP
+    reason: "[M1] text image (configs)"
+
+  - pattern: contexts
+    action: KEEP
+    reason: "[M1] contexts — key-value state of MCP skills, part of the profile"
+
+  - pattern: playbooks
+    action: KEEP
+    reason: "[M1] playbooks — part of the profile"
+
+  - pattern: persona
+    action: KEEP
+    reason: "[M1] persona — part of the profile"
+
+  # No rule matches → UNKNOWN. Never deleted, always reported with volume.
