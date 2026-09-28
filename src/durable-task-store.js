@@ -595,7 +595,7 @@ class DurableTaskStore {
       JOIN durable_tasks t ON t.id = i.task_id
       WHERE t.profile_id = ? AND t.status = 'active' AND i.status = 'waiting' AND i.wait_json IS NOT NULL
       ORDER BY i.updated_at DESC LIMIT 20`).all(profileId)
-      .filter(row => { try { return JSON.parse(row.wait_json).awaiting_user === true; } catch { return false; } });
+      .filter(row => { try { const w = JSON.parse(row.wait_json); return w.awaiting_user === true && !w.woken_at; } catch { return false; } });
   }
 
   expireWaitingDeadlines(now = nowMs()) {
