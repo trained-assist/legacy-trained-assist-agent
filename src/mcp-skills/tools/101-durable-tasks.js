@@ -169,6 +169,9 @@ module.exports = {
         const profileId = requireProfile(ctx);
         try {
           const item = store().skipItem(item_id, profileId, { reason, by: 'agent' });
+          const t = store().getTask(item.task_id, profileId);
+          require('../../playbook-defects-log').logDefect({ profile_id: profileId, task_id: item.task_id,
+            playbook: t && t.playbook_id || null, kind: 'skip', item_id: item.id, step: item.title, stage: item.stage, reason });
           // Skipping the last open step must not leave a finished plan unfinalized.
           const progress = store().progressSummary(item.task_id, profileId);
           if (progress.total > 0 && progress.finished >= progress.total) store().finalizePlan(item.task_id, profileId);
@@ -323,6 +326,24 @@ module.exports = {
       handler: async ({ item_id, message }, ctx) => {
         const profileId = requireProfile(ctx);
         return store().wakeItem(item_id, profileId, { message: message ?? null, by: 'user' });
+      },
+    },
+
+    task_item_exception: {
+      description:
+        'Close the step you are running NOW as an exception — done differently than the checklist expects, or ' +
+        'not applicable — with a concrete reason. Then finish your reply with DURABLE: done. The step\'s checks are ' +
+        'recorded as passed-by-exception (no judge) and the exception is logged for checklist improvement and shown ' +
+        'to the owner. Use it honestly: an exception is visible, a silent miss is not.',
+      inputSchema: {
+        type: 'object',
+        required: ['item_id', 'reason'],
+        properties: { item_id: { type: 'string', description: 'Your Step id' }, reason: { type: 'string' } },
+      },
+      handler: async ({ item_id, reason }, ctx) => {
+        const profileId = requireProfile(ctx);
+        try { return { item: store().markItemException(item_id, profileId, { reason, by: 'agent' }) }; }
+        catch (e) { return { error: e.message }; }
       },
     },
 

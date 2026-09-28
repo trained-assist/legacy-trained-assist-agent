@@ -94,6 +94,17 @@ test('bridged MCP config on disk carries no server env; real specs stay in memor
   }
 });
 
+test('engineering workspaces + mirrors are inside the profile, handed to MCP by env', () => {
+  const workDir = fs.mkdtempSync(path.join(tmpRoot, 'eng-'));
+  const { buildMcpConfig } = require('../src/browser');
+  const dp = require('../src/data-paths');
+  const env = buildMcpConfig(workDir, 'alice', {}).mcpServers['trained-skills'].env;
+  const profile = dp.userWorkDir('alice');
+  assert.equal(env.ENGINEERING_WORKSPACE_ROOT, path.join(profile, 'engineering-workspaces'));
+  assert.equal(env.ENGINEERING_MIRRORS_ROOT, path.join(profile, 'engineering-mirrors'));
+  assert.ok(dp.engineeringWorkspacesDir('alice').startsWith(profile + path.sep), 'nothing under the shared data dir');
+});
+
 // ── runEngineProcess end-to-end with the allowlist + bridge ───────────────────
 
 const fakeMcp = writeExe(path.join(tmpRoot, 'fake-mcp.js'), `#!/usr/bin/env node
@@ -208,6 +219,20 @@ function bridgeHandshake(socketPath, token, server) {
     s.on('error', reject);
   });
 }
+
+test('run-as is skipped (allowlist only) when the engine cwd is outside the profile — engineering worktrees', async () => {
+  const { prepareEngineSpawn } = require('../src/runner/engine-isolation');
+  const wd = fs.mkdtempSync(path.join(tmpRoot, 'wd-'));
+  const outside = fs.mkdtempSync(path.join(tmpRoot, 'ws-'));
+  const config = { ...iso.isolationConfig({ AGENT_RUN_AS_USERS: 'never-leased' }), slotLockDir: path.join(tmpRoot, 'locks-x') };
+  const r = await prepareEngineSpawn({ engine: 'claude', taskId: 't-ws', user: { username: 'u', workDir: wd }, cwd: outside, engineEnv: { ...SERVER_ENV }, config });
+  try {
+    assert.equal(r.runAs, null, 'no slot leased');
+    assert.equal(r.isolated, true, 'still allowlisted + bridged');
+    assert.ok(!('AGENT_SECRET' in r.env));
+    assert.deepEqual(r.wrap('/bin/x', ['a']), ['/bin/x', ['a']]);
+  } finally { r.release(); }
+});
 
 test('bridge: a valid token only opens servers registered for that run', async () => {
   const sock = await bridge.ensureBridge(process.env.AGENT_MCP_BRIDGE_DIR);

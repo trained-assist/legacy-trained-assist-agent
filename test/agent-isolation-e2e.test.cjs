@@ -16,7 +16,7 @@ const { spawnSync, execFileSync } = require('child_process');
 const enabled = process.env.AGENT_ISOLATION_E2E === '1' && process.platform === 'linux';
 const PREFIX = 'tae2e-';
 const GROUP = 'tae2e';
-const SLOTS = [`${PREFIX}1`, `${PREFIX}2`];
+const SLOTS = [`${PREFIX}1`, `${PREFIX}2`, `${PREFIX}3`];
 const SCRIPT = path.join(__dirname, '..', 'scripts', 'ops', 'agent-isolation-setup.sh');
 
 function sudo(args, opts = {}) {
@@ -38,6 +38,9 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
     fs.writeFileSync(path.join(tokensDir, p, 'github'), `${p}-gh-token\n`, { mode: 0o600 });
   }
   fs.writeFileSync(secretsFile, 'AGENT_SECRET=srv-agent-secret\n', { mode: 0o600 });
+  // a chat attachment the service stored with 0600 (server.js intake)
+  fs.mkdirSync(path.join(users, 'alice', 'media', 'intake'), { recursive: true });
+  fs.writeFileSync(path.join(users, 'alice', 'media', 'intake', 'att.txt'), 'attachment-ok\n', { mode: 0o600 });
   // a repo in the profile, created by the service user (engineering workspaces look like this)
   const repo = path.join(users, 'alice', 'repo');
   fs.mkdirSync(repo);
@@ -54,7 +57,7 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
 
   const setup = sudo(['bash', SCRIPT, '--apply', '--service-user', me, '--service-home', home,
     '--users-dir', users, '--tokens-dir', tokensDir, '--data-dir', dataDir, '--secrets-file', secretsFile,
-    '--slots', '2', '--prefix', PREFIX, '--group', GROUP,
+    '--slots', '3', '--prefix', PREFIX, '--group', GROUP,
     '--skip-engines', '--skip-firewall', '--skip-systemd', '--skip-sa-review']);
   assert.equal(setup.status, 0, `setup failed:\n${setup.stdout}\n${setup.stderr}`);
 
@@ -74,6 +77,7 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
     `id -un`,
     `cat ${users}/alice/notes.md && echo OWN_READ_OK`,
     `echo from-agent > ${users}/alice/agent-wrote.txt && echo OWN_WRITE_OK`,
+    `cat ${users}/alice/media/intake/att.txt`,
     `cat ${users}/bob/notes.md && echo LEAK_OTHER_PROFILE`,
     `ls ${users} && echo LEAK_PROFILE_LIST`,
     `cat ${tokensDir}/bob/github && echo LEAK_OTHER_TOKENS`,
@@ -95,6 +99,7 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
   assert.match(out, new RegExp(`^${runA.slot}$`, 'm'), 'runs as the slot user');
   assert.match(out, /OWN_READ_OK/);
   assert.match(out, /OWN_WRITE_OK/);
+  assert.match(out, /^attachment-ok$/m, 'a 0600 attachment the service stored is readable by this profile\'s run');
   assert.match(out, /^GIT_STATUS_OK$/m, 'git works on a service-owned repo (safe.directory)');
   assert.match(out, /^GIT_AUTHOR=Service Bot$/m, 'commit identity from the service git config');
   for (const leak of ['LEAK_OTHER_PROFILE', 'LEAK_PROFILE_LIST', 'LEAK_OTHER_TOKENS', 'LEAK_TOKEN_FILE', 'LEAK_SECRETS_FILE']) {
@@ -111,8 +116,23 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
   assert.equal(fs.readFileSync(wrote, 'utf8'), 'from-agent\n');
   fs.appendFileSync(wrote, 'service-appended\n');
 
-  runA.release();
   runB.release();
+
+  // A file the agent created with a typical 0644 mode stays writable for the NEXT run,
+  // which is another slot (opencode's session DB broke on exactly this).
+  const shared = path.join(users, 'alice', 'agent-0644.txt');
+  const [sb, sa] = runA.spawnArgv('/bin/sh', ['-c', `umask 022; echo one > ${shared}`]);
+  spawnSync(sb, sa, { env: iso.buildAgentEnv(serviceEnv, { extra: runA.env }), cwd: path.join(users, 'alice') });
+  runA.release();
+  // occupy the slot alice just used, so her next run lands on a different one
+  const hold = await iso.prepareIsolatedRun(cfg, { workDir: path.join(users, 'bob'), engine: 'none', serviceHome: home });
+  const runA2 = await iso.prepareIsolatedRun(cfg, { workDir: path.join(users, 'alice'), engine: 'none', serviceHome: home });
+  assert.notEqual(runA2.slot, runA.slot, 'next run of alice is another slot');
+  const [wb, wa] = runA2.spawnArgv('/bin/sh', ['-c', `echo two >> ${shared} && echo APPEND_OK`]);
+  const w = spawnSync(wb, wa, { env: iso.buildAgentEnv(serviceEnv, { extra: runA2.env }), cwd: path.join(users, 'alice'), encoding: 'utf8' });
+  assert.match(w.stdout, /APPEND_OK/, `another slot can write the previous slot's file: ${w.stderr}`);
+  runA2.release();
+  hold.release();
 
   // After release, the slot that served alice is reused for bob — alice is closed again.
   const runB2 = await iso.prepareIsolatedRun(cfg, { workDir: path.join(users, 'bob'), engine: 'none', serviceHome: home });
@@ -151,11 +171,15 @@ test('runEngineProcess as a slot user: allowlisted env, MCP through the bridge, 
 env > "$HOME/engine.env"
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | "${process.execPath}" "${client}" trained-skills > "$HOME/mcp.out" 2>&1
 cat ${home}/secrets.env > "$HOME/secrets.out" 2>&1
+cat "$2" > "$HOME/sys.out" 2>&1
 id -u > "$HOME/uid"
 echo '{"type":"result","result":"ok"}'
 `);
   fs.chmodSync(engine, 0o755);
   fs.writeFileSync(path.join(home, 'secrets.env'), 'AGENT_SECRET=srv-agent-secret\n', { mode: 0o600 });
+  // the runner writes the system prompt into the profile with mode 0600 (persona.js)
+  const sysPrompt = path.join(workDir, '.system-prompt.txt');
+  fs.writeFileSync(sysPrompt, 'SYS-PROMPT-OK\n', { mode: 0o600 });
 
   t.after(() => {
     for (const s of SLOTS) sudo(['userdel', s]);
@@ -164,7 +188,7 @@ echo '{"type":"result","result":"ok"}'
     sudo(['rm', '-rf', home, pub]);
   });
   const setup = sudo(['bash', SCRIPT, '--apply', '--service-user', me, '--service-home', home,
-    '--slots', '2', '--prefix', PREFIX, '--group', GROUP,
+    '--slots', '3', '--prefix', PREFIX, '--group', GROUP,
     '--skip-engines', '--skip-firewall', '--skip-systemd', '--skip-sa-review']);
   assert.equal(setup.status, 0, `setup failed:\n${setup.stdout}\n${setup.stderr}`);
 
@@ -184,7 +208,7 @@ echo '{"type":"result","result":"ok"}'
     cleanEnv: { PATH: '/usr/local/bin:/usr/bin:/bin', AGENT_SECRET: 'srv-agent-secret' }, userTokens: { GH_TOKEN: 'alice-gh' },
     sessionFilePath: '', restartShutdown: () => false, activeTimers: new Map(),
     tgEdit: async () => ({ ok: true }), tgSend: async () => ({ ok: true }), outputCallback: null,
-    engineBin: engine, engineArgs: [], cwd: workDir,
+    engineBin: engine, engineArgs: ['--append-system-prompt-file', sysPrompt], cwd: workDir,
     bridgedServers: { 'trained-skills': { command: process.execPath, args: [fakeMcp] } },
   });
   assert.equal(r.claudeResult, 'ok', JSON.stringify(r.processError));
@@ -195,6 +219,7 @@ echo '{"type":"result","result":"ok"}'
   const env = fs.readFileSync(path.join(agentHome, 'engine.env'), 'utf8');
   for (const v of ['srv-agent-secret', 'srv-bot']) assert.ok(!env.includes(v), `engine env has ${v}`);
   assert.match(env, /^GH_TOKEN=alice-gh$/m);
+  assert.equal(fs.readFileSync(path.join(agentHome, 'sys.out'), 'utf8'), 'SYS-PROMPT-OK\n', 'engine reads a 0600 system prompt file the service passed');
   assert.doesNotMatch(fs.readFileSync(path.join(agentHome, 'secrets.out'), 'utf8'), /srv-agent-secret/);
   const mcp = JSON.parse(fs.readFileSync(path.join(agentHome, 'mcp.out'), 'utf8').trim());
   assert.deepEqual(mcp.result, { uid: process.getuid(), hasSecret: true }, 'MCP server ran as the service user with its env');
