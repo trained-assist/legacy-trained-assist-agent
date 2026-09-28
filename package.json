@@ -14,6 +14,7 @@
     "test": "vitest run && npm run test:cjs",
     "test:cjs": "node scripts/run-cjs-tests.js",
     "test:watch": "vitest",
+    "sandbox:speech": "node scripts/sandbox/speech-f0.mjs",
     "test:staging": "node scripts/staging/run.mjs",
     "test:mainstream": "node src/mainstream-tester/index.js"
   },
