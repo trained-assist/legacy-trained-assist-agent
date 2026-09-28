@@ -126,7 +126,14 @@ function tokenPath(username, service) {
   return path.join(TOKENS_ROOT, String(username), service);
 }
 
+// Engineering workspaces (git worktrees per task/plan) of a profile — written by the
+// engineering skill (engineering_spawn_workspace): <root>/<repo>/ws-*/code.
+function engineeringWorkspacesDir(username) {
+  return path.join(SYSTEM_ROOT, 'engineering-workspaces', String(username));
+}
+
 module.exports = {
+  engineeringWorkspacesDir,
   USERS_ROOT,
   SYSTEM_ROOT,
   TOKENS_ROOT,

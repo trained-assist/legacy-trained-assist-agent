@@ -172,6 +172,33 @@ test('with AGENT_ENV_ALLOWLIST=1 the engine sees no server-only env, MCP keeps i
   }
 });
 
+test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + config env refs), nothing else', async () => {
+  process.env.AGENT_ENV_ALLOWLIST = '1';
+  const svcHome = fs.mkdtempSync(path.join(tmpRoot, 'svc-oc-'));
+  fs.mkdirSync(path.join(svcHome, '.config', 'opencode'), { recursive: true });
+  fs.writeFileSync(path.join(svcHome, '.config', 'opencode', 'opencode.json'),
+    JSON.stringify({ provider: { gigachat: { options: { apiKey: '${GIGACHAT_TOKEN}' } }, other: { options: { apiKey: '{env:OTHER_PROVIDER_KEY}' } } } }));
+  process.env.AGENT_SERVICE_HOME = svcHome;
+  try {
+    const outDir = fs.mkdtempSync(path.join(tmpRoot, 'oc-'));
+    const opts = baseOpts(outDir, fakeEngine(outDir));
+    opts.engine = 'opencode';
+    opts.cleanEnv = { ...SERVER_ENV, GIGACHAT_TOKEN: 'gc-key', OTHER_PROVIDER_KEY: 'other-key' };
+    const r = await runEngineProcess(opts);
+    assert.equal(r.exitCode, 0);
+    const env = parseEnvFile(path.join(outDir, 'engine.env'));
+    assert.equal(env.OPENROUTER_API_KEY, 'srv-openrouter', 'opencode needs its OpenRouter key');
+    assert.equal(env.GIGACHAT_TOKEN, 'gc-key', '${VAR} reference in the opencode config');
+    assert.equal(env.OTHER_PROVIDER_KEY, 'other-key', '{env:VAR} reference in the opencode config');
+    for (const k of ['AGENT_SECRET', 'TELEGRAM_BOT_TOKEN', 'DEEPGRAM_API_KEY', 'INN_DADATA_SECRET', 'SOME_SERVER_ONLY_SETTING']) assert.ok(!(k in env), `${k} dropped`);
+    // claude runs on OAuth — no provider key passes for it
+    assert.deepEqual(iso.engineCredentialNames('claude'), []);
+  } finally {
+    delete process.env.AGENT_ENV_ALLOWLIST;
+    delete process.env.AGENT_SERVICE_HOME;
+  }
+});
+
 function bridgeHandshake(socketPath, token, server) {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -279,6 +306,14 @@ test('ops script: dry run is the default and changes nothing', () => {
   assert.match(r.stdout, /169\.254\.0\.0\/16 -j REJECT/);
   assert.match(r.stdout, /AGENT_RUN_AS_USERS=ta-agent-1,ta-agent-2/);
   assert.deepEqual(fs.readdirSync(home), [], 'nothing created');
+  // gate preparation mirrors src/agent-isolation.js gatePrepareCommands
+  const home2 = fs.mkdtempSync(path.join(tmpRoot, 'ops2-'));
+  fs.mkdirSync(path.join(home2, 'users', 'alice'), { recursive: true });
+  const r2 = spawnSync('bash', [script, '--service-user', 'svc', '--service-home', home2, '--slots', '1', '--skip-sa-review', '--skip-engines'], { encoding: 'utf8' });
+  const want = iso.gatePrepareCommands(iso.isolationConfig({ AGENT_RUN_AS_GROUP: 'ta-agents', AGENT_SERVICE_USER: 'svc' }), path.join(home2, 'users', 'alice'));
+  const printed = r2.stdout.replace(/\\/g, ''); // dry run prints argv with printf %q
+  for (const argv of want) assert.ok(printed.includes(`[dry-run] ${argv.join(' ')}`), `script prepares like the runner: ${argv.join(' ')}\n${r2.stdout}`);
+  assert.ok(!fs.existsSync(path.join(home2, 'users', 'alice', iso.GATE_MARKER)), 'dry run does not mark');
   const bad = spawnSync('bash', [script, '--service-user', 'svc', '--apply'], { encoding: 'utf8' });
   if (process.getuid && process.getuid() !== 0) assert.notEqual(bad.status, 0, '--apply refuses without root');
 });

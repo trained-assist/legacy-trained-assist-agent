@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const iso = require('../agent-isolation');
 const { issueRunToken, revokeRunToken } = require('../agent-run-tokens');
 const bridge = require('../agent-mcp-bridge');
@@ -67,8 +68,12 @@ async function prepareEngineSpawn({ engine, taskId, user, cwd, engineEnv, userTo
       cwd,
     });
     if (config.runAs) isoRun = await iso.prepareIsolatedRun(config, { workDir: user.workDir, cwd, engine, reach: [socket] });
+    const configFiles = engine === 'opencode'
+      ? [path.join(config.serviceHome || os.homedir(), '.config', 'opencode', 'opencode.json'), engineEnv.OPENCODE_CONFIG].filter(Boolean)
+      : [];
     const env = iso.buildAgentEnv(engineEnv, {
       userTokenNames: Object.keys(userTokens || {}),
+      engineCredentialNames: iso.engineCredentialNames(engine, { configFiles }),
       extra: { AGENT_RUN_TOKEN: runToken, AGENT_MCP_BRIDGE_SOCKET: socket, ...(isoRun ? isoRun.env : {}) },
     });
     const wrap = isoRun ? (bin, args) => isoRun.spawnArgv(bin, args) : (bin, args) => [bin, args];

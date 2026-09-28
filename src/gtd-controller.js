@@ -231,11 +231,11 @@ const FRESH_CLAIM_GRACE_MS = 30 * 1000; // just-claimed items: let the claiming 
 // recorded as inconclusive — a broken check must not look like a pass.
 // `validationMode` (P3d-1b) selects whether an inconclusive deterministic verdict
 // may be decided by the injectable cheap LLM validator.
-async function recordItemValidations(store, { task, item, executionId, registry, projectDir, validationMode = DEFAULT_VALIDATION_MODE, llmValidate = null, planText = null }) {
+async function recordItemValidations(store, { task, item, executionId, registry, projectDir, validationMode = DEFAULT_VALIDATION_MODE, llmValidate = null, planText = null, reply = null }) {
   let results;
   try {
     results = await evaluateItemValidationsModeAware(item, {
-      task, profileId: task.profile_id, projectDir, registry, mode: validationMode, llmValidate, planText,
+      task, profileId: task.profile_id, projectDir, registry, mode: validationMode, llmValidate, planText, reply,
     });
   } catch (e) {
     results = [{ key: '*', status: 'inconclusive', subject: null, evidence: { reason: 'evaluator-error', error: e.message } }];
@@ -734,7 +734,7 @@ async function settleDurableReply(ctx, reply) {
         // validated (pr_opened / ci_green) against the URL it printed.
         await recordItemValidations(store, {
           task, item: itemSnap, executionId, registry: validators, projectDir: itemProjectDir,
-          validationMode: mode, llmValidate, planText: `${planText}\n${said}`,
+          validationMode: mode, llmValidate, planText: `${planText}\n${said}`, reply: said,
         });
       }
       store.setItemEvidence(itemSnap.id, task.profile_id, {
