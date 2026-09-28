@@ -14,7 +14,7 @@ const opts = { taskId: 'task', user: { id: 42, username: 'test' }, secrets: { BO
 // MAX_CONCURRENT_TASKS). Per-profile cap waits were removed — a busy
 // lane/session is the one case where the "waiting for previous work" message
 // may appear.
-function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedToken = 'canonical-token', sessionsOnDisk = {}, scopeCalls = [] } = {}) {
+function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedToken = 'canonical-token', sessionsOnDisk = {}, scopeCalls = [], intents = {} } = {}) {
   const source = fs.readFileSync(require.resolve('../src/runner'), 'utf8');
   // Slice the real admission body. Epic #1527 PR1 renamed the public runTask
   // into a thin acceptedByChat/run-finished wrapper around _runTaskInner — the
@@ -32,6 +32,7 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
     console, Promise, Set, Date,
     STOP_TASK_INTENT: /$^/, GTD_STOP_INTENT: /$^/, WAKEUP_INTENT: /$^/, SKIP_TASK_INTENT: /$^/, ACTIVE_CHECKLIST_INTENT: /$^/, CHECKLIST_EDIT_INTENT: /$^/,
     isPreQueueQuickIntent: () => false,
+    ...intents,
     queuedSessions: new Set(),
     queuedByOwner: new Map(), pendingSessionStops: new Set(),
     ownerKey: (u, id) => `${u}\0${id}`, consumePendingStop: () => false,
@@ -151,4 +152,20 @@ test('own-chat session id is kept for admission (same-dialog ordering intact)', 
   });
   await h.start(); await tick();
   assert.equal(scopeCalls[0].sessionId, 's-own');
+});
+
+// Playbooks e2e (2026-09-28): a durable plan step's prompt mentioning «поправь … чек-лист»
+// was hijacked by the chat intent CHECKLIST_EDIT_INTENT — the run returned the checklist
+// autologin link instead of starting the engine (3 attempts in 2 s). Machine prompts
+// (internalGtd) must never go through chat intents; a human message still does.
+test('durable step prompt reaches the engine even when it matches a chat intent', async () => {
+  const { CHECKLIST_EDIT_INTENT, WAKEUP_INTENT } = require('../src/runner/intent-engine');
+  const prompt = '[DURABLE TASK — auto-execution]\nStep (6/13): Реализация\nInstructions: если по ходу нужно — поправь чек-лист в журнале; если агент завис — перезапусти шаг';
+  assert.ok(CHECKLIST_EDIT_INTENT.test(prompt) && WAKEUP_INTENT.test(prompt), 'the prompt really matches the chat intents');
+  let engineRuns = 0;
+  const h = harness({ taskOpts: { ...opts, user: { id: null, username: 'test' }, initialMsgId: null, task: prompt, internalGtd: true },
+    intents: { CHECKLIST_EDIT_INTENT, WAKEUP_INTENT, isPreQueueQuickIntent: () => true },
+    run: async () => { engineRuns++; } });
+  await h.start(); await tick();
+  assert.equal(engineRuns, 1, 'engine ran — no chat-intent interception for a machine prompt');
 });

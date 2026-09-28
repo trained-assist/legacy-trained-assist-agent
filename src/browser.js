@@ -3,6 +3,7 @@ const path = require('path');
 const os = require('os');
 const skillsEnforce = require('./skills/enforce');
 const { SKILL_SIBLINGS, siblingPaths: siblingPathsOf } = require('./skill-siblings');
+const { engineeringWorkspaceRoot, engineeringMirrorsRoot } = require('./data-paths');
 
 // Services whose cookies we know how to inject into Playwright
 const COOKIE_DOMAINS = {
@@ -79,7 +80,7 @@ function buildStorageState(tokensDir) {
  * `siblingPaths` (optional, test seam): overrides for the sibling checkout entrypoints
  * below; production always uses the computed repo-relative paths.
  */
-function writeMcpConfig(workDir, userId, { userName, userHandle, siblingPaths } = {}) {
+function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths } = {}) {
   // Note: --user-data-dir creates a persistent context, which is incompatible
   // with --storage-state (Playwright limitation). We rely on --storage-state
   // for both cookie injection and session persistence. Per-user isolation is
@@ -154,6 +155,11 @@ function writeMcpConfig(workDir, userId, { userName, userHandle, siblingPaths } 
     ...(process.env.GCP_REGION      ? { GCP_REGION:      process.env.GCP_REGION }      : {}),
     ...(userName       ? { AGENT_USER_NAME:    userName }       : {}),
     ...(userHandle     ? { AGENT_USER_HANDLE: userHandle }     : {}),
+    // Engineering workspaces + mirrors inside this profile (issue #1649, src/data-paths.js).
+    ...(userId ? {
+      ENGINEERING_WORKSPACE_ROOT: engineeringWorkspaceRoot(String(userId)),
+      ENGINEERING_MIRRORS_ROOT: engineeringMirrorsRoot(String(userId)),
+    } : {}),
     // Registry (src/mcp-skills/registry.js) skips the catalog modules hidden by this file.
     ...(skillsFile ? { SKILLS_RESOLVED: skillsFile } : {}),
     // NO AGENT_SESSION_FILE here: .mcp.json is ONE file per profile, rewritten by every run,
@@ -196,9 +202,29 @@ function writeMcpConfig(workDir, userId, { userName, userHandle, siblingPaths } 
     console.log(`[skills] ${path.basename(workDir)}: sections=${skillsPlan.sections.join(',')} hidden sib=${skillsPlan.hidden.siblings.join('|') || '-'} mod=${skillsPlan.hidden.modules.length} dom=${skillsPlan.hidden.domains.length}`);
   }
 
+  return config;
+}
+
+function writeMcpConfig(workDir, userId, opts = {}) {
+  const config = buildMcpConfig(workDir, userId, opts);
   const configPath = path.join(workDir, '.mcp.json');
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   return configPath;
 }
 
-module.exports = { writeMcpConfig, buildNalogOrigins };
+// Engine-facing MCP config for one run (issue #1649).
+// bridged=false → exactly writeMcpConfig; servers=null.
+// bridged=true  → the real server specs (with their server-side env) stay in memory
+//   and are returned as `servers` for src/agent-mcp-bridge.js; the file the engine
+//   reads only names the bridge client, so it carries no secrets and the MCP
+//   servers keep running as the service user, not as the run-as slot.
+function writeRunMcpConfig(workDir, userId, opts = {}, { bridged = false } = {}) {
+  if (!bridged) return { mcpConfig: writeMcpConfig(workDir, userId, opts), servers: null };
+  const { bridgedMcpConfig } = require('./agent-mcp-bridge');
+  const real = buildMcpConfig(workDir, userId, opts);
+  const configPath = path.join(workDir, '.mcp.json');
+  fs.writeFileSync(configPath, JSON.stringify(bridgedMcpConfig(real), null, 2));
+  return { mcpConfig: configPath, servers: real.mcpServers };
+}
+
+module.exports = { writeMcpConfig, buildMcpConfig, writeRunMcpConfig, buildNalogOrigins };
