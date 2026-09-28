@@ -64,7 +64,19 @@ also ends anything the agent left running in the background.
 ### Engine home and credentials
 
 `HOME=<profile>/.agent-home` (persistent per profile, so CLI state and native
-resume survive across slots), `TMPDIR` inside it.
+resume survive across slots), `TMPDIR=<profile>/.agent-home/tmp/<slot>`.
+
+- `TMPDIR` is one of the names glibc strips from the environment of setuid
+  programs (`unsecvars.h`), so it can never pass through sudo's environment,
+  whatever sudoers says. The runner passes every allowlisted name from that list
+  as a sudo `NAME=value` argv assignment (`sudoArgv`, issue #1791); a unit test
+  keeps the list in sync with the allowlist and the host loader.
+- The temp dir is per slot (overlapping runs of one profile never share it) and
+  is emptied by the slot on every release; on lease, day-old dirs of other slots
+  are swept too. `.agent-home/tmp` is excluded from profile migration/sync
+  (`config/profile-clean-list.yaml`).
+- `--verify` checks that `TMPDIR` reaches a slot and that every running slot
+  process has one.
 
 - claude: `CLAUDE_CODE_OAUTH_TOKEN` = the current short-lived access token. The
   refresh token never leaves the service home; the host refresh broker stays the
