@@ -51,6 +51,18 @@ function joined(state) {
   return !!state && state.elements.length > 0 && state.elements.every(e => TERMINAL.has(e.status));
 }
 
+// What the child's agent last told the owner (the reply of the latest finished step) — the
+// real reason when an agent pauses its own plan without a blocker_reason.
+function lastSaid(items) {
+  const done = items.filter(i => i.status === 'done' && i.evidence_json)
+    .sort((a, b) => (b.completed_at || b.updated_at || 0) - (a.completed_at || a.updated_at || 0))[0];
+  if (!done) return null;
+  let reply = '';
+  try { reply = String(JSON.parse(done.evidence_json).reply || ''); } catch { return null; }
+  reply = reply.replace(/\*\*/g, '').replace(/DURABLE:\s*\w+/gi, '').replace(/\s+/g, ' ').trim();
+  return reply ? reply.slice(0, 300) : null;
+}
+
 // ── Child state (deterministic) ─────────────────────────────────────────────
 // A step that exhausted its recovery budget stays `failed` while its task stays
 // `active` (the executor never claims past it) — for the batch that IS a failed child.
@@ -81,7 +93,7 @@ function childState(store, childId, profileId, { now = Date.now(), stallMs = DEF
     let policy = {};
     try { policy = task.execution_policy_json ? JSON.parse(task.execution_policy_json) : {}; } catch { policy = {}; }
     if (policy && policy.paused_by_batch) return { state: 'paused', progress };
-    return { state: 'needs_owner', progress, ask: task.blocker_reason || 'план поставлен на паузу своим агентом' };
+    return { state: 'needs_owner', progress, ask: task.blocker_reason || lastSaid(items) || 'план поставлен на паузу своим агентом' };
   }
   // A step parked on a user answer (task_item_wait awaiting_user) also waits for the owner.
   const asking = items.find(i => i.status === 'waiting' && i.wait_json && (() => {
@@ -363,9 +375,14 @@ async function advanceFanout(store, { task, item, now = Date.now(), notify = nul
       if (!byAsk.has(k)) byAsk.set(k, []);
       byAsk.get(k).push(el.name || el.key);
     }
-    for (const [ask, names] of byAsk) {
-      messages.push(`❓ Пачка «${state.config.title}»: ${names.length > 1 ? `${names.length} элемента ждут` : `«${names[0]}» ждёт`} твоего ответа${names.length > 1 ? ` (${names.join(', ')})` : ''}:\n${ask}\nОтветь один раз — продолжу ${names.length > 1 ? 'все' : 'его'}.`);
-    }
+    // ONE message per tick: the owner answers once for the whole batch, even when the
+    // children word the same blocker differently (live 28.09: 3 messages for one token).
+    const total = ownerAsks.length;
+    const head = total > 1 ? `${total} элемента ждут твоего ответа` : `«${[...byAsk.values()][0][0]}» ждёт твоего ответа`;
+    const body = total > 1
+      ? [...byAsk].map(([ask, names]) => `• ${names.join(', ')}: ${ask}`).join('\n')
+      : [...byAsk.keys()][0];
+    messages.push(`❓ Пачка «${state.config.title}»: ${head}:\n${body}\nОтветь один раз — продолжу ${total > 1 ? 'все' : 'его'}.`);
   }
 
   // 3. spawn queued elements (no batch cap — host slots gate the actual step fires).
