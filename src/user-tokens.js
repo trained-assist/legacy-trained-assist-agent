@@ -2,9 +2,17 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { tokensRoot, userTokensDir } = require('./data-paths');
 
-const TOKENS_ROOT = process.env.AGENT_TOKENS_ROOT || path.join(os.homedir(), 'agent-tokens');
+const TOKENS_ROOT = tokensRoot();
 const CONNECT_PENDING_DIR = path.join(os.homedir(), 'connect-pending');
+
+// Files whose values have a reviewed engine-facing contract. Everything else
+// (credentials, browser state, cookies, passwords, and future files) is
+// server-side only and is deliberately excluded by loadUserTokens().
+const ENGINE_TOKEN_FILES = new Set([
+  'github', 'figma', 'notion', 'linear', 'dadata', 'weeek', 'gdrive', 'nalog',
+]);
 const AGENT_PUBLIC_URL = (process.env.AGENT_PUBLIC_URL || 'https://136-65-7-197.sslip.io').replace(/\/$/, '');
 
 const ZEROCREDS_URL = (process.env.ZEROCREDS_URL || 'https://zerocreds.ru').replace(/\/$/, '');
@@ -124,7 +132,7 @@ const SERVICE_DISPLAY = {
 };
 
 function tokensDir(userId) {
-  return path.join(TOKENS_ROOT, String(userId));
+  return userTokensDir(userId);
 }
 
 // Parses credential files ({"value":...}, {"access_token":...}, plain string).
@@ -157,7 +165,7 @@ function loadUserTokens(userId, legacyChatId) {
     } catch (e) { console.warn('[user-tokens] readdir TOKENS_ROOT:', e.message); }
 
     for (const candidate of candidates) {
-      const legacyDir = path.join(TOKENS_ROOT, candidate);
+      const legacyDir = userTokensDir(candidate);
       if (!fs.existsSync(legacyDir)) continue;
       const hasContent = fs.readdirSync(legacyDir).filter(f => !LOG_FILES.has(f) && !f.startsWith('.')).length > 0;
       if (!hasContent) continue;
@@ -204,6 +212,7 @@ function loadUserTokens(userId, legacyChatId) {
     catch (e) { console.warn('[user-tokens] readFileSync race:', e.message); continue; } // file deleted between readdirSync and readFileSync — skip
     const label = file.toLowerCase();
     accessed.push(label);
+    if (!ENGINE_TOKEN_FILES.has(label)) continue;
     if (label === 'github') {
       const tok = readTokenValue(val);
       extra.GH_TOKEN = tok; extra.GITHUB_TOKEN = tok;
@@ -233,7 +242,7 @@ function loadUserTokens(userId, legacyChatId) {
         if (parsed.device_id)     extra.NALOG_DEVICE_ID     = parsed.device_id;
       } catch { extra.NALOG_TOKEN = val; }
     }
-    else extra[label.toUpperCase().replace(/[^A-Z0-9]/g, '_')] = val;
+    // Default-deny: unknown profile files remain server-side credentials/state.
   }
   if (accessed.length > 0) appendSecretsLog(userId, accessed);
   return extra;

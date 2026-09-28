@@ -10,6 +10,10 @@ it('disconnect routing mutates only explicitly requested credentials and reports
     const path = require('node:path');
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hh-disconnect-'));
     os.homedir = () => root;
+    // data-paths (the single token-root resolver since #1789 P0/C1) honors
+    // AGENT_TOKENS_DIR first; the vitest isolation setup exports its own, and a
+    // child process inherits it — so pin BOTH names to this test's root.
+    process.env.AGENT_TOKENS_DIR = root;
     process.env.AGENT_TOKENS_ROOT = root;
     delete process.env.OPENROUTER_API_KEY;
     const tokens = require('./src/user-tokens');
