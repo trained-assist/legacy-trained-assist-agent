@@ -15,3 +15,9 @@ Goal: Speech skill extraction — sibling trained-assist-speech-skill + delegate
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1782
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
+
+Goal: profile migration M0+M1 — clean list + read-only inventory classifier + aggregate report (#1784)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1794
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
