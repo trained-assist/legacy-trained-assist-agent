@@ -85,6 +85,14 @@ const SERVICE_FORM_SCHEMA = {
       { name: 'password', label: 'Пароль (необязательно)',       type: 'password', required: false, level: 'secret' },
     ],
   },
+  cloudflare: {
+    title: 'Подключить свой Cloudflare',
+    description: 'Необязательно: без него сайты публикуются в общий аккаунт. dash.cloudflare.com → My Profile → API Tokens → Create Token → шаблон «Edit Cloudflare Workers» или право Account · Cloudflare Pages · Edit.',
+    fields: [
+      { name: 'value',      label: 'API токен',  type: 'password', required: true,  level: 'secret' },
+      { name: 'account_id', label: 'Account ID (необязательно)', type: 'text', required: false, level: 'pii' },
+    ],
+  },
   'nalog-creds': {
     title: 'Налог.ру — войти через Госуслуги',
     description: 'Данные не попадают в чат — форма отправляет их напрямую на сервер. Ассистент войдёт автоматически и сохранит сессию.',
@@ -110,6 +118,7 @@ const SERVICE_DISPLAY = {
   'tilda-creds':   'Tilda (логин)',
   dadata:          'DaData',
   gdrive:          'Google Drive',
+  cloudflare:      'Cloudflare (свой)',
   hh:              'HeadHunter',
   site:            'Сайт (авто-логин)',
 };
@@ -213,6 +222,8 @@ function loadUserTokens(userId, legacyChatId) {
       } catch { /* plain string — no L2 in this file */ }
     }
     else if (label === 'gdrive') extra.GDRIVE_SA_JSON = val;
+    // Used server-side only by site_deploy (src/cf-pages.js); never exported to the engine env.
+    else if (label === 'cloudflare') continue;
     else if (label === 'nalog') {
       try {
         const parsed = JSON.parse(val);
