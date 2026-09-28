@@ -72,6 +72,18 @@ Goal: research-профиль на OpenCode Go — `opencode-go/mimo-v2.6-flash`
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live (живой hermes_research отвечает с Go-моделью в логе рана и grounded=true)
 
+Goal: ротация Go-ключей доходит до движка — OPENCODE_GO_API_KEYS (оба ключа через запятую) маппится на OPENCODE_API_KEY (#1792)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1827
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live (в логе рана research уходит с обоими ключами, оба опросены по отдельности)
+
+Goal: profile maintenance lock + POST /internal/flush-profile — safety precondition for running the migration LIVE (#1784 G1+G2)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1812
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
+
 Goal: поисковая лестница `search` в llm-ladder worker — opencode-go/mimo-v2.6-flash → openrouter/google/gemini-2.5-flash как фолбэк. ПОСЛЕДНИЙ пункт очереди (#1792)
 
 - [ ] В trained-assist-llm-ladder (config/ladders.json) добавлена лестница `search`: rung 1 `opencode-go/mimo-v2.6-flash`, rung 2 `openrouter/google/gemini-2.5-flash`
@@ -79,9 +91,4 @@ Goal: поисковая лестница `search` в llm-ladder worker — open
 - [ ] CI green → Merged to main
 - [ ] Deployed to prod — verified live (исчерпанная Go-allowance деградирует на gemini, а не роняет hermes_research)
 
-Факты, проверенные живьём 2026-09-28 — не переисследовывать: ключ `oc_sk_…` из `OPENCODE_GO_API_KEY` валиден под именем `OPENCODE_API_KEY`; `opencode run -m opencode-go/mimo-v2.6-flash` отвечает на продовом opencode 1.18.31, хотя модели нет в клиентском реестре того билда; сервер требует заголовок `x-opencode-session`. Пока лестницы нет, пин в `DIRECT_MODEL.research` работает без фолбэка: закончившаяся месячная allowance = упавший research.
-Goal: profile maintenance lock + POST /internal/flush-profile — safety precondition for running the migration LIVE (#1784 G1+G2)
-
-- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1812
-- [ ] Merged to main
-- [ ] Deployed to prod — verified live
+Факты, проверенные живьём 2026-09-28 — не переисследовывать: в `OPENCODE_GO_API_KEYS` лежат **два** разных ключа `oc_sk_…` через запятую, оба работают по отдельности и склеенными — провайдер `opencode-go` читает `OPENCODE_API_KEY` и запятую принимает, так что ротация доходит до движка целиком; `opencode run -m opencode-go/mimo-v2.6-flash` отвечает на продовом opencode 1.18.31, хотя модели нет в клиентском реестре того билда; сервер требует заголовок `x-opencode-session`. Открытого пока нет только ранга НИЖЕ Go: когда кончатся оба ключа — упавший research вместо деградации. Этот ранг и есть `openrouter/google/gemini-2.5-flash` в лестнице `search` ниже (в llm-ladder worker); ключ OpenRouter на боксе пока один, без ротации.

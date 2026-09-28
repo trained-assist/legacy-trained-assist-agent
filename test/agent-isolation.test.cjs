@@ -194,15 +194,16 @@ test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + Op
     const outDir = fs.mkdtempSync(path.join(tmpRoot, 'oc-'));
     const opts = baseOpts(outDir, fakeEngine(outDir));
     opts.engine = 'opencode';
-    opts.cleanEnv = { ...SERVER_ENV, GIGACHAT_TOKEN: 'gc-key', OTHER_PROVIDER_KEY: 'other-key', OPENCODE_GO_API_KEY: 'oc-test-go-key' };
+    opts.cleanEnv = { ...SERVER_ENV, GIGACHAT_TOKEN: 'gc-key', OTHER_PROVIDER_KEY: 'other-key', OPENCODE_GO_API_KEY: 'oc-test-single', OPENCODE_GO_API_KEYS: 'oc-k1,oc-k2' };
     const r = await runEngineProcess(opts);
     assert.equal(r.exitCode, 0);
     const env = parseEnvFile(path.join(outDir, 'engine.env'));
     assert.equal(env.OPENROUTER_API_KEY, 'srv-openrouter', 'opencode needs its OpenRouter key');
-    // OpenCode Go: the box ships OPENCODE_GO_API_KEY, the built-in opencode-go provider
-    // reads OPENCODE_API_KEY — runEngineProcess maps it, the allowlist must let it through.
-    assert.equal(env.OPENCODE_API_KEY, 'oc-test-go-key', 'GO key is exposed to the engine under the name its provider reads');
-    assert.ok(!( 'OPENCODE_GO_API_KEY' in env), 'the original name is not needed by the engine');
+    // OpenCode Go: the box ships a two-key rotation list as OPENCODE_GO_API_KEYS, while the
+    // built-in opencode-go provider reads OPENCODE_API_KEY — runEngineProcess maps the LIST
+    // (both keys, so rotation survives), not just the singular entry.
+    assert.equal(env.OPENCODE_API_KEY, 'oc-k1,oc-k2', 'the whole Go key list reaches the engine under the name its provider reads');
+    assert.ok(!('OPENCODE_GO_API_KEY' in env) && !('OPENCODE_GO_API_KEYS' in env), 'the box names are not needed by the engine');
     assert.ok(iso.engineCredentialNames('opencode').includes('OPENCODE_API_KEY'), 'Go key is an engine credential, not a server-only secret');
     assert.deepEqual(iso.engineCredentialNames('codex'), ['OPENAI_API_KEY'], 'codex credential set is unchanged');
     assert.equal(env.GIGACHAT_TOKEN, 'gc-key', '${VAR} reference in the opencode config');
