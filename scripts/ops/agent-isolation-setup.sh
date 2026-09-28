@@ -233,10 +233,11 @@ fi
 # The runner prepares a gate on its first isolated run (src/agent-isolation.js,
 # gatePrepareCommands) — synchronously, which for a big profile (browser caches)
 # would stall the service. Do it here once, with the SAME commands, for every
-# existing profile workspace and engineering workspace.
+# existing profile workspace.
 if [ "$SKIP_PERMS" = 0 ] && [ "$MODE" = run-as ]; then
   say "3a. prepare profile gates (group ACLs inside, none on the gate itself)"
-  for gate in "$USERS_DIR"/*/ "$DATA_DIR"/engineering-workspaces/*/*/; do
+  # (engineering workspaces live inside the profile — scripts/ops/migrate-engineering-workspaces.js)
+  for gate in "$USERS_DIR"/*/; do
     [ -d "$gate" ] || continue
     gate="${gate%/}"
     if [ -e "$gate/.agent-acl-v1" ]; then echo "prepared: $gate"; continue; fi
