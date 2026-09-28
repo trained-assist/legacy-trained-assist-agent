@@ -10,6 +10,10 @@ Goal: register trained-assist-search-skill as the search-skills sibling — вы
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live (search-skills в .mcp.json, ensure_sibling в журнале деплоя)
 
+Goal: mainstream-tester: причина фоллбэка decider'а видна в логе + ретрай таймаута + driver_error в отдельный лог, cron из релиза
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1816
+
 Goal: Speech skill extraction — sibling trained-assist-speech-skill + delegate recognition from core (#1779)
 
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1782
@@ -41,7 +45,6 @@ Goal: research-поиск в интернете — 4 способа парал�
 - [ ] C1 — unify token access through `src/data-paths.js`
 - [ ] C2 — restrict engine environment to the reviewed allowlist
 - [ ] C3 — remove user-to-service secret fallbacks and service-key leaks
-
 
 Goal: token access and engine env allowlist (P0 C1-C3) — единый резолвер токен-корня, ENGINE_TOKEN_FILES, тесты на оба env-имени
 
