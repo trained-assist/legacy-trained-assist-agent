@@ -37,12 +37,13 @@ function makeDb(file, sessionId, parts) {
     + 'CREATE TABLE IF NOT EXISTS part (session_id TEXT, data TEXT, time_created INTEGER);');
   db.prepare('INSERT OR IGNORE INTO session (id) VALUES (?)').run(sessionId);
   const ins = db.prepare('INSERT INTO part (session_id, data, time_created) VALUES (?, ?, ?)');
-  for (const p of parts) ins.run(sessionId, JSON.stringify(p), p.time.created);
+  for (const p of parts) ins.run(sessionId, JSON.stringify(p), (p.time || p.state.time).created || p.state.time.start);
   db.close();
 }
 
+// Real opencode shape: a tool part has no top-level `time`, only state.time.{start,end}.
 const tool = (name, input, output, at) => ({
-  type: 'tool', tool: name, state: { status: 'completed', input, output }, time: { created: at },
+  type: 'tool', tool: name, state: { status: 'completed', input, output, time: { start: at, end: at + 1000 } },
 });
 
 // Fixed trace: 20 min on files, 30 min on the web, 5 min of tests, then the answer.
@@ -113,6 +114,17 @@ test('buildDigest: fixed trace → fixed minutes per tool family + PI split', ()
 });
 
 // ── Slice 3: pass B contract ──────────────────────────────────────────────
+test('familyOf: MCP tools come prefixed with their server name', () => {
+  const { familyOf } = digestMod();
+  const f = (tool) => familyOf({ kind: 'tool', tool });
+  assert.equal(f('trained-skills_publish_page'), 'send');
+  assert.equal(f('engineering-skills_github_pr_checks'), 'code');
+  assert.equal(f('engineering-skills_engineering_spawn_workspace'), 'code');
+  assert.equal(f('playwright_browser_click'), 'web');
+  assert.equal(f('trained-skills_ru_browser_fetch'), 'web');
+  assert.equal(f('web_search'), 'web', 'an un-prefixed underscore name stays intact');
+});
+
 test('parseDigestJson: strips thinking garbage and fences, validates shape', () => {
   const { parseDigestJson } = digestMod();
   const raw = '<think>надо посчитать {не json}</think>\nОк, вот:\n```json\n'

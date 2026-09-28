@@ -141,14 +141,17 @@ function classifyArtifacts(list) {
 
 // ── Pass A: timeline buckets ─────────────────────────────────────────────────
 
-const WEB_TOOLS = /^(webfetch|web_search|websearch|browser|playwright|fetch|http|crawl|scrape|website)/;
+const WEB_TOOLS = /^(webfetch|web_search|websearch|browser|playwright|fetch|http|crawl|scrape|website|ru_browser)/;
 const FILES_TOOLS = /^(read|write|edit|multiedit|delete|glob|grep|ls|tree|patch|move|copy|mkdir|find|list)/;
-const CODE_TOOLS = /^(bash|shell|exec|run|test|npm|node|python|repl|spawn)/;
+const CODE_TOOLS = /^(bash|shell|exec|run|test|npm|node|python|repl|spawn|github|engineering|cicd|dev_)/;
+// MCP tools arrive as `<server>_<tool>` (engineering-skills_github_pr_checks); a server name
+// always has a dash, so `web_search` is left alone.
+const MCP_PREFIX = /^[a-z0-9]+(?:-[a-z0-9]+)+_(?=.)/;
 const SEND_TOOLS = /^(publish|deploy|send|upload|share|tg_send)/;
 
 function familyOf(ev) {
   if (!ev || ev.kind !== 'tool') return 'other';
-  const t = String(ev.tool || '').toLowerCase();
+  const t = String(ev.tool || '').toLowerCase().replace(MCP_PREFIX, '');
   if (SEND_TOOLS.test(t)) return 'send';
   if (WEB_TOOLS.test(t)) return 'web';
   if (FILES_TOOLS.test(t)) return 'files';
@@ -436,6 +439,7 @@ async function getDigestFor(username, sessionId, { llm } = {}) {
 }
 
 module.exports = {
+  familyOf,
   detectPhones,
   classifyArtifacts,
   buildDigest,
