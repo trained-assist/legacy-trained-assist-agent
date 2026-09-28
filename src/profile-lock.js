@@ -211,7 +211,9 @@ async function waitForProfileUnlocked(username, { timeoutMs = null, pollMs = POL
       // Released, or the holder went stale while we waited (crashed migrator /
       // TTL expiry) — either way the profile is free and the run proceeds.
       if (announced) console.log('[profile-lock] profile=%s lock gone after %dms — proceeding', username, Date.now() - startedAt);
-      return { waited: announced, waitedMs: Date.now() - startedAt };
+      // never announced → nothing was waited for; clock skew around the first
+      // readLock must not report a nonzero waitedMs for an immediate resolution.
+      return { waited: announced, waitedMs: announced ? Date.now() - startedAt : 0 };
     }
     const now = Date.now();
     if (!announced) {
