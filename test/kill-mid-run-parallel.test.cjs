@@ -10,7 +10,7 @@ const vm = require('node:vm');
 
 const read = f => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
 const serverSrc = read('src/server.js');
-const { isTaskResumable, resumeSinkOf } = require('../src/pending-task-resume');
+const { isTaskResumable, resumeSinkOf, resolvePendingWorkDir } = require('../src/pending-task-resume');
 
 const task = (over = {}) => ({ taskId: `t-${over.username || 'alice'}-1`, username: 'alice', userId: 42, task: 'work',
   initialMsgId: 7, startedAt: Date.now() - 30_000, sessionId: 's1', ...over });
@@ -31,7 +31,7 @@ function deferredHarness({ pending, now = Date.now(), retryDelayMs = () => 50, s
     // between resumes — that one must fire immediately so the loop doesn't hang the test; only
     // the backoff delay for an actual resume (a different value) is deferred/controllable.
     setTimeout: (fn, ms) => { if (ms === 200) { fn(); return 0; } const t = { fn, ms }; timers.push(t); return t; },
-    process: { env: {} }, isTaskResumable, resumeSinkOf, MAX_RESUME_ATTEMPTS: 3,
+    process: { env: {} }, isTaskResumable, resumeSinkOf, resolvePendingWorkDir, MAX_RESUME_ATTEMPTS: 3,
     getRetryDelayMs: attempt => retryDelayMs(attempt),
     // A fresh snapshot per call, like the real fs-backed getPendingTasks() (server.js reads the
     // journal once per resumePendingTasks() run) — clearPendingTask() must not mutate the array

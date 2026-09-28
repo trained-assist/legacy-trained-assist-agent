@@ -214,13 +214,21 @@ function savePendingTask(taskId, params) {
   let previous = null;
   try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); }
   catch (e) { if (e.code !== 'ENOENT') throw e; }
-  atomicJson(file, { ...previous, ...params, threadId: params.threadId ?? previous?.threadId ?? null,
+  const record = { ...previous, ...params, threadId: params.threadId ?? previous?.threadId ?? null,
     // Identity survives phase rewrites and restart-resume (epic #1365 CH-08): the first
     // taskId/requestId of a request stay attached to every later attempt.
     rootTaskId: previous?.rootTaskId ?? params.rootTaskId ?? taskId,
     requestId: previous?.requestId ?? params.requestId ?? null,
     // Retries and transition to running must never refresh the original intent.
-    initiatedAt: previous ? (Object.hasOwn(previous, 'initiatedAt') ? previous.initiatedAt : null) : (Object.hasOwn(params, 'initiatedAt') ? params.initiatedAt : null) });
+    initiatedAt: previous ? (Object.hasOwn(previous, 'initiatedAt') ? previous.initiatedAt : null) : (Object.hasOwn(params, 'initiatedAt') ? params.initiatedAt : null) };
+  // Identity ≠ location (epic #1789 P1, src/data-paths.js header): the journal
+  // names the profile by username/profileId and the workspace is derived from it
+  // at read time (pending-task-resume resolvePendingWorkDir). A persisted absolute
+  // workDir pins resume to one machine path, so a profile copied to another
+  // directory (or another VM) would resume into the old location. Stripping here
+  // also retires the field from legacy records on their first rewrite.
+  delete record.workDir;
+  atomicJson(file, record);
 }
 
 function recordTaskActivity(_opts, _at = Date.now()) {
@@ -230,6 +238,7 @@ function recordTaskActivity(_opts, _at = Date.now()) {
 function bindTaskActivity(taskId, user, sessionId) {
   const file = path.join(PENDING_DIR, `${taskId}.json`);
   const pending = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete pending.workDir; // #1789 P1 — identity, not a machine path (see savePendingTask)
   atomicJson(file, { ...pending, sessionId, activitySessionId: sessionId });
   if (Number.isFinite(pending.initiatedAt)) recordTaskActivity({ user, sessionId, threadId: pending.threadId }, pending.initiatedAt);
 }
@@ -1058,7 +1067,7 @@ function _runTaskInner(opts) {
   // Journal BEFORE waiting: a restart must not silently lose accepted work.
   savePendingTask(opts.taskId, {
     phase: 'queued', activitySessionId: opts.activitySessionId, taskId: opts.taskId, rootTaskId: opts.rootTaskId, requestId: opts.requestId, userId: opts.user.id, username: opts.user.username, threadId: opts.threadId,
-    workDir: opts.user.workDir, task: opts.task, context: opts.context,
+    task: opts.task, context: opts.context,
     sessionId: opts.sessionId, contextFromSession: opts.contextFromSession,
     forceClaude: opts.forceClaude, forceNew: opts.forceNew, webExactSession: opts.webExactSession, mode: opts.mode, userMessageRecorded: opts.userMessageRecorded,
     projectId: opts.projectId, projectPicked: opts.projectPicked, newProjectName: opts.newProjectName, engine: opts.engine,
@@ -1799,7 +1808,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   const audience = user.audience || 'default';
 
   savePendingTask(taskId, {
-    phase: 'running', taskId, userId: user.id, username: user.username, workDir: user.workDir, audience,
+    phase: 'running', taskId, userId: user.id, username: user.username, audience,
     profileId: user.profileId, telegramUserId: user.telegramUserId, continuationCount, retryCount, internalGtd,
     task, context, sessionId, contextFromSession, forceClaude, forceNew, webExactSession, mode, projectId, projectPicked, newProjectName,
     initialMsgId, pinnedMsgId, initiatedAt, threadId, resumedAfterRestart, resumeAttempts,
@@ -3046,6 +3055,9 @@ function interruptForRestart() {
 module.exports = {
   interruptForRestart, MAX_RESUME_ATTEMPTS, isProviderFault,
   runTask, getQuickAnswer, runQuickAnswer, shouldAttemptQuickAnswer, generateConnectLink, getPendingTasks, clearPendingTask,
+  // Exported for the journal path-hygiene test (epic #1789 P1): the journal must
+  // never persist an absolute workDir, including over a legacy record.
+  savePendingTask,
   resolveRunSession,
   isTaskRunning, isChatTaskRunning, isSessionRunning, isSessionQueuedFor, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,
   stopTracesFor, confirmStopped, countIdleLiveRuns,
