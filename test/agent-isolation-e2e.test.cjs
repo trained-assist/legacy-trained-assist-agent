@@ -166,11 +166,15 @@ test('runEngineProcess as a slot user: allowlisted env, MCP through the bridge, 
 env > "$HOME/engine.env"
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | "${process.execPath}" "${client}" trained-skills > "$HOME/mcp.out" 2>&1
 cat ${home}/secrets.env > "$HOME/secrets.out" 2>&1
+cat "$2" > "$HOME/sys.out" 2>&1
 id -u > "$HOME/uid"
 echo '{"type":"result","result":"ok"}'
 `);
   fs.chmodSync(engine, 0o755);
   fs.writeFileSync(path.join(home, 'secrets.env'), 'AGENT_SECRET=srv-agent-secret\n', { mode: 0o600 });
+  // the runner writes the system prompt into the profile with mode 0600 (persona.js)
+  const sysPrompt = path.join(workDir, '.system-prompt.txt');
+  fs.writeFileSync(sysPrompt, 'SYS-PROMPT-OK\n', { mode: 0o600 });
 
   t.after(() => {
     for (const s of SLOTS) sudo(['userdel', s]);
@@ -199,7 +203,7 @@ echo '{"type":"result","result":"ok"}'
     cleanEnv: { PATH: '/usr/local/bin:/usr/bin:/bin', AGENT_SECRET: 'srv-agent-secret' }, userTokens: { GH_TOKEN: 'alice-gh' },
     sessionFilePath: '', restartShutdown: () => false, activeTimers: new Map(),
     tgEdit: async () => ({ ok: true }), tgSend: async () => ({ ok: true }), outputCallback: null,
-    engineBin: engine, engineArgs: [], cwd: workDir,
+    engineBin: engine, engineArgs: ['--append-system-prompt-file', sysPrompt], cwd: workDir,
     bridgedServers: { 'trained-skills': { command: process.execPath, args: [fakeMcp] } },
   });
   assert.equal(r.claudeResult, 'ok', JSON.stringify(r.processError));
@@ -210,6 +214,7 @@ echo '{"type":"result","result":"ok"}'
   const env = fs.readFileSync(path.join(agentHome, 'engine.env'), 'utf8');
   for (const v of ['srv-agent-secret', 'srv-bot']) assert.ok(!env.includes(v), `engine env has ${v}`);
   assert.match(env, /^GH_TOKEN=alice-gh$/m);
+  assert.equal(fs.readFileSync(path.join(agentHome, 'sys.out'), 'utf8'), 'SYS-PROMPT-OK\n', 'engine reads a 0600 system prompt file the service passed');
   assert.doesNotMatch(fs.readFileSync(path.join(agentHome, 'secrets.out'), 'utf8'), /srv-agent-secret/);
   const mcp = JSON.parse(fs.readFileSync(path.join(agentHome, 'mcp.out'), 'utf8').trim());
   assert.deepEqual(mcp.result, { uid: process.getuid(), hasSecret: true }, 'MCP server ran as the service user with its env');
