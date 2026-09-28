@@ -22,6 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { userWorkDir } = require('./data-paths');
+const { atomicJson } = require('./atomic-json');
 const { getSession } = require('./session-store');
 const { readTrace } = require('./session-trace');
 
@@ -401,10 +402,7 @@ function readCache(fp) {
 
 function writeCache(fp, payload) {
   try {
-    fs.mkdirSync(path.dirname(fp), { recursive: true });
-    const tmp = `${fp}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(payload));
-    fs.renameSync(tmp, fp);
+    atomicJson(fp, payload);
   } catch (e) {
     console.warn('[session-digest] cache write:', e.message);
   }

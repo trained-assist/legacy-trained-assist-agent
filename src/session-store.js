@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { atomicJson } = require('./atomic-json');
 
 const SESSIONS_FILE = 'sessions.json';
 const SESSIONS_DIR  = 'sessions';
@@ -27,11 +28,10 @@ function loadIndex(workDir) {
   }
 }
 
-function atomicWrite(fp, data) {
-  const tmp = `${fp}.tmp`;
-  fs.writeFileSync(tmp, data);
-  fs.renameSync(tmp, fp);
-}
+// All durable writes go through atomic-json (tmp + fsync + rename + dir fsync): a
+// restart mid-write must never leave a torn sessions.json / session file behind.
+// The local `${fp}.tmp` helper used here previously had no fsync and a fixed tmp
+// suffix, so two processes writing one file could collide (issue #1735 step 6).
 
 /** Order by recency of activity (lastAt), newest first. Falls back to createdAt
  *  for legacy records missing lastAt. Mutates and returns the same array. */
@@ -46,7 +46,7 @@ function saveIndex(workDir, sessions) {
   // eviction drop the least-recently-active rather than the oldest-created.
   const ordered = sortByRecency(sessions);
   if (ordered.length > MAX_SESSIONS) ordered.splice(MAX_SESSIONS);
-  atomicWrite(sessionsPath(workDir), JSON.stringify(ordered, null, 2));
+  atomicJson(sessionsPath(workDir), ordered, { space: 2 });
 }
 
 /** Create a new session record, return its id.
@@ -110,7 +110,7 @@ function createSession(workDir, { task, id: providedId, chatId, projectId = null
     ...(sideSession ? { sideSession: true } : {}),
     messages: [{ role: 'user', content: task, at: now }],
   };
-  atomicWrite(sessionFilePath(workDir, id), JSON.stringify(full, null, 2));
+  atomicJson(sessionFilePath(workDir, id), full, { space: 2 });
 
   // Register the new session as the chat's CURRENT session immediately — durable at
   // creation, not deferred until after the (long) Claude run. Otherwise a follow-up
@@ -131,7 +131,7 @@ function promoteSideSession(workDir, id) {
     const full = JSON.parse(fs.readFileSync(fp, 'utf8'));
     if (!full.sideSession) return false;
     delete full.sideSession;
-    atomicWrite(fp, JSON.stringify(full, null, 2));
+    atomicJson(fp, full, { space: 2 });
     const sessions = loadIndex(workDir);
     if (!sessions.some(s => s.id === id)) {
       const lastUser = [...(full.messages || [])].reverse().find(m => m.role === 'user');
@@ -166,7 +166,7 @@ function appendUserMessage(workDir, id, content) {
     full.messages.push({ role: 'user', content, at: now });
     full.lastAt = now;
     full.messageCount = full.messages.length;
-    atomicWrite(fp, JSON.stringify(full, null, 2));
+    atomicJson(fp, full, { space: 2 });
 
     const sessions = loadIndex(workDir);
     const idx = sessions.findIndex(s => s.id === id);
@@ -192,7 +192,7 @@ function appendReply(workDir, id, reply) {
     full.messages.push({ role: 'assistant', content: reply, at: now });
     full.lastAt = now;
     full.messageCount = full.messages.length;
-    atomicWrite(fp, JSON.stringify(full, null, 2));
+    atomicJson(fp, full, { space: 2 });
 
     // Update index
     const sessions = loadIndex(workDir);
@@ -280,7 +280,7 @@ function setCurrentSessionId(workDir, id, chatId, audience, threadId = null) {
   try {
     const dir = path.join(workDir, SESSIONS_DIR);
     fs.mkdirSync(dir, { recursive: true });
-    atomicWrite(path.join(dir, _currentSessionFile(chatId, audience, threadId)), JSON.stringify({ id, lastAt: Date.now() }));
+    atomicJson(path.join(dir, _currentSessionFile(chatId, audience, threadId)), { id, lastAt: Date.now() });
     // Update liveChatId in the session file so it knows which chat it's attached to
     if (id && chatId) {
       const fp = sessionFilePath(workDir, id);
@@ -290,7 +290,7 @@ function setCurrentSessionId(workDir, id, chatId, audience, threadId = null) {
         if (current !== chatId) {
           full.liveChatId = chatId;
           delete full.ownerChatId; // lazily migrate the field name on the durable record
-          atomicWrite(fp, JSON.stringify(full, null, 2));
+          atomicJson(fp, full, { space: 2 });
         }
       }
     }
@@ -321,7 +321,7 @@ function claimLiveChatId(workDir, id, chatId, threadId) {
       full.messageThreadId = normThreadId(threadId);
       dirty = true;
     }
-    if (dirty) atomicWrite(fp, JSON.stringify(full, null, 2));
+    if (dirty) atomicJson(fp, full, { space: 2 });
     return current || chatId;
   } catch (e) {
     console.warn('[session-store] claimLiveChatId:', e.message);
@@ -373,7 +373,7 @@ function setSummary(workDir, id, summary, atMsgCount) {
       full.summary = summary;
       full.summaryMsgCount = mc;
       full.summaryAt = Date.now();
-      atomicWrite(fp, JSON.stringify(full, null, 2));
+      atomicJson(fp, full, { space: 2 });
     }
     const sessions = loadIndex(workDir);
     const idx = sessions.findIndex(s => s.id === id);
@@ -402,7 +402,7 @@ function setSessionProject(workDir, id, projectId) {
     if (fs.existsSync(fp)) {
       const full = JSON.parse(fs.readFileSync(fp, 'utf8'));
       full.projectId = projectId || null;
-      atomicWrite(fp, JSON.stringify(full, null, 2));
+      atomicJson(fp, full, { space: 2 });
     }
     const sessions = loadIndex(workDir);
     const idx = sessions.findIndex(s => s.id === id);
@@ -432,7 +432,7 @@ function setLastOcModel(workDir, id, role, model) {
     const full = JSON.parse(fs.readFileSync(fp, 'utf8'));
     full.ocModels = full.ocModels || {};
     full.ocModels[role] = model;
-    atomicWrite(fp, JSON.stringify(full, null, 2));
+    atomicJson(fp, full, { space: 2 });
   } catch (e) {
     console.error('[session-store] setLastOcModel error:', e.message);
   }
@@ -456,7 +456,7 @@ function setEngineSessionId(workDir, id, engine, engineSessionId) {
     full.engineSessions = full.engineSessions || {};
     if (full.engineSessions[engine] === engineSessionId) return true; // idempotent — skip the rewrite
     full.engineSessions[engine] = engineSessionId;
-    atomicWrite(fp, JSON.stringify(full, null, 2));
+    atomicJson(fp, full, { space: 2 });
     return true;
   } catch (e) {
     console.warn('[session-store] setEngineSessionId:', e.message);

@@ -31,6 +31,7 @@ const {
   PLAYBOOK_ID_RE,
 } = require('./playbook-store');
 const { userWorkDir } = require('./data-paths');
+const { atomicText } = require('./atomic-json');
 const { hermesRun } = require('./hermes-run');
 
 const schema = require('../contracts/playbook.schema.json');
@@ -127,10 +128,8 @@ function profilePlaybookPath(username, id) {
 }
 
 function writeJsonAtomic(file, obj) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`);
-  fs.renameSync(tmp, file);
+  // Byte-identical to the previous writer: pretty JSON + trailing newline.
+  atomicText(file, `${JSON.stringify(obj, null, 2)}\n`);
 }
 
 function buildDraftContext(description, seed) {

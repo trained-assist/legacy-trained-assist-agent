@@ -31,6 +31,7 @@ const { readTokenValue } = require('./token-value');
 const { DurableTaskStore } = require('./durable-task-store');
 const { criterionIdForItem } = require('./durable-task-plan');
 const { durableTaskDbPath, userWorkDir, projectDir: projectDirPath, listProfiles } = require('./data-paths');
+const { atomicText } = require('./atomic-json');
 const { logDefect } = require('./playbook-defects-log');
 const { resolveStepExecution, planLevelMap } = require('./playbook-executor');
 
@@ -1021,30 +1022,6 @@ const CONTROL_HINT = /(проконтролир|доведи|довед[её]ш�
 function _dir(workDir) { return path.join(workDir, GTD_DIR); }
 function _file(workDir, sessionId) { return path.join(_dir(workDir), `${sessionId}.json`); }
 
-// Атомарная запись: write-tmp → fsync → rename. Сервис живёт под systemd с
-// KillMode=control-group и рестартится в любой момент — без fsync rename может
-// стать видимым, а содержимое остаться неслитым (partial/zero-length файл после
-// краша). Уникальное имя tmp (pid+счётчик) не даёт двум параллельным писателям
-// в один и тот же fp затереть tmp друг друга на полпути.
-let _tmpCounter = 0;
-function _atomicWrite(fp, data) {
-  const tmp = `${fp}.tmp.${process.pid}.${_tmpCounter++}`;
-  let fd;
-  try {
-    fd = fs.openSync(tmp, 'w');
-    fs.writeSync(fd, data);
-    fs.fsyncSync(fd);
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd);
-  }
-  try {
-    fs.renameSync(tmp, fp);
-  } catch (e) {
-    try { fs.unlinkSync(tmp); } catch { /* best-effort cleanup */ }
-    throw e;
-  }
-}
-
 function readGtd(workDir, sessionId) {
   try {
     const fp = _file(workDir, sessionId);
@@ -1056,7 +1033,7 @@ function readGtd(workDir, sessionId) {
 function writeGtd(workDir, rec) {
   try {
     fs.mkdirSync(_dir(workDir), { recursive: true });
-    _atomicWrite(_file(workDir, rec.sessionId), JSON.stringify(rec, null, 2));
+    atomicText(_file(workDir, rec.sessionId), JSON.stringify(rec, null, 2));
     return true;
   } catch (e) { console.error('[gtd] write:', e.message); return false; }
 }
@@ -1154,7 +1131,7 @@ function _editActiveSection(projectDir, mutate) {
   const sec = _activeSection(sections);
   if (!sec) return false;
   if (!mutate(lines, sec)) return false;
-  try { _atomicWrite(fp, lines.join('\n')); return true; }
+  try { atomicText(fp, lines.join('\n')); return true; }
   catch (e) { console.error('[gtd] edit checklist section:', e.message); return false; }
 }
 
@@ -1483,7 +1460,7 @@ function writeChecklistDone(projectDir, items) {
       lines[i] = `${m[1]}${upd.done ? 'x' : ' '}${m[3]}${m[4]}`;
     }
   }
-  try { _atomicWrite(fp, lines.join('\n')); return true; }
+  try { atomicText(fp, lines.join('\n')); return true; }
   catch (e) { console.error('[gtd] writeChecklistDone:', e.message); return false; }
 }
 
@@ -1894,5 +1871,4 @@ module.exports = {
   tickHeartbeat, countOpenLegacy, durableItemCounts,
   DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP,
   CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,
-  _atomicWrite,
 };
