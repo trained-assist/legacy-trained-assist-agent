@@ -8,14 +8,15 @@
 //    answer itself proposes («Создать PR», «Задеплоить на RU»), each backed by a
 //    verbatim quote from the answer.
 //
-//    Grounding (2026-09-28): BOTH the quote AND the label must be found in the text.
-//    The label used to be free-form («перефразируй, 2-5 слов, без номеров»), so a cheap
-//    ladder rung turned the answer's own names — «Начать #1753 P0», «Запустить фазы #1755» —
-//    into «Начать срочную задачу», «Запустить фазы», «Начать экран вакансии»: buttons the
-//    user cannot match back to the text (incident 2026-09-28). Now the label is the answer's
-//    own name for the action (numbers/IDs kept); a label that is not verbatim in the answer is
-//    re-anchored to a «…»-quoted name inside its grounded quote, and dropped if that too fails.
-//    Buttons are only ever extracted, never invented.
+//    Label policy (owner decision, incident 2026-09-28 second round): the label is a SHORT
+//    FORMULATION of the step (≤ MAX_LABEL chars), not a verbatim copy of the answer's phrasing.
+//    The previous rule required the label to appear in the text verbatim — buttons then read as
+//    awkward word-for-word echoes of the prose («жёстко», per the owner). The tap itself only
+//    sends the button index (act|sid|n) and the session re-reads its own answer, so the label is
+//    display-only: free wording is safe.
+//
+//    What stays grounded is the ACTION: quote must be a verbatim fragment of the answer, so a
+//    button can only ever be extracted from a step the answer really proposed — never invented.
 // 2. paragraphize: a wall of text (long, almost no blank lines) is re-split into
 //    paragraphs/lists by the LLM; the result is accepted only if it kept the
 //    words of the original (coverage guard), otherwise the original goes out.
@@ -31,19 +32,12 @@ function norm(s) {
   return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
-// Truncate to `max` chars on a word boundary (never mid-word — a cut half-word can't be
-// grounded in the answer any more).
+// Truncate to `max` chars on a word boundary (a cut half-word reads as a typo on a button).
 function cutWords(s, max) {
   if (s.length <= max) return s;
   const cut = s.slice(0, max);
   const sp = cut.lastIndexOf(' ');
   return (sp > 10 ? cut.slice(0, sp) : cut).trim();
-}
-
-// First «…»/“…”/"…" span inside a verbatim quote — the answer's own name for an action.
-function firstQuoted(quote) {
-  const m = String(quote || '').match(/[«"“]([^«»"”]{3,60})[»"”]/);
-  return m ? m[1].trim() : '';
 }
 
 // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last) — throws when every rung
@@ -55,20 +49,16 @@ async function callJson({ apiKey, system, user, maxTokens, timeoutMs, source }) 
 }
 
 const ACTIONS_SYSTEM = [
-  'Ты читаешь финальный ответ ассистента пользователю и извлекаешь из него КОНКРЕТНЫЕ действия,',
-  'которые ассистент сам предлагает выполнить СЛЕДУЮЩИМ шагом и которые пользователь может',
-  'одобрить одной кнопкой («Создать PR», «Задеплоить», «Запустить тест на staging»,',
-  '«Вариант Б: переписать на воркер»). Если ответ — план из нескольких шагов, это ОДНО действие',
-  'с ярлыком, называющим суть плана («Сделать шаги 1–3: …»), а не кнопка на каждый шаг.',
-  'Если ответ предлагает выбор из альтернатив — по кнопке на альтернативу.',
-  'НЕ действия: итог уже сделанного, факты, вопрос без предложения, общие фразы',
-  '(«продолжить», «обсудить», «уточнить»), служебные /команды и управление чеклистом.',
-  `Максимум ${MAX_ACTIONS}. Ярлык — как действие НАЗВАНО в самом ответе: дословный фрагмент ответа,`,
-  'без кавычек и нумерации списка (сократи до ~40 символов по краям). СОХРАНЯЙ номера и метки из',
-  'ответа (#1753, P0, PR #294) — пользователь должен узнать действие по тексту. Не придумывай слов,',
-  'которых нет в ответе; только если действие вообще не названо в тексте — короткий повелительный',
-  'ярлык из слов ответа (2-5 слов).',
-  'Для каждого действия дай quote — ДОСЛОВНЫЙ фрагмент ответа (5-15 слов), где оно предложено.',
+  'Ты читаешь финальный ответ ассистента пользователю. Если ассистент предлагает следующие',
+  'шаги или выбор — верни их списком.',
+  `Каждый ярлык — КРАТКАЯ формулировка шага, до ${MAX_LABEL} символов, по-русски, своими словами;`,
+  'не копируй дословно фразы ответа.',
+  'Если ответ — план из нескольких шагов, это ОДНО действие с ярлыком про суть плана.',
+  'Если ответ предлагает выбор из альтернатив — по ярлыку на каждую альтернативу.',
+  'НЕ действия: итог уже сделанного, факты, вопрос без предложения, общие фразы,',
+  'служебные /команды и управление чеклистом.',
+  'Для каждого действия дай quote — ДОСЛОВНЫЙ фрагмент ответа (5-15 слов), где оно предложено:',
+  'кнопка ставится только на реально предложенный шаг.',
   'Ответь СТРОГО JSON: {"kind":"plan"|"menu"|"actions"|"none","actions":[{"label":"…","quote":"…"}]}.',
   'Сомневаешься → {"kind":"none","actions":[]}.',
 ].join(' ');
@@ -114,14 +104,9 @@ function validateActions(obj, text) {
       const hit = words.filter(w => hay.includes(w)).length;
       if (!words.length || hit / words.length < 0.8) continue;
     }
-    // Label grounding: the button must carry the answer's own name, not an invented paraphrase.
-    // Prefer the model's label; if it is not verbatim in the answer, re-anchor to the «…»-quoted
-    // name inside its grounded quote; drop the action if neither is present.
-    let label = cutWords(rawLabel, MAX_LABEL);
-    if (!label || !hay.includes(norm(label))) {
-      const q = cutWords(firstQuoted(rawQuote), MAX_LABEL);
-      label = q && hay.includes(norm(q)) ? q : '';
-    }
+    // The action must be grounded (quote in the text) — that is the «never invent a button»
+    // invariant. The label itself is free wording (short formulation), see header.
+    const label = cutWords(rawLabel, MAX_LABEL);
     if (!label) continue;
     const k = norm(label);
     if (seen.has(k)) continue;
@@ -195,4 +180,4 @@ async function paragraphize(text, apiKey, { timeoutMs = 12000 } = {}) {
   }
 }
 
-module.exports = { extractAnswerActions, validateActions, actionsMarkup, paragraphize, isWallOfText, coverage };
+module.exports = { extractAnswerActions, validateActions, actionsMarkup, paragraphize, isWallOfText, coverage, ACTIONS_SYSTEM };

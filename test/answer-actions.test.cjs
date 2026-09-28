@@ -37,33 +37,46 @@ test('kind none / junk → no actions', () => {
   assert.deepEqual(A.validateActions(null, ANSWER).actions, []);
 });
 
-// Incident 2026-09-28: the answer named the choices («Начать #1753 P0», «Запустить фазы #1755»,
-// «Начать #1733 — экран вакансии и база»), but the label prompt forced a paraphrase, so the
-// buttons read «Начать срочную задачу», «Запустить фазы», «Начать экран вакансии» — the user
-// could not map them back to the text. Labels must now carry the answer's own names.
+// Label policy (owner decision 2026-09-28, second round): a label is a SHORT FORMULATION of the
+// step, not a verbatim copy of the answer — echoing the prose back on a button reads «жёстко».
+// The old tests below asserted the opposite contract (label must appear in the answer verbatim);
+// they are replaced, because the owner explicitly changed that requirement. What MUST stay:
+// an action is only ever extracted from a step the answer really proposed (grounded quote).
 const QUOTED = 'Записал оба решения. Следующие шаги: «Начать #1753 P0» (дешёвый, развязывает остальное), «Запустить фазы #1755» или «Начать #1733 — экран вакансии и база».';
 
-test('paraphrased label is re-anchored to the answer\'s own quoted name', () => {
+test('short formulation label is kept even when it does not appear verbatim in the answer', () => {
   const r = A.validateActions({ kind: 'menu', actions: [
-    { label: 'Начать срочную задачу', quote: 'Следующие шаги: «Начать #1753 P0» (дешёвый, развязывает остальное)' },
-    { label: 'Начать экран вакансии', quote: '«Начать #1733 — экран вакансии и база»' },
+    { label: 'Взять #1753', quote: 'Следующие шаги: «Начать #1753 P0» (дешёвый, развязывает остальное)' },
+    { label: 'Сначала экран вакансии', quote: '«Начать #1733 — экран вакансии и база»' },
   ] }, QUOTED);
-  assert.deepEqual(r.actions.map(a => a.label), ['Начать #1753 P0', 'Начать #1733 — экран вакансии и база']);
+  assert.deepEqual(r.actions.map(a => a.label), ['Взять #1753', 'Сначала экран вакансии']);
 });
 
-test('verbatim label (with issue id) is kept as-is, invented label without quoted name is dropped', () => {
+test('action with a quote the answer never said is still dropped (no invented buttons)', () => {
   const r = A.validateActions({ kind: 'actions', actions: [
-    { label: 'Запустить фазы #1755', quote: '«Запустить фазы #1755»' },
-    { label: 'Срочно всё удалить', quote: 'Следующие шаги' },
-  ] }, QUOTED);
-  assert.deepEqual(r.actions.map(a => a.label), ['Запустить фазы #1755']);
-});
-
-test('label is only accepted when it appears in the answer (no invented buttons)', () => {
-  const r = A.validateActions({ kind: 'actions', actions: [
-    { label: 'Переписать на воркер', quote: 'следующие шаги: начать' },
+    { label: 'Срочно всё удалить', quote: 'немедленно зачистить все ветки и прод' },
   ] }, QUOTED);
   assert.deepEqual(r.actions, []);
+});
+
+test('label longer than MAX_LABEL is cut on a word boundary', () => {
+  const r = A.validateActions({ kind: 'actions', actions: [
+    { label: 'Начать #1753 P0 — самую дешёвую задачу, которая развязывает всё остальное', quote: '«Начать #1753 P0» (дешёвый, развязывает остальное)' },
+  ] }, QUOTED);
+  assert.equal(r.actions.length, 1);
+  assert.ok(r.actions[0].label.length <= 40, `too long: ${r.actions[0].label}`);
+  assert.ok(!r.actions[0].label.endsWith('ост'), r.actions[0].label);
+});
+
+// The prompt itself is part of the contract: it must ask for a SHORT FORMULATION (the owner's
+// 2026-09-28 wording) and must keep requiring the grounded quote — a regression back to
+// «дословно copy the answer» would fail here, not in production.
+test('prompt asks for a short formulation label and still requires a verbatim quote', () => {
+  assert.match(A.ACTIONS_SYSTEM, /КРАТКАЯ формулировка/);
+  assert.match(A.ACTIONS_SYSTEM, /до \d+ символов/);
+  assert.match(A.ACTIONS_SYSTEM, /не копируй дословно/);
+  assert.match(A.ACTIONS_SYSTEM, /ДОСЛОВНЫЙ фрагмент ответа/);
+  assert.doesNotMatch(A.ACTIONS_SYSTEM, /как действие НАЗВАНО в самом ответе/);
 });
 
 test('markup uses act|sid|n and fits callback_data', () => {
