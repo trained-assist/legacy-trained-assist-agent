@@ -1495,11 +1495,6 @@ async function main() {
   setInterval(drivePoll, 2 * 60 * 1000);
 
   scheduleNalogExpiryChecks(secrets);
-  // Sustained-overload alert to the operator chat (src/load-watch.js): load above
-  // ratio×cores for the sustain window → Telegram with the top CPU processes.
-  if (process.env.TEST_MODE !== '1') {
-    require('./load-watch').startLoadWatch({ botToken: secrets.BOT_TOKEN, chatId: secrets.OPERATOR_CHAT_ID || '1714048' });
-  }
   if (hhNeg.scheduleHhBackgroundScoring) hhNeg.scheduleHhBackgroundScoring();
 // Cold search runs on the generic cron (#1489 S7.1): one job per vacancy, managed by
 // hh_proactive_schedule in hh-skill. No HH timer in core.
