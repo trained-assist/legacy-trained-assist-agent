@@ -288,7 +288,7 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     expect(prompts[2]).toContain('попытка 2');
   }, 30_000);
 
-  it('doctor without credentials walks claude → codex → opencode on the doctor ladder', async () => {
+  it('doctor without credentials walks claude → codex → opencode doctor (#1689)', async () => {
     const G = require('../../src/gtd-controller.js');
     const { PlaybookStore } = require('../../src/playbook-store.js');
     const { compilePlaybook } = require('../../src/playbook-compiler.js');

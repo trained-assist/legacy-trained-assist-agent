@@ -17,10 +17,11 @@
 const LEVELS = ['bachelor', 'master', 'doctor'];
 const ROLES = ['researcher', 'developer', 'reviewer', 'verifier'];
 
-// level → {engine, ocProfile}. bachelor/master are OpenCode profiles, each mapped to an
-// llm-ladder worker ladder (src/opencode-ladder-provider.js, #1687); doctor is the strongest tier
-// and runs on Claude (cross-engine fallback / degradation is the recovery slice P3c). Override with
-// PLAYBOOK_LEVEL_MAP={"bachelor":{"engine":"opencode","ocProfile":"free"}}.
+// level → {engine, ocProfile}. bachelor/master are OpenCode ladder profiles;
+// doctor is the strongest tier and runs on Claude (cross-engine fallback /
+// degradation is the recovery slice P3c). `free` vs `value` for bachelor is a
+// product choice — default `value` (deepseek/glm) for stable availability;
+// override with PLAYBOOK_LEVEL_MAP={"bachelor":{"engine":"opencode","ocProfile":"free"}}.
 const DEFAULT_LEVEL_MAP = Object.freeze({
   // Both OpenCode levels run on the standard Go deepseek profile (owner 2026-09-27) — `value`
   // led with paid OpenRouter and `max` ended on it, which is how durable/web steps leaked there.
@@ -28,15 +29,17 @@ const DEFAULT_LEVEL_MAP = Object.freeze({
   master: { engine: 'opencode', ocProfile: 'deepseek' },
   // Claude has no model ladder of its own. When an engine is unavailable (engine
   // health) or this step already failed on it with AUTH/CONFIG, the step runs on the
-  // next rung of `fallback` instead of failing: claude → codex → opencode on the worker's
-  // `doctor` ladder (owner 2026-09-28, #1687). Overridable per plan / env like the rest.
+  // next rung of `fallback` instead of failing: claude → codex → opencode `doctor`
+  // profile (owner 2026-09-28, #1689: Go MiMo first, then stronger models — not the
+  // cheapest `deepseek` tier; interim local copy of the llm-ladder worker's `doctor`
+  // ladder, keep in sync until #1687 lands). Default behaviour, overridable per plan / env.
   doctor: { engine: 'claude', ocProfile: null, fallback: [
     { engine: 'codex', ocProfile: null },
     { engine: 'opencode', ocProfile: 'doctor' },
   ] },
 });
 
-// executor_role → OpenCode agent role (opencode-ladder-provider ROLES).
+// executor_role → OpenCode agent role (opencode-ladder ROLES).
 const ROLE_TO_OC = Object.freeze({
   researcher: 'explore',
   developer: 'build',
