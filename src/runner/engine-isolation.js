@@ -107,7 +107,9 @@ async function prepareEngineSpawn({ engine, taskId, user, cwd, engineEnv, engine
       engineCredentialNames: iso.engineCredentialNames(engine, { configFiles }),
       extra: { AGENT_RUN_TOKEN: runToken, AGENT_MCP_BRIDGE_SOCKET: socket, ...(isoRun ? isoRun.env : {}) },
     });
-    const wrap = isoRun ? (bin, args) => isoRun.spawnArgv(bin, args) : (bin, args) => [bin, args];
+    // The final env goes along: names sudo cannot carry through the environment
+    // (TMPDIR, #1791) are turned into argv assignments by sudoArgv.
+    const wrap = isoRun ? (bin, args) => isoRun.spawnArgv(bin, args, env) : (bin, args) => [bin, args];
     return { env, wrap, release, isolated: true, runAs: isoRun ? isoRun.slot : null };
   } catch (e) {
     release();

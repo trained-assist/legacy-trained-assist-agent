@@ -184,7 +184,8 @@ if [ "$SKIP_SUDOERS" = 0 ] && [ "$MODE" = run-as ]; then
   SUDOERS_CONTENT="# managed by scripts/ops/agent-isolation-setup.sh (issue #1649)
 Runas_Alias TA_AGENT_SLOTS = ${SLOT_CSV}
 # The runner builds the engine env itself (allowlist) and passes it through the
-# process environment — never argv (so HOME/PATH are the runner's, not sudo's).
+# process environment — never argv (so HOME/PATH are the runner's, not sudo's) —
+# except names glibc strips from setuid programs (TMPDIR): those go as NAME=value.
 # No tty, no password. !syslog: sudo would otherwise log the full command line —
 # that is the agent prompt, i.e. user data — to the system journal on every run.
 Defaults>TA_AGENT_SLOTS !syslog, !env_reset, !always_set_home, !secure_path, !requiretty, !use_pty
@@ -382,6 +383,22 @@ if [ "$VERIFY" = 1 ] && [ "$MODE" = run-as ]; then
     check_denied "ls '$TOKENS_DIR'" "tokens root not listable"
     check_denied "ls '$USERS_DIR'" "profiles root not listable"
     check_denied "ls '$SERVICE_HOME/.claude'" "service engine credentials not readable"
+    # #1791: glibc strips TMPDIR from setuid sudo's env; the runner passes it as a sudo
+    # argv assignment. Both halves are checked: the mechanism works, and every live slot
+    # process actually got it (without it a slot writes to the shared /tmp, readable by
+    # the other slots — the docs claimed per-profile tmp for a week while it was not).
+    if [ "$(sudo -n -u "$s" TMPDIR=/ta-verify-tmp -- printenv TMPDIR 2>/dev/null)" = /ta-verify-tmp ]; then
+      echo "ok:   TMPDIR reaches a slot via sudo argv"
+    else echo "FAIL: TMPDIR does not reach a slot via sudo argv"; fail=1; fi
+    no_tmp=""
+    for u in "${SLOT_USERS[@]}"; do
+      for pid in $(pgrep -u "$u" 2>/dev/null); do
+        [ -r "/proc/$pid/environ" ] || continue  # exited meanwhile
+        tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -q '^TMPDIR=' || no_tmp="$no_tmp $u:$pid"
+      done
+    done
+    if [ -z "$no_tmp" ]; then echo "ok:   every running slot process has its own TMPDIR"
+    else echo "FAIL: slot processes without TMPDIR (they write to the shared /tmp):$no_tmp"; fail=1; fi
     if command -v curl >/dev/null 2>&1 && [ "$SKIP_FIREWALL" = 0 ]; then
       check_denied "curl -s -m 3 -H 'Metadata-Flavor: Google' http://169.254.169.254/computeMetadata/v1/" "metadata endpoint blocked"
     fi
