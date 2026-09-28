@@ -1654,14 +1654,14 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
 
 module.exports = {
   detectIntent, maybeSchedule, scheduleFromChecklist, runDue, buildReopenMessage,
-  readGtd, writeGtd, clearGtd, clearAllGtd, clearGtdForChat, listGtd, settleResumedGtd,
+  readGtd, writeGtd, clearGtd, clearGtdForChat, listGtd, settleResumedGtd,
   readChecklist, trackedChecklist, checklistSummary, computeMaxIterations,
   checklistCheapPrecheck, writeChecklistDone, mirrorGtdChecklist, CHECKLIST_API_BASE, checklistAutologinUrl,
   _ghToken, _ghFetch,
-  durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem, planSessionId,
-  settleDurableReply, resumeDurableReply, resumeDurableCrash, durableSettleContext, planWorkspaceLabel,
+  durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
+  resumeDurableReply, resumeDurableCrash, planWorkspaceLabel,
   tickHeartbeat, countOpenLegacy, durableItemCounts,
-  DEFAULT_ETA_MIN, DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP, ETA_MAX_CLAMP,
-  CHECKLIST_FILE, CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,
+  DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP,
+  CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,
   _atomicWrite,
 };
