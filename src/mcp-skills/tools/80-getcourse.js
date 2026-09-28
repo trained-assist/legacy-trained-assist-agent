@@ -10,6 +10,7 @@ const path = require('path');
 const os = require('os');
 
 const { generateConnectLink: generateConnectLinkZC } = require('../../user-tokens');
+const { readCredentialFile } = require('../../credential-store');
 
 const USER_ID = process.env.USER_ID || '';
 
@@ -41,7 +42,7 @@ function configPath(userId) {
 function readConfig(userId) {
   const file = configPath(userId);
   if (!fs.existsSync(file)) return {};
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
+  try { return JSON.parse(readCredentialFile(file)); } catch { return {}; }
 }
 
 // ── Level guards ──────────────────────────────────────────────────────────

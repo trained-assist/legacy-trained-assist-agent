@@ -138,6 +138,9 @@ function tokensDir(userId) {
 // Parses credential files ({"value":...}, {"access_token":...}, plain string).
 // Shared single source of truth so every reader agrees on the format.
 const { readTokenValue } = require('./token-value');
+// Encrypted-at-rest credential store (epic #1789 P0 C4). Decryption happens
+// INSIDE these read helpers — callers keep reading plain strings.
+const { readCredentialFile, deleteCredential, isMetaSidecar, removeFromIndex } = require('./credential-store');
 
 function appendSecretsLog(userId, services) {
   try {
@@ -204,11 +207,11 @@ function loadUserTokens(userId, legacyChatId) {
   if (!fs.existsSync(dir)) return extra;
   const accessed = [];
   for (const file of fs.readdirSync(dir)) {
-    if (LOG_FILES.has(file)) continue;
+    if (LOG_FILES.has(file) || isMetaSidecar(file)) continue;
     const filePath = path.join(dir, file);
     try { if (fs.statSync(filePath).isDirectory()) continue; } catch { continue; }
     let val;
-    try { val = fs.readFileSync(filePath, 'utf8').trim(); }
+    try { val = readCredentialFile(filePath).trim(); }
     catch (e) { console.warn('[user-tokens] readFileSync race:', e.message); continue; } // file deleted between readdirSync and readFileSync — skip
     const label = file.toLowerCase();
     accessed.push(label);
@@ -252,7 +255,7 @@ function listConnectedServices(userId) {
   const dir = tokensDir(userId);
   if (!fs.existsSync(dir)) return null;
   const files = fs.readdirSync(dir).filter(f => {
-    if (LOG_FILES.has(f)) return false;
+    if (LOG_FILES.has(f) || isMetaSidecar(f)) return false; // .meta sidecars are not services
     try { return !fs.statSync(path.join(dir, f)).isDirectory(); } catch { return false; }
   });
   if (files.length === 0) return null;
@@ -289,8 +292,9 @@ function revokeService(userId, serviceName) {
   try {
     if (fs.statSync(filePath).isDirectory()) {
       fs.rmSync(filePath, { recursive: true });
+      removeFromIndex(userId, key); // dir-backed service (getcourse/) — no single file to delete
     } else {
-      fs.unlinkSync(filePath);
+      deleteCredential(userId, key); // file + .meta sidecar + .index.json entry
     }
   } catch (e) { console.warn('[user-tokens] revokeService unlink:', e.message); return 'not_found'; }
   appendSecretsLog(userId, [`revoke:${key}`]);
