@@ -185,8 +185,9 @@ if [ "$SKIP_SUDOERS" = 0 ] && [ "$MODE" = run-as ]; then
 Runas_Alias TA_AGENT_SLOTS = ${SLOT_CSV}
 # The runner builds the engine env itself (allowlist) and passes it through the
 # process environment — never argv (so HOME/PATH are the runner's, not sudo's).
-# No tty, no password.
-Defaults>TA_AGENT_SLOTS !env_reset, !always_set_home, !secure_path, !requiretty, !use_pty
+# No tty, no password. !syslog: sudo would otherwise log the full command line —
+# that is the agent prompt, i.e. user data — to the system journal on every run.
+Defaults>TA_AGENT_SLOTS !syslog, !env_reset, !always_set_home, !secure_path, !requiretty, !use_pty
 ${SERVICE_USER} ALL=(TA_AGENT_SLOTS) NOPASSWD: ALL"
   if [ "$APPLY" = 1 ]; then
     tmp="$(mktemp)"; printf '%s\n' "$SUDOERS_CONTENT" > "$tmp"
