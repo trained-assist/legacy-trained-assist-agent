@@ -6,9 +6,13 @@
 //
 // This module is pure and read-only. It decides whether the agent should be
 // *told* a playbook is available, and returns the prompt section to inject. It
-// NEVER compiles, creates or activates a plan — the draft→active gate
-// (`task_update status=active`) remains an explicit user step (guardrail in the
-// text itself).
+// NEVER compiles, creates or activates a plan itself.
+//
+// Consent rule (#1719): the user's agreement to the TASK is the activation
+// consent — an agreed task goes straight to `playbook_run(..., activate: true)`.
+// The earlier «never activate yourself» wording contradicted the persona's
+// «don't re-ask on an agreed task» rule, so in practice the agent skipped the
+// playbook entirely. Only a not-yet-agreed large task is merely proposed.
 //
 // Opt-in-safe by construction:
 //   • not a development-like task        → '' (prompt unchanged)
@@ -70,6 +74,16 @@ function isDisabled(env) {
   return typeof raw === 'string' && /^(off|0|false|no|disabled)$/i.test(raw.trim());
 }
 
+// Shared by both variants. One tracker: an active plan is executed by the durable
+// executor and projects its own checklist.md, so a parallel root checklist.md
+// would be a second, competing tracker for the same work.
+const CONSENT_RULES = [
+  'Крупная задача (фича, баг с неясной причиной, несколько файлов/модулей, новый сервис) идёт через плейбук: `playbook_run(playbook_id: "<id>", goal: "...")`.',
+  'Задача уже согласована (пользователь сам попросил, сказал «делай/давай», нажал кнопку действия) → это и есть согласие на план: вызывай `playbook_run(..., activate: true)`, НЕ переспрашивай «активировать план?». Дальше шаги исполняет durable-исполнитель отдельными ранами — не дублируй их в этом ходе, коротко сообщи пользователю, что план запущен и сколько в нём шагов.',
+  'Задача ещё не согласована → только предложи плейбук одной фразой; без согласия план не активируй.',
+  'С активным планом НЕ веди отдельный checklist.md в корне проекта — план сам исполняется и ведёт свою проекцию. Внешние эффекты хуков (уведомления/issue/публикация) — только с `approve_hooks: true`. Мелкую правку просто сделай, без плейбука.',
+];
+
 // Build the prompt section to inject, or '' when nothing should change.
 // `store` is injectable for tests; production builds a profile-scoped store.
 function buildDevPlaybookSuggestion({ task, profileId = null, audience = null, store = null, env = process.env } = {}) {
@@ -97,24 +111,17 @@ function buildDevPlaybookSuggestion({ task, profileId = null, audience = null, s
     : [];
   if (family.length > 1) {
     return [
-      '[ПРОЦЕСС РАЗРАБОТКИ ДОСТУПЕН — предложи его, но НЕ запускай сам]',
+      '[ПРОЦЕСС РАЗРАБОТКИ ДОСТУПЕН]',
       'Для инженерных задач есть плейбуки (пошаговый контракт с проверками и durable-ожиданиями CI/деплоя/ответа):',
       ...family.map(pid => `- \`${pid}\` — ${ENGINEERING_FAMILY_HINTS[pid]}`),
-      'Если задача крупная (фича, баг с неясной причиной, несколько файлов/модулей, новый сервис) — предложи провести её через подходящий плейбук: `playbook_run(playbook_id: "<id>", goal: "...")` (собрать черновик-план).',
-      'После согласия пользователя план активируется явным шагом `task_update status=active`.',
-      'НИКОГДА не запускай и не активируй план самовольно: `draft→active` — только явное решение пользователя. Мелкую правку просто сделай.',
+      ...CONSENT_RULES,
     ].join('\n');
   }
-  const scaffold = id === 'development'
-    ? '`ba_development_playbook` (развернуть шаги) → `playbook_run` (собрать черновик-план)'
-    : `\`playbook_run(playbook_id: "${id}")\` (собрать черновик-план)`;
 
   return [
-    '[ПРОЦЕСС РАЗРАБОТКИ ДОСТУПЕН — предложи его, но НЕ запускай сам]',
+    '[ПРОЦЕСС РАЗРАБОТКИ ДОСТУПЕН]',
     `Для этой задачи доступен плейбук процесса \`${id}\` (пошаговый инженерный контракт: frame → discover → design → build → deliver).`,
-    `Если задача крупная (фича, неоднозначная правка, несколько файлов/модулей) — предложи пользователю провести её через процесс: ${scaffold}.`,
-    'После согласия пользователя план активируется явным шагом `task_update status=active`.',
-    'НИКОГДА не запускай и не активируй план самовольно: `draft→active` — только явное решение пользователя. Мелкую правку просто сделай.',
+    ...CONSENT_RULES,
   ].join('\n');
 }
 

@@ -170,6 +170,22 @@ describe('MCP surface: playbook_run', () => {
     expect(res.render).toContain('Engineering development');
   });
 
+  it('activate=true creates the plan already active (agreed task = activation consent, #1719)', async () => {
+    const tools = loadTools();
+    const res = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'Согласовано', activate: true }, ALICE);
+    expect(res.task.status).toBe('active');
+    const got = await tools.task_get.handler({ task_id: res.task.id }, ALICE);
+    expect(got.task.status).toBe('active');
+    // Activation is not hook consent: external-effect hooks still need approve_hooks.
+    expect(JSON.parse(got.task.execution_policy_json || '{}').hooks_approved).not.toBe(true);
+  });
+
+  it('without activate the plan stays a draft', async () => {
+    const tools = loadTools();
+    const res = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'Черновик', activate: false }, ALICE);
+    expect(res.task.status).toBe('draft');
+  });
+
   it('derives task-level acceptance criteria from step validations, or uses explicit ones', async () => {
     const tools = loadTools();
     const derived = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'derived' }, ALICE);

@@ -767,6 +767,14 @@ class DurableTaskStore {
     return res.changes > 0;
   }
 
+  /** Active (status=active) task this session is attached to, or null. */
+  activeTaskForSession(profileId, sessionId) {
+    return this._prep(`SELECT t.* FROM task_sessions s
+      JOIN durable_tasks t ON t.id = s.task_id
+      WHERE s.profile_id = ? AND s.session_id = ? AND s.active = 1 AND t.status = 'active'
+      LIMIT 1`).get(profileId, sessionId) || null;
+  }
+
   listSessions(taskId, profileId) {
     return this._prep(`SELECT s.* FROM task_sessions s
       JOIN durable_tasks t ON t.id = s.task_id

@@ -280,6 +280,20 @@ describe('scheduleFromChecklist', () => {
     expect(rec.chatId).toBe('42');
   });
 
+  it('skips a second tracker when the session has an active durable plan (#1719)', async () => {
+    const G = freshG();
+    const wd = makeUserDir(baseDir, 'u-plan');
+    const store = G.durableStore();
+    const task = store.createTask({ id: `t-${Date.now()}`, profile_id: 'u-plan', goal: 'plan-driven' });
+    store.attachSession(task.id, 's-plan', 'u-plan');
+    expect(await G.scheduleFromChecklist({ workDir: wd, sessionId: 's-plan', username: 'u-plan', projectDir: projDir })).toBeNull();
+
+    // A draft (not yet active) plan does not suppress the checklist tracker.
+    store.updateTask(task.id, 'u-plan', { status: 'draft' });
+    const rec = await G.scheduleFromChecklist({ workDir: wd, sessionId: 's-plan', username: 'u-plan', projectDir: projDir });
+    expect(rec && rec.status).toBe('open');
+  });
+
   it('dedup by sessionId: returns existing open record without resetting it', async () => {
     const G = freshG();
     const wd = makeUserDir(baseDir, 'u1');

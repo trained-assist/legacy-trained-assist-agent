@@ -63,8 +63,11 @@ describe('engineering playbook family (software-engineering-playbooks)', () => {
     });
     for (const id of ['feature', 'debugging', 'new-software']) expect(section).toContain(`\`${id}\``);
     expect(section).toContain('playbook_run');
-    expect(section).toContain('task_update status=active');
-    expect(section).toMatch(/НИКОГДА не запускай/);
+    expect(section).toContain('activate: true');
+    expect(section).toMatch(/НЕ переспрашивай/);
+    expect(section).toMatch(/не согласована/);
+    expect(section).toMatch(/НЕ веди отдельный checklist\.md/);
+    expect(section).not.toMatch(/НИКОГДА не запускай/);
   });
 
   it('lists only the members that resolve', () => {
@@ -90,10 +93,11 @@ describe('buildDevPlaybookSuggestion boundaries', () => {
       store: availableStore, env: { AUDIENCE_DEFAULT_PLAYBOOK: JSON.stringify({ default: 'development' }) },
     });
     expect(section).toContain('development');
-    expect(section).toContain('ba_development_playbook');
+    // One entry point: playbook_run compiles directly; the legacy static view is not in the path.
+    expect(section).not.toContain('ba_development_playbook');
     expect(section).toContain('playbook_run');
-    expect(section).toMatch(/НЕ запускай|не запускай/);
-    expect(section).toContain('task_update status=active');
+    expect(section).toContain('activate: true');
+    expect(section).toMatch(/без согласия план не активируй/);
   });
 
   it('returns "" for a non-development task (prompt unchanged)', () => {
