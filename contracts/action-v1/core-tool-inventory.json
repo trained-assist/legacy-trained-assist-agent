@@ -23,7 +23,6 @@
   "domain": [
     "10-nalog.js",
     "20-tilda.js",
-    "50-gdrive.js",
     "62-business-analyst.js",
     "80-getcourse.js",
     "81-gc-discovery.js",
