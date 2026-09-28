@@ -156,7 +156,15 @@ function groupHistoryPath(username, chatId, threadId = null) {
 // ── Token storage (TOKENS_ROOT) ───────────────────────────────────────────────
 
 function tokenPath(username, service) {
-  return path.join(TOKENS_ROOT, String(username), service);
+  return path.join(tokensRoot(), String(username), service);
+}
+
+function tokensRoot() {
+  return TOKENS_ROOT;
+}
+
+function userTokensDir(username) {
+  return path.join(tokensRoot(), String(username));
 }
 
 // Engineering workspaces (git worktrees per task/plan) and the repository mirrors they
@@ -200,6 +208,8 @@ module.exports = {
   sessionFilePath,
   groupHistoryPath,
   tokenPath,
+  tokensRoot,
+  userTokensDir,
   durableTaskDbPath,
   engineHealthDbPath,
   sentMessagesDir,
