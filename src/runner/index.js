@@ -1009,7 +1009,9 @@ async function _runTaskInner(opts) {
   // one of these commands' replies) — respect that and fall through to the normal path.
   if (humanInput && !opts.forceClaude && isPreQueueQuickIntent((opts.task || '').trim())) {
     const quick = getQuickAnswer(opts.task, opts.user.username, opts.user.workDir, false, opts.user.id, opts.user.telegramUserId, opts.user.audience || 'default', runThreadId);
-    if (quick) {
+    // Only a ready text answer goes out here; structured results (e.g. a connect-link that
+    // needs an async token mint) take the normal path, which knows how to render them.
+    if (typeof quick === 'string' && quick) {
       // Never invisible: an accepted task answered here leaves no other trace (#1479).
       console.log('[%s] pre-queue quick-answer len=%d', opts.taskId, quick.length);
       const msg = `⚡ ${quick}`;
