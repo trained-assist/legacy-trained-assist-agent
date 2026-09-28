@@ -115,6 +115,7 @@ function ok(c, m) { c ? (pass++) : (fail++, console.log('FAIL:', m)); }
   const wd4 = fs.mkdtempSync(path.join(os.tmpdir(), 'gtd4-'));
   ok((await G.scheduleFromChecklist({ workDir: wd4, sessionId: 's-2', projectDir: fs.mkdtempSync(path.join(os.tmpdir(), 'gtd-noproj-')) })) === null,
     'scheduleFromChecklist: no checklist -> null');
+  G.setChecklistOwner(projDir, 's-2'); // #1729 BV-08: only the owner session is tracked
   const scheduledFromChecklist = await G.scheduleFromChecklist({
     workDir: wd4, sessionId: 's-2', chatId: '7', username: 'u', projectDir: projDir,
   });
@@ -449,7 +450,7 @@ function ok(c, m) { c ? (pass++) : (fail++, console.log('FAIL:', m)); }
   // detectIntent) stores the passed audience on the record itself.
   const wd16 = fs.mkdtempSync(path.join(os.tmpdir(), 'gtd16-'));
   const projectDir16 = fs.mkdtempSync(path.join(os.tmpdir(), 'gtd16-proj-'));
-  fs.writeFileSync(path.join(projectDir16, 'checklist.md'), 'Goal: x\n\n- [ ] one\n');
+  fs.writeFileSync(path.join(projectDir16, 'checklist.md'), 'Goal: x\nOwner-session: s-aud\n\n- [ ] one\n');
   const scheduledWithAudience = await G.scheduleFromChecklist({
     workDir: wd16, sessionId: 's-aud', chatId: '42', username: 'u', projectDir: projectDir16, audience: 'recruiter',
   });

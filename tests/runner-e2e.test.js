@@ -1172,3 +1172,29 @@ describe('GTD footer is not an assistant menu', () => {
     } finally { spy.mockRestore(); gtd.clearGtd(user.workDir, 'other-open-checklist'); }
   });
 });
+
+// BV-08a (#1729): /all_forgotten_checklists is answered deterministically (no engine run),
+// one header + one message per orphaned checklist with «▶️ Делать» / «✖️ Отменить».
+describe('/all_forgotten_checklists', () => {
+  it('empty profile → «Забытых чек-листов нет»', { timeout: 15000 }, async () => {
+    await runTask({ taskId: `fcl-${Date.now()}`, user: makeUser(), task: '/all_forgotten_checlists', secrets: { BOT_TOKEN: 'fake:token' } });
+    expect(tgTexts()).toEqual(['Забытых чек-листов нет']);
+  });
+
+  it('lists an orphaned checklist with Делать/Отменить buttons', { timeout: 15000 }, async () => {
+    const user = makeUser();
+    const projects = require('../src/projects');
+    const meta = projects.createProject(user.workDir, { type: 'generic', name: 'tg bot' });
+    writeFileSync(join(projects.projectDir(user.workDir, meta.id), 'checklist.md'),
+      'Goal: История группы\nOwner-session: s-gone\n- [x] PR\n- [ ] живая проверка\n');
+    await runTask({ taskId: `fcl-${Date.now()}`, user, task: '/all_forgotten_checklists', secrets: { BOT_TOKEN: 'fake:token' } });
+    const sent = tgSent();
+    expect(sent[0].body.text).toBe('🗂 Забытых чек-листов: 1');
+    expect(sent[1].body.text).toContain('«История группы» · tg bot');
+    const kb = sent[1].body.reply_markup.inline_keyboard[0];
+    expect(kb.map(b => b.text)).toEqual(['▶️ Делать', '✖️ Отменить']);
+    expect(kb[0].callback_data).toMatch(/^ocl\|do\|[a-f0-9]{12}$/);
+    expect(kb[1].callback_data).toMatch(/^ocl\|no\|[a-f0-9]{12}$/);
+    expect(listSessionIndex()).toEqual([]);
+  });
+});

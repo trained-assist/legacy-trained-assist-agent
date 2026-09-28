@@ -95,6 +95,8 @@ const DEV_INTENT = /разраб[оа][тк]|(?:создай|сделай|нап
 const STOP_TASK_INTENT          = /^\/stop$|^стоп[!.?]?$|^stop[!.?]?$|^остановись[!.?]?$|^отмена[!.?]?$/i;
 const GTD_STOP_INTENT           = /^(?:\[Сообщение \d+\]\s*)?\/(?:gtd_stop|stop_gtd|checklist_turn_off)(?:@\w+)?$|стоп.{0,5}gtd\b|gtd.{0,5}стоп\b/i;
 const ACTIVE_CHECKLIST_INTENT   = /^(?:\[Сообщение \d+\]\s*)?\/(?:show_active_cheklist|active_checklist)(?:@\w+)?$/i;
+// BV-08a (#1729): все осиротевшие чек-листы профиля. Алиас с опечаткой владельца сохраняем.
+const FORGOTTEN_CHECKLISTS_INTENT = /^(?:\[Сообщение \d+\]\s*)?\/(?:all_forgotten_checklists|all_forgotten_checlists)(?:@\w+)?$/i;
 // Natural-language "хочу поправить чек-лист" — hand back checklist.trainedassist.store
 // autologin link instead of asking for a password. Edit/view verbs + "чек-лист" in either
 // order; deliberately excludes GTD_STOP_INTENT's "стоп"/"выключи" and bare /active_checklist.
@@ -985,6 +987,7 @@ module.exports = {
   STOP_TASK_INTENT,
   GTD_STOP_INTENT,
   ACTIVE_CHECKLIST_INTENT,
+  FORGOTTEN_CHECKLISTS_INTENT,
   CHECKLIST_EDIT_INTENT,
   WAKEUP_INTENT,
   SKIP_TASK_INTENT,

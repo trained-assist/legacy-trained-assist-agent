@@ -1026,32 +1026,110 @@ function listGtd(workDir) {
 // goals (#1517): цели, которые отслеживает запись GTD. Их пункты объединяются с
 // последней секцией — агент, дописавший новую секцию («Goal: инцидент», вся в [x]),
 // не должен этим «закрыть» ещё открытые пункты отслеживаемой цели.
+//
+// Владелец секции (#1729, BV-08): строка `Owner-session: <sessionId>` внутри секции
+// (обычно сразу под `Goal:`). Отметка отмены: `Cancelled: <дата>` (кнопка «✖️ Отменить»
+// у осиротевшего чек-листа). Обе строки — метаданные ТЕКУЩЕЙ секции; отменённая секция
+// остаётся активной (старые секции не воскрешаются), просто считается закрытой.
+const OWNER_LINE_RE = /^\s*(?:[-*]\s*)?owner-session:\s*([A-Za-z0-9_.:-]+)\s*$/i;
+const CANCELLED_LINE_RE = /^\s*(?:[-*]\s*)?cancelled:\s*(.*)$/i;
+function _parseChecklistSections(raw) {
+  const lines = raw.split('\n');
+  const sections = [];
+  let cur = { goal: null, goalLine: -1, owner: null, ownerLine: -1, cancelled: false, items: [] };
+  sections.push(cur);
+  for (let i = 0; i < lines.length; i++) {
+    const g = lines[i].match(/^\s*#*\s*goal:\s*(.+)$/i);
+    if (g) { cur = { goal: g[1].trim(), goalLine: i, owner: null, ownerLine: -1, cancelled: false, items: [] }; sections.push(cur); continue; }
+    const o = lines[i].match(OWNER_LINE_RE);
+    if (o) { cur.owner = o[1]; cur.ownerLine = i; continue; }
+    if (CANCELLED_LINE_RE.test(lines[i])) { cur.cancelled = true; continue; }
+    const item = lines[i].match(/^\s*-\s*\[([ xX])\]\s*(.+)$/);
+    if (item) cur.items.push({ text: item[2].trim(), done: item[1].toLowerCase() === 'x', line: i });
+  }
+  return { lines, sections };
+}
+
+function _activeSection(sections) {
+  for (let s = sections.length - 1; s >= 0; s--) if (sections[s].items.length) return sections[s];
+  return null;
+}
+
 function readChecklist(projectDir, { goals = null } = {}) {
   if (!projectDir) return null;
   let raw;
   try { raw = fs.readFileSync(path.join(projectDir, CHECKLIST_FILE), 'utf8'); } catch { return null; }
-  const lines = raw.split('\n');
-  const sections = [];
-  let cur = { goal: null, items: [] };
-  sections.push(cur);
-  for (let i = 0; i < lines.length; i++) {
-    const g = lines[i].match(/^\s*#*\s*goal:\s*(.+)$/i);
-    if (g) { cur = { goal: g[1].trim(), items: [] }; sections.push(cur); continue; }
-    const item = lines[i].match(/^\s*-\s*\[([ xX])\]\s*(.+)$/);
-    if (item) cur.items.push({ text: item[2].trim(), done: item[1].toLowerCase() === 'x', line: i });
-  }
-  for (let s = sections.length - 1; s >= 0; s--) {
-    if (!sections[s].items.length) continue;
-    const last = sections[s];
+  const { sections } = _parseChecklistSections(raw);
+  const last = _activeSection(sections);
+  if (last) {
+    const meta = { owner: last.owner, cancelled: last.cancelled };
     const tracked = new Set((goals || []).map(g => String(g).trim()).filter(Boolean));
-    if (!tracked.size) return { goal: last.goal, items: last.items };
+    if (!tracked.size) return { goal: last.goal, items: last.items, ...meta };
     const items = sections.filter(x => x === last || (x.goal && tracked.has(x.goal)))
       .flatMap(x => x.items).sort((a, b) => a.line - b.line);
-    return { goal: last.goal, items };
+    return { goal: last.goal, items, ...meta };
   }
   // Ни одного чекбокса — отдаём последний объявленный goal (fallback для
   // originalTask) с пустыми items.
-  return { goal: sections[sections.length - 1].goal, items: [] };
+  return { goal: sections[sections.length - 1].goal, items: [], owner: null, cancelled: false };
+}
+
+// Пишет/заменяет строку `Owner-session:` активной секции (или добавляет `Cancelled:`).
+// Строка встаёт сразу под `Goal:` (или в начало файла для секции без Goal). Возвращает
+// true, если файл изменён. Правит только активную секцию — чужие старые не трогает.
+function _editActiveSection(projectDir, mutate) {
+  const fp = path.join(projectDir, CHECKLIST_FILE);
+  let raw;
+  try { raw = fs.readFileSync(fp, 'utf8'); } catch { return false; }
+  const { lines, sections } = _parseChecklistSections(raw);
+  const sec = _activeSection(sections);
+  if (!sec) return false;
+  if (!mutate(lines, sec)) return false;
+  try { _atomicWrite(fp, lines.join('\n')); return true; }
+  catch (e) { console.error('[gtd] edit checklist section:', e.message); return false; }
+}
+
+function setChecklistOwner(projectDir, sessionId) {
+  if (!projectDir || !sessionId || !/^[A-Za-z0-9_.:-]+$/.test(String(sessionId))) return false;
+  return _editActiveSection(projectDir, (lines, sec) => {
+    if (sec.owner === sessionId) return false;
+    const line = `Owner-session: ${sessionId}`;
+    if (sec.ownerLine >= 0) lines[sec.ownerLine] = line;
+    else lines.splice(sec.goalLine + 1, 0, line);
+    return true;
+  });
+}
+
+function markChecklistCancelled(projectDir, { now = Date.now() } = {}) {
+  if (!projectDir) return false;
+  return _editActiveSection(projectDir, (lines, sec) => {
+    if (sec.cancelled) return false;
+    const at = sec.ownerLine >= 0 ? sec.ownerLine + 1 : sec.goalLine + 1;
+    lines.splice(at, 0, `Cancelled: ${new Date(now).toISOString().slice(0, 10)}`);
+    return true;
+  });
+}
+
+// Фолбэк владельца (#1729): агент/тул дописал новую секцию без `Owner-session:` в ЭТОМ
+// ране — сессия рана и есть её автор. Признак «в этом ране»: mtime checklist.md не
+// раньше старта рана. Не трогаем секцию, если её уже ведёт чужая открытая GTD-запись
+// (например, её прекчек переписал файл во время нашего рана) или если она уже
+// числится осиротевшей раньше старта рана (legacy-секция, а не свежая).
+function claimFreshChecklist({ workDir, projectDir, sessionId, since }) {
+  if (!workDir || !projectDir || !sessionId || !Number.isFinite(since)) return false;
+  let mtime;
+  try { mtime = fs.statSync(path.join(projectDir, CHECKLIST_FILE)).mtimeMs; } catch { return false; }
+  if (mtime < since) return false;
+  const cl = readChecklist(projectDir);
+  if (!cl || cl.owner || cl.cancelled || !cl.items.some(i => !i.done)) return false;
+  if (listGtd(workDir).some(r => r.status === 'open' && r.projectDir === projectDir && r.sessionId !== sessionId)) return false;
+  try {
+    const known = require('./orphan-checklists').findRecord(workDir, projectDir, cl.goal);
+    if (known && known.firstSeenAt < since) return false;
+  } catch { /* store unreadable → treat as unknown */ }
+  const ok = setChecklistOwner(projectDir, sessionId);
+  if (ok) console.log(`[gtd] claimed checklist section «${(cl.goal || '').slice(0, 60)}» in ${projectDir} for session=${sessionId}`);
+  return ok;
 }
 
 // Чек-лист записи GTD (#1517): запоминаем цель текущей последней секции в
@@ -1170,11 +1248,30 @@ async function maybeSchedule({ workDir, sessionId, chatId, username, task, apiKe
 // факт незакрытого checklist.md достаточен, чтобы довести дело до конца.
 // Используется как дефолт для PR-задач: «создал PR → checklist.md с 3 пунктами
 // (CI/merge/деплой) → трекается автоматически», без явной фразы «доведи до конца».
-async function scheduleFromChecklist({ workDir, sessionId, chatId, username, projectDir, audience, threadId = null }) {
+//
+// Владелец (#1729, BV-08): доводку получает только сессия-владелец активной секции
+// (`Owner-session:`). Чужая секция или legacy-секция без владельца к сессии A не
+// цепляется (инцидент 28.09: вчерашняя доводка tg-bot#290 всплыла в чужом разговоре).
+// Если такая секция никем не ведётся — она «осиротевшая» и уходит в orphan-store
+// (src/orphan-checklists.js): одно напоминание через 30 мин с «▶️ Делать»/«✖️ Отменить».
+async function scheduleFromChecklist({ workDir, sessionId, chatId, username, projectDir, audience, threadId = null, isSessionRunning = null }) {
   if (!workDir || !sessionId || !projectDir) return null;
   const checklist = readChecklist(projectDir);
   if (!checklist || !checklist.items.length || !checklist.items.some(i => !i.done)) return null;
+  if (checklist.cancelled) return null; // «✖️ Отменить» — секция закрыта человеком
   const existing = readGtd(workDir, sessionId);
+  const ownedByUs = checklist.owner === sessionId;
+  // Legacy без владельца: ведём дальше, только если A уже ведёт этот projectDir.
+  const legacyOurs = !checklist.owner && existing && existing.status === 'open' && existing.projectDir === projectDir;
+  if (!ownedByUs && !legacyOurs) {
+    try {
+      require('./orphan-checklists').noteSkipped({
+        workDir, projectDir, checklist, username, audience, chatId, threadId, isSessionRunning,
+      });
+    } catch (e) { console.warn('[gtd] orphan note:', e.message); }
+    console.log(`[gtd] skip(checklist): section owner=${checklist.owner || '(none)'} != session=${sessionId} in ${projectDir}`);
+    return null;
+  }
   if (existing && existing.status === 'open') return existing; // уже трекается — не сбрасываем прогресс/backoff
   // Один трекер на работу (#1719): у сессии есть активный durable-план → его ведёт
   // durable-исполнитель со своей проекцией; второй GTD-цикл по корневому
@@ -1320,10 +1417,12 @@ function writeChecklistDone(projectDir, items) {
 
 // Forum topics (#255): a delayed GTD notification must return to the topic it was
 // created from. threadId omitted entirely when absent (private/non-forum unchanged).
-async function _tgNotify(botToken, chatId, text, threadId = null) {
-  if (!botToken || !chatId) return;
+// extra (optional): доп. поля sendMessage, напр. reply_markup (кнопки напоминания об
+// осиротевшем чек-листе). Возвращает message_id отправленного сообщения или null.
+async function _tgNotify(botToken, chatId, text, threadId = null, extra = null) {
+  if (!botToken || !chatId) return null;
   const base = (process.env.TELEGRAM_API_URL || 'https://api.telegram.org').replace(/\/$/, '');
-  const body = { chat_id: chatId, text };
+  const body = { chat_id: chatId, text, ...(extra || {}) };
   if (Number.isInteger(threadId) && threadId > 0) body.message_thread_id = threadId;
   try {
     const res = await fetch(`${base}/bot${botToken}/sendMessage`, {
@@ -1337,8 +1436,10 @@ async function _tgNotify(botToken, chatId, text, threadId = null) {
       let desc = '';
       try { desc = (await res.json()).description || ''; } catch { /* not JSON */ }
       console.warn(`[gtd] tgNotify chat=${chatId} failed: HTTP ${res.status} ${desc}`.trim());
+      return null;
     }
-  } catch (e) { console.warn('[gtd] tgNotify:', e.message); }
+    try { const data = await res.json(); return data?.result?.message_id ?? null; } catch { return null; }
+  } catch (e) { console.warn('[gtd] tgNotify:', e.message); return null; }
 }
 
 const REOPEN_INTRO = '[GTD — авто-доведение задачи до конца]';
@@ -1369,9 +1470,13 @@ function buildReopenMessage(rec) {
         + '\n  (или подними уже открытый issue с прошлого шага и двигай его), потом выполни. В конце напиши строкой: GTD: continue',
     '• Если задача оказалась существенно сложнее первоначальной оценки (нужно намного больше кода, затрагивает много новых компонентов) — не усложняй. Напиши строкой: GTD: escalated',
     '• Если всё оставшееся — шаг, который может сделать ТОЛЬКО человек (живая проверка в чате, ручное решение), НЕ эскалируй и не выдумывай себе работу. Напиши строкой: GTD: blocked-on-human',
+    // BV-08: секция без владельца к этой сессии не прицепится — пусть агент подписывает свои.
+    rec.sessionId ? `• Если дописываешь в checklist.md новую секцию \`Goal:\` — сразу под ней поставь строку \`Owner-session: ${rec.sessionId}\`.` : null,
+    // Доводка осиротевшего чек-листа («▶️ Делать»): сессия новая и может стоять в другой папке.
+    rec.source === 'orphan-checklist' && rec.projectDir ? `• Чек-лист лежит здесь: ${path.join(rec.projectDir, CHECKLIST_FILE)}` : null,
     '',
     summary || `Исходная задача: ${rec.originalTask || '(см. историю сессии)'}`,
-  ].join('\n');
+  ].filter(l => l !== null).join('\n');
 }
 
 const DONE_RE      = /GTD:\s*done/i;
@@ -1470,6 +1575,15 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
   // stay bounded per tick.
   try { await runDueDurable({ secrets, runTask, isTaskRunning, now }); }
   catch (e) { console.error('[gtd-durable] tick error:', e.message); }
+
+  // BV-08: одно напоминание об осиротевшем чек-листе (не раньше 30 мин после
+  // обнаружения). Тот же тик — никаких новых таймеров/кронов (#1489).
+  try {
+    await require('./orphan-checklists').remindDue({
+      secrets, baseUsersDir, now,
+      isSessionRunning: (username, sid) => { try { return !!isTaskRunning(username, sid); } catch { return false; } },
+    });
+  } catch (e) { console.error('[orphan-checklists] tick error:', e.message); }
 
   let users = [];
   try { users = fs.readdirSync(baseUsersDir).filter(u => /^[a-zA-Z0-9_-]+$/.test(u)); } catch { return; }
@@ -1668,6 +1782,7 @@ module.exports = {
   detectIntent, maybeSchedule, scheduleFromChecklist, runDue, buildReopenMessage,
   readGtd, writeGtd, clearGtd, clearGtdForChat, listGtd, settleResumedGtd,
   readChecklist, trackedChecklist, checklistSummary, computeMaxIterations,
+  setChecklistOwner, markChecklistCancelled, claimFreshChecklist, _tgNotify,
   checklistCheapPrecheck, writeChecklistDone, mirrorGtdChecklist, CHECKLIST_API_BASE, checklistAutologinUrl,
   _ghToken, _ghFetch,
   durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,

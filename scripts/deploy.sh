@@ -263,13 +263,17 @@ echo "==> Starting service..."
 $SUDO systemctl reset-failed "$SERVICE" 2>/dev/null || true
 $SUDO systemctl start "$SERVICE"
 
-echo "==> Waiting for service to be healthy (up to 60s)..."
+echo "==> Waiting for service to be healthy on $TARGET (up to 60s)..."
+# Healthy = /health 200 AND it reports the commit we just built (SS-13): a bare
+# 200 from a process still running the previous release must fail the deploy.
 HEALTHY=0
 for i in $(seq 1 60); do
-  STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://localhost:8080/health 2>/dev/null || echo 000)
-  if [ "$STATUS_CODE" = "200" ]; then HEALTHY=1; echo "  healthy after ${i}s"; break; fi
+  if node "$RELEASE_DIR/scripts/check-health-commit.js" http://localhost:8080/health "$TARGET" 2>/dev/null; then
+    HEALTHY=1; echo "  healthy on ${TARGET:0:7} after ${i}s"; break
+  fi
   sleep 1
 done
+[ "$HEALTHY" = "1" ] || node "$RELEASE_DIR/scripts/check-health-commit.js" http://localhost:8080/health "$TARGET" || true
 $SUDO systemctl status "$SERVICE" --no-pager --lines=10 || true
 if [ "$DEPLOY_ENV" = "gcp" ] && [ -f /etc/systemd/system/assist-cron-tick.timer ]; then
   $SUDO systemctl enable --now assist-cron-tick.timer || echo "  WARN: assist-cron-tick.timer not enabled"
@@ -281,7 +285,7 @@ $SUDO journalctl -u "$SERVICE" --no-pager -n 20 || true
 # Must use `false` (a failing command) not `exit 1` — bash's ERR trap fires only
 # on non-zero command exits, not on an explicit `exit` statement.
 if [ "$HEALTHY" = "0" ]; then
-  echo "ERROR: service did not respond on /health after 60s — failing deploy to trigger rollback"
+  echo "ERROR: /health did not report commit ${TARGET:0:7} within 60s — failing deploy to trigger rollback"
   false
 fi
 trap - ERR

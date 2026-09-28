@@ -10,6 +10,9 @@
 ```
 docs/user-scenarios/
   README.md          ← этот файл
+  core/              ← платформа: конкурентность, фоновые запуски
+    01-channel-concurrency.md       ← очередь чата, параллельные сессии (#1365)
+    02-background-run-visibility.md ← ярлык/ack/сбой фоновых запусков, GTD-владелец чек-листа (#1729)
   recruiter/         ← домен: рекрутер с HeadHunter
     01-full-end-to-end.md       ← сквозной flow: от коннекта до отправки оффера
     02-ats-setup-and-scoring.md ← настройка критериев подбора
@@ -17,6 +20,9 @@ docs/user-scenarios/
     04-cold-search.md           ← холодный поиск (проактивный)
     05-vacancy-switch.md        ← смена активной вакансии
     06-hh-reconnect.md          ← переподключение HH после истечения токена
+  core/              ← сквозные механики бота (все домены)
+    01-channel-concurrency.md   ← одна задача на диалог, очередь, изоляция
+    02-stop-and-supplement.md   ← «⛔ Стоп» / «➕ Дополнить» на идущей задаче
   engineering/       ← домен: инженерная разработка через Playbooks (#1372)
     01-development-playbook.md  ← playbook `development`: от запроса до проверенной поставки
   exhibition/        ← домен: участники выставок → сайт продаж
