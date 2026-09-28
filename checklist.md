@@ -9,3 +9,9 @@ Goal: register trained-assist-search-skill as the search-skills sibling — вы
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1803
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live (search-skills в .mcp.json, ensure_sibling в журнале деплоя)
+
+Goal: encrypted credential store — AES-256-GCM at rest для agent-tokens (epic #1789 P0 C4): единый модуль credential-store, все чтения/записи через него, .meta + .index.json, scripts/encrypt-tokens.mjs, CRED_ENCRYPTION_KEY в env-manifest/CI
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1819
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
