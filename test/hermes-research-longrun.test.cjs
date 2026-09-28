@@ -11,8 +11,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
+// Hermetic keepalive dir (#1791): the default lives under the service data dir; a
+// test must never touch a path shared with the service or other runs.
+process.env.AGENT_KEEPALIVE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-keepalive-'));
+
 const { writeOpencodeMcpConfig, codexMcpArgs, runEngineProcess, _const } = require('../src/runner/claude-runner');
-const { keepaliveFilePath, lastKeepaliveAt, withKeepalive } = require('../src/mcp-keepalive');
+const { keepaliveDir, keepaliveFilePath, lastKeepaliveAt, withKeepalive, sweepKeepalive } = require('../src/mcp-keepalive');
 const { persistAndDeliver, researchDir } = require('../src/hermes-delivery');
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-longrun-'));
@@ -71,6 +75,42 @@ test('withKeepalive touches the file while the tool runs and is a no-op without 
   const out = await withKeepalive(async () => { assert.ok(lastKeepaliveAt(file) > Date.now() - 5000); return 42; }, file);
   assert.equal(out, 42);
   assert.equal(await withKeepalive(async () => 'x', ''), 'x');
+});
+
+test('keepalive dir: service data dir by default (never the shared /tmp), private, swept of day-old files', async () => {
+  const saved = { d: process.env.AGENT_KEEPALIVE_DIR, a: process.env.AGENT_DATA_DIR };
+  try {
+    delete process.env.AGENT_KEEPALIVE_DIR;
+    process.env.AGENT_DATA_DIR = '/srv/agent-data';
+    assert.equal(keepaliveDir(), '/srv/agent-data/agent-keepalive');
+    assert.equal(keepaliveFilePath('a/b'), '/srv/agent-data/agent-keepalive/a_b');
+  } finally {
+    process.env.AGENT_KEEPALIVE_DIR = saved.d;
+    if (saved.a === undefined) delete process.env.AGENT_DATA_DIR; else process.env.AGENT_DATA_DIR = saved.a;
+  }
+  const dir = path.join(tmp(), 'ka');
+  await withKeepalive(async () => {}, path.join(dir, 'fresh'));
+  assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+  fs.writeFileSync(path.join(dir, 'old'), '');
+  const old = new Date(Date.now() - 25 * 3600 * 1000);
+  fs.utimesSync(path.join(dir, 'old'), old, old);
+  assert.equal(sweepKeepalive(dir), 1);
+  assert.deepEqual(fs.readdirSync(dir), ['fresh']);
+  assert.equal(sweepKeepalive(path.join(dir, 'missing')), 0);
+});
+
+test('keepalive: a touch that cannot write is logged once per file, never thrown', async () => {
+  const blocker = path.join(tmp(), 'not-a-dir');
+  fs.writeFileSync(blocker, '');
+  const file = path.join(blocker, 'ka');
+  const warns = [];
+  const orig = console.warn;
+  console.warn = (m) => warns.push(String(m));
+  try {
+    await withKeepalive(async () => {}, file);
+    await withKeepalive(async () => {}, file);
+  } finally { console.warn = orig; }
+  assert.equal(warns.filter(w => w.includes(file)).length, 1, warns.join('\n'));
 });
 
 function fakeFetch(calls, ok = true) {

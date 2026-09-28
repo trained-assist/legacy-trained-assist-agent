@@ -1541,6 +1541,12 @@ async function main() {
   setInterval(drivePoll, 2 * 60 * 1000);
 
   scheduleNalogExpiryChecks(secrets);
+  // Keepalive files of runs that never reached their cleanup (crash/restart) — the
+  // dir is persistent (src/mcp-keepalive.js, #1791), so sweep day-old ones on start.
+  try {
+    const n = require('./mcp-keepalive').sweepKeepalive();
+    if (n) console.log(`[keepalive] swept ${n} stale file(s)`);
+  } catch (e) { console.warn(`[keepalive] sweep failed: ${e.message}`); }
   if (hhNeg.scheduleHhBackgroundScoring) hhNeg.scheduleHhBackgroundScoring();
 // Cold search runs on the generic cron (#1489 S7.1): one job per vacancy, managed by
 // hh_proactive_schedule in hh-skill. No HH timer in core.
