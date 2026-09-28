@@ -6,8 +6,16 @@
 //    detectPlanInAnswer (yes/no → generic «Действуй дальше по плану») +
 //    detectMenuInAnswer (2-4 alternatives). It returns the concrete actions the
 //    answer itself proposes («Создать PR», «Задеплоить на RU»), each backed by a
-//    verbatim quote from the answer. A label whose quote is not found in the text
-//    is dropped — buttons are only ever extracted, never invented.
+//    verbatim quote from the answer.
+//
+//    Grounding (2026-09-28): BOTH the quote AND the label must be found in the text.
+//    The label used to be free-form («перефразируй, 2-5 слов, без номеров»), so a cheap
+//    ladder rung turned the answer's own names — «Начать #1753 P0», «Запустить фазы #1755» —
+//    into «Начать срочную задачу», «Запустить фазы», «Начать экран вакансии»: buttons the
+//    user cannot match back to the text (incident 2026-09-28). Now the label is the answer's
+//    own name for the action (numbers/IDs kept); a label that is not verbatim in the answer is
+//    re-anchored to a «…»-quoted name inside its grounded quote, and dropped if that too fails.
+//    Buttons are only ever extracted, never invented.
 // 2. paragraphize: a wall of text (long, almost no blank lines) is re-split into
 //    paragraphs/lists by the LLM; the result is accepted only if it kept the
 //    words of the original (coverage guard), otherwise the original goes out.
@@ -21,6 +29,21 @@ const MAX_LABEL = 40;
 
 function norm(s) {
   return String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+// Truncate to `max` chars on a word boundary (never mid-word — a cut half-word can't be
+// grounded in the answer any more).
+function cutWords(s, max) {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const sp = cut.lastIndexOf(' ');
+  return (sp > 10 ? cut.slice(0, sp) : cut).trim();
+}
+
+// First «…»/“…”/"…" span inside a verbatim quote — the answer's own name for an action.
+function firstQuoted(quote) {
+  const m = String(quote || '').match(/[«"“]([^«»"”]{3,60})[»"”]/);
+  return m ? m[1].trim() : '';
 }
 
 // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last) — throws when every rung
@@ -40,7 +63,11 @@ const ACTIONS_SYSTEM = [
   'Если ответ предлагает выбор из альтернатив — по кнопке на альтернативу.',
   'НЕ действия: итог уже сделанного, факты, вопрос без предложения, общие фразы',
   '(«продолжить», «обсудить», «уточнить»), служебные /команды и управление чеклистом.',
-  `Максимум ${MAX_ACTIONS}. Ярлык — повелительное, 2-5 слов, по-русски, без номеров, эмодзи и аббревиатур (перефразируй: WIP → «в работе»).`,
+  `Максимум ${MAX_ACTIONS}. Ярлык — как действие НАЗВАНО в самом ответе: дословный фрагмент ответа,`,
+  'без кавычек и нумерации списка (сократи до ~40 символов по краям). СОХРАНЯЙ номера и метки из',
+  'ответа (#1753, P0, PR #294) — пользователь должен узнать действие по тексту. Не придумывай слов,',
+  'которых нет в ответе; только если действие вообще не названо в тексте — короткий повелительный',
+  'ярлык из слов ответа (2-5 слов).',
   'Для каждого действия дай quote — ДОСЛОВНЫЙ фрагмент ответа (5-15 слов), где оно предложено.',
   'Ответь СТРОГО JSON: {"kind":"plan"|"menu"|"actions"|"none","actions":[{"label":"…","quote":"…"}]}.',
   'Сомневаешься → {"kind":"none","actions":[]}.',
@@ -76,21 +103,30 @@ function validateActions(obj, text) {
   const seen = new Set();
   const actions = [];
   for (const a of obj.actions) {
-    const label = String(a?.label || '').replace(/^[\d.)\s]+/, '').replace(/[«»"]/g, '').trim();
-    const quote = norm(a?.quote);
-    if (!label || label.length > MAX_LABEL * 2) continue;
-    if (/^\/|чеклист/i.test(label)) continue;
+    const rawLabel = String(a?.label || '').replace(/^[\d.)\s]+/, '').replace(/[«»"“”]/g, '').trim();
+    const rawQuote = String(a?.quote || '').trim();
+    if (/^\/|чеклист/i.test(rawLabel)) continue;
     // Grounding: the quote (or, if the model trimmed it, most of its words) must be in the text.
+    const quote = norm(rawQuote);
     if (!quote || quote.split(' ').length < 2) continue;
     if (!hay.includes(quote)) {
       const words = quote.split(' ').filter(w => w.length > 3);
       const hit = words.filter(w => hay.includes(w)).length;
       if (!words.length || hit / words.length < 0.8) continue;
     }
+    // Label grounding: the button must carry the answer's own name, not an invented paraphrase.
+    // Prefer the model's label; if it is not verbatim in the answer, re-anchor to the «…»-quoted
+    // name inside its grounded quote; drop the action if neither is present.
+    let label = cutWords(rawLabel, MAX_LABEL);
+    if (!label || !hay.includes(norm(label))) {
+      const q = cutWords(firstQuoted(rawQuote), MAX_LABEL);
+      label = q && hay.includes(norm(q)) ? q : '';
+    }
+    if (!label) continue;
     const k = norm(label);
     if (seen.has(k)) continue;
     seen.add(k);
-    actions.push({ label: label.slice(0, MAX_LABEL), quote: a.quote });
+    actions.push({ label, quote: a.quote });
     if (actions.length >= MAX_ACTIONS) break;
   }
   return actions.length ? { kind, actions } : { kind: 'none', actions: [] };
