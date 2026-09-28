@@ -8,19 +8,24 @@
 // an audience never falls back to another bot (#1302). Same semantics as
 // gtd-controller's resolveOwnerTarget, without a durable store/task.
 //
+// The send itself goes through the shared sendChatReply (94-tg-send) — the same
+// non-run delivery hermes-delivery.js uses — so this file adds no direct
+// Telegram call site (ratchet test/ratchet-telegram-senders.test.cjs).
+//
 // Consumed by the recruiting hub launch push: server.js wires it into
 // hhCtx.notifyProfile (secrets/readChatId/userWorkDir injected there).
 
 const fs = require('fs');
 const path = require('path');
 const { deliverySecrets } = require('./bot-delivery');
+const { sendChatReply } = require('./mcp-skills/tools/94-tg-send');
 
 async function notifyProfile(username, text, {
   secrets = {},
   readChatId,
   userWorkDir,
   threadId = null,
-  fetchImpl = globalThis.fetch,
+  fetchImpl = undefined,
 } = {}) {
   const chatId = typeof readChatId === 'function' ? readChatId(username) : null;
   if (!chatId) return { sent: false, reason: 'no_chat_id' };
@@ -53,17 +58,12 @@ async function notifyProfile(username, text, {
   if (!token) return { sent: false, reason: 'no_bot_token' };
 
   try {
-    const payload = { chat_id: chatId, text, disable_web_page_preview: true };
-    if (thread != null) payload.message_thread_id = thread;
-    const r = await fetchImpl(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!r.ok) console.warn(`[notifyProfile] ${username} → chat ${chatId} (${audience}): HTTP ${r.status}`);
-    return { sent: r.ok, status: r.status };
+    const opts = { target: { chatId, token, ...(thread != null ? { threadId: thread } : {}) } };
+    if (fetchImpl) opts.fetchImpl = fetchImpl;
+    await sendChatReply({ text: String(text) }, opts);
+    return { sent: true };
   } catch (e) {
+    console.warn(`[notifyProfile] ${username} → chat ${chatId} (${audience}): ${e.message}`);
     return { sent: false, reason: e.message };
   }
 }

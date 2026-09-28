@@ -13,9 +13,9 @@ function mkProfile(t,{sessions=null,full=null}={}){
   return {workDir:()=>root};
 }
 const readChatIdOf=(chatId)=>()=>chatId;
-function recorder(){
+function recorder({apiOk=true,apiPayload={ok:true,result:{message_id:1}}}={}){
   const calls=[];
-  const fetchImpl=async(url,opts)=>{calls.push({url,body:JSON.parse(opts.body)});return{ok:true,status:200};};
+  const fetchImpl=async(url,opts)=>{calls.push({url,body:opts.body});return{ok:true,json:async()=>apiPayload};};
   return{calls,fetchImpl};
 }
 
@@ -29,12 +29,12 @@ test('routes to the audience bot of the chat that last ran a task',async t=>{
   ],full:{'s-777-2':{messageThreadId:15}}});
   const {calls,fetchImpl}=recorder();
   const res=await notifyProfile('u','▶ запущен',{secrets,readChatId:readChatIdOf('777'),userWorkDir:p.workDir,fetchImpl});
-  assert.deepEqual(res,{sent:true,status:200});
+  assert.deepEqual(res,{sent:true});
   assert.equal(calls.length,1);
   assert.match(calls[0].url,/botrecruiter\/sendMessage/);
-  assert.equal(calls[0].body.chat_id,'777');
-  assert.equal(calls[0].body.message_thread_id,15);
-  assert.equal(calls[0].body.text,'▶ запущен');
+  assert.equal(calls[0].body.get('chat_id'),'777');
+  assert.equal(calls[0].body.get('message_thread_id'),'15');
+  assert.equal(calls[0].body.get('text'),'▶ запущен');
 });
 
 test('legacy profile without a sessions index falls back to the default bot',async t=>{
@@ -43,7 +43,7 @@ test('legacy profile without a sessions index falls back to the default bot',asy
   const res=await notifyProfile('u','hi',{secrets,readChatId:readChatIdOf('42'),userWorkDir:p.workDir,fetchImpl});
   assert.equal(res.sent,true);
   assert.match(calls[0].url,/botclassic\/sendMessage/);
-  assert.equal(calls[0].body.message_thread_id,undefined);
+  assert.equal(calls[0].body.get('message_thread_id'),null);
 });
 
 test('no .chatid — nothing is sent',async t=>{
@@ -63,9 +63,10 @@ test('an audience without its configured bot never falls back to classic (#1302)
   assert.equal(calls.length,0);
 });
 
-test('telegram failure is reported, not thrown',async t=>{
+test('telegram rejection is reported, not thrown',async t=>{
   const p=mkProfile(t);
-  const fetchImpl=async()=>({ok:false,status:400});
+  const {fetchImpl}=recorder({apiPayload:{ok:false,description:'chat not found'}});
   const res=await notifyProfile('u','hi',{secrets,readChatId:readChatIdOf('42'),userWorkDir:p.workDir,fetchImpl});
-  assert.deepEqual(res,{sent:false,status:400});
+  assert.equal(res.sent,false);
+  assert.match(res.reason,/chat not found/);
 });
