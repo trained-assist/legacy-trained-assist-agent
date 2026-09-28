@@ -4,15 +4,13 @@
 // playbook at the start of a *development-like* task, so the agent proposes the
 // process scaffold instead of waiting to be asked.
 //
-// This module is pure and read-only. It decides whether the agent should be
-// *told* a playbook is available, and returns the prompt section to inject. It
-// NEVER compiles, creates or activates a plan itself.
-//
-// Consent rule (#1719): the user's agreement to the TASK is the activation
-// consent — an agreed task goes straight to `playbook_run(..., activate: true)`.
-// The earlier «never activate yourself» wording contradicted the persona's
-// «don't re-ask on an agreed task» rule, so in practice the agent skipped the
-// playbook entirely. Only a not-yet-agreed large task is merely proposed.
+// This module is pure and read-only — it returns a prompt section to inject.
+// The module itself never compiles, creates or activates a plan; the prompt
+// it generates tells the agent when playbook_run(activate: true) is appropriate
+// (agreed task → activate, not-yet-agreed → suggest only). The earlier
+// «never activate yourself» wording contradicted the persona's «don't re-ask
+// on an agreed task» rule, so the agent skipped the playbook entirely — fixed
+// in #1719.
 //
 // Opt-in-safe by construction:
 //   • not a development-like task        → '' (prompt unchanged)
