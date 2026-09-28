@@ -9,7 +9,10 @@ const assert = require('node:assert/strict');
 
 const tool = require('../src/mcp-skills/tools/99c-search-searxng').tools.search_serp_free;
 
-const ENV_KEYS = ['FREE_SEARCH_BACKEND', 'SEARXNG_URL', 'SMOKE_FREE_SEARCH'];
+const ENV_KEYS = [
+  'FREE_SEARCH_BACKEND', 'SEARXNG_URL', 'SMOKE_FREE_SEARCH',
+  'FREE_SEARCH_DDG_COOLDOWN_MS', 'FREE_SEARCH_SEARXNG_COOLDOWN_MS', 'FREE_SEARCH_BRAVE_COOLDOWN_MS',
+];
 
 function withEnv(overrides, fn) {
   const saved = {};
@@ -18,6 +21,11 @@ function withEnv(overrides, fn) {
     delete process.env[k];
   }
   Object.assign(process.env, overrides);
+  // Cooldowns are module state that outlives a single test: keep them off unless a test opts in,
+  // so one test's failure never makes a later test skip a backend.
+  for (const k of ['FREE_SEARCH_DDG_COOLDOWN_MS', 'FREE_SEARCH_SEARXNG_COOLDOWN_MS', 'FREE_SEARCH_BRAVE_COOLDOWN_MS']) {
+    if (process.env[k] === undefined) process.env[k] = '0';
+  }
   const done = (v) => {
     for (const k of ENV_KEYS) {
       if (saved[k] === undefined) delete process.env[k];
@@ -282,6 +290,125 @@ test('duckduckgo HTTP 202 anomaly challenge → named as rate-limit, chain falls
     assert.equal(out.engine, 'searxng');
     assert.equal(out.results.length, 2);
   });
+});
+
+test('a stalled duckduckgo is one-shot — the budget still reaches the searxng fallback', async () => {
+  await withEnv({ FREE_SEARCH_BACKEND: 'duckduckgo,searxng', SEARXNG_URL: 'https://sx.test' }, async () => {
+    const calls = [];
+    const out = await tool.handler(
+      { query: 'x' },
+      {
+        fetchImpl: async (url) => {
+          calls.push(url);
+          if (url.includes('duckduckgo')) {
+            const err = new Error('The operation was aborted due to timeout');
+            err.name = 'TimeoutError';
+            throw err;
+          }
+          return res(200, SEARX_JSON, 'application/json');
+        },
+      }
+    );
+    assert.equal(calls.filter((u) => u.includes('duckduckgo')).length, 1, 'a stalled DDG is not retried');
+    assert.equal(out.engine, 'searxng');
+    assert.equal(out.results.length, 2);
+  });
+});
+
+test('a duckduckgo failure opens a cooldown — the next call skips it and says so', async () => {
+  await withEnv(
+    { FREE_SEARCH_BACKEND: 'duckduckgo,searxng', SEARXNG_URL: 'https://sx.test', FREE_SEARCH_DDG_COOLDOWN_MS: '60000' },
+    async () => {
+      const first = [];
+      const r1 = await tool.handler(
+        { query: 'x' },
+        {
+          fetchImpl: async (url) => {
+            first.push(url);
+            return url.includes('duckduckgo') ? res(202, '<html>anomaly</html>') : res(200, SEARX_JSON, 'application/json');
+          },
+        }
+      );
+      assert.equal(r1.engine, 'searxng');
+      assert.equal(first.filter((u) => u.includes('duckduckgo')).length, 1);
+
+      const second = [];
+      await tool.handler(
+        { query: 'y' },
+        {
+          fetchImpl: async (url) => {
+            second.push(url);
+            return res(200, SEARX_JSON, 'application/json');
+          },
+        }
+      );
+      assert.equal(second.filter((u) => u.includes('duckduckgo')).length, 0, 'cooling-down backend is not probed');
+
+      // …and when it is the reason everything failed, the message names the cooldown.
+      const only = await tool.handler({ query: 'z' }, { fetchImpl: async () => res(200, '') });
+      assert.equal(only.error, 'search_failed');
+      assert.match(only.message, /cooling down after a recent failure/);
+    }
+  );
+});
+
+test('a stalled instance goes into cooldown and is skipped on the next call', async () => {
+  await withEnv(
+    { FREE_SEARCH_BACKEND: 'searxng', SEARXNG_URL: 'https://slow.test', FREE_SEARCH_SEARXNG_COOLDOWN_MS: '60000' },
+    async () => {
+      const r1 = await tool.handler(
+        { query: 'x' },
+        {
+          fetchImpl: async () => {
+            const err = new Error('aborted');
+            err.name = 'TimeoutError';
+            throw err;
+          },
+        }
+      );
+      assert.equal(r1.error, 'search_failed');
+      assert.match(r1.message, /timeout after/);
+
+      // the stall is remembered: with a healthy instance added, the dead one is never probed
+      process.env.SEARXNG_URL = 'https://slow.test,https://fast.test';
+      const second = [];
+      const r2 = await tool.handler(
+        { query: 'y' },
+        {
+          fetchImpl: async (url) => {
+            second.push(url);
+            return res(200, SEARX_JSON, 'application/json');
+          },
+        }
+      );
+      assert.equal(r2.engine, 'searxng');
+      assert.equal(second.filter((u) => u.includes('slow.test')).length, 0, 'stalled instance is skipped');
+      assert.ok(second.some((u) => u.includes('fast.test')), 'the healthy instance answers instead');
+    }
+  );
+});
+
+test('an empty SERP does NOT cool an instance down — that is query-dependent, not an outage', async () => {
+  await withEnv(
+    { FREE_SEARCH_BACKEND: 'searxng', SEARXNG_URL: 'https://bingish.test', FREE_SEARCH_SEARXNG_COOLDOWN_MS: '60000' },
+    async () => {
+      const r1 = await tool.handler(
+        { query: 'русский запрос' },
+        { fetchImpl: async () => res(200, JSON.stringify({ results: [] }), 'application/json') }
+      );
+      assert.equal(r1.error, 'search_failed');
+      assert.match(r1.message, /empty SERP/);
+
+      const second = [];
+      const r2 = await tool.handler(
+        { query: 'english query' },
+        { fetchImpl: async (url) => { second.push(url); return res(200, SEARX_JSON, 'application/json'); } }
+      );
+      assert.equal(second.length, 1, 'the same instance is still tried');
+      assert.match(second[0], /bingish\.test/);
+      assert.equal(r2.engine, 'searxng');
+    }
+  );
 });
 
 test('pool rotation spreads calls across instances', async () => {
