@@ -83,6 +83,7 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
     `cat ${tokensDir}/bob/github && echo LEAK_OTHER_TOKENS`,
     `cat ${tokensDir}/alice/github && echo LEAK_TOKEN_FILE`,
     `cat ${secretsFile} && echo LEAK_SECRETS_FILE`,
+    `echo tmp-note > "$TMPDIR/probe.txt" && echo TMP_WRITE_OK`,
     `cd ${repo} && git status --short && echo GIT_STATUS_OK && git commit -q --allow-empty -m agent && git log -1 --format=%an | sed 's/^/GIT_AUTHOR=/'`,
     `env`,
   ].map(c => `(${c}) 2>/dev/null`).join('; ');
@@ -110,6 +111,10 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
   assert.match(out, /GH_TOKEN=alice-gh-env/, 'current profile token passed via env');
   assert.match(out, /^SHELL=\/bin\/bash$/m, 'slot has a usable shell for the engines\' Bash tool');
   assert.match(out, new RegExp(`^HOME=${path.join(users, 'alice', '.agent-home')}$`, 'm'), 'HOME is the per-profile engine home');
+  // #1791: glibc strips TMPDIR from setuid sudo's env — it must arrive via argv.
+  assert.equal(runA.env.TMPDIR, path.join(users, 'alice', '.agent-home', 'tmp', runA.slot));
+  assert.match(out, new RegExp(`^TMPDIR=${runA.env.TMPDIR}$`, 'm'), `TMPDIR reaches the slot:\n${out}`);
+  assert.match(out, /^TMP_WRITE_OK$/m, 'the slot can write its temp dir');
 
   // The service user can still read and rewrite what the agent wrote (default ACL).
   const wrote = path.join(users, 'alice', 'agent-wrote.txt');
@@ -124,6 +129,7 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
   const [sb, sa] = runA.spawnArgv('/bin/sh', ['-c', `umask 022; echo one > ${shared}`]);
   spawnSync(sb, sa, { env: iso.buildAgentEnv(serviceEnv, { extra: runA.env }), cwd: path.join(users, 'alice') });
   runA.release();
+  assert.deepEqual(fs.readdirSync(runA.env.TMPDIR), [], 'temp files are cleared on release');
   // occupy the slot alice just used, so her next run lands on a different one
   const hold = await iso.prepareIsolatedRun(cfg, { workDir: path.join(users, 'bob'), engine: 'none', serviceHome: home });
   const runA2 = await iso.prepareIsolatedRun(cfg, { workDir: path.join(users, 'alice'), engine: 'none', serviceHome: home });
