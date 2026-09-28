@@ -17,6 +17,7 @@ const SKILL_SIBLINGS = [
   { id: 'freelance', repo: 'trained-assist-freelance-skill', mcpServerId: 'freelance-skills' },
   { id: 'engineering', repo: 'trained-assist-engineering', mcpServerId: 'engineering-skills' },
   { id: 'sales', repo: 'trained-assist-sales-skill', mcpServerId: 'sales-skills' },
+  { id: 'documents', repo: 'trained-assist-documents-skill', mcpServerId: 'documents-skills' },
 ];
 
 const DEFAULT_ROOT = path.join(__dirname, '..', '..');
