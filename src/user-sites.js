@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { userWorkDir } = require('./data-paths');
+const { userWorkDir, writeMode } = require('./data-paths');
 
 function sitesRoot(username) {
   // Connected-site config lives in the profile workspace (USERS_ROOT/<u>/sites).
@@ -48,7 +48,7 @@ function saveSiteConfig(username, slug, config) {
 function saveSiteCreds(username, slug, creds) {
   const dir = path.join(sitesRoot(username), slug);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'creds.json'), JSON.stringify(creds), { mode: 0o600 });
+  fs.writeFileSync(path.join(dir, 'creds.json'), JSON.stringify(creds), writeMode(0o600));
 }
 
 function readSiteCreds(username, slug) {
@@ -86,7 +86,7 @@ function readIntents(username, slug) {
 function saveStorageState(username, slug, state) {
   const dir = path.join(sitesRoot(username), slug);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'storage-state.json'), JSON.stringify(state), { mode: 0o600 });
+  fs.writeFileSync(path.join(dir, 'storage-state.json'), JSON.stringify(state), writeMode(0o600));
 }
 
 function readStorageState(username, slug) {
