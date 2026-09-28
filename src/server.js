@@ -4,7 +4,7 @@ process.once('exit', () => executionOwner.close());
 const { atomicJson } = require('./atomic-json');
 const { deliverySecrets, taskDelivery } = require('./bot-delivery');
 const { withDedupLock } = require('./request-dedup-lock');
-const { isTaskResumable, resumeSinkOf } = require('./pending-task-resume');
+const { isTaskResumable, resumeSinkOf, resolvePendingWorkDir } = require('./pending-task-resume');
 const { isNonTaskMessage } = require('./resume-hygiene');
 const { recordResume } = require('./resume-stats');
 const { getRetryDelayMs } = require('./retry-policy');
@@ -332,7 +332,7 @@ async function resumePendingTasks(secrets) {
   const notifyFailure = (p, text) => {
     if (!p.userId || !secrets?.BOT_TOKEN) return Promise.resolve(); // Telegram sink only
     let token;
-    try { token = taskDelivery({ user: { audience: p.audience, workDir: p.workDir || path.join(BASE_USERS_DIR, p.username) }, sessionId: p.sessionId, secrets }).secrets.BOT_TOKEN; }
+    try { token = taskDelivery({ user: { audience: p.audience, workDir: resolvePendingWorkDir(p) }, sessionId: p.sessionId, secrets }).secrets.BOT_TOKEN; }
     catch (e) { console.error('[resume] delivery unavailable:', e.message); return Promise.resolve(); }
     return p.initialMsgId
       ? tgCall(token, 'editMessageText', { chat_id: p.userId, message_id: p.initialMsgId, text })
@@ -401,7 +401,9 @@ async function resumePendingTasks(secrets) {
     // deploy flurry (34 restarts/day), so a perfectly resumable task "gave up after 3 attempts"
     // without a single genuine failure. Reuse the journaled number; a fresh task starts at 1.
     const attempt = p.resumeAttempts || 1;
-    const workDir = p.workDir || path.join(BASE_USERS_DIR, p.username);
+    // Workspace by profile identity, not by a path remembered in the journal
+    // (epic #1789 P1) — legacy records still resolve through their stored workDir.
+    const workDir = resolvePendingWorkDir(p);
 
     // Native resume (#1234): claude (Sub-2), codex (Sub-3) and opencode (Sub-4) are wired.
     // Source: the pending journal (written mid-run, survives SIGKILL) with the durable session
