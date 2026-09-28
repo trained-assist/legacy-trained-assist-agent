@@ -52,6 +52,13 @@ Environment=VM_NAME=gcp-main
 Environment=CRON_SCHEDULER_ROLE=primary
 Environment=GCP_PROJECT=alesa-personal-assistent
 Environment=ANTHROPIC_MODEL=claude-opus-5-5
+# Global concurrency cap on live engine processes (src/runner/task-queue.js).
+# Default is 6 — measured 2026-09-28: engines are network-bound (~0.1 core and
+# ~0.6 GB RAM each), so 6 left half the box idle while interactive tasks queued
+# behind e2e runs (global_slot_wait up to 4 min). 12 fits 4 vCPU / 16 GB; the
+# run-as slot pool is 14 (scripts/ops/agent-isolation-setup.sh --slots 14),
+# which must stay >= this value + nested runs.
+Environment=MAX_CONCURRENT_TASKS=12
 
 [Install]
 WantedBy=multi-user.target
