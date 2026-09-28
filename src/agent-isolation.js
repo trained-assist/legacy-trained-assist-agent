@@ -219,6 +219,17 @@ function ancestorDirs(target, serviceHome = os.homedir()) {
   return out;
 }
 
+// Files the SERVICE wrote into a profile with mode 0600 (chat/web attachments, answer
+// modes, …) have ACL mask --- and are invisible to the slot of THIS profile's run. They
+// are the profile's own data, so before a run the service (their owner) opens them to
+// the group; other profiles stay closed by their gates. Browser profiles are skipped.
+function shareServiceFiles(cfg, gate, { exec } = {}) {
+  try {
+    runCmd(['find', gate, '-xdev', '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
+      '-type', 'f', '-user', cfg.serviceUser, '!', '-perm', '-g+r', '-exec', 'chmod', 'g+rw', '{}', '+'], exec);
+  } catch (e) { console.warn(`[isolation] could not share service files in ${gate}: ${e.message}`); }
+}
+
 function prepareGate(cfg, gate, { exec } = {}) {
   fs.mkdirSync(gate, { recursive: true, mode: 0o700 });
   const marker = path.join(gate, GATE_MARKER);
@@ -244,8 +255,29 @@ function recoverSlot(cfg, slot, { exec } = {}) {
   let paths = [];
   try { paths = JSON.parse(fs.readFileSync(file, 'utf8')).paths || []; } catch { return; }
   console.warn(`[isolation] ${slot}: revoking ${paths.length} ACL entr(ies) left by an interrupted run`);
+  // The interrupted run's gates are the paths it could write (its traverse-only
+  // ancestors are skipped by find's -user filter at no cost).
+  shareSlotFiles(cfg, slot, paths.filter(p => fs.existsSync(path.join(p, GATE_MARKER))), { exec });
   revokePaths(cfg, slot, paths, { exec });
   fs.rmSync(file, { force: true });
+}
+
+// Files a slot creates carry the mode the program asked for (sqlite, most CLIs: 0644).
+// With the gate's default ACL that mode becomes the ACL mask, so the group entry is
+// cut to read-only and the NEXT run — another slot — cannot write them (opencode's
+// session DB failed exactly like that). Only the owner may change it, so the slot
+// itself opens its files to the group before its access to the gate is revoked.
+function shareSlotFiles(cfg, slot, dirs, { exec } = {}) {
+  for (const d of dirs) {
+    try {
+      // chrome/: the live browser profile — service-owned, huge, never the slot's.
+      runCmd([cfg.sudoBin, '-n', '-u', slot, '--', 'find', d, '-xdev',
+        '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
+        '-user', slot, '!', '-type', 'l',
+        '(', '!', '-perm', '-g+rw', '-o', '-type', 'd', '!', '-perm', '-g+x', ')',
+        '-exec', 'chmod', 'g+rwX', '{}', '+'], exec);
+    } catch (e) { console.warn(`[isolation] ${slot}: could not share its files in ${d}: ${e.message}`); }
+  }
 }
 
 // Kill everything the slot user still runs (background jobs the agent left behind).
@@ -395,6 +427,7 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
   let aclPaths = [];
   const undo = () => {
     reapSlot(cfg, slot, { exec });
+    if (aclPaths.length) shareSlotFiles(cfg, slot, gates, { exec }); // while the gate is still open
     revokePaths(cfg, slot, aclPaths, { exec });
     fs.rmSync(journalPath(cfg, slot), { force: true });
   };
@@ -402,7 +435,7 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
     reapSlot(cfg, slot, { exec });
     recoverSlot(cfg, slot, { exec });
     stage = stageEngineHome(engine, workDir, { serviceHome });
-    for (const gate of gates) prepareGate(cfg, gate, { exec });
+    for (const gate of gates) { prepareGate(cfg, gate, { exec }); shareServiceFiles(cfg, gate, { exec }); }
     const traverse = [...new Set([...gates, ...reach].flatMap(p => ancestorDirs(p, serviceHome)))]
       .filter(d => !gates.includes(d));
     aclPaths = [...traverse, ...gates];
@@ -444,10 +477,12 @@ module.exports = {
   gatePrepareCommands,
   gateOpenCommand,
   prepareGate,
+  shareServiceFiles,
   ancestorDirs,
   journalPath,
   recoverSlot,
   reapSlot,
+  shareSlotFiles,
   engineHomeDir,
   engineStagePlan,
   stageEngineHome,

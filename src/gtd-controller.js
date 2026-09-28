@@ -31,6 +31,7 @@ const { readTokenValue } = require('./token-value');
 const { DurableTaskStore } = require('./durable-task-store');
 const { criterionIdForItem } = require('./durable-task-plan');
 const { durableTaskDbPath, userWorkDir, projectDir: projectDirPath } = require('./data-paths');
+const { logDefect } = require('./playbook-defects-log');
 const { resolveStepExecution, planLevelMap } = require('./playbook-executor');
 
 // Engines this step already failed on with credentials/config — retrying them is
@@ -231,11 +232,11 @@ const FRESH_CLAIM_GRACE_MS = 30 * 1000; // just-claimed items: let the claiming 
 // recorded as inconclusive — a broken check must not look like a pass.
 // `validationMode` (P3d-1b) selects whether an inconclusive deterministic verdict
 // may be decided by the injectable cheap LLM validator.
-async function recordItemValidations(store, { task, item, executionId, registry, projectDir, validationMode = DEFAULT_VALIDATION_MODE, llmValidate = null, planText = null }) {
+async function recordItemValidations(store, { task, item, executionId, registry, projectDir, validationMode = DEFAULT_VALIDATION_MODE, llmValidate = null, planText = null, reply = null }) {
   let results;
   try {
     results = await evaluateItemValidationsModeAware(item, {
-      task, profileId: task.profile_id, projectDir, registry, mode: validationMode, llmValidate, planText,
+      task, profileId: task.profile_id, projectDir, registry, mode: validationMode, llmValidate, planText, reply,
     });
   } catch (e) {
     results = [{ key: '*', status: 'inconclusive', subject: null, evidence: { reason: 'evaluator-error', error: e.message } }];
@@ -267,6 +268,20 @@ async function recordItemValidations(store, { task, item, executionId, registry,
 // point of the escape is to unblock, and the recorded reason (not a hidden fail)
 // is what keeps it honest. Only the agent (non-programmatic) path can skip — a
 // programmatic step has no model to decide.
+function recordStepException(store, { task, item, executionId, reason }) {
+  const keys = Object.keys(parseValidation(item && item.validation_json != null ? item.validation_json : item && item.validation));
+  for (const key of keys.length ? keys : ['exception']) {
+    try {
+      store.recordValidation({
+        task_id: task.id, profile_id: task.profile_id, task_item_id: item.id, execution_id: executionId,
+        criterion_id: criterionIdForItem(task, item, key), contract_revision: task.contract_revision || 1,
+        validator: key, status: 'pass', subject_json: JSON.stringify({ key }),
+        evidence_json: JSON.stringify({ exception: true, reason }),
+      });
+    } catch (e) { console.error(`[gtd-durable] recordStepException ${item.id.slice(0, 8)} ${key}:`, e.message); }
+  }
+}
+
 function recordFastpassSkip(store, { task, item, executionId, reason }) {
   const raw = item && item.validation_json != null ? item.validation_json : item && item.validation;
   const keys = Object.keys(parseValidation(raw));
@@ -293,6 +308,15 @@ function recordFastpassSkip(store, { task, item, executionId, reason }) {
 // validation needs a matching 'pass' row (fast-pass skips are stored as pass).
 // Returns 'done' only when this call actually settled the task, so task_done
 // hooks fire on the transition (the hook log is also fire-once keyed).
+// Soft finalization (owner 2026-09-28): 🔴 deterministic checks (a registered
+// validator — PR opened, CI green, merged, command/HTTP/file probes…) block 'done';
+// 🟡 semantic checks (judged by the LLM) do not — they are logged as defects so the
+// checklist can be improved from real runs. execution_policy.finalization = 'strict'
+// restores the old gate (every check blocks).
+function isBlockingCheck(key) {
+  return Object.hasOwn(getDefaultRegistry(), key);
+}
+
 function settleTaskCompletion(store, task) {
   const progress = store.progressSummary(task.id, task.profile_id);
   if (!(progress.total > 0 && progress.finished >= progress.total)) return null;
@@ -301,16 +325,24 @@ function settleTaskCompletion(store, task) {
     console.log(`[gtd-durable] task complete: ${task.id.slice(0, 8)}`);
     return 'done';
   }
-  const res = store.finalizePlan(task.id, task.profile_id);
+  const strict = (parsePolicy(task) || {}).finalization === 'strict';
+  const res = store.finalizePlan(task.id, task.profile_id, { blocking: strict ? null : isBlockingCheck });
+  const fmt = list => (list || []).map(m => `${m.validator}=${m.got == null ? 'missing' : m.got}`).join(', ');
+  const base = { profile_id: task.profile_id, task_id: task.id, playbook: task.playbook_id || null };
   if (res.finalized) {
-    console.log(`[gtd-durable] task complete: ${task.id.slice(0, 8)}`);
+    for (const m of res.unconfirmed || []) logDefect({ ...base, kind: 'unconfirmed', validator: m.validator, criterion_id: m.criterion_id, got: m.got });
+    console.log(`[gtd-durable] task complete: ${task.id.slice(0, 8)}${(res.unconfirmed || []).length ? ` — 🟡 unconfirmed: ${fmt(res.unconfirmed)}` : ''}`);
     return 'done';
   }
-  const missing = (res.missing || [])
-    .map(m => `${m.criterion_id}/${m.validator}=${m.got == null ? 'missing' : m.got}`)
-    .join(', ');
-  console.warn(`[gtd-durable] finalization blocked: ${task.id.slice(0, 8)} — unmet validations: ${missing}`);
-  return null;
+  // Never a silent stall: all steps finished but a red check is unmet → blocked, logged.
+  const reason = `finalization blocked — unmet checks: ${fmt(res.missing)}`;
+  if (task.status !== 'blocked') {
+    try { store.updateTask(task.id, task.profile_id, { status: 'blocked' }); } catch { /* status enum */ }
+    try { store.db.prepare('UPDATE durable_tasks SET blocker_reason = ? WHERE id = ?').run(reason.slice(0, 1000), task.id); } catch { /* column */ }
+    for (const m of res.missing || []) logDefect({ ...base, kind: 'blocked', validator: m.validator, criterion_id: m.criterion_id, got: m.got });
+  }
+  console.warn(`[gtd-durable] ${task.id.slice(0, 8)} ${reason}`);
+  return 'blocked';
 }
 
 // ── Playbook hook execution (P4, #1459) ─────────────────────────────────────
@@ -603,8 +635,12 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
           await fireTaskHooks(store, task, 'task_failed', hookVars({ error: errText }), sinks, hooksApproved);
         }
       }
-      if (settleTaskCompletion(store, task) === 'done') {
+      const settled = settleTaskCompletion(store, task);
+      if (settled === 'done') {
         await fireTaskHooks(store, task, 'task_done', hookVars(), sinks, hooksApproved);
+      } else if (settled === 'blocked') {
+        const fresh = store.getTask(task.id, task.profile_id) || task;
+        await fireTaskHooks(store, task, 'task_failed', hookVars({ error: fresh.blocker_reason || 'finalization blocked' }), sinks, hooksApproved);
       }
       continue;
     }
@@ -637,6 +673,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       'Fast-pass — это ЗАПИСЫВАЕМЫЙ escape hatch, а не тихий обход. Только в режиме "programmatic+llm-fastpass" ты можешь пропустить проверку, если она слишком тяжёлая, ломает работу или нужен срочный фикс — добавь финальной строкой: VALIDATION: fastpass-skip: <причина>. Пропуск попадёт в audit trail с причиной.',
       `Один план = один git-workspace. Если шагу нужен репозиторий — engineering_spawn_workspace(repository_url, root_task_id: "${planWorkspaceLabel(task)}"): тот же root_task_id на всех шагах плана даёт ТОТ ЖЕ workspace и ветку (при BRANCH_COLLISION — это твой план: engineering_workspace_status с тем же root_task_id). Не придумывай свою метку. Всё, что шаг создал в репо, закоммить в эту ветку до конца шага — незакоммиченное следующий шаг не увидит.`,
       `План можно легально править по ходу: нужен дополнительный шаг — task_item_add(task_id: "${task.id}", after_item_id: "<Step id>", title, execution_kind, executor_role, minimum_model_level, context_budget, validation, instructions) — он выполнится сразу после этого шага; следующий шаг не имеет смысла для этой задачи — task_item_skip(item_id, reason) с конкретной причиной.`,
+      'Если пункт чек-листа для этой задачи не применим или ты сделал иначе — не подгоняй: вызови task_item_exception(item_id: "<Step id>", reason: "<почему>") и заверши DURABLE: done. Исключение видно владельцу и попадёт в журнал.',
       'Каждый шаг — новый ран без памяти: следующий шаг увидит только твой итог. Перед финальной строкой DURABLE дай блок «ИТОГ ШАГА» (≤10 строк): что сделано, ссылки (issue/PR/файлы/ветка), принятые решения, что важно следующему шагу.',
       'Выполни этот шаг. Если шаг выполнен и проверка прошла — ответь финальной строкой: DURABLE: done.',
       'Если шаг не удался — опиши ошибку и ответь финальной строкой: DURABLE: failed: <причина>.',
@@ -726,7 +763,17 @@ async function settleDurableReply(ctx, reply) {
       const freshItem = store.getTaskItem(itemSnap.id) || itemSnap;
       const mode = resolveValidationMode({ task, item: freshItem });
       const skipReason = mode === FASTPASS_SKIP_MODE ? parseFastpassSkip(said) : null;
-      if (skipReason) {
+      let exception = null;
+      try { exception = freshItem.exception_json ? JSON.parse(freshItem.exception_json) : null; } catch { /* malformed */ }
+      if (exception && exception.reason) {
+        // Agent-declared exception (task_item_exception): no judge; checks pass as an
+        // exception and the defect is logged for checklist improvement.
+        recordStepException(store, { task, item: freshItem, executionId, reason: exception.reason });
+        logDefect({ profile_id: task.profile_id, task_id: task.id, playbook: task.playbook_id || null, kind: 'exception',
+          item_id: freshItem.id, step: freshItem.title, stage: freshItem.stage, level: freshItem.current_model_level || freshItem.minimum_model_level,
+          reason: exception.reason });
+        console.log(`[gtd-durable] exception ${itemSnap.id.slice(0, 8)}: ${exception.reason}`);
+      } else if (skipReason) {
         recordFastpassSkip(store, { task, item: freshItem, executionId, reason: skipReason });
         console.log(`[gtd-durable] fastpass skip ${itemSnap.id.slice(0, 8)}: ${skipReason}`);
       } else {
@@ -734,7 +781,7 @@ async function settleDurableReply(ctx, reply) {
         // validated (pr_opened / ci_green) against the URL it printed.
         await recordItemValidations(store, {
           task, item: itemSnap, executionId, registry: validators, projectDir: itemProjectDir,
-          validationMode: mode, llmValidate, planText: `${planText}\n${said}`,
+          validationMode: mode, llmValidate, planText: `${planText}\n${said}`, reply: said,
         });
       }
       store.setItemEvidence(itemSnap.id, task.profile_id, {
@@ -780,8 +827,12 @@ async function settleDurableReply(ctx, reply) {
     }
   }
   // Keep the task row's revision ticking so projections/UI notice progress.
-  if (settleTaskCompletion(store, task) === 'done') {
+  const settled = settleTaskCompletion(store, task);
+  if (settled === 'done') {
     await fireTaskHooks(store, task, 'task_done', hookVars(), sinks, hooksApproved);
+  } else if (settled === 'blocked') {
+    const fresh = store.getTask(task.id, task.profile_id) || task;
+    await fireTaskHooks(store, task, 'task_failed', hookVars({ error: fresh.blocker_reason || 'finalization blocked' }), sinks, hooksApproved);
   }
 }
 
