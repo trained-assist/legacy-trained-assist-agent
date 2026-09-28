@@ -65,6 +65,13 @@ function userWorkDir(username) {
   return path.join(USERS_ROOT, String(username));
 }
 
+// Path inside a profile's workspace. Canonical replacement for inline
+// path.join(USERS_ROOT, username, ...) / path.join(BASE_USERS_DIR, username, ...)
+// at call sites — same resolution, one place to change (issue #1735 step 1).
+function workspacePath(username, ...segments) {
+  return path.join(userWorkDir(username), ...segments);
+}
+
 function contextFilePath(username, skill, key) {
   return path.join(USERS_ROOT, String(username), 'contexts', skill, `${key}.json`);
 }
@@ -170,6 +177,7 @@ module.exports = {
   TOKENS_ROOT,
   listProfiles,
   userWorkDir,
+  workspacePath,
   contextFilePath,
   sessionsDirPath,
   projectsRoot,
