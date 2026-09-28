@@ -312,17 +312,38 @@ class DurableTaskStore {
    * is already encoded at record time — a fast-pass skip is stored as 'pass'
    * with evidence {skipped:true}, so it satisfies the gate while staying visible.
    */
-  finalizePlan(taskId, profileId) {
+  // `blocking(validatorKey)` (soft finalization): only the keys it returns true for
+  // block 'done'; the rest come back as `unconfirmed`. Default: every key blocks.
+  finalizePlan(taskId, profileId, { blocking = null } = {}) {
     const task = this.getTask(taskId, profileId);
     if (!task) return { finalized: false, missing: [], reason: 'task-not-found' };
     if (task.status === 'done') return { finalized: true };
-    const missing = this._finalizationMissing(task);
-    if (missing.length) return { finalized: false, missing };
+    const all = this._finalizationMissing(task);
+    const isBlocking = typeof blocking === 'function' ? blocking : () => true;
+    const missing = all.filter(m => isBlocking(m.validator));
+    const unconfirmed = all.filter(m => !isBlocking(m.validator));
+    if (missing.length) return { finalized: false, missing, unconfirmed };
     this.db.transaction(() => {
       this._prep(`UPDATE durable_tasks SET status = 'done', updated_at = ?, revision = revision + 1
         WHERE id = ? AND profile_id = ?`).run(nowMs(), taskId, profileId);
     })();
-    return { finalized: true };
+    return unconfirmed.length ? { finalized: true, unconfirmed } : { finalized: true };
+  }
+
+  /**
+   * The agent closes its CURRENT (running) step as an exception — done differently
+   * or not applicable — with a reason. Stored on the step; when the run then
+   * answers DURABLE: done, its validations are recorded as 'pass' with evidence
+   * {exception:true, reason} instead of asking the judge. Always logged as a defect.
+   */
+  markItemException(itemId, profileId, { reason, by = 'agent' }) {
+    if (typeof reason !== 'string' || !reason.trim()) throw new Error('reason required');
+    const item = this._itemOwnedBy(itemId, profileId);
+    if (!item) throw new Error('item not found (or not owned by this profile)');
+    if (item.status !== 'running') throw new Error(`only the step that is running now can be closed as an exception (status=${item.status})`);
+    this._prep('UPDATE task_items SET exception_json = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify({ reason: reason.trim(), by, at: nowMs() }), nowMs(), itemId);
+    return this.getTaskItem(itemId);
   }
 
   // ── Items ──────────────────────────────────────────────────────────────
