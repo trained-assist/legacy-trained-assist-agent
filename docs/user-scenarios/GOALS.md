@@ -25,6 +25,8 @@
   (каталог → сайт продаж).
 - `docs/user-scenarios/freelance/*.md` — сценарии спецификации фриланс-проекта
   (intake → GO/NO-GO).
+- `docs/user-scenarios/speech/*.md` — сценарии распознавания речи: единый инструмент
+  `speech_transcribe`, ключ Deepgram, чейн `video_analyze_batch` (эпик речевой подсистемы).
 - Любой новый `docs/user-scenarios/<domain>/*.md`, добавленный по тому же формату
   (см. README.md в этой папке).
 
