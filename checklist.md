@@ -10,6 +10,12 @@ Goal: register trained-assist-search-skill as the search-skills sibling — вы
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live (search-skills в .mcp.json, ensure_sibling в журнале деплоя)
 
+Goal: mainstream-tester: причина фоллбэка decider'а видна в логе + ретрай таймаута + driver_error в отдельный лог, cron из релиза
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1816
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
+
 Goal: research-профиль на OpenCode Go — `opencode-go/mimo-v2.6-flash` вместо gemini через openrouter, ноль стоимости на вызов сверх подписки (#1792)
 
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1821
