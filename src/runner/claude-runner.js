@@ -395,7 +395,7 @@ async function runEngineProcess(opts) {
   // Fails closed: a configured isolation that cannot be set up throws, never falls back
   // to running as the service user.
   const isolation = await prepareEngineSpawn({
-    engine, taskId, user, cwd, engineEnv, userTokens, bridgedServers, mcpConfig,
+    engine, taskId, user, cwd, engineEnv, engineArgs, userTokens, bridgedServers, mcpConfig,
   });
   const spawnEnv = isolation.env;
   const spawnArgs = engine === 'codex' && mcpConfig

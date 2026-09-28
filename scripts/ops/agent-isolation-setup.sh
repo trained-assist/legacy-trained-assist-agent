@@ -185,8 +185,9 @@ if [ "$SKIP_SUDOERS" = 0 ] && [ "$MODE" = run-as ]; then
 Runas_Alias TA_AGENT_SLOTS = ${SLOT_CSV}
 # The runner builds the engine env itself (allowlist) and passes it through the
 # process environment — never argv (so HOME/PATH are the runner's, not sudo's).
-# No tty, no password.
-Defaults>TA_AGENT_SLOTS !env_reset, !always_set_home, !secure_path, !requiretty, !use_pty
+# No tty, no password. !syslog: sudo would otherwise log the full command line —
+# that is the agent prompt, i.e. user data — to the system journal on every run.
+Defaults>TA_AGENT_SLOTS !syslog, !env_reset, !always_set_home, !secure_path, !requiretty, !use_pty
 ${SERVICE_USER} ALL=(TA_AGENT_SLOTS) NOPASSWD: ALL"
   if [ "$APPLY" = 1 ]; then
     tmp="$(mktemp)"; printf '%s\n' "$SUDOERS_CONTENT" > "$tmp"
@@ -226,6 +227,26 @@ if [ "$SKIP_PERMS" = 0 ]; then
   exists "$DATA_DIR" || run install -d -m 0750 -o "$SERVICE_USER" "$DATA_DIR"
   run install -d -m 0711 -o "$SERVICE_USER" "$BRIDGE_DIR"
   run install -d -m 0700 -o "$SERVICE_USER" "$SLOT_LOCK_DIR"
+fi
+
+# ── 3a. prepare profile gates ahead of time ───────────────────────────────────
+# The runner prepares a gate on its first isolated run (src/agent-isolation.js,
+# gatePrepareCommands) — synchronously, which for a big profile (browser caches)
+# would stall the service. Do it here once, with the SAME commands, for every
+# existing profile workspace.
+if [ "$SKIP_PERMS" = 0 ] && [ "$MODE" = run-as ]; then
+  say "3a. prepare profile gates (group ACLs inside, none on the gate itself)"
+  # (engineering workspaces live inside the profile — scripts/ops/migrate-engineering-workspaces.js)
+  for gate in "$USERS_DIR"/*/; do
+    [ -d "$gate" ] || continue
+    gate="${gate%/}"
+    if [ -e "$gate/.agent-acl-v1" ]; then echo "prepared: $gate"; continue; fi
+    run chmod o-rwx "$gate"
+    run setfacl -R -P -m "g:${GROUP}:rwX,d:g:${GROUP}:rwX,d:u:${SERVICE_USER}:rwX,m::rwx,d:m::rwx" "$gate"
+    run setfacl -x "g:${GROUP}" "$gate"
+    if [ "$APPLY" = 1 ]; then date -u +%FT%TZ > "$gate/.agent-acl-v1"; chown "$SERVICE_USER" "$gate/.agent-acl-v1"
+    else echo "[dry-run] mark $gate/.agent-acl-v1"; fi
+  done
 fi
 
 # ── 3b. engine binaries under the service home ────────────────────────────────

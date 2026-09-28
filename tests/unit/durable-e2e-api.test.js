@@ -116,3 +116,20 @@ describe('driver helpers', () => {
     ] })).toBe('https://github.com/o/r/pull/5');
   });
 });
+
+describe('driver: find the plan PR when summaries are truncated', () => {
+  it('falls back to the open PR of the plan branch in the repo the plan links to', () => {
+    const { findPlanPr } = require('../../scripts/e2e/playbooks-e2e.js');
+    const report = { plan: { id: 'decfb1d9-4f06' }, steps: [
+      { summary: 'Issue: https://github.com/o/sandbox/issues/4' },
+      { summary: '✅ PR создан с полным телом … (url cut off by truncation' },
+    ] };
+    const calls = [];
+    const gh = args => { calls.push(args); return JSON.stringify([
+      { url: 'https://github.com/o/sandbox/pull/3', headRefName: 'eng/p-plan-849669d6' },
+      { url: 'https://github.com/o/sandbox/pull/6', headRefName: 'eng/p-plan-decfb1d9' },
+    ]); };
+    expect(findPlanPr(report, gh)).toBe('https://github.com/o/sandbox/pull/6');
+    expect(calls[0]).toEqual(['pr', 'list', '--repo', 'o/sandbox', '--state', 'open', '--json', 'url,headRefName']);
+  });
+});

@@ -90,7 +90,7 @@ const SERVER_ONLY_ENV = new Set([
  * Keeps allowlisted names, the current profile's token names, and `extra`;
  * server-only names are always dropped.
  */
-function buildAgentEnv(fullEnv, { userTokenNames = [], extra = {} } = {}) {
+function buildAgentEnv(fullEnv, { userTokenNames = [], extra = {}, engineCredentialNames = [] } = {}) {
   const tokenNames = new Set(userTokenNames);
   const out = {};
   for (const [k, v] of Object.entries(fullEnv || {})) {
@@ -103,7 +103,30 @@ function buildAgentEnv(fullEnv, { userTokenNames = [], extra = {} } = {}) {
     if (v == null || SERVER_ONLY_ENV.has(k)) continue;
     out[k] = String(v);
   }
+  // The engine's own model-provider keys (engineCredentialNames): without them the engine
+  // cannot call its models at all. Deliberately allowed past the server-only list.
+  for (const k of engineCredentialNames) {
+    if (fullEnv?.[k] != null && fullEnv[k] !== '') out[k] = String(fullEnv[k]);
+  }
   return out;
+}
+
+// Env names an engine reads its model-provider credentials from.
+// opencode: the built-in OpenRouter provider reads OPENROUTER_API_KEY, and custom
+// providers in its config files reference env vars as {env:NAME} or ${NAME}
+// (e.g. gigachat → ${GIGACHAT_TOKEN}); every such reference is followed.
+// codex: OPENAI_API_KEY when it runs on an API key. claude: OAuth, nothing from env.
+const ENV_REF_RE = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+function engineCredentialNames(engine, { configFiles = [] } = {}) {
+  if (engine === 'codex') return ['OPENAI_API_KEY'];
+  if (engine !== 'opencode') return [];
+  const names = new Set(['OPENROUTER_API_KEY']);
+  for (const f of configFiles) {
+    let text = '';
+    try { text = fs.readFileSync(f, 'utf8'); } catch { continue; }
+    for (const m of text.matchAll(ENV_REF_RE)) names.add(m[1] || m[2]);
+  }
+  return [...names];
 }
 
 // ── Slot pool (cross-process lock files) ─────────────────────────────────────
@@ -194,6 +217,17 @@ function ancestorDirs(target, serviceHome = os.homedir()) {
   return out;
 }
 
+// Files the SERVICE wrote into a profile with mode 0600 (chat/web attachments, answer
+// modes, …) have ACL mask --- and are invisible to the slot of THIS profile's run. They
+// are the profile's own data, so before a run the service (their owner) opens them to
+// the group; other profiles stay closed by their gates. Browser profiles are skipped.
+function shareServiceFiles(cfg, gate, { exec } = {}) {
+  try {
+    runCmd(['find', gate, '-xdev', '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
+      '-type', 'f', '-user', cfg.serviceUser, '!', '-perm', '-g+r', '-exec', 'chmod', 'g+rw', '{}', '+'], exec);
+  } catch (e) { console.warn(`[isolation] could not share service files in ${gate}: ${e.message}`); }
+}
+
 function prepareGate(cfg, gate, { exec } = {}) {
   fs.mkdirSync(gate, { recursive: true, mode: 0o700 });
   const marker = path.join(gate, GATE_MARKER);
@@ -219,8 +253,29 @@ function recoverSlot(cfg, slot, { exec } = {}) {
   let paths = [];
   try { paths = JSON.parse(fs.readFileSync(file, 'utf8')).paths || []; } catch { return; }
   console.warn(`[isolation] ${slot}: revoking ${paths.length} ACL entr(ies) left by an interrupted run`);
+  // The interrupted run's gates are the paths it could write (its traverse-only
+  // ancestors are skipped by find's -user filter at no cost).
+  shareSlotFiles(cfg, slot, paths.filter(p => fs.existsSync(path.join(p, GATE_MARKER))), { exec });
   revokePaths(cfg, slot, paths, { exec });
   fs.rmSync(file, { force: true });
+}
+
+// Files a slot creates carry the mode the program asked for (sqlite, most CLIs: 0644).
+// With the gate's default ACL that mode becomes the ACL mask, so the group entry is
+// cut to read-only and the NEXT run — another slot — cannot write them (opencode's
+// session DB failed exactly like that). Only the owner may change it, so the slot
+// itself opens its files to the group before its access to the gate is revoked.
+function shareSlotFiles(cfg, slot, dirs, { exec } = {}) {
+  for (const d of dirs) {
+    try {
+      // chrome/: the live browser profile — service-owned, huge, never the slot's.
+      runCmd([cfg.sudoBin, '-n', '-u', slot, '--', 'find', d, '-xdev',
+        '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
+        '-user', slot, '!', '-type', 'l',
+        '(', '!', '-perm', '-g+rw', '-o', '-type', 'd', '!', '-perm', '-g+x', ')',
+        '-exec', 'chmod', 'g+rwX', '{}', '+'], exec);
+    } catch (e) { console.warn(`[isolation] ${slot}: could not share its files in ${d}: ${e.message}`); }
+  }
 }
 
 // Kill everything the slot user still runs (background jobs the agent left behind).
@@ -282,6 +337,7 @@ function stageEngineHome(engine, workDir, { serviceHome = os.homedir() } = {}) {
     fs.writeFileSync(dest, content, { mode: 0o660 });
     staged.push({ ...item, dest, original: content });
   }
+  writeAgentGitConfig(home, serviceHome);
   const tmp = path.join(home, 'tmp'); // not the shared /tmp: other slots could read it
   fs.mkdirSync(tmp, { recursive: true, mode: 0o770 });
   const env = { HOME: home, TMPDIR: tmp };
@@ -290,6 +346,39 @@ function stageEngineHome(engine, workDir, { serviceHome = os.homedir() } = {}) {
     if (tok) env.CLAUDE_CODE_OAUTH_TOKEN = tok;
   }
   return { home, env, staged };
+}
+
+// git under a slot: the repos in a profile belong to the service user, so without
+// safe.directory git refuses them ("dubious ownership"). Commit identity comes from the
+// service's git config; pushes use THIS profile's GitHub token (GH_TOKEN in the engine
+// env), never the service's credential helper.
+function readGitIdentity(serviceHome) {
+  const out = {};
+  try {
+    const text = fs.readFileSync(path.join(serviceHome, '.gitconfig'), 'utf8');
+    let section = '';
+    for (const line of text.split('\n')) {
+      const sec = /^\s*\[([^\]]+)\]/.exec(line);
+      if (sec) { section = sec[1].trim().toLowerCase(); continue; }
+      const kv = /^\s*(name|email)\s*=\s*(.+?)\s*$/.exec(line);
+      if (section === 'user' && kv) out[kv[1]] = kv[2];
+    }
+  } catch { /* no service git config */ }
+  return out;
+}
+
+function writeAgentGitConfig(home, serviceHome) {
+  const id = readGitIdentity(serviceHome);
+  const lines = [
+    '# written per run by src/agent-isolation.js (issue #1649)',
+    '[safe]', '\tdirectory = *',
+    ...(id.name || id.email ? ['[user]', ...(id.name ? [`\tname = ${id.name}`] : []), ...(id.email ? [`\temail = ${id.email}`] : [])] : []),
+    '[credential "https://github.com"]',
+    '\thelper = "!f() { [ -n \\"$GH_TOKEN\\" ] || exit 0; echo username=x-access-token; echo password=$GH_TOKEN; }; f"',
+  ];
+  const file = path.join(home, '.gitconfig');
+  fs.rmSync(file, { force: true });
+  fs.writeFileSync(file, lines.join('\n') + '\n', { mode: 0o660 });
 }
 
 function syncBackEngineHome(staged) {
@@ -336,6 +425,7 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
   let aclPaths = [];
   const undo = () => {
     reapSlot(cfg, slot, { exec });
+    if (aclPaths.length) shareSlotFiles(cfg, slot, gates, { exec }); // while the gate is still open
     revokePaths(cfg, slot, aclPaths, { exec });
     fs.rmSync(journalPath(cfg, slot), { force: true });
   };
@@ -343,7 +433,7 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
     reapSlot(cfg, slot, { exec });
     recoverSlot(cfg, slot, { exec });
     stage = stageEngineHome(engine, workDir, { serviceHome });
-    for (const gate of gates) prepareGate(cfg, gate, { exec });
+    for (const gate of gates) { prepareGate(cfg, gate, { exec }); shareServiceFiles(cfg, gate, { exec }); }
     const traverse = [...new Set([...gates, ...reach].flatMap(p => ancestorDirs(p, serviceHome)))]
       .filter(d => !gates.includes(d));
     aclPaths = [...traverse, ...gates];
@@ -375,6 +465,7 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
 module.exports = {
   isolationConfig,
   buildAgentEnv,
+  engineCredentialNames,
   ENGINE_ENV_ALLOW,
   SERVER_ONLY_ENV,
   acquireSlot,
@@ -384,14 +475,17 @@ module.exports = {
   gatePrepareCommands,
   gateOpenCommand,
   prepareGate,
+  shareServiceFiles,
   ancestorDirs,
   journalPath,
   recoverSlot,
   reapSlot,
+  shareSlotFiles,
   engineHomeDir,
   engineStagePlan,
   stageEngineHome,
   syncBackEngineHome,
+  writeAgentGitConfig,
   readClaudeAccessToken,
   resolveBin,
   sudoArgv,
