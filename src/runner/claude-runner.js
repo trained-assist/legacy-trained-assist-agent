@@ -14,6 +14,7 @@ const path = require('path');
 const os = require('os');
 const { keepaliveFilePath, lastKeepaliveAt } = require('../mcp-keepalive');
 const { prepareEngineSpawn } = require('./engine-isolation');
+const { stopEngineProcess } = require('./engine-stop');
 
 const STREAM_INTERVAL_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 3000;
@@ -869,12 +870,15 @@ async function runEngineProcess(opts) {
   // username + audience: exact-match keys for stop/running isolation across bots
   // (issue #1302 §3.2) — chatId alone can collide across audiences (private-chat
   // chatId == Telegram user id, identical regardless of which bot is messaged).
-  const sessionState = { killFn: null, killTimer: null, extendCount: 0, proc, userStopped: false, chatId, sessionId, username: user.username, audience: user.audience || 'default' };
+  // `slot` — run-as пользователь этого рана: под изоляцией `proc` это sudo-обёртка,
+  // и убить движок можно только сигналом слоту (см. runner/engine-stop.js).
+  // `threadId` нужен taskOwnedBy для топик-скоупа (#255) — без него «стоп» в
+  // топике A убивал бы задачу топика B.
+  const sessionState = { killFn: null, killTimer: null, extendCount: 0, proc, userStopped: false, chatId, threadId: runThreadId, sessionId, username: user.username, audience: user.audience || 'default', slot: isolation.runAs || null };
   activeTimers.set(taskId, sessionState);
   // A Stop that arrived before the process existed (queued web Stop) lands now.
   if (consumePendingStop?.()) {
-    sessionState.userStopped = true;
-    try { proc.kill('SIGTERM'); } catch {}
+    stopEngineProcess(sessionState);
   }
   try {
     await new Promise((resolve, reject) => {

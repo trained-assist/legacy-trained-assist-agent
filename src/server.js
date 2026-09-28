@@ -914,9 +914,14 @@ async function main() {
 
     // POST /tasks/stop — kill any running Claude process for a user by username,
     // scoped to one audience/bot (default 'default' — never "every audience", #1302 §3.2).
-    // Body: { username: string, audience?: string, chatId?: number, threadId?: number }
+    // Body: { username: string, audience?: string, chatId?: number, threadId?: number,
+    //         waitMs?: number }
     // When chatId is supplied the kill is scoped to that chat; threadId (when valid)
-    // further scopes it to one forum topic, so «стоп» in topic A cannot kill topic B.
+    // further scopes it to one forum topic, so «стоп» в топике A не трогает топик B.
+    //
+    // Помимо kill: тумбстоун trace (чтобы retry/backoff/resume не «переродились»),
+    // GTD-записи диалога, и подтверждение выхода процессов — ответ приходит раньше,
+    // чем шлюз успевает оборвать соединение (AbortSignal 5с, см. agent-client.js).
     if (req.method === 'POST' && url.pathname === '/tasks/stop') {
       const body = await readBody(req);
       let payload;
@@ -929,11 +934,41 @@ async function main() {
         return json(res, 400, { error: 'invalid username' });
       if (audience != null && (typeof audience !== 'string' || !/^[a-zA-Z0-9_-]{1,32}$/.test(audience)))
         return json(res, 400, { error: 'invalid audience' });
-      const { stopUserTask, killTaskByUsername } = require('./runner');
-      const scoped = stopUserTask(username, chatId ?? null, audience || null, threadId);
+      // Подтверждение выхода: 2500ms по умолчанию, потолок 4500ms — шлюз ждёт 5с,
+      // остаток нужен на сериализацию ответа и network jitter.
+      const rawWaitMs = payload?.waitMs;
+      const waitMs = Number.isFinite(rawWaitMs) ? Math.min(Math.max(rawWaitMs, 0), 4500) : 2500;
+      const owner = { username, audience: audience || null, chatId: chatId ?? null, threadId };
+      const { stopUserTask, killTaskByUsername, stopTracesFor, confirmStopped } = require('./runner');
+      const scoped = stopUserTask(username, owner.chatId, owner.audience, threadId);
       // Profile-wide (no chatId) callers keep the audience-wide kill semantics.
-      const killed = (chatId == null && !scoped) ? killTaskByUsername(username, audience || null) : (scoped ? 1 : 0);
-      return json(res, 200, { ok: true, killed, audience: audience || 'default' });
+      const killed = (chatId == null && !scoped) ? killTaskByUsername(username, owner.audience) : (scoped ? 1 : 0);
+      // Тумбстоун ставится здесь, а не внутри kill: wakeup/skip зовут те же
+      // stop-функции, но цепочку закрывать не должны (см. runner). Вызов
+      // идемпотентен — трейсы одного владельца дают один и тот же набор.
+      const stoppedTraces = stopTracesFor(owner);
+      // GTD: чат-скоуп, если шлюз прислал chatId, иначе профильный — симметрично
+      // профильному kill выше. Записи, созданные ПОСЛЕ остановки, не трогаются
+      // (clearGtd закрывает только существующие open-записи).
+      let gtdCancelled = 0;
+      try {
+        const gtd = require('./gtd-controller');
+        const workDir = userWorkDir(username);
+        gtdCancelled = owner.chatId != null
+          ? gtd.clearGtdForChat(workDir, owner.chatId, threadId)
+          : gtd.clearAllGtd(workDir);
+      } catch (e) { console.warn('[tasks/stop] gtd clear:', e.message); }
+      const confirmed = await confirmStopped(owner, waitMs);
+      const stopped = killed > 0 || stoppedTraces > 0 || gtdCancelled > 0;
+      return json(res, 200, {
+        ok: true,
+        // killed — прежняя семантика (сколько процессов получили сигнал), её
+        // читает шлюз. НЕ менять: это обратная совместимость. Для честного
+        // «остановлено vs нет активной задачи» шлюз должен перейти на `stopped`
+        // (tg-bot follow-up, spec SS-03).
+        killed, stopped, stoppedTraces, gtdCancelled, confirmed,
+        audience: audience || 'default',
+      });
     }
 
     if (req.method === 'POST' && url.pathname === '/run') {
@@ -1102,7 +1137,13 @@ async function main() {
         }
 
         // runTask journals synchronously, before any await or acknowledgement.
-        const completion = runTask({ taskId, requestId: requestId || null, user, threadId, ...(Object.hasOwn(payload, 'initiatedAt') ? { initiatedAt } : {}), task: effectiveTask, context, sessionId: sessionId || null, contextFromSession: contextFromSession || null, forceClaude: !!forceClaude, forceNew: !!forceNew, initialMsgId: initialMsgId || null, pinnedMsgId: pinnedMsgId || null, secrets, fileRefs: effectiveFileRefs, mode: mode || null, projectId: projectId || null, projectPicked: projectPicked === true, newProjectName: newProjectName || null });
+        // fromUser: POST /run — это запрос человека (или его явный «▶️ Запустить»
+        // из держателя). Trace-гейт Стопа его не блокирует никогда: K1 (новый
+        // запрос юзера всегда запускается) и SS-05 (сообщения, присланные во время
+        // задачи, остаются в держателе с кнопкой — но как только дошли до /run,
+        // это решение юзера). Авто-ретраи внутренних хопов сюда не приходят: они
+        // зовут runTask напрямую и гейтятся по initiatedAt.
+        const completion = runTask({ taskId, requestId: requestId || null, user, threadId, ...(Object.hasOwn(payload, 'initiatedAt') ? { initiatedAt } : {}), fromUser: true, task: effectiveTask, context, sessionId: sessionId || null, contextFromSession: contextFromSession || null, forceClaude: !!forceClaude, forceNew: !!forceNew, initialMsgId: initialMsgId || null, pinnedMsgId: pinnedMsgId || null, secrets, fileRefs: effectiveFileRefs, mode: mode || null, projectId: projectId || null, projectPicked: projectPicked === true, newProjectName: newProjectName || null });
         completion.catch(err => console.error(`[${taskId}] runTask error:`, err.message));
         if (requestId) atomicJson(receipt, { taskId, audience: audience || 'default', acceptedAt: Date.now() });
         json(res, 202, { taskId, requestId, durable: true });

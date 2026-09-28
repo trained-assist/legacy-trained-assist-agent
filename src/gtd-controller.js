@@ -33,6 +33,7 @@ const { criterionIdForItem } = require('./durable-task-plan');
 const { durableTaskDbPath, userWorkDir, projectDir: projectDirPath } = require('./data-paths');
 const { logDefect } = require('./playbook-defects-log');
 const { resolveStepExecution, planLevelMap } = require('./playbook-executor');
+const { traceIdFor, traceStoppedAt, isUserStoppedReply } = require('./stop-trace');
 
 // Engines this step already failed on with credentials/config — retrying them is
 // pointless, the fallback ladder skips them.
@@ -723,6 +724,18 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
 async function settleDurableReply(ctx, reply) {
   const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier } = ctx;
   const said = typeof reply === 'string' ? reply : '';
+  // R4 / SS-04: «⛔ Остановлено…» — волеизъявление пользователя, а не провал шага.
+  // Раньше ответ без DURABLE-маркера уходил в recoverDurableItem, и остановленный
+  // шаг ретраили. USER_STOP должен быть терминальным (recovery-policy.js уже
+  // возвращает для него null) — помечаем прямо здесь, не достигая recovery.
+  if (isUserStoppedReply(said)) {
+    const errText = 'user stopped (⛔)';
+    store.failItem(itemSnap.id, task.profile_id, { executionId, error: errText });
+    store.updateTaskItem(itemSnap.id, { last_failure_class: 'USER_STOP', last_recovery_action: 'terminal' }, task.profile_id);
+    store.finishExecution(executionId, { status: 'failed', error_class: 'USER_STOP', error_text: errText });
+    console.log(`[gtd-durable] item ${itemSnap.id.slice(0, 8)}: user stop — terminal, no retry`);
+    return;
+  }
   if (lastDurableMarker(said) === 'waiting') {
     // The agent parked the step on a durable wait (task_item_wait during the
     // run). Not a failure: the attempt is refunded and nothing is completed.
@@ -1493,7 +1506,10 @@ function settleResumedGtd(workDir, sessionId, reply, { now = Date.now() } = {}) 
   const rec = readGtd(workDir, sessionId);
   if (!rec || rec.status !== 'open') return null;
   const said = typeof reply === 'string' ? reply : '';
-  if (DONE_RE.test(said)) rec.closedReason = 'done';
+  // Ответ остановки — терминал, а не «поставить dueAt заново» (иначе остановленная
+  // доводка перерождается на следующем тике, ровно инцидент §0).
+  if (isUserStoppedReply(said)) rec.closedReason = 'user-stop';
+  else if (DONE_RE.test(said)) rec.closedReason = 'done';
   else if (ESCALATED_RE.test(said)) rec.closedReason = 'complexity-escalated';
   else if (BLOCKED_RE.test(said)) rec.closedReason = 'awaiting-human';
   else { rec.dueAt = now + rec.etaMinutes * 60 * 1000; writeGtd(workDir, rec); return rec; }
@@ -1654,6 +1670,24 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
         continue;
       }
 
+      // R3/SK-04: «Стоп» в этом диалоге закрывает доводку. Проверяем ДО
+      // инкремента, чтобы остановленная запись не сжигала итерацию и не
+      // будила Claude. Записи, созданные ПОСЛЕ отметки Стопа (rec.createdAt
+      // > stoppedAt) — новая задача юзера — продолжают работать (K1).
+      {
+        const trace = traceIdFor({
+          chatId, audience, threadId: rec.threadId || null, username, sessionId: rec.sessionId,
+        });
+        const stoppedAt = traceStoppedAt(trace);
+        const createdAt = Number.isFinite(rec.createdAt) ? rec.createdAt : 0;
+        if (stoppedAt != null && stoppedAt >= createdAt) {
+          rec.status = 'closed'; rec.closedReason = 'user-stop';
+          writeGtd(workDir, rec);
+          console.log(`[gtd] closed ${rec.sessionId}: user-stop (trace stopped ${new Date(stoppedAt).toISOString()})`);
+          continue;
+        }
+      }
+
       // Инкремент + persist ДО запуска — durable, переживает краш итерации.
       rec.iterations += 1;
       rec.lastFiredAt = now;
@@ -1705,6 +1739,7 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
         const doneAt = Date.now();
         // Терминал: итерация сказала done/escalated, либо исчерпали cap.
         const said = typeof reply === 'string' ? reply : '';
+        const stoppedNow = isUserStoppedReply(said);
         const doneNow      = DONE_RE.test(said);
         const escalatedNow = ESCALATED_RE.test(said);
         const blockedNow   = BLOCKED_RE.test(said);
@@ -1713,7 +1748,14 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
         const fresh = readGtd(workDir, _recSnap.sessionId);
         if (!fresh) { console.log(`[gtd] ${_recSnap.sessionId}: record gone at completion — not resurrecting`); return; }
         if (fresh.status !== 'open') { console.log(`[gtd] ${_recSnap.sessionId}: already ${fresh.status} at completion — leaving as-is`); return; }
-        if (doneNow) {
+        if (stoppedNow) {
+          // R3: итерация вернулась «⛔ Остановлено…» (гейт либо живой kill).
+          // Запись закрывается, а не переносится на dueAt — иначе доводка
+          // «перерождается» на следующем тике (инцидент §0).
+          fresh.status = 'closed'; fresh.closedReason = 'user-stop';
+          writeGtd(workDir, fresh);
+          console.log(`[gtd] closed ${_recSnap.sessionId}: user-stop (iteration replied with a stop)`);
+        } else if (doneNow) {
           fresh.status = 'closed'; fresh.closedReason = 'done';
           writeGtd(workDir, fresh);
           console.log(`[gtd] closed ${_recSnap.sessionId}: done`);
@@ -1780,7 +1822,7 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
 
 module.exports = {
   detectIntent, maybeSchedule, scheduleFromChecklist, runDue, buildReopenMessage,
-  readGtd, writeGtd, clearGtd, clearGtdForChat, listGtd, settleResumedGtd,
+  readGtd, writeGtd, clearGtd, clearGtdForChat, clearAllGtd, listGtd, settleResumedGtd,
   readChecklist, trackedChecklist, checklistSummary, computeMaxIterations,
   setChecklistOwner, markChecklistCancelled, claimFreshChecklist, _tgNotify,
   checklistCheapPrecheck, writeChecklistDone, mirrorGtdChecklist, CHECKLIST_API_BASE, checklistAutologinUrl,
