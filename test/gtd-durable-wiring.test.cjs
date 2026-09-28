@@ -493,8 +493,10 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     });
     const blocked = store.getTask(blockedPlan.task.id, 'u1');
     const item = store.listTaskItems(blockedPlan.task.id, 'u1')[0];
-    ok(item.status === 'done' && blocked.status === 'active',
-      `gate: items done but unmet validation keeps the task active (item=${item.status}, task=${blocked.status})`);
+    // Soft finalization (2026-09-28): an unmet deterministic check after every step
+    // finished is never a silent stall — the plan goes 'blocked' with the reason.
+    ok(item.status === 'done' && blocked.status === 'blocked' && /unmet checks/.test(blocked.blocker_reason || ''),
+      `gate: items done but unmet validation blocks the task with a reason (item=${item.status}, task=${blocked.status})`);
   }
 
   // 18. P3d follow-up (#1449): the REAL development playbook's 4 programmatic

@@ -126,7 +126,28 @@ function tokenPath(username, service) {
   return path.join(TOKENS_ROOT, String(username), service);
 }
 
+// Engineering workspaces (git worktrees per task/plan) and the repository mirrors they
+// fork from live INSIDE the profile workspace (issue #1649): a run of this profile —
+// possibly as an unprivileged slot user — can reach them, other profiles cannot, and no
+// mirror is shared across profiles. The engineering skill (engineering_spawn_workspace /
+// dev_spawn_workspace) gets these roots via ENGINEERING_WORKSPACE_ROOT /
+// ENGINEERING_MIRRORS_ROOT (src/browser.js) and adds <principal>/<repo>/ws-*/code.
+function engineeringWorkspaceRoot(username) {
+  return path.join(userWorkDir(username), 'engineering-workspaces');
+}
+
+function engineeringMirrorsRoot(username) {
+  return path.join(userWorkDir(username), 'engineering-mirrors');
+}
+
+function engineeringWorkspacesDir(username) {
+  return path.join(engineeringWorkspaceRoot(username), String(username));
+}
+
 module.exports = {
+  engineeringWorkspacesDir,
+  engineeringWorkspaceRoot,
+  engineeringMirrorsRoot,
   USERS_ROOT,
   SYSTEM_ROOT,
   TOKENS_ROOT,

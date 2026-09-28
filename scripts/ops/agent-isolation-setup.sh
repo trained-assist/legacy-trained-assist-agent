@@ -28,7 +28,7 @@ UNIT="assist-agent"
 MODE="run-as"                 # run-as | allowlist
 UMASK_VALUE="0027"
 LOOPBACK_POLICY="blocklist"   # blocklist | deny
-BLOCK_PORTS="3000,8080,9090,9224,5900,6080"
+BLOCK_PORTS="2053,3000,5900,6080,7070,8080,8081,8888,9090,9222:9299,20241"
 ENGINE_BINS="claude codex opencode gh node git"
 USERS_DIR_OPT=""
 TOKENS_DIR_OPT=""
@@ -54,8 +54,10 @@ Usage: agent-isolation-setup.sh --service-user USER [options]
   --unit NAME             systemd unit of the agent service (default assist-agent)
   --mode run-as|allowlist run-as: switch users + env allowlist; allowlist: env allowlist + MCP bridge only
   --umask MASK            UMask for the service (default 0027)
-  --loopback-policy P     blocklist (default): reject listed local ports; deny: reject all loopback TCP
-  --block-ports LIST      local ports slots may not connect to (default 3000,8080,9090,9224,5900,6080)
+  --loopback-policy P     blocklist (default): reject listed local ports; deny: reject all TCP to this host
+  --block-ports LIST      local ports slots may not connect to, on ANY address of this host
+                          (default 2053,3000,5900,6080,7070,8080,8081,8888,9090,9222:9299,20241;
+                          ranges as a:b). List what listens here: ss -ltnp
   --engine-bins LIST      binaries to make reachable for slots when installed under the service home
   --skip-users --skip-sudoers --skip-perms --skip-engines --skip-firewall --skip-systemd --skip-sa-review
 EOF
@@ -102,7 +104,7 @@ say() { echo; echo "== $*"; }
 [[ "$PREFIX" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "bad --prefix"
 [[ "$GROUP" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "bad --group"
 [[ "$SLOTS" =~ ^[0-9]+$ ]] && [ "$SLOTS" -ge 1 ] && [ "$SLOTS" -le 64 ] || die "--slots must be 1..64"
-[[ "$BLOCK_PORTS" =~ ^[0-9,]*$ ]] || die "bad --block-ports"
+[[ "$BLOCK_PORTS" =~ ^[0-9,:]*$ ]] || die "bad --block-ports"
 case "$MODE" in run-as|allowlist) ;; *) die "--mode must be run-as or allowlist" ;; esac
 case "$LOOPBACK_POLICY" in blocklist|deny) ;; *) die "--loopback-policy must be blocklist or deny" ;; esac
 [ "$APPLY" = 0 ] || [ "$(id -u)" = 0 ] || die "--apply must run as root"
@@ -183,8 +185,9 @@ if [ "$SKIP_SUDOERS" = 0 ] && [ "$MODE" = run-as ]; then
 Runas_Alias TA_AGENT_SLOTS = ${SLOT_CSV}
 # The runner builds the engine env itself (allowlist) and passes it through the
 # process environment — never argv (so HOME/PATH are the runner's, not sudo's).
-# No tty, no password.
-Defaults>TA_AGENT_SLOTS !env_reset, !always_set_home, !secure_path, !requiretty, !use_pty
+# No tty, no password. !syslog: sudo would otherwise log the full command line —
+# that is the agent prompt, i.e. user data — to the system journal on every run.
+Defaults>TA_AGENT_SLOTS !syslog, !env_reset, !always_set_home, !secure_path, !requiretty, !use_pty
 ${SERVICE_USER} ALL=(TA_AGENT_SLOTS) NOPASSWD: ALL"
   if [ "$APPLY" = 1 ]; then
     tmp="$(mktemp)"; printf '%s\n' "$SUDOERS_CONTENT" > "$tmp"
@@ -224,6 +227,26 @@ if [ "$SKIP_PERMS" = 0 ]; then
   exists "$DATA_DIR" || run install -d -m 0750 -o "$SERVICE_USER" "$DATA_DIR"
   run install -d -m 0711 -o "$SERVICE_USER" "$BRIDGE_DIR"
   run install -d -m 0700 -o "$SERVICE_USER" "$SLOT_LOCK_DIR"
+fi
+
+# ── 3a. prepare profile gates ahead of time ───────────────────────────────────
+# The runner prepares a gate on its first isolated run (src/agent-isolation.js,
+# gatePrepareCommands) — synchronously, which for a big profile (browser caches)
+# would stall the service. Do it here once, with the SAME commands, for every
+# existing profile workspace.
+if [ "$SKIP_PERMS" = 0 ] && [ "$MODE" = run-as ]; then
+  say "3a. prepare profile gates (group ACLs inside, none on the gate itself)"
+  # (engineering workspaces live inside the profile — scripts/ops/migrate-engineering-workspaces.js)
+  for gate in "$USERS_DIR"/*/; do
+    [ -d "$gate" ] || continue
+    gate="${gate%/}"
+    if [ -e "$gate/.agent-acl-v1" ]; then echo "prepared: $gate"; continue; fi
+    run chmod o-rwx "$gate"
+    run setfacl -R -P -m "g:${GROUP}:rwX,d:g:${GROUP}:rwX,d:u:${SERVICE_USER}:rwX,m::rwx,d:m::rwx" "$gate"
+    run setfacl -x "g:${GROUP}" "$gate"
+    if [ "$APPLY" = 1 ]; then date -u +%FT%TZ > "$gate/.agent-acl-v1"; chown "$SERVICE_USER" "$gate/.agent-acl-v1"
+    else echo "[dry-run] mark $gate/.agent-acl-v1"; fi
+  done
 fi
 
 # ── 3b. engine binaries under the service home ────────────────────────────────
@@ -271,15 +294,17 @@ iptables -A TA_AGENTS_OUT -d 169.254.0.0/16 -j REJECT
 # local DNS stub stays reachable
 iptables -A TA_AGENTS_OUT -d 127.0.0.53 -p udp --dport 53 -j RETURN
 iptables -A TA_AGENTS_OUT -d 127.0.0.53 -p tcp --dport 53 -j RETURN"
+  # Destination = any address of THIS host (addrtype LOCAL), not only 127.0.0.0/8:
+  # services bound to 0.0.0.0 are otherwise reachable through the host's own IPs.
   if [ "$LOOPBACK_POLICY" = deny ]; then
     FW_RULES="$FW_RULES
-iptables -A TA_AGENTS_OUT -d 127.0.0.0/8 -p tcp -j REJECT
-ip6tables -A TA_AGENTS_OUT -d ::1/128 -p tcp -j REJECT 2>/dev/null || true"
+iptables -A TA_AGENTS_OUT -m addrtype --dst-type LOCAL -p tcp -j REJECT
+ip6tables -A TA_AGENTS_OUT -m addrtype --dst-type LOCAL -p tcp -j REJECT 2>/dev/null || true"
   else
     for port in ${BLOCK_PORTS//,/ }; do
       FW_RULES="$FW_RULES
-iptables -A TA_AGENTS_OUT -d 127.0.0.0/8 -p tcp --dport $port -j REJECT
-ip6tables -A TA_AGENTS_OUT -d ::1/128 -p tcp --dport $port -j REJECT 2>/dev/null || true"
+iptables -A TA_AGENTS_OUT -m addrtype --dst-type LOCAL -p tcp --dport $port -j REJECT
+ip6tables -A TA_AGENTS_OUT -m addrtype --dst-type LOCAL -p tcp --dport $port -j REJECT 2>/dev/null || true"
     done
   fi
   printf '%s\n' "$FW_RULES" | write_file "$FW_SCRIPT" 0755
