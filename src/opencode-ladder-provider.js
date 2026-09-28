@@ -42,10 +42,15 @@ const PROFILE_LADDER = Object.freeze({
 // opencode-go/mimo-v2.6-flash` on the shipped client (1.18.31) answers, even though the
 // model is newer than that build's registry.
 //
-// No failover yet: a single Go key, so an exhausted allowance fails the run rather than
-// degrading. The planned `search` ladder (opencode-go/mimo-v2.6-flash →
-// openrouter/google/gemini-2.5-flash) belongs in the llm-ladder worker and is the last
-// item on checklist.md.
+// Key rotation: the box ships TWO Go keys in OPENCODE_GO_API_KEYS, and goApiKey() draws
+// ONE of them per run (the provider forwards OPENCODE_API_KEY verbatim, so a comma-joined
+// pair is rejected upstream — verified on prod 2026-09-28 with a clean HOME). So a key that
+// spent its 5-hour/weekly allowance does not stop research: the next run draws the other.
+//
+// What is still missing is a rung BENEATH Go: when both keys are spent the run fails
+// instead of degrading. That rung is `openrouter/google/gemini-2.5-flash`, and it lives in
+// the `search` ladder — the last item on checklist.md, in the llm-ladder worker where
+// ladders belong (#1687).
 const DIRECT_MODEL = Object.freeze({
   research: 'opencode-go/mimo-v2.6-flash',
 });

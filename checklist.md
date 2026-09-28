@@ -72,6 +72,12 @@ Goal: research-профиль на OpenCode Go — `opencode-go/mimo-v2.6-flash`
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live (живой hermes_research отвечает с Go-моделью в логе рана и grounded=true)
 
+Goal: profile maintenance lock + POST /internal/flush-profile — safety precondition for running the migration LIVE (#1784 G1+G2)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1812
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
+
 Goal: поисковая лестница `search` в llm-ladder worker — opencode-go/mimo-v2.6-flash → openrouter/google/gemini-2.5-flash как фолбэк. ПОСЛЕДНИЙ пункт очереди (#1792)
 
 - [ ] В trained-assist-llm-ladder (config/ladders.json) добавлена лестница `search`: rung 1 `opencode-go/mimo-v2.6-flash`, rung 2 `openrouter/google/gemini-2.5-flash`
@@ -79,9 +85,4 @@ Goal: поисковая лестница `search` в llm-ladder worker — open
 - [ ] CI green → Merged to main
 - [ ] Deployed to prod — verified live (исчерпанная Go-allowance деградирует на gemini, а не роняет hermes_research)
 
-Факты, проверенные живьём 2026-09-28 — не переисследовывать: ключ `oc_sk_…` из `OPENCODE_GO_API_KEY` валиден под именем `OPENCODE_API_KEY`; `opencode run -m opencode-go/mimo-v2.6-flash` отвечает на продовом opencode 1.18.31, хотя модели нет в клиентском реестре того билда; сервер требует заголовок `x-opencode-session`. Пока лестницы нет, пин в `DIRECT_MODEL.research` работает без фолбэка: закончившаяся месячная allowance = упавший research.
-Goal: profile maintenance lock + POST /internal/flush-profile — safety precondition for running the migration LIVE (#1784 G1+G2)
-
-- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1812
-- [ ] Merged to main
-- [ ] Deployed to prod — verified live
+Факты, проверенные живьём 2026-09-28 — не переисследовывать (замер на ЧИСТОМ `HOME`/`OPENCODE_CONFIG_DIR`, иначе сохранённая учётка `/home/vova` портила результат): в `OPENCODE_GO_API_KEYS` лежат **два разных** ключа `oc_sk_…`; провайдер `opencode-go` отдаёт `OPENCODE_API_KEY` наверх **без сплита** — одна валидная → OK, пара через запятую → провал, а сырой API прямо отвечает 401 «Invalid credential»; поэтому `goApiKey()` берёт **один ключ на ран** из списка (ротация между ранами) и никогда не продаёт запятую. `opencode run -m opencode-go/mimo-v2.6-flash` отвечает на продовом opencode 1.18.31, хотя модели нет в клиентском реестре того билда; сервер требует заголовок `x-opencode-session`. Открытого нет только ранга НИЖЕ Go: когда кончатся оба ключа — упавший research вместо деградации; этот ранг и есть `openrouter/google/gemini-2.5-flash` в лестнице `search` (в llm-ladder worker), ключ OpenRouter на боксе пока один, без ротации.

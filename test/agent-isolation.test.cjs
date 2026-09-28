@@ -16,7 +16,7 @@ process.env.AGENT_MCP_BRIDGE_DIR = path.join(tmpRoot, 'bridge');
 const iso = require('../src/agent-isolation');
 const tokens = require('../src/agent-run-tokens');
 const bridge = require('../src/agent-mcp-bridge');
-const { runEngineProcess } = require('../src/runner/claude-runner');
+const { runEngineProcess, goApiKey } = require('../src/runner/claude-runner');
 const { writeRunMcpConfig } = require('../src/browser');
 
 const SERVER_ENV = {
@@ -194,15 +194,18 @@ test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + Op
     const outDir = fs.mkdtempSync(path.join(tmpRoot, 'oc-'));
     const opts = baseOpts(outDir, fakeEngine(outDir));
     opts.engine = 'opencode';
-    opts.cleanEnv = { ...SERVER_ENV, GIGACHAT_TOKEN: 'gc-key', OTHER_PROVIDER_KEY: 'other-key', OPENCODE_GO_API_KEY: 'oc-test-go-key' };
+    opts.cleanEnv = { ...SERVER_ENV, GIGACHAT_TOKEN: 'gc-key', OTHER_PROVIDER_KEY: 'other-key', OPENCODE_GO_API_KEY: 'oc-single', OPENCODE_GO_API_KEYS: 'oc-k1,oc-k2' };
     const r = await runEngineProcess(opts);
     assert.equal(r.exitCode, 0);
     const env = parseEnvFile(path.join(outDir, 'engine.env'));
     assert.equal(env.OPENROUTER_API_KEY, 'srv-openrouter', 'opencode needs its OpenRouter key');
-    // OpenCode Go: the box ships OPENCODE_GO_API_KEY, the built-in opencode-go provider
-    // reads OPENCODE_API_KEY — runEngineProcess maps it, the allowlist must let it through.
-    assert.equal(env.OPENCODE_API_KEY, 'oc-test-go-key', 'GO key is exposed to the engine under the name its provider reads');
-    assert.ok(!( 'OPENCODE_GO_API_KEY' in env), 'the original name is not needed by the engine');
+    // OpenCode Go: the box ships a two-key rotation list as OPENCODE_GO_API_KEYS, while the
+    // built-in opencode-go provider reads OPENCODE_API_KEY and forwards it verbatim — so the
+    // engine must get EXACTLY ONE key from the list, never the comma-joined pair (upstream
+    // answers 401 to that) and never the box-side names.
+    assert.ok(['oc-k1', 'oc-k2'].includes(env.OPENCODE_API_KEY), `one key drawn from the rotation list (got ${env.OPENCODE_API_KEY})`);
+    assert.ok(!env.OPENCODE_API_KEY.includes(','), 'a comma-joined value would be rejected upstream');
+    assert.ok(!('OPENCODE_GO_API_KEY' in env) && !('OPENCODE_GO_API_KEYS' in env), 'the box names are not needed by the engine');
     assert.ok(iso.engineCredentialNames('opencode').includes('OPENCODE_API_KEY'), 'Go key is an engine credential, not a server-only secret');
     assert.deepEqual(iso.engineCredentialNames('codex'), ['OPENAI_API_KEY'], 'codex credential set is unchanged');
     assert.equal(env.GIGACHAT_TOKEN, 'gc-key', '${VAR} reference in the opencode config');
@@ -214,6 +217,25 @@ test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + Op
     delete process.env.AGENT_ENV_ALLOWLIST;
     delete process.env.AGENT_SERVICE_HOME;
   }
+});
+
+// OpenCode Go key rotation: the provider forwards OPENCODE_API_KEY verbatim, so the value
+// must always be exactly one oc_sk_… — never the comma list the box ships it as.
+test('goApiKey: one key per run, drawn from the rotation list, never a comma', () => {
+  assert.equal(goApiKey({}), '', 'nothing configured → empty (engineCredentialNames then drops it)');
+  assert.equal(goApiKey({ OPENCODE_GO_API_KEY: 'oc-single' }), 'oc-single', 'singular entry is the fallback');
+  assert.equal(goApiKey({ OPENCODE_GO_API_KEYS: 'oc-only' }), 'oc-only', 'a one-entry list passes through');
+  assert.equal(goApiKey({ OPENCODE_GO_API_KEY: 'oc-single', OPENCODE_GO_API_KEYS: 'oc-a,oc-b' }), 'oc-a',
+    'the list wins over the singular entry — that is where the second key lives');
+  // An explicit override always wins (ops pinning a key).
+  assert.equal(goApiKey({ OPENCODE_API_KEY: 'oc-explicit', OPENCODE_GO_API_KEYS: 'oc-a,oc-b' }), 'oc-explicit');
+  // Whitespace / empty entries are dropped, and every draw is a real single key.
+  const list = { OPENCODE_GO_API_KEYS: ' oc-a , ,, oc-b ,' };
+  const draws = new Set(Array.from({ length: 60 }, () => goApiKey(list)));
+  assert.deepEqual([...draws].sort(), ['oc-a', 'oc-b'], 'only clean single keys are ever drawn');
+  for (const d of draws) assert.ok(!d.includes(',') && !d.includes(' '), `drawn key is clean: ${d}`);
+  // Both keys must be reachable, or "rotation" is a lie.
+  assert.equal(draws.size, 2, 'both rotation keys are reachable over repeated runs');
 });
 
 function bridgeHandshake(socketPath, token, server) {
