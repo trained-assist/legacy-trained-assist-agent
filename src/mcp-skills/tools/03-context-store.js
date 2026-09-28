@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicJson } = require('../../atomic-json');
 
 function contextPath(skill, key) {
   return path.join(process.cwd(), 'contexts', skill, `${key}.json`);
@@ -19,17 +20,14 @@ function readContext(skill, key) {
 
 function writeContext(skill, key, value) {
   const file = contextPath(skill, key);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
   // Atomic write: the context store is keyed by PROFILE (username), so two
   // concurrent sessions of one profile can write it at the same time. The
   // runner only serializes per-CHAT (parallel tasks across sessions/chats of
   // one profile are allowed), so this store is the one genuinely shared
-  // per-profile resource. temp + rename means a reader never observes a
-  // torn file, and a crash mid-write leaves the previous value intact rather
+  // per-profile resource. temp + fsync + rename means a reader never observes
+  // a torn file, and a crash mid-write leaves the previous value intact rather
   // than corrupt — this is what makes parallel same-profile sessions safe.
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify({ value, updated_at: new Date().toISOString() }, null, 2));
-  fs.renameSync(tmp, file);
+  atomicJson(file, { value, updated_at: new Date().toISOString() }, { space: 2 });
 }
 
 module.exports = {
