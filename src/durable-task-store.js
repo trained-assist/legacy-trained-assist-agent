@@ -8,6 +8,7 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const { validateItem, declaredValidations, criterionIdForItem } = require('./durable-task-plan');
+const { atomicText } = require('./atomic-json');
 
 const TASK_STATUSES = ['draft', 'paused', 'blocked', 'active', 'done', 'failed', 'cancelled'];
 const ITEM_STATUSES = ['pending', 'running', 'waiting', 'done', 'failed', 'skipped'];
@@ -844,9 +845,7 @@ class DurableTaskStore {
     const dir = path.join(projectDir, '.trained-assist', 'tasks', taskId);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'checklist.md');
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, md);
-    fs.renameSync(tmp, file); // atomic-ish on same fs
+    atomicText(file, md);
     return file;
   }
 

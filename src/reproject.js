@@ -23,6 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicJson } = require('./atomic-json');
 
 const projects = require('./projects');
 
@@ -49,13 +50,6 @@ function stateFilePath(profileRoot) {
 }
 function ledgerPath(profileRoot) {
   return path.join(profileRoot, 'projects', LEDGER_FILE);
-}
-
-function atomicWrite(fp, data) {
-  fs.mkdirSync(path.dirname(fp), { recursive: true });
-  const tmp = `${fp}.tmp`;
-  fs.writeFileSync(tmp, data);
-  fs.renameSync(tmp, fp);
 }
 
 function readIndex(profileRoot) {
@@ -457,7 +451,7 @@ function syncGtdRecords(profileRoot, sessionMoves) {
     if (!target) { actions.push({ kind: 'gtd-stale', file: f, projectDir: pd, warning: 'не удалось определить новый проект — осталось указывать на мёртвый путь' }); continue; }
     rec.staleProjectDir = pd;
     rec.projectDir = target;
-    atomicWrite(fp, JSON.stringify(rec));
+    atomicJson(fp, rec);
     actions.push({ kind: 'gtd-sync', file: f, from: pd, to: target });
   }
   return actions;
@@ -558,7 +552,7 @@ function applyPlan(profileRoot, plan, { dryRun = true, now = Date.now() } = {}) 
           const fp = sessionFilePath(profileRoot, sid);
           const s = JSON.parse(fs.readFileSync(fp, 'utf8'));
           s.projectId = pid;
-          atomicWrite(fp, JSON.stringify(s));
+          atomicJson(fp, s);
         } catch { /* session file may not exist */ }
       }
     }
@@ -599,7 +593,7 @@ function applyPlan(profileRoot, plan, { dryRun = true, now = Date.now() } = {}) 
   }
 
   if (!dryRun) {
-    atomicWrite(sessionIndexPath(profileRoot), JSON.stringify(index, null, 2));
+    atomicJson(sessionIndexPath(profileRoot), index, { space: 2 });
     // PUSH onto the ledger stack — never overwrite. A second apply used to replace the
     // first apply's ledger, so the first reorg could no longer be reverted and its moved
     // artifact files had no way back (one mechanism behind "reorg cut my folders").
@@ -621,7 +615,7 @@ function readLedgerStack(profileRoot) {
   return [];
 }
 function writeLedgerStack(profileRoot, stack) {
-  atomicWrite(ledgerPath(profileRoot), JSON.stringify({ stack }, null, 2));
+  atomicJson(ledgerPath(profileRoot), { stack }, { space: 2 });
 }
 
 // Undo the MOST RECENT apply only (LIFO). Earlier applies stay on the stack and can be
@@ -642,10 +636,10 @@ function revertPlan(profileRoot, { now = Date.now() } = {}) {
       const fp = sessionFilePath(profileRoot, mv.id);
       const s = JSON.parse(fs.readFileSync(fp, 'utf8'));
       s.projectId = mv.from;
-      atomicWrite(fp, JSON.stringify(s));
+      atomicJson(fp, s);
     } catch { /* best-effort */ }
   }
-  atomicWrite(sessionIndexPath(profileRoot), JSON.stringify(index, null, 2));
+  atomicJson(sessionIndexPath(profileRoot), index, { space: 2 });
 
   // Move artifact files back to their original project folder. Anything that can't be
   // moved back is REPORTED (path + reason), never silently skipped.
@@ -668,7 +662,7 @@ function revertPlan(profileRoot, { now = Date.now() } = {}) {
     try {
       const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
       if (rec.id !== pm.to) continue; // user re-pinned since — don't clobber
-      atomicWrite(fp, JSON.stringify({ id: pm.from, at: now }));
+      atomicJson(fp, { id: pm.from, at: now });
       pinsReverted++;
     } catch { /* best-effort */ }
   }
@@ -682,7 +676,7 @@ function revertPlan(profileRoot, { now = Date.now() } = {}) {
       if (rec.projectDir !== g.to) continue; // changed since — don't clobber
       rec.projectDir = g.from;
       delete rec.staleProjectDir;
-      atomicWrite(fp, JSON.stringify(rec));
+      atomicJson(fp, rec);
       gtdReverted++;
     } catch { /* best-effort */ }
   }
@@ -690,7 +684,7 @@ function revertPlan(profileRoot, { now = Date.now() } = {}) {
   // Pop the consumed entry (so a double-revert undoes the PREVIOUS apply, not this one
   // twice) and keep an audit copy of what was reverted.
   stack.pop();
-  try { atomicWrite(`${ledgerPath(profileRoot)}.reverted-${now}`, JSON.stringify(ledger, null, 2)); } catch { /* ignore */ }
+  try { atomicJson(`${ledgerPath(profileRoot)}.reverted-${now}`, ledger, { space: 2 }); } catch { /* ignore */ }
   if (stack.length) writeLedgerStack(profileRoot, stack);
   else { try { fs.unlinkSync(ledgerPath(profileRoot)); } catch { /* ignore */ } }
   return { reverted: n, foldersReverted, gtdReverted, pinsReverted, notReverted, remainingApplies: stack.length };
@@ -699,7 +693,7 @@ function revertPlan(profileRoot, { now = Date.now() } = {}) {
 // ── State persistence (iterative refinement across cycles/crashes) ────────────
 
 function saveState(profileRoot, state) {
-  atomicWrite(stateFilePath(profileRoot), JSON.stringify(state, null, 2));
+  atomicJson(stateFilePath(profileRoot), state, { space: 2 });
 }
 function loadState(profileRoot) {
   try { return JSON.parse(fs.readFileSync(stateFilePath(profileRoot), 'utf8')); } catch { return null; }
