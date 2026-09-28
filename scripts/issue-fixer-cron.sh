@@ -26,7 +26,26 @@ if [ -f "$HOME/secrets.env" ]; then
   set +a
 fi
 
-cd "$HOME/trained-assist-agent"
+# Resolve the code dir through the release marker (ops/lib/cron-release.sh):
+# this wrapper used to hardcode `cd ~/trained-assist-agent`, so it silently ran
+# whatever branch that checkout happened to be on (2026-09-28: two days on a
+# feature branch, stale code, no errors anywhere). Never hardcode it again.
+#
+# The banner goes to a status file, NOT stdout: cron mails any output and this
+# job runs every 2 minutes (MAILTO unset + no MTA = syslog spam, not mail).
+STATUS_FILE="$LOG_DIR/last-release.txt"
+REL_LIB="$HOME/agent-master/ops/lib/cron-release.sh"
+[ -f "$REL_LIB" ] || REL_LIB="$HOME/trained-assist-agent/ops/lib/cron-release.sh"
+if [ -f "$REL_LIB" ]; then
+  . "$REL_LIB"
+  APP_DIR=$(cron_app_dir)
+  { cron_banner "issue-fixer" "$APP_DIR"; echo "at $(date -u +%FT%TZ)"; } > "$STATUS_FILE"
+  cd "$APP_DIR"
+else
+  # No helper (box predates it): keep the legacy path so the job still runs.
+  echo "[release] issue-fixer: WARNING — cron-release.sh not found, using legacy ~/trained-assist-agent" > "$STATUS_FILE"
+  cd "$HOME/trained-assist-agent"
+fi
 
 LOGFILE="$LOG_DIR/run-$(date +%Y%m%d-%H%M%S).log"
 STAGE_FAILED=0
