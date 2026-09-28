@@ -3,3 +3,9 @@ Goal: Audience-aware notifyProfile via shared sendChatReply — hub launch push 
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1761
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
+
+Goal: non-atomic workspace writes → atomicJson/atomicText (#1735 step 2)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1765
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live

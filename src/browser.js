@@ -4,6 +4,7 @@ const os = require('os');
 const skillsEnforce = require('./skills/enforce');
 const { SKILL_SIBLINGS, siblingPaths: siblingPathsOf } = require('./skill-siblings');
 const { engineeringWorkspaceRoot, engineeringMirrorsRoot } = require('./data-paths');
+const { atomicJson } = require('./atomic-json');
 
 // Services whose cookies we know how to inject into Playwright
 const COOKIE_DOMAINS = {
@@ -208,7 +209,7 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths } 
 function writeMcpConfig(workDir, userId, opts = {}) {
   const config = buildMcpConfig(workDir, userId, opts);
   const configPath = path.join(workDir, '.mcp.json');
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  atomicJson(configPath, config, { space: 2 });
   return configPath;
 }
 
@@ -223,7 +224,7 @@ function writeRunMcpConfig(workDir, userId, opts = {}, { bridged = false } = {})
   const { bridgedMcpConfig } = require('./agent-mcp-bridge');
   const real = buildMcpConfig(workDir, userId, opts);
   const configPath = path.join(workDir, '.mcp.json');
-  fs.writeFileSync(configPath, JSON.stringify(bridgedMcpConfig(real), null, 2));
+  atomicJson(configPath, bridgedMcpConfig(real), { space: 2 });
   return { mcpConfig: configPath, servers: real.mcpServers };
 }
 

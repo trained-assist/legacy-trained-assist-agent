@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const { resolve } = require('./resolve');
 const { loadCatalog, siblingIndexPath, readProfileSkills } = require('./catalog');
+const { atomicJson } = require('../atomic-json');
 
 // probe: {serverId: {file: bool|null} | null} from prompt-domains probeServers().
 function buildReadiness(catalog, { probe, siblingExists } = {}) {
@@ -67,7 +68,7 @@ function runShadow({ workDir, username, audience, mcpConfigPath, domainReport, c
     }
 
     const record = { at: new Date().toISOString(), user: username || null, audience: audience || null, resolved, actual, diff, preview };
-    try { fs.writeFileSync(path.join(workDir, '.skills-resolved.json'), JSON.stringify(record, null, 2)); } catch (e) { log(`[skills-shadow] write: ${e.message}`); }
+    try { atomicJson(path.join(workDir, '.skills-resolved.json'), record, { space: 2 }); } catch (e) { log(`[skills-shadow] write: ${e.message}`); }
     const prev = preview ? ` preview[${audience}]=-${preview.hides.siblings.length}sib/-${preview.hides.promptDomains.length}dom/-${preview.hides.modules.length}mod` : '';
     log(`[skills-shadow] user=${username || '?'} mode=${resolved.mode} diff=${diff.length ? diff.join(',') : '0'} sections=${resolved.sections.length} siblings=${resolved.siblings.join('|') || '-'}${prev}`);
     return record;

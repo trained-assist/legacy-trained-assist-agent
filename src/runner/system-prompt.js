@@ -12,6 +12,7 @@ const persona = require('../persona');
 const answerRouter = require('../answer-router');
 const promptDomains = require('../prompt-domains');
 const skillsShadow = require('../skills/shadow');
+const { atomicText } = require('../atomic-json');
 
 // Builds a runtime capabilities addendum for OpenCode system prompt.
 // OpenCode uses non-Claude models that don't auto-read CLAUDE.md, so we inject what's available.
@@ -64,7 +65,7 @@ function assembleSystemPrompt({ user, boundProjectId, mcpConfig, activeSessionId
         `\n\n# ПРОЕКТ: ${meta ? meta.name : boundProjectId} (${meta ? meta.label : 'project'}) — доменные правила\n` +
         profileTxt + '\n';
       const out = path.join(user.workDir, '.system-prompt.txt');
-      fs.writeFileSync(out, merged, { mode: 0o600 });
+      atomicText(out, merged, { mode: 0o600 });
       systemPromptFile = out;
     }
   } catch (e) { console.warn('[runner] project profile merge:', e.message); }
@@ -77,7 +78,7 @@ function assembleSystemPrompt({ user, boundProjectId, mcpConfig, activeSessionId
     if (domainBlock) {
       const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
       const out = path.join(user.workDir, '.system-prompt.txt');
-      fs.writeFileSync(out, baseTxt + '\n\n' + domainBlock, { mode: 0o600 });
+      atomicText(out, baseTxt + '\n\n' + domainBlock, { mode: 0o600 });
       systemPromptFile = out;
     }
   } catch (e) { console.warn('[runner] prompt domains:', e.message); }
@@ -108,7 +109,7 @@ function assembleSystemPrompt({ user, boundProjectId, mcpConfig, activeSessionId
       const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
       const merged = baseTxt + '\n' + block + '\n';
       const out = path.join(user.workDir, '.system-prompt.txt');
-      fs.writeFileSync(out, merged, { mode: 0o600 });
+      atomicText(out, merged, { mode: 0o600 });
       systemPromptFile = out;
     }
   } catch (e) { console.warn('[runner] answer-router block:', e.message); }

@@ -1191,7 +1191,7 @@ async function updateContextPin(token, chatId, workDir, card, botPinnedMsgId = n
   let entry = store.chats[key] || null;
   const save = (next) => {
     store.chats[key] = next;
-    fs.writeFileSync(pinFile, JSON.stringify(store));
+    atomicJson(pinFile, store);
   };
 
   // Seed from bot's authoritative pinned message when this chat has no local state.
