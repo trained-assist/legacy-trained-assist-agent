@@ -27,6 +27,11 @@ const os = require('os');
 const isoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cjs-oc-state-'));
 const isoEnv = {
   LADDER_LOG_DIR: path.join(isoDir, 'ladder-log'),
+  // Server-side state (pending-tasks, execution-history, stop-trace tombstones) —
+  // same reasoning as LADDER_LOG_DIR: a test must never write into the live
+  // ~/agent-data, least of all a «Стоп» tombstone that would then block real runs.
+  // A test file may still point this at its own temp dir (see line below).
+  AGENT_DATA_DIR: path.join(isoDir, 'agent-data'),
   // Runner RAM watchdog off in tests (see tests/setup-isolation.mjs).
   MIN_FREE_RAM_MB: '0',
 };
