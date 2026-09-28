@@ -121,10 +121,33 @@ function printReport(r, { verbose = false } = {}) {
 }
 
 // ── acting where a human would ───────────────────────────────────────────────
+const REPO_RE = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(?:pull|issues)\/\d+/g;
+
 function latestPr(report) {
   const urls = report.steps.flatMap(s => [s.summary || '', JSON.stringify(s.wait || {})].join('\n').match(PR_RE) || []);
   return urls.length ? urls[urls.length - 1] : null;
 }
+
+// Step summaries are truncated, so the PR url may be missing. Every plan works on
+// ONE branch eng/<profile>-plan-<id8> (one workspace per plan): find the open PR of
+// that branch in the repo the plan's issue/PR links point at.
+function findPlanPr(report, gh = defaultGh) {
+  const direct = latestPr(report);
+  if (direct) return direct;
+  const text = report.steps.map(s => s.summary || '').join('\n');
+  const repos = [...new Set([...text.matchAll(REPO_RE)].map(m => m[1]))];
+  const suffix = `plan-${String(report.plan.id).slice(0, 8)}`;
+  for (const repo of repos) {
+    try {
+      const prs = JSON.parse(gh(['pr', 'list', '--repo', repo, '--state', 'open', '--json', 'url,headRefName']));
+      const hit = prs.find(p => String(p.headRefName || '').endsWith(suffix));
+      if (hit) return hit.url;
+    } catch { /* try the next repo */ }
+  }
+  return null;
+}
+
+function defaultGh(args) { return execFileSync('gh', args, { encoding: 'utf8' }); }
 
 // The plan waits on a merge the repo cannot do itself (no auto-merge): merge a PR
 // whose checks are all green, like the owner would. Uses the local `gh` auth.
@@ -133,7 +156,7 @@ function tryAutoMerge(report) {
   if (!cur || cur.status !== 'waiting' && cur.status !== 'pending') return null;
   const waitsOnMerge = (cur.wait && cur.wait.until && Object.hasOwn(cur.wait.until, 'merged')) || /смерж|merged/i.test(cur.title);
   if (!waitsOnMerge) return null;
-  const pr = latestPr(report);
+  const pr = findPlanPr(report);
   if (!pr) return null;
   try {
     const info = JSON.parse(execFileSync('gh', ['pr', 'view', pr, '--json', 'state,statusCheckRollup'], { encoding: 'utf8' }));
@@ -247,4 +270,4 @@ if (require.main === module) {
     e => { console.error(e.message); process.exit(1); });
 }
 
-module.exports = { parseArgs, latestPr, tryAutoMerge, httpBackend };
+module.exports = { parseArgs, latestPr, findPlanPr, tryAutoMerge, httpBackend };
