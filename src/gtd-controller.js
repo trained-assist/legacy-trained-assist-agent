@@ -539,9 +539,11 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
   // without this guard claimNextRunnable could hand it straight back and
   // double-fire it. Items fired as agent runs are 'running' and never re-claimed.
   const claimedThisPass = new Set();
+  // `fired` = steps handled (the return value); `slotsUsed` = agent runs started —
+  // only those take an engine slot, so only they count against `maxFires` (#1752).
   let fired = 0;
+  let slotsUsed = 0;
   for (;;) {
-    if (fired >= maxFires) return fired;
     const item = claimNextDurableItem(store, { now });
     if (!item) return fired;
     const task = store.db.prepare('SELECT * FROM durable_tasks WHERE id = ?').get(item.task_id);
@@ -599,6 +601,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       if (verdict === 'parked') continue;
     }
 
+    fired += 1;
     console.log(`[gtd-durable] fire item=${item.id.slice(0, 8)} task=${task.id.slice(0, 8)} tier=${item.current_tier}`);
     // Random suffix: an item can re-fire within the same ms (recovery retries) → PK collision.
     const executionId = `exec-${item.id.slice(0, 8)}-${now}-${crypto.randomBytes(3).toString('hex')}`;
@@ -609,6 +612,14 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       ? resolveStepExecution(item, { levelMap: planLevelMap(parsePolicy(task)), useRoleMap: !parsePolicy(task)?.level_map })
       : { executionKind: 'agent', engine: 'claude', ocProfile: null, ocRole: null, skipModels: [] };
     if (step.executionKind === 'agent') step = pickUsableTarget(store, item, step, healthOf);
+    // No free engine slot left this pass: an agent step goes back to the queue
+    // untouched (no attempt, no execution row); programmatic steps and batch
+    // bookkeeping keep flowing — they need no slot.
+    if (step.executionKind === 'agent' && slotsUsed >= maxFires) {
+      fired -= 1;
+      store.updateTaskItem(item.id, { status: 'waiting', due_at: now + FRESH_CLAIM_GRACE_MS }, task.profile_id);
+      continue;
+    }
     if (step.degradedFrom) console.log(`[gtd-durable] ${item.id.slice(0, 8)} runs on fallback ${step.engine}${step.ocProfile ? `/${step.ocProfile}` : ''}: ${step.degradeReason}`);
     // Record WHICH engine/profile/level actually ran the step — without it there is
     // no way to see (or test) that different levels really run on different engines.
@@ -680,7 +691,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
 
     // Only an agent run takes an engine slot — programmatic steps never count
     // against the per-tick budget (which is the host's free slots, see runDue).
-    fired += 1;
+    slotsUsed += 1;
     const freshForPrompt = store.getTaskItem(item.id) || item;
     const resumed = resumeNote(parseWait(freshForPrompt), now);
     const digest = task.acceptance_criteria_json ? priorStepsDigest(store, task, item) : '';

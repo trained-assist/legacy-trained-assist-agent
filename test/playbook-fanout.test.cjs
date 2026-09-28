@@ -161,6 +161,18 @@ function makeAllDue(store) { store.db.prepare(`UPDATE task_items SET due_at = 0 
     ok(G.durableBudget(() => 9) === 9, 'budget = free slots (no fixed 3/tick)');
     ok(G.durableBudget(null) === G.MAX_FIRES_PER_TICK, 'no slot info → legacy cap');
     ok(G.durableBudget(() => { throw new Error('x'); }) === G.MAX_FIRES_PER_TICK, 'broken slot probe → legacy cap');
+    // A full host: agent steps stay queued untouched, nothing is fired.
+    const store = G.durableStore();
+    const r = store.createPlan({ profile_id: 'u1', goal: 'g', user_value: 'v', acceptance_criteria: [{ description: 'c' }],
+      execution_policy: { validation_mode: 'programmatic' },
+      items: [{ title: 'agent step', execution_kind: 'agent', executor_role: 'developer', minimum_model_level: 'bachelor', context_budget: 'small', validation: { command: 'true' } }] });
+    store.updateTask(r.task.id, 'u1', { status: 'active' });
+    let runs = 0;
+    const n = await G.runDueDurable({ secrets: {}, now: Date.now(), isTaskRunning: () => false, runTask: async () => { runs++; return 'DURABLE: done'; }, maxFires: 0 });
+    const it = store.listTaskItems(r.task.id, 'u1')[0];
+    ok(n === 0 && runs === 0 && it.attempt_count === 0 && it.status === 'waiting', `0 free slots: agent step not fired, no attempt spent (n=${n}, runs=${runs}, attempts=${it.attempt_count}, ${it.status})`);
+    const n2 = await G.runDueDurable({ secrets: {}, now: Date.now() + 60e3, isTaskRunning: () => false, runTask: async () => { runs++; return 'DURABLE: done'; }, maxFires: 5 });
+    ok(n2 === 1 && runs === 1, 'freed slot: the same step fires on the next pass');
   }
 
   // ── 5. exclusive stage across siblings ─────────────────────────────────────
