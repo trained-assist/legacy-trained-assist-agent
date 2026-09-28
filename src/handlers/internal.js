@@ -45,6 +45,32 @@ async function handleInternal(req, url, res, ctx) {
     // firing, open records would sit forever with no external signal. `stale` flips once we've
     // missed 3 ticks' worth of time AND there's backlog waiting on it — cheap enough to poll from
     // a cron-skill job without spawning Claude.
+    // POST /internal/orphan-checklists/action — «▶️ Делать» / «✖️ Отменить» под
+    // напоминанием об осиротевшем чек-листе (#1729 BV-08/08a; шлюз, callback `ocl|do|<id>`
+    // / `ocl|no|<id>`). Детерминированно, без LLM. Body: { username, action: 'do'|'no',
+    // id, chatId?, threadId?, audience? } → { ok, status, text } (text — во что шлюз
+    // правит сообщение с кнопками). «Делать» пишет GTD-запись с dueAt=now и дёргает тик,
+    // не дожидаясь (ран идёт в фоне; тик в полёте → подхватит следующий, ≤ 5 мин).
+    if (req.method === 'POST' && url.pathname === '/internal/orphan-checklists/action') {
+      let body;
+      try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+      const { username, action, id, chatId, threadId, audience } = body || {};
+      if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(username || ''))) return json(res, 400, { error: 'invalid username' });
+      if (action !== 'do' && action !== 'no') return json(res, 400, { error: 'invalid action' });
+      if (!/^[a-f0-9]{6,40}$/.test(String(id || ''))) return json(res, 400, { error: 'invalid id' });
+      if (audience != null && !/^[a-zA-Z0-9_-]{1,32}$/.test(String(audience))) return json(res, 400, { error: 'invalid audience' });
+      const out = require('../orphan-checklists').act({
+        workDir: path.join(BASE_USERS_DIR, username), username, id, action,
+        chatId: chatId ?? null, threadId: Number.isInteger(threadId) && threadId > 0 ? threadId : null,
+        audience: audience || null,
+      });
+      if (out.status === 'started') {
+        const tick = getGtdTickNow && getGtdTickNow();
+        if (tick) Promise.resolve().then(tick).catch(e => console.warn('[orphan-checklists] tick:', e.message));
+      }
+      return json(res, out.status === 'bad-request' ? 400 : 200, out);
+    }
+
     // POST /internal/gtd/tick — run one GTD/durable tick right now (same code path and
     // re-entrancy guard as the 5-min timer). Used by scripts/e2e/playbooks-e2e.js.
     // Optional body {accelerate: {plan_id, profile}}: that plan's waiting steps poll now.

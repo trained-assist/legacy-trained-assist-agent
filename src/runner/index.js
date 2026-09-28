@@ -55,6 +55,7 @@ const {
   STOP_TASK_INTENT,
   GTD_STOP_INTENT,
   ACTIVE_CHECKLIST_INTENT,
+  FORGOTTEN_CHECKLISTS_INTENT,
   CHECKLIST_EDIT_INTENT,
   WAKEUP_INTENT,
   SKIP_TASK_INTENT,
@@ -697,6 +698,39 @@ function _runTaskInner(opts) {
         else     await sendTo(botToken, chatId, msg).catch(() => {});
       }
       return msg;
+    })();
+  }
+
+  // /all_forgotten_checklists (BV-08a, #1729) — осиротевшие чек-листы профиля, у каждого
+  // «▶️ Делать» / «✖️ Отменить» (callback ocl|…). Детерминированно, без LLM. Заголовок —
+  // правкой placeholder-сообщения, каждая запись — отдельным сообщением с кнопками, чтобы
+  // тап правил только свою запись.
+  if (humanInput && FORGOTTEN_CHECKLISTS_INTENT.test((opts.task || '').trim())) {
+    return (async () => {
+      const botToken = opts.secrets?.TELEGRAM_BOT_TOKEN || opts.secrets?.BOT_TOKEN;
+      const chatId = opts.user.id;
+      let entries = [];
+      try {
+        entries = require('../orphan-checklists').listForgotten({
+          workDir: opts.user.workDir, username: opts.user.username, audience: opts.user.audience || 'default',
+          chatId, threadId: runThreadId, isSessionRunning: (_u, sid) => isSessionRunning(sid),
+        });
+      } catch (e) { console.warn('[runner] forgotten checklists:', e.message); }
+      const MAX_SHOWN = 10;
+      const header = entries.length
+        ? `🗂 Забытых чек-листов: ${entries.length}${entries.length > MAX_SHOWN ? ` (показываю ${MAX_SHOWN})` : ''}`
+        : 'Забытых чек-листов нет';
+      if (botToken) {
+        const im = opts.initialMsgId;
+        if (im) await tgEdit(botToken, chatId, im, header, {}).catch(() => sendTo(botToken, chatId, header).catch(() => {}));
+        else     await sendTo(botToken, chatId, header).catch(() => {});
+        const oc = require('../orphan-checklists');
+        for (const e of entries.slice(0, MAX_SHOWN)) {
+          await sendTo(botToken, chatId, oc.listEntryText(e), { reply_markup: oc.keyboard(e.id) }).catch(() => {});
+        }
+      }
+      const oc = require('../orphan-checklists');
+      return [header, ...entries.slice(0, MAX_SHOWN).map(e => oc.listEntryText(e))].join('\n\n');
     })();
   }
 
@@ -1505,13 +1539,21 @@ function resolveRunSession(sessions, getCurrent, { workDir, sessionId, chatId, a
 // `runThreadId` referenced from _runTask, where only the `threadId` param exists).
 // Returns the scheduling promise (fire-and-forget at the call site); a null return
 // means "nothing scheduled" (internal re-run / no session / no checklist).
-function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task, secrets, workDir, username, projectDir, audience, chatId, threadId }) {
+function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task, secrets, workDir, username, projectDir, audience, chatId, threadId, runStartedAt = null }) {
   if (internalGtd || !activeSessionId) return null;
   const gtd = require('../gtd-controller');
+  // BV-08 (#1729): секция, которую этот ран дописал без `Owner-session:` (агент забыл
+  // строку / тул её не пишет), принадлежит этой сессии — подписываем до проверки
+  // владельца. Legacy-секции (файл не менялся в этом ране) остаются без владельца.
+  if (projectDir && Number.isFinite(runStartedAt)) {
+    try { gtd.claimFreshChecklist({ workDir, projectDir, sessionId: activeSessionId, since: runStartedAt }); }
+    catch (e) { console.warn('[gtd] claim checklist:', e.message); }
+  }
   const checklistArgs = {
     workDir, sessionId: activeSessionId, chatId,
     username, projectDir: projectDir || null, audience: audience || 'default',
     threadId: Number.isInteger(threadId) && threadId > 0 ? threadId : null,
+    isSessionRunning: (_username, sid) => isSessionRunning(sid),
   };
   if (explicitMode === 'deep') {
     // Осознанный launch — «⏻ Запустить проработку» (workrun). Свободный текст
@@ -1533,6 +1575,9 @@ function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task,
 async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null }) {
   // Strip @botname suffix from slash commands once at intake so all INTENT regexes match cleanly.
   let task = rawTask ? rawTask.replace(/^(\/\S+?)@\S+/, '$1') : rawTask;
+  // Старт рана для claimFreshChecklist (BV-08): initiatedAt — момент запроса у шлюза
+  // (переживает авто-продолжения и резюм), иначе — сейчас.
+  const runStartedAt = Number.isFinite(initiatedAt) ? Math.min(initiatedAt, Date.now()) : Date.now();
   // Явный режим ответа из inline-кнопки: 'deep' (⏻ проработка, sticky) | 'clarify'
   // (❓ уточнить, транзиентно этот ход). Нормализуем; неизвестное → null (дефолт one-shot).
   const explicitMode = answerRouter.normalizeMode(mode);
@@ -2739,7 +2784,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     scheduleGtdAfterRun({
       internalGtd, activeSessionId, explicitMode, task, secrets,
       workDir: user.workDir, username: user.username, projectDir: user.cwd || null,
-      audience: user.audience || 'default', chatId, threadId,
+      audience: user.audience || 'default', chatId, threadId, runStartedAt,
     });
   } catch (e) { console.warn('[gtd] hook:', e.message); }
 

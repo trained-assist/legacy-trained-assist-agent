@@ -30,7 +30,7 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
     recordTaskActivity: () => {}, fs: { existsSync: () => false }, path: require('node:path'), PENDING_DIR: '/isolated',
     restartShutdown: false,
     console, Promise, Set, Date,
-    STOP_TASK_INTENT: /$^/, GTD_STOP_INTENT: /$^/, WAKEUP_INTENT: /$^/, SKIP_TASK_INTENT: /$^/, ACTIVE_CHECKLIST_INTENT: /$^/, CHECKLIST_EDIT_INTENT: /$^/,
+    STOP_TASK_INTENT: /$^/, GTD_STOP_INTENT: /$^/, WAKEUP_INTENT: /$^/, SKIP_TASK_INTENT: /$^/, ACTIVE_CHECKLIST_INTENT: /$^/, FORGOTTEN_CHECKLISTS_INTENT: /$^/, CHECKLIST_EDIT_INTENT: /$^/,
     isPreQueueQuickIntent: () => false,
     ...intents,
     queuedSessions: new Set(),
