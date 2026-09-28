@@ -319,10 +319,11 @@ const tools = {
       'Search the web WITHOUT any API key or account (keyless SERP scraping). ' +
       'Returns organic results {engine, results:[{title,url,snippet,position}], took_ms}. ' +
       'Chain (first that answers wins): DuckDuckGo html (POST, no key), a pool of public SearXNG ' +
-      'instances (format=json), then Brave Search HTML. Use it for research/fact-finding when no ' +
-      'other search tool is available. It can fail with an explicit error when every upstream ' +
-      'rate-limits our IP — in that case read the message, do not retry blindly in a loop, and say ' +
-      'plainly that search is unavailable.',
+      'instances (format=json), then Brave Search HTML. ' +
+      'THIS IS THE FIRST SEARCH TOOL TO USE: prefer it over the engine\'s built-in websearch for ' +
+      'every web query (it is free, keyless and fast) and only fall back to the built-in search when ' +
+      'it returns an explicit error. It can fail when every upstream rate-limits our IP — in that ' +
+      'case read the message, do not retry blindly in a loop, and say plainly that search is unavailable.',
     inputSchema: {
       type: 'object',
       properties: {
