@@ -134,6 +134,10 @@ function makeAllDue(store) { store.db.prepare(`UPDATE task_items SET due_at = 0 
     const s2 = F.controlBatch(store, batch.task.id, 'u1', { action: 'skip', key: 'x2', reason: 'нет каталога' });
     ok(s2.ok && s2.status.elements.find(e => e.key === 'x2').status === 'skipped', 'owner can skip an element');
     ok(store.getTask(b, 'u1').status === 'cancelled', 'skipped element child plan is cancelled');
+    const add = F.controlBatch(store, batch.task.id, 'u1', { action: 'add', goal: 'https://late.example/ex', name: 'Поздняя' });
+    ok(add.ok && add.status.elements.find(e => e.name === 'Поздняя').status === 'queued', 'owner can add a late element');
+    const adv3 = await F.advanceFanout(store, { task: batch.task, item: store.getTaskItem(batch.item.id), llm: null });
+    ok(adv3.spawned === 1, `late element spawned on the next advance (got ${adv3.spawned})`);
   }
 
   // ── 3. model decisions are bounded by the closed menu + budgets ────────────

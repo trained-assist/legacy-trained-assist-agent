@@ -322,19 +322,21 @@ module.exports = {
     },
 
     playbook_batch_control: {
-      description: 'Steer a batch: action=resume (un-pause after the systemic cause is fixed), retry (re-run the failed step of element `key`), skip (drop element `key` with a reason).',
+      description: 'Steer a batch: action=resume (un-pause after the systemic cause is fixed), retry (re-run the failed step of element `key`), skip (drop element `key` with a reason), add (one more element: goal + optional name, spawned on the next tick).',
       inputSchema: {
         type: 'object', required: ['batch_task_id', 'action'],
         properties: {
           batch_task_id: { type: 'string' },
-          action: { type: 'string', enum: ['resume', 'retry', 'skip'] },
+          action: { type: 'string', enum: ['resume', 'retry', 'skip', 'add'] },
           key: { type: 'string', description: 'Element key (for retry/skip)' },
           reason: { type: 'string' },
+          goal: { type: 'string', description: 'Goal of the element to add (action=add)' },
+          name: { type: 'string', description: 'Name of the element to add (action=add)' },
         },
       },
-      handler: safe(async ({ batch_task_id, action, key, reason }, ctx) => {
+      handler: safe(async ({ batch_task_id, action, key, reason, goal, name }, ctx) => {
         const profileId = requireUser(ctx);
-        return require('../../playbook-fanout').controlBatch(batchStore(), batch_task_id, profileId, { action, key, reason });
+        return require('../../playbook-fanout').controlBatch(batchStore(), batch_task_id, profileId, { action, key, reason, goal, name });
       }),
     },
 

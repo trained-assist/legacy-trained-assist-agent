@@ -424,8 +424,8 @@ function batchStatus(store, taskId, profileId) {
   };
 }
 
-// Owner control: resume a paused batch, retry / skip one element.
-function controlBatch(store, taskId, profileId, { action, key = null, reason = null }) {
+// Owner control: resume a paused batch, retry / skip one element, add a late element.
+function controlBatch(store, taskId, profileId, { action, key = null, reason = null, goal = null, name = null }) {
   const item = findFanoutItem(store, taskId, profileId);
   const state = parseFanout(item);
   if (!state) return { error: 'task is not a batch' };
@@ -447,8 +447,17 @@ function controlBatch(store, taskId, profileId, { action, key = null, reason = n
     if (!el) return { error: 'key required' };
     el.status = 'skipped'; el.skipReason = reason || 'пропущено владельцем';
     if (el.childId) { try { store.updateTask(el.childId, profileId, { status: 'cancelled' }); } catch { /* terminal */ } }
+  } else if (action === 'add') {
+    // A late element (the owner sends one more link): queued, spawned on the next advance.
+    if (!goal) return { error: 'goal required' };
+    const t = store.getTask(taskId, profileId);
+    if (!t || t.status === 'done' || t.status === 'cancelled') return { error: 'batch already finished — start a new one' };
+    const [fresh] = normalizeElements([{ goal, name: name || undefined }]);
+    if (state.elements.some(e => e.key === fresh.key)) return { error: `element already in the batch: ${fresh.key}` };
+    state.elements.push(fresh);
+    state.finishedAt = null;
   } else return { error: `unknown action: ${action}` };
-  state.journal.push({ at: now, key, event: 'owner', action, reason: reason || null });
+  state.journal.push({ at: now, key: key || (action === 'add' ? goal : null), event: 'owner', action, reason: reason || null });
   saveFanout(store, item.id, state);
   store.db.prepare(`UPDATE task_items SET due_at = ?, status = CASE WHEN status = 'running' THEN status ELSE 'waiting' END WHERE id = ?`).run(now, item.id);
   return { ok: true, status: batchStatus(store, taskId, profileId) };
