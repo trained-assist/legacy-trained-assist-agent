@@ -25,7 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { USERS_ROOT } = require('./data-paths');
+const { USERS_ROOT, listProfiles } = require('./data-paths');
 const { atomicJson } = require('./atomic-json');
 const { resolveGithubToken } = require('./github-token');
 
@@ -71,14 +71,7 @@ function readIndex(profileDir) {
 
 // Returns [{ profile, entry }] for every open entry across every profile under USERS_ROOT.
 function collectOpen({ usersRoot = USERS_ROOT } = {}) {
-  let profiles;
-  try {
-    profiles = fs.readdirSync(usersRoot, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name);
-  } catch {
-    return [];
-  }
+  const profiles = listProfiles(usersRoot);
   const open = [];
   for (const profile of profiles) {
     const entries = readIndex(path.join(usersRoot, profile));
@@ -272,11 +265,7 @@ async function run({
   findExisting = ghFindExisting,
   logger = console,
 } = {}) {
-  const profiles = (() => {
-    try {
-      return fs.readdirSync(usersRoot, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
-    } catch { return []; }
-  })();
+  const profiles = listProfiles(usersRoot);
 
   const result = { profiles: profiles.length, due: 0, created: [], skipped: 0, errors: [] };
 
