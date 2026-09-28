@@ -152,13 +152,16 @@ function makeAllDue(store) { store.db.prepare(`UPDATE task_items SET due_at = 0 
     const ask = { then: 'rerun', awaiting_user: true, reason: 'нужен токен Weeek', started_at: Date.now(), deadline_at: Date.now() + 3600e3 };
     store.parkItem(first(a).id, 'u1', { wait: ask, dueAt: Date.now() + 3600e3 });
     store.parkItem(first(b).id, 'u1', { wait: ask, dueAt: Date.now() + 3600e3 });
-    store.updateTask(c, 'u1', { status: 'paused' }); // paused by its own agent
+    store.db.prepare("UPDATE task_items SET status = 'done', evidence_json = ?, completed_at = ? WHERE id = ?")
+      .run(JSON.stringify({ reply: '**Стартовать нельзя:** не подключён API-токен Weeek.\nDURABLE: done' }), Date.now(), first(c).id);
+    store.updateTask(c, 'u1', { status: 'paused' }); // paused by its own agent, no blocker_reason
+    ok(/не подключён API-токен Weeek/.test(F.childState(store, c, 'u1').ask), 'self-paused child: the reason is what its agent last said, not «на паузе»');
     await F.advanceFanout(store, { task: batch.task, item: store.getTaskItem(batch.item.id), notify: async t => notes.push(t), llm: null });
-    ok(notes.length === 2, `owner asks surfaced, grouped by ask (got ${notes.length}: ${notes.join(' | ')})`);
-    ok(notes.some(t => /2 элемента ждут/.test(t) && /Weeek/.test(t)), 'same ask of two elements → one message');
-    ok(notes.some(t => /пауз/.test(t)), 'self-paused child is surfaced, not silent');
+    ok(notes.length === 1, `all owner asks of one tick → ONE message (got ${notes.length}: ${notes.join(' | ')})`);
+    ok(/3 элемента ждут/.test(notes[0]) && /Weeek/.test(notes[0]), 'the message lists every waiting element');
+    ok(/API-токен Weeek/.test(notes[0]), 'self-paused child is surfaced with its real reason');
     await F.advanceFanout(store, { task: batch.task, item: store.getTaskItem(batch.item.id), notify: async t => notes.push(t), llm: null });
-    ok(notes.length === 2, 'the same ask is not repeated on the next advance');
+    ok(notes.length === 1, 'the same ask is not repeated on the next advance');
     // pause_batch-paused children stay quiet
     const s2 = F.parseFanout(store.getTaskItem(batch.item.id));
     ok(s2.elements.every(e => e.status === 'running'), 'waiting-for-owner elements stay running (tracked), not failed');
@@ -175,7 +178,7 @@ function makeAllDue(store) { store.db.prepare(`UPDATE task_items SET due_at = 0 
     ok(F.childState(store, a, 'u1').state === 'running', 'a woken ask no longer counts as waiting for the owner');
     ok(DW.buildAwaitingUserNotice('u1', { store }) === '', 'notice empty after resume');
     await F.advanceFanout(store, { task: batch.task, item: store.getTaskItem(batch.item.id), notify: async t => notes.push(t), llm: null });
-    ok(notes.length === 2, 'no new asks after resume');
+    ok(notes.length === 1, 'no new asks after resume');
   }
 
   // ── 3. model decisions are bounded by the closed menu + budgets ────────────
