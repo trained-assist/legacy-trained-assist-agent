@@ -220,6 +220,20 @@ function bridgeHandshake(socketPath, token, server) {
   });
 }
 
+test('run-as is skipped (allowlist only) when the engine cwd is outside the profile — engineering worktrees', async () => {
+  const { prepareEngineSpawn } = require('../src/runner/engine-isolation');
+  const wd = fs.mkdtempSync(path.join(tmpRoot, 'wd-'));
+  const outside = fs.mkdtempSync(path.join(tmpRoot, 'ws-'));
+  const config = { ...iso.isolationConfig({ AGENT_RUN_AS_USERS: 'never-leased' }), slotLockDir: path.join(tmpRoot, 'locks-x') };
+  const r = await prepareEngineSpawn({ engine: 'claude', taskId: 't-ws', user: { username: 'u', workDir: wd }, cwd: outside, engineEnv: { ...SERVER_ENV }, config });
+  try {
+    assert.equal(r.runAs, null, 'no slot leased');
+    assert.equal(r.isolated, true, 'still allowlisted + bridged');
+    assert.ok(!('AGENT_SECRET' in r.env));
+    assert.deepEqual(r.wrap('/bin/x', ['a']), ['/bin/x', ['a']]);
+  } finally { r.release(); }
+});
+
 test('bridge: a valid token only opens servers registered for that run', async () => {
   const sock = await bridge.ensureBridge(process.env.AGENT_MCP_BRIDGE_DIR);
   const t = tokens.issueRunToken({ taskId: 'bob-1', username: 'bob' });
