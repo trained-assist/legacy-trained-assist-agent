@@ -17,7 +17,7 @@ const localModules = fs.readdirSync(TOOLS).filter(f => f.endsWith('.js')).sort()
 
 // Readiness of a typical "no credentials" user with every sibling on the host.
 function readiness(over = {}) {
-  const r = { 'hh-skills': true, 'freelance-skills': true, 'engineering-skills': true, 'sales-skills': true, 'documents-skills': true };
+  const r = { 'hh-skills': true, 'freelance-skills': true, 'engineering-skills': true, 'sales-skills': true, 'documents-skills': true, 'speech-skills': true };
   for (const m of localModules) r[`trained-skills/${m}`] = true;
   for (const m of ['80-getcourse.js', '81-gc-discovery.js', '10-nalog.js', '20-tilda.js',
     '95-illustrate.js', '96-label.js']) r[`trained-skills/${m}`] = false;
@@ -87,7 +87,7 @@ test('legacy mode (no skills.json) = exactly what the current code exposes', () 
   const res = resolve(catalog, null, r);
   assert.strictEqual(res.mode, 'legacy');
   assert.deepStrictEqual(res.sections, Object.keys(catalog.sections));
-  assert.deepStrictEqual(res.siblings, ['documents-skills', 'engineering-skills', 'freelance-skills', 'hh-skills', 'sales-skills']);
+  assert.deepStrictEqual(res.siblings, ['documents-skills', 'engineering-skills', 'freelance-skills', 'hh-skills', 'sales-skills', 'speech-skills']);
   // prompt domains: same answer as src/prompt-domains selectDomains on the same probe
   const probe = {};
   for (const [k, v] of Object.entries(r)) {
@@ -112,7 +112,7 @@ test('legacy mode (no skills.json) = exactly what the current code exposes', () 
 test('enabled parent enables its children; other sections stay off; core always on', () => {
   const res = resolve(catalog, { enabled: ['recruiting'] }, readiness());
   assert.deepStrictEqual(res.sections, ['core', 'recruiting', 'recruiting/hh', 'recruiting/interview', 'recruiting/company']);
-  assert.deepStrictEqual(res.siblings, ['hh-skills', 'sales-skills']); // sales: company/INN modules
+  assert.deepStrictEqual(res.siblings, ['hh-skills', 'sales-skills', 'speech-skills']); // sales: company/INN modules; speech: recruiting/interview
   assert.ok(res.modules.includes('sales-skills/40-company.js'));
   assert.ok(!res.modules.includes('sales-skills/85-expo.js'), 'flexi-expo is off');
   assert.ok(res.modules.includes('hh-skills/90-hh.js'));
@@ -177,7 +177,7 @@ test('shadow: legacy profile → diff=0, writes .skills-resolved.json, audience 
   for (const [k, v] of Object.entries(r)) if (k.includes('/')) { const [s, m] = k.split('/'); (probe[s] || (probe[s] = {}))[m] = v; }
   const picked = pd.selectDomains(pd.loadDomains(), probe).map(d => d.name);
   const mcp = path.join(dir, '.mcp.json');
-  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { playwright: {}, 'trained-skills': {}, 'hh-skills': {}, 'freelance-skills': {}, 'engineering-skills': {}, 'sales-skills': {}, 'documents-skills': {} } }));
+  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { playwright: {}, 'trained-skills': {}, 'hh-skills': {}, 'freelance-skills': {}, 'engineering-skills': {}, 'sales-skills': {}, 'documents-skills': {}, 'speech-skills': {} } }));
   const lines = [];
   const rd = buildReadiness(catalog, { probe, siblingExists: () => true });
   assert.strictEqual(rd['engineering-skills'], true);

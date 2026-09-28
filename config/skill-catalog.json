@@ -7,7 +7,8 @@
     "freelance-skills": { "kind": "sibling", "repo": "trained-assist-freelance-skill" },
     "engineering-skills": { "kind": "sibling", "repo": "trained-assist-engineering" },
     "sales-skills": { "kind": "sibling", "repo": "trained-assist-sales-skill" },
-    "documents-skills": { "kind": "sibling", "repo": "trained-assist-documents-skill" }
+    "documents-skills": { "kind": "sibling", "repo": "trained-assist-documents-skill" },
+    "speech-skills": { "kind": "sibling", "repo": "trained-assist-speech-skill" }
   },
   "audienceDefaults": {
     "recruiter": { "enabled": ["recruiting"] }
@@ -37,6 +38,7 @@
     },
     "recruiting/interview": {
       "title": "Интервью и видео",
+      "siblings": ["speech-skills"],
       "modules": ["hh-skills/99-interview-analysis.js", "95-video-analysis.js"]
     },
     "recruiting/company": {
