@@ -48,7 +48,7 @@ function run(id, over = {}) {
   const sibling = join(root, 'trained-assist-sales-skill');
   return checkPlaybookReachability(id, {
     store: new PlaybookStore({ profileId: null, systemDir: join(root, 'system'), siblingRoots: [sibling] }),
-    catalog, domains: [], audienceMap: {}, devFamily: [], toolDirs: [],
+    catalog, domains: [], audienceMap: {}, devFamily: [], toolDirs: [], launcherDir: false,
     siblingRepos: ['trained-assist-sales-skill'],
     ...over,
   });
@@ -82,6 +82,15 @@ describe('checkPlaybookReachability', () => {
   it('weak routes (audience map, dev auto-offer) pass with a warning', () => {
     expect(status(run('demo-pb', { audienceMap: { exhibition: 'demo-pb' } }), 'dispatch')).toBe('warn');
     expect(status(run('demo-pb', { devFamily: ['demo-pb'] }), 'dispatch')).toBe('warn');
+  });
+
+  it('a programmatic launcher in the owning repo code is route F (warn)', () => {
+    const src = join(root, 'trained-assist-sales-skill', 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'hub.js'), "const LAUNCH_PLAYBOOK_ID = 'demo-pb';\n");
+    const r = run('demo-pb', { launcherDir: undefined });
+    expect(status(r, 'dispatch')).toBe('warn');
+    expect(r.rows.find(x => x.gate === 'dispatch').detail).toMatch(/F запуск из кода.*hub\.js/);
   });
 
   it('fails an unknown id', () => {

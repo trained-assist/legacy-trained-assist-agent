@@ -15,6 +15,8 @@
 //     B   config/audience-default-playbooks.json maps an audience to it warn
 //     E   dev-task auto-offer (ENGINEERING_FAMILY + DEV_TASK_RE)       warn
 //     C   a tools module (list_skills meta catalog) names it           warn
+//     F   code of the owning repo launches it (a UI button calling
+//         playbook_run with the quoted id, e.g. the hh recruiting hub)  warn
 //     D   none of the above                                            FAIL
 //   no-shadow                the id lives at one level only (else edits hit a dead copy)
 //   sections / sibling-mounted / section-enabled / tools-visible / pointer-in-prompt
@@ -79,6 +81,8 @@ function checkPlaybookReachability(id, opts = {}) {
   const devFamily = opts.devFamily || require('./dev-task-playbook-suggestion').ENGINEERING_FAMILY;
   const siblingRepos = opts.siblingRepos || DEFAULT_SIBLING_REPOS;
   const toolDirs = opts.toolDirs || defaultToolDirs(catalog, catalogLib.siblingRepoDir);
+  // Route F scans the owning repo's src/ (null → derived from the resolved file below).
+  let launcherDir = opts.launcherDir !== undefined ? opts.launcherDir : null;
 
   // ── resolve + schema/scope ─────────────────────────────────────────────────
   let pb = null;
@@ -148,18 +152,37 @@ function checkPlaybookReachability(id, opts = {}) {
       if (txt.split('\n').some(l => l.includes(id) && nearPlaybook(l))) metaHits.push(f);
     }
   }
+  if (launcherDir === null && pb && pb.source !== 'profile') {
+    const repoRoot = path.dirname(path.dirname(pb.path)); // <repo>/playbooks/<id>.json
+    launcherDir = path.join(repoRoot, 'src');
+  }
+  const launcherHits = [];
+  const walk = (dir) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name !== 'node_modules' && e.name !== 'prompt-domains' && e.name !== 'tools') walk(full);
+      } else if (/\.(c|m)?js$/.test(e.name) && idQuoted.test(fs.readFileSync(full, 'utf8'))) {
+        launcherHits.push(path.relative(launcherDir, full));
+      }
+    }
+  };
+  if (launcherDir) walk(launcherDir);
   const weak = [
     mentionHits.size ? `A2 промпт-домены: ${[...mentionHits].join(', ')}` : null,
     audienceHits.length ? `B audience-map: ${audienceHits.join(', ')}` : null,
     devOffer ? 'E автооффер dev-задач (только при совпадении DEV_TASK_RE)' : null,
     metaHits.length ? `C tools: ${metaHits.join(', ')}` : null,
+    launcherHits.length ? `F запуск из кода (кнопка/UI, не из чата): ${launcherHits.join(', ')}` : null,
   ].filter(Boolean);
   if (pointerHits.size) {
     add('dispatch', true, [`A1 playbook_run в промпт-доменах: ${[...pointerHits].join(', ')}`, ...weak].join('; '));
   } else if (weak.length) {
     add('dispatch', true, `${weak.join('; ')}; нет прямого playbook_run("${id}") в промпт-домене`, { warn: true });
   } else {
-    add('dispatch', false, 'нет маршрута: ни playbook_run(<id>) в prompt-domains/*.md, ни audience-map, ни автооффера, ни упоминания в tools — из обычной просьбы агент плейбук не предложит');
+    add('dispatch', false, 'нет маршрута: ни playbook_run(<id>) в prompt-domains/*.md, ни audience-map, ни автооффера, ни упоминания в tools, ни запуска из кода репозитория — из обычной просьбы агент плейбук не предложит');
   }
 
   // ── no-shadow ──────────────────────────────────────────────────────────────

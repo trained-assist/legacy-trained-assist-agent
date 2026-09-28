@@ -102,8 +102,9 @@ visible id. Exit 1 on any FAIL.
 
 `dispatch` routes: **A1** prompt domain names `playbook_run` + `"<id>"` (strong); **A2** id next to
 "playbook/плейбук" in a prompt domain; **B** audience map; **E** dev-task auto-offer
-(`ENGINEERING_FAMILY`, only when `DEV_TASK_RE` matches); **C** a tools module names it (list_skills).
-A2/B/E/C pass with a warning; none of them → FAIL.
+(`ENGINEERING_FAMILY`, only when `DEV_TASK_RE` matches); **C** a tools module names it (list_skills);
+**F** the owning repo's code launches it (a UI button, e.g. the hh recruiting hub — reachable, but not
+from chat). A2/B/E/C/F pass with a warning; none of them → FAIL.
 
 ## Current playbooks
 
@@ -113,5 +114,5 @@ Core `playbooks/` holds none; playbooks live in the domain sibling that owns the
 |---|---|---|
 | `feature`, `debugging`, `new-software` | software-engineering-playbooks (checked out as `trained-assist-engineering`) | engineering delivery; offered by `src/dev-task-playbook-suggestion.js` |
 | `exhibition-catalog-to-sales-site` | trained-assist-sales-skill | exhibition catalog → registry check → sales site |
-| `recruiting-vacancy-launch` | trained-assist-hh-skill | vacancy launch |
+| `recruiting-vacancy-launch` | trained-assist-hh-skill | vacancy launch; started by the recruiting hub «▶ Собрать» button |
 | `freelance-project-spec`, `presentation-creation` | trained-assist-documents-skill | freelance intake → GO/NO-GO; presentation |
