@@ -162,6 +162,20 @@ function makeAllDue(store) { store.db.prepare(`UPDATE task_items SET due_at = 0 
     // pause_batch-paused children stay quiet
     const s2 = F.parseFanout(store.getTaskItem(batch.item.id));
     ok(s2.elements.every(e => e.status === 'running'), 'waiting-for-owner elements stay running (tracked), not failed');
+    // The answer path (live 28.09): the chat notice shows the batch ONCE, not N child asks,
+    // and one resume(message) wakes every parked ask and re-activates the self-paused child.
+    const DW = require('../src/durable-wait.js');
+    const notice = DW.buildAwaitingUserNotice('u1', { store });
+    ok(/ПАЧКА batch_task_id=/.test(notice) && !/item_id=/.test(notice), `notice lists the batch once, hides child asks: ${notice}`);
+    const r = F.controlBatch(store, batch.task.id, 'u1', { action: 'resume', message: 'токен подключил' });
+    ok(r.ok, 'resume ok');
+    ok(store.getTask(c, 'u1').status === 'active', 'resume re-activates a child that paused itself waiting for the owner');
+    const w = JSON.parse(first(a).wait_json);
+    ok(w.woken_at && w.wake_message === 'токен подключил' && JSON.parse(first(b).wait_json).woken_at, 'resume wakes every parked ask with the owner message');
+    ok(F.childState(store, a, 'u1').state === 'running', 'a woken ask no longer counts as waiting for the owner');
+    ok(DW.buildAwaitingUserNotice('u1', { store }) === '', 'notice empty after resume');
+    await F.advanceFanout(store, { task: batch.task, item: store.getTaskItem(batch.item.id), notify: async t => notes.push(t), llm: null });
+    ok(notes.length === 2, 'no new asks after resume');
   }
 
   // ── 3. model decisions are bounded by the closed menu + budgets ────────────
