@@ -15,6 +15,7 @@
 const fs = require('fs');
 const path = require('path');
 const { writeMode } = require('./data-paths');
+const { atomicText } = require('./atomic-json');
 
 // Mirrors the /run taskId grammar (username ≤32, audience ≤32, requestId ≤128,
 // all [a-zA-Z0-9_-]) plus a safety margin. Doubles as the filename guard.
@@ -42,7 +43,7 @@ function writeInput(workDir, taskId, doc) {
   if (!workDir || !taskId || !TASK_ID_RE.test(taskId) || typeof doc !== 'string') return false;
   const dir = storeDir(workDir);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `${taskId}.txt`), doc, writeMode(0o600));
+  atomicText(path.join(dir, `${taskId}.txt`), doc, writeMode(0o600));
   prune(dir);
   return true;
 }
