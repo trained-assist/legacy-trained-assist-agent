@@ -9,3 +9,9 @@ Goal: non-atomic workspace writes → atomicJson/atomicText (#1735 step 2)
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1765
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
+
+Goal: Speech skill extraction — sibling trained-assist-speech-skill + delegate recognition from core (#1779)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1782
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
