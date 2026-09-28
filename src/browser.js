@@ -153,6 +153,12 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
     ...(process.env.INN_DADATA_SECRET ? { INN_DADATA_SECRET:      process.env.INN_DADATA_SECRET } : {}),
     ...(process.env.INN_CHECKO_KEY    ? { INN_CHECKO_KEY:         process.env.INN_CHECKO_KEY }    : {}),
     ...(process.env.INN_RUSPROFILE_COOKIE ? { INN_RUSPROFILE_COOKIE: process.env.INN_RUSPROFILE_COOKIE } : {}),
+    // Serper (Google SERP) key for search_serper — the backup web-search engine shipped
+    // by the search-skills sibling (epic #1792). Same bypass pattern as INN_*: it only
+    // ever reaches the MCP child through this map, so a deploy without the GitHub secret
+    // makes the tool answer "serper не сконфигрирован: нужен SERPER_API_KEY" instead of
+    // taking the server down.
+    ...(process.env.SERPER_API_KEY ? { SERPER_API_KEY: process.env.SERPER_API_KEY } : {}),
     ...(process.env.GOOGLE_OAUTH_CLIENT_ID     ? { GOOGLE_OAUTH_CLIENT_ID:     process.env.GOOGLE_OAUTH_CLIENT_ID }     : {}),
     ...(process.env.GOOGLE_OAUTH_CLIENT_SECRET ? { GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET } : {}),
     ...(process.env.AGENT_PUBLIC_URL ? { AGENT_PUBLIC_URL: process.env.AGENT_PUBLIC_URL } : {}),
