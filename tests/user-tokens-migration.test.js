@@ -9,25 +9,44 @@ const require = createRequire(import.meta.url);
 
 let tmpDir;
 let origHome;
+let origTokensDir;
+let origTokensRoot;
+
+function bustTokenCaches() {
+  // The token root is resolved by data-paths (single resolver since #1789 P0/C1)
+  // and frozen at module load; user-tokens reads it from there. Bust BOTH.
+  for (const mod of ['../src/user-tokens.js', '../src/data-paths.js']) {
+    delete require.cache[require.resolve(mod)];
+  }
+}
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tokens-'));
   origHome = process.env.HOME;
+  origTokensDir = process.env.AGENT_TOKENS_DIR;
+  origTokensRoot = process.env.AGENT_TOKENS_ROOT;
   // Redirect HOME so TOKENS_ROOT = tmpDir/agent-tokens
   process.env.HOME = tmpDir;
+  // data-paths honors AGENT_TOKENS_DIR first (systemd's name); the vitest
+  // isolation setup exports its own — pin BOTH names to this test's root.
+  process.env.AGENT_TOKENS_DIR = path.join(tmpDir, 'agent-tokens');
+  process.env.AGENT_TOKENS_ROOT = path.join(tmpDir, 'agent-tokens');
+  bustTokenCaches();
 });
 
 afterEach(() => {
   process.env.HOME = origHome;
+  if (origTokensDir === undefined) delete process.env.AGENT_TOKENS_DIR;
+  else process.env.AGENT_TOKENS_DIR = origTokensDir;
+  if (origTokensRoot === undefined) delete process.env.AGENT_TOKENS_ROOT;
+  else process.env.AGENT_TOKENS_ROOT = origTokensRoot;
   fs.rmSync(tmpDir, { recursive: true, force: true });
   // Bust require cache so TOKENS_ROOT is re-computed on next import
-  const mod = require.resolve('../src/user-tokens.js');
-  delete require.cache[mod];
+  bustTokenCaches();
 });
 
 function freshModule() {
-  const mod = require.resolve('../src/user-tokens.js');
-  delete require.cache[mod];
+  bustTokenCaches();
   return require('../src/user-tokens.js');
 }
 

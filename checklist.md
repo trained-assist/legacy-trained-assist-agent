@@ -35,3 +35,16 @@ Goal: research-поиск в интернете — 4 способа парал�
 - [ ] Deployed to prod — verified live (живой hermes_research с веб-вопросом: websearch в opencode DB, настоящие URL в ответе, grounded=true → коммент в #1618)
 - [ ] L1/L2/L3 прижились и сравнены по 5 контрольным запросам → таблица в https://github.com/trained-assist/trained-assist-agent/issues/1792
 - [ ] PR fallback-цепочки (единый web_search с бэкендами) создан и смержен
+
+# #1789 P0 tracker
+
+- [ ] C1 — unify token access through `src/data-paths.js`
+- [ ] C2 — restrict engine environment to the reviewed allowlist
+- [ ] C3 — remove user-to-service secret fallbacks and service-key leaks
+
+
+Goal: token access and engine env allowlist (P0 C1-C3) — единый резолвер токен-корня, ENGINE_TOKEN_FILES, тесты на оба env-имени
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1801
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
