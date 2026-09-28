@@ -4,14 +4,18 @@ const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
 
-function atomicJson(file, value) {
+function atomicText(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   const fd = fs.openSync(tmp, 'wx', 0o600);
-  try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  try { fs.writeFileSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
   const dir = fs.openSync(path.dirname(file), 'r');
   try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
 }
 
-module.exports = { atomicJson };
+function atomicJson(file, value) {
+  atomicText(file, JSON.stringify(value));
+}
+
+module.exports = { atomicJson, atomicText };
