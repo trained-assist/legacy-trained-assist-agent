@@ -113,6 +113,26 @@ test('buildDigest: fixed trace → fixed minutes per tool family + PI split', ()
   assert.deepEqual(buildDigest({ events: traceEvents(), messages: SESSION_MESSAGES }), d);
 });
 
+test('buildDigest: messages-only fallback caps idle gaps — days of thread ≠ days of «Переписка»', () => {
+  const { buildDigest } = digestMod();
+  const DAY = 24 * 60 * MIN;
+  // Two replies a minute apart, then a 4-day pause, then another minute apart.
+  const d = buildDigest({ events: [], messages: [
+    { role: 'user', content: 'a', at: T0 },
+    { role: 'assistant', content: 'b', at: T0 + MIN },
+    { role: 'user', content: 'c', at: T0 + 4 * DAY },
+    { role: 'assistant', content: 'd', at: T0 + 4 * DAY + MIN },
+  ] });
+  // 1 + min(4 days → 120) + 1 = 122 — the pause contributes its cap, not 5760.
+  assert.equal(minutesOf(d, 'messages'), 122);
+  // A purely empty-of-activity thread (one gap far above the cap) is capped too.
+  const quiet = buildDigest({ events: [], messages: [
+    { role: 'user', content: 'hi', at: T0 },
+    { role: 'assistant', content: 'hi', at: T0 + 10 * DAY },
+  ] });
+  assert.equal(minutesOf(quiet, 'messages'), 120);
+});
+
 // ── Slice 3: pass B contract ──────────────────────────────────────────────
 test('familyOf: MCP tools come prefixed with their server name', () => {
   const { familyOf } = digestMod();
