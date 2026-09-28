@@ -230,6 +230,27 @@ function shareServiceFiles(cfg, gate, { exec } = {}) {
   } catch (e) { console.warn(`[isolation] could not share service files in ${gate}: ${e.message}`); }
 }
 
+// Fix ACL masks on files left by ANY slot. When a slot creates files (e.g.,
+// SQLite's opencode.db), the file-creation mode (0644) intersects with the
+// default ACL mask (rwx) to produce mask r-- — too restrictive for the NEXT slot.
+// shareSlotFiles only fixes files owned by the current slot, so cross-slot files
+// stay broken. Running as root (service user has passwordless sudo) lets us fix
+// any file regardless of owner.
+function fixSlotFileMasks(cfg, gate, { exec } = {}) {
+  const home = path.join(gate, '.agent-home');
+  if (!fs.existsSync(home)) return;
+  try {
+    // Files: ensure group has read+write
+    runCmd([cfg.sudoBin, '-n', 'find', home, '-xdev',
+      '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
+      '-type', 'f', '!', '-perm', '-g+rw', '-exec', 'chmod', 'g+rw', '{}', '+'], exec);
+    // Directories: ensure group has read+write+traverse
+    runCmd([cfg.sudoBin, '-n', 'find', home, '-xdev',
+      '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
+      '-type', 'd', '!', '-perm', '-g+rwx', '-exec', 'chmod', 'g+rwx', '{}', '+'], exec);
+  } catch (e) { console.warn(`[isolation] could not fix slot file masks in ${gate}: ${e.message}`); }
+}
+
 function prepareGate(cfg, gate, { exec } = {}) {
   fs.mkdirSync(gate, { recursive: true, mode: 0o700 });
   const marker = path.join(gate, GATE_MARKER);
@@ -435,7 +456,7 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
     reapSlot(cfg, slot, { exec });
     recoverSlot(cfg, slot, { exec });
     stage = stageEngineHome(engine, workDir, { serviceHome });
-    for (const gate of gates) { prepareGate(cfg, gate, { exec }); shareServiceFiles(cfg, gate, { exec }); }
+    for (const gate of gates) { prepareGate(cfg, gate, { exec }); shareServiceFiles(cfg, gate, { exec }); fixSlotFileMasks(cfg, gate, { exec }); }
     const traverse = [...new Set([...gates, ...reach].flatMap(p => ancestorDirs(p, serviceHome)))]
       .filter(d => !gates.includes(d));
     aclPaths = [...traverse, ...gates];
@@ -478,6 +499,7 @@ module.exports = {
   gateOpenCommand,
   prepareGate,
   shareServiceFiles,
+  fixSlotFileMasks,
   ancestorDirs,
   journalPath,
   recoverSlot,
