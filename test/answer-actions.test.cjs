@@ -37,6 +37,35 @@ test('kind none / junk → no actions', () => {
   assert.deepEqual(A.validateActions(null, ANSWER).actions, []);
 });
 
+// Incident 2026-09-28: the answer named the choices («Начать #1753 P0», «Запустить фазы #1755»,
+// «Начать #1733 — экран вакансии и база»), but the label prompt forced a paraphrase, so the
+// buttons read «Начать срочную задачу», «Запустить фазы», «Начать экран вакансии» — the user
+// could not map them back to the text. Labels must now carry the answer's own names.
+const QUOTED = 'Записал оба решения. Следующие шаги: «Начать #1753 P0» (дешёвый, развязывает остальное), «Запустить фазы #1755» или «Начать #1733 — экран вакансии и база».';
+
+test('paraphrased label is re-anchored to the answer\'s own quoted name', () => {
+  const r = A.validateActions({ kind: 'menu', actions: [
+    { label: 'Начать срочную задачу', quote: 'Следующие шаги: «Начать #1753 P0» (дешёвый, развязывает остальное)' },
+    { label: 'Начать экран вакансии', quote: '«Начать #1733 — экран вакансии и база»' },
+  ] }, QUOTED);
+  assert.deepEqual(r.actions.map(a => a.label), ['Начать #1753 P0', 'Начать #1733 — экран вакансии и база']);
+});
+
+test('verbatim label (with issue id) is kept as-is, invented label without quoted name is dropped', () => {
+  const r = A.validateActions({ kind: 'actions', actions: [
+    { label: 'Запустить фазы #1755', quote: '«Запустить фазы #1755»' },
+    { label: 'Срочно всё удалить', quote: 'Следующие шаги' },
+  ] }, QUOTED);
+  assert.deepEqual(r.actions.map(a => a.label), ['Запустить фазы #1755']);
+});
+
+test('label is only accepted when it appears in the answer (no invented buttons)', () => {
+  const r = A.validateActions({ kind: 'actions', actions: [
+    { label: 'Переписать на воркер', quote: 'следующие шаги: начать' },
+  ] }, QUOTED);
+  assert.deepEqual(r.actions, []);
+});
+
 test('markup uses act|sid|n and fits callback_data', () => {
   const m = A.actionsMarkup('s-123-456', [{ label: 'Создать PR' }, { label: 'Задеплоить' }]);
   assert.equal(m.inline_keyboard[1][0].callback_data, 'act|s-123-456|1');
