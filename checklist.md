@@ -78,6 +78,12 @@ Goal: profile maintenance lock + POST /internal/flush-profile — safety precond
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
 
+Goal: ротация Go-ключей — один ключ на ран из OPENCODE_GO_API_KEYS, запятая никогда не уходит в движок (#1792)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1832
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live (два ключа реально чередуются между ранами: проверить по логу двух последовательных research-ранов)
+
 Goal: поисковая лестница `search` в llm-ladder worker — opencode-go/mimo-v2.6-flash → openrouter/google/gemini-2.5-flash как фолбэк. ПОСЛЕДНИЙ пункт очереди (#1792)
 
 - [ ] В trained-assist-llm-ladder (config/ladders.json) добавлена лестница `search`: rung 1 `opencode-go/mimo-v2.6-flash`, rung 2 `openrouter/google/gemini-2.5-flash`
