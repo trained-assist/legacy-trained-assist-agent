@@ -15,3 +15,9 @@ Goal: Speech skill extraction — sibling trained-assist-speech-skill + delegate
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1782
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
+
+Goal: align remaining workspace writers with atomicJson/atomicText — one atomic path for every USERS_ROOT write (#1735 step 6)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1793
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live

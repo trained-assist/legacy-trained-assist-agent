@@ -18,18 +18,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicJson } = require('./atomic-json');
 
 const MODES = new Set(['deep', 'clarify', 'oneshot']);
 const MODES_DIR = 'answer-modes';
 
 function _dir(workDir) { return path.join(workDir, MODES_DIR); }
 function _file(workDir, sessionId) { return path.join(_dir(workDir), `${sessionId}.json`); }
-
-function _atomicWrite(fp, data) {
-  const tmp = `${fp}.tmp`;
-  fs.writeFileSync(tmp, data, { mode: 0o600 });
-  fs.renameSync(tmp, fp);
-}
 
 // Нормализует mode из callback/payload в известное значение или null.
 function normalizeMode(mode) {
@@ -50,7 +45,7 @@ function writeMode(workDir, sessionId, rec) {
   try {
     if (!workDir || !sessionId || !rec) return false;
     fs.mkdirSync(_dir(workDir), { recursive: true });
-    _atomicWrite(_file(workDir, sessionId), JSON.stringify({ sessionId, ...rec }, null, 2));
+    atomicJson(_file(workDir, sessionId), { sessionId, ...rec }, { space: 2 });
     return true;
   } catch (e) { console.error('[answer-router] write:', e.message); return false; }
 }

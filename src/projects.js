@@ -26,6 +26,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicJson } = require('./atomic-json');
 const { siblingModules } = require('./domains/sibling-lib');
 
 const PROJECTS_DIR = 'projects';
@@ -179,12 +180,6 @@ function notesPath(workDir, id) {
   return path.join(projectDir(workDir, id), NOTES_FILE);
 }
 
-function atomicWrite(fp, data) {
-  const tmp = `${fp}.tmp`;
-  fs.writeFileSync(tmp, data);
-  fs.renameSync(tmp, fp);
-}
-
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 function getProject(workDir, id) {
@@ -281,7 +276,7 @@ function createProject(workDir, input, { now = Date.now(), audience } = {}) {
   if (!fs.existsSync(pfp)) fs.writeFileSync(pfp, def.profile);
 
   const meta = { id, name: parsed.name, type: parsed.type, label: def.label, audience: aud, createdAt: now, lastAt: now };
-  atomicWrite(metaPath(workDir, id), JSON.stringify(meta, null, 2));
+  atomicJson(metaPath(workDir, id), meta, { space: 2 });
   return meta;
 }
 
@@ -289,7 +284,7 @@ function touchProject(workDir, id, { now = Date.now() } = {}) {
   const meta = getProject(workDir, id);
   if (!meta) return;
   meta.lastAt = now;
-  try { atomicWrite(metaPath(workDir, id), JSON.stringify(meta, null, 2)); } catch { /* best-effort */ }
+  try { atomicJson(metaPath(workDir, id), meta, { space: 2 }); } catch { /* best-effort */ }
 }
 
 // ── Name + 3-sense summary (durable, LLM-generated, regenerated as project grows) ──
@@ -305,7 +300,7 @@ function setProjectSummary(workDir, id, { name, summary, type } = {}, sessionCou
   if (type && meta.type === 'generic' && TYPES[type]) { meta.type = type; meta.label = typeOf(type).label; }
   if (typeof sessionCount === 'number') meta.summarySessionCount = sessionCount;
   meta.summaryAt = now;
-  try { atomicWrite(metaPath(workDir, id), JSON.stringify(meta, null, 2)); return true; }
+  try { atomicJson(metaPath(workDir, id), meta, { space: 2 }); return true; }
   catch { return false; }
 }
 
@@ -324,7 +319,7 @@ function renameProject(workDir, id, name, { now = Date.now() } = {}) {
   meta.name = String(name || '').trim().slice(0, MAX_NAME) || meta.name;
   meta.nameLocked = true;
   meta.lastAt = now;
-  try { atomicWrite(metaPath(workDir, id), JSON.stringify(meta, null, 2)); } catch { /* best-effort */ }
+  try { atomicJson(metaPath(workDir, id), meta, { space: 2 }); } catch { /* best-effort */ }
   return meta;
 }
 
@@ -397,7 +392,7 @@ function getPinnedProjectId(workDir, chatId, audience, threadId = null) {
 function setPinnedProjectId(workDir, id, chatId, { now = Date.now(), audience, threadId = null } = {}) {
   try {
     fs.mkdirSync(projectsRoot(workDir), { recursive: true });
-    atomicWrite(_pinPath(workDir, chatId, audience, threadId), JSON.stringify({ id, at: now }));
+    atomicJson(_pinPath(workDir, chatId, audience, threadId), { id, at: now });
   } catch (e) {
     console.warn('[projects] setPinnedProjectId:', e.message);
   }
@@ -410,7 +405,7 @@ function clearPinnedProjectId(workDir, chatId, { audience, threadId = null } = {
   try { fs.unlinkSync(_pinPath(workDir, chatId, audience, threadId)); } catch { /* no pin file */ }
   const cur = _readActive(workDir, chatId, audience, threadId);
   if (cur && cur.pinned) {
-    try { atomicWrite(_activePath(workDir, chatId, audience, threadId), JSON.stringify({ id: cur.id, at: cur.at })); }
+    try { atomicJson(_activePath(workDir, chatId, audience, threadId), { id: cur.id, at: cur.at }); }
     catch (e) { console.warn('[projects] clearPinnedProjectId legacy:', e.message); }
   }
   return had;
@@ -431,7 +426,7 @@ function repointPins(workDir, fromId, toId, { now = Date.now() } = {}) {
     if (!rec || rec.id !== fromId || (isLegacy && !rec.pinned)) continue;
     const target = isPin ? fp : path.join(projectsRoot(workDir), name.replace(/^active-/, 'pin-'));
     if (isLegacy && fs.existsSync(target)) continue; // a real pin file wins over legacy
-    atomicWrite(target, JSON.stringify({ id: toId, at: now }));
+    atomicJson(target, { id: toId, at: now });
     out.push({ file: path.basename(target), from: fromId, to: toId, createdFromLegacy: isLegacy || undefined });
   }
   return out;
@@ -446,9 +441,9 @@ function setActiveProjectId(workDir, id, chatId, { now = Date.now(), audience, p
     // write drops the flag.
     if (!fs.existsSync(_pinPath(workDir, chatId, audience, threadId))) {
       const cur = _readActive(workDir, chatId, audience, threadId);
-      if (cur && cur.pinned && cur.id) atomicWrite(_pinPath(workDir, chatId, audience, threadId), JSON.stringify({ id: cur.id, at: cur.at || now }));
+      if (cur && cur.pinned && cur.id) atomicJson(_pinPath(workDir, chatId, audience, threadId), { id: cur.id, at: cur.at || now });
     }
-    atomicWrite(_activePath(workDir, chatId, audience, threadId), JSON.stringify({ id, at: now }));
+    atomicJson(_activePath(workDir, chatId, audience, threadId), { id, at: now });
     if (pinned) setPinnedProjectId(workDir, id, chatId, { now, audience, threadId });
     touchProject(workDir, id, { now });
   } catch (e) {
