@@ -12,7 +12,9 @@ Goal: register trained-assist-search-skill as the search-skills sibling — вы
 
 Goal: mainstream-tester: причина фоллбэка decider'а видна в логе + ретрай таймаута + driver_error в отдельный лог, cron из релиза
 
-- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1816
+- [x] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1816
+- [x] Merged to main
+- [x] Deployed to prod — verified live (релиз 63a9a7c на GCP; ручной запуск cron-скрипта 22:23–22:31 UTC: code dir=agent-master, 12/12 шагов разные, 0 fallback'ов, 0 driver errors; 27 исторических driver-записей перенесены в driver-errors.jsonl, бэкап bugs.jsonl.bak-1790634845104)
 
 Goal: Speech skill extraction — sibling trained-assist-speech-skill + delegate recognition from core (#1779)
 
