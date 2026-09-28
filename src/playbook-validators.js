@@ -405,6 +405,44 @@ function resolveValidationMode({ task = null, item = null, env = process.env } =
 // Bounded excerpt set of the repo docs most likely to carry step evidence. Reads
 // only markdown from a few known roots; hard caps on file count and chars keep
 // the prompt small and the read cheap.
+// What the plan actually has in git: the plan works in ONE engineering workspace
+// whose branch ends with plan-<id8> (one workspace per plan). The judge sees the
+// committed history of that branch and — the key signal — anything left uncommitted
+// (an artifact that never reached the branch does not exist for the next step).
+const PLAN_EVIDENCE_MAX_CHARS = 4000;
+function collectPlanWorkspaceEvidence({ profileId, taskId, root = null } = {}) {
+  if (!profileId || !taskId) return null;
+  let base = root;
+  if (!base) {
+    try { base = require('./data-paths').engineeringWorkspacesDir(profileId); } catch { return null; }
+  }
+  const suffix = `plan-${String(taskId).slice(0, 8)}`;
+  const git = (dir, args) => {
+    const r = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', timeout: DEFAULT_STAT_TIMEOUT_MS });
+    return r.status === 0 ? String(r.stdout || '').trim() : '';
+  };
+  let repos = [];
+  try { repos = fs.readdirSync(base); } catch { return null; }
+  for (const repo of repos) {
+    let wss = [];
+    try { wss = fs.readdirSync(path.join(base, repo)).filter(d => d.startsWith('ws-')); } catch { continue; }
+    for (const ws of wss) {
+      const dir = path.join(base, repo, ws, 'code');
+      const branch = git(dir, ['branch', '--show-current']);
+      if (!branch || !branch.endsWith(suffix)) continue;
+      const status = git(dir, ['status', '--short']);
+      const log = git(dir, ['log', '-6', '--stat', '--format=%h %s']);
+      const text = [
+        `Plan branch: ${branch} (${repo})`,
+        `Uncommitted in the plan workspace: ${status ? `\n${status}` : 'nothing'}`,
+        `Recent commits on the plan branch:\n${log || '(none)'}`,
+      ].join('\n');
+      return text.slice(0, PLAN_EVIDENCE_MAX_CHARS);
+    }
+  }
+  return null;
+}
+
 function collectDocExcerpts(projectDir) {
   if (!projectDir) return [];
   const files = [];
@@ -461,6 +499,11 @@ function buildLlmValidatorPrompt(ctx) {
     `Validation key: ${ctx.key}`,
     `Validation expectation: ${describeValidation(ctx.key, ctx.validation)}`,
     item.evidence_json ? `Step evidence: ${String(item.evidence_json).slice(0, 4000)}` : '',
+    // The agent's own reply for THIS run — validation runs before the reply is stored
+    // as evidence, so without this the judge never saw what the step did.
+    ctx.reply ? `Agent reply for this step:\n${String(ctx.reply).slice(-4000)}` : '',
+    ctx.planEvidence ? `Plan workspace (git) — what is really committed:\n${ctx.planEvidence}` : 'Plan workspace (git): (not found)',
+    ctx.planText ? `Earlier steps of this plan (tail):\n${String(ctx.planText).slice(-2000)}` : '',
   ].filter(Boolean);
   const excerpts = Array.isArray(ctx.excerpts) ? ctx.excerpts : [];
   parts.push(excerpts.length
@@ -614,20 +657,22 @@ async function evaluateItemValidations(item, { task = null, profileId = null, pr
  */
 async function evaluateItemValidationsModeAware(item, {
   task = null, profileId = null, projectDir = null, registry = null,
-  mode = DEFAULT_VALIDATION_MODE, llmValidate = null, planText = null,
+  mode = DEFAULT_VALIDATION_MODE, llmValidate = null, planText = null, reply = null,
 } = {}) {
   const raw = item && item.validation_json != null ? item.validation_json : item && item.validation;
   const validation = parseValidation(raw);
   const entries = Object.entries(validation);
   const useLlm = mode !== 'programmatic' && entries.length > 0;
   let excerpts = null;
+  let planEvidence;
   const results = [];
   for (const [key, value] of entries) {
     const ctx = { task, item, profileId, projectDir, validation: value, key, planText };
     let res = await evaluateValidation(key, ctx, registry);
     if (useLlm && res.status === 'inconclusive') {
       if (excerpts === null) excerpts = collectDocExcerpts(projectDir);
-      const llmCtx = { ...ctx, excerpts, mode };
+      if (planEvidence === undefined) planEvidence = collectPlanWorkspaceEvidence({ profileId, taskId: task && task.id });
+      const llmCtx = { ...ctx, excerpts, mode, reply, planEvidence };
       const decided = await llmDecide(key, llmCtx, { llmValidate, mode });
       res = softenLlmVerdict(key, decided, ctx);
     }
@@ -637,6 +682,7 @@ async function evaluateItemValidationsModeAware(item, {
 }
 
 module.exports = {
+  collectPlanWorkspaceEvidence,
   createDefaultRegistry, getDefaultRegistry, evaluateValidation, evaluateItemValidations,
   evaluateItemValidationsModeAware, resolveValidationMode,
   parseValidation, collectDocExcerpts, buildLlmValidatorPrompt, makeLlmValidate, getDefaultLlmValidate,
