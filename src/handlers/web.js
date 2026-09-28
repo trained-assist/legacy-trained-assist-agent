@@ -98,7 +98,7 @@ async function handleWeb(req, url, res, ctx) {
   // SINGLE source of truth (projects.js / on-disk projects/ folder). This is also
   // the opt-in action — creating the first project rolls out the projects/ folder,
   // switching the profile onto the project model. Deliberate and reversible (rm the
-  // folder). type must be a known key (recruiting|expo|generic); a bare name with a
+  // folder). type must be a user-selectable key (projects.selectableTypes()); a bare name with a
   // "recruiting: X" prefix is also parsed by createProject. Empty type → generic.
   if (req.method === 'POST' && url.pathname === '/web/project-create') {
     const verifySecret = secrets.WEB_VERIFY_SECRET || secrets.AGENT_SECRET;
@@ -110,8 +110,7 @@ async function handleWeb(req, url, res, ctx) {
     if (!username || !/^[a-zA-Z0-9_-]{1,64}$/.test(username)) return json(res, 400, { error: 'invalid username' });
     const trimmed = (name || '').trim();
     if (!trimmed || trimmed.length > 120) return json(res, 400, { error: 'invalid name' });
-    const ALLOWED_TYPES = ['recruiting', 'expo', 'generic'];
-    if (type && !ALLOWED_TYPES.includes(type)) return json(res, 400, { error: 'invalid type' });
+    if (type && !require('../projects').selectableTypes().includes(type)) return json(res, 400, { error: 'invalid type' });
     try {
       const { createProject } = require('../projects');
       const { userWorkDir } = require('../data-paths');

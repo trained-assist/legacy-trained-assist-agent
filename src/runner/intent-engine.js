@@ -25,6 +25,7 @@ async function hhQuickAnswer({ intent, task, username, workDir, timeoutMs }) {
   return text || '';
 }
 const { hhLib, hhAvailable } = require('../domains/hh/lib');
+const { siblingModules } = require('../domains/sibling-lib');
 const readVacancyState = (workDir) => (hhAvailable('hh-vacancy') ? hhLib('hh-vacancy').readVacancyState(workDir) : null);
 // Vacancy-creation quick flow lives in hh-skill src/hh-vacancy-quick.js (#1470); this core
 // keeps only the ORDER of checks. No hh-skill checkout → the hooks simply do not apply.
@@ -56,7 +57,6 @@ const STALE_PR_ALARM_INTENT = /Проверь PR #\d+: CI статус, конф
 const SETUP_INTENT          = /подключ|connect|настро|интегр|привяз|как.*добав|могу.*отправ|зайт|авториз|setup|подрубить/i;
 const INN_CAPABILITY_INTENT  = /(?:скил|skill|умееш|можешь|есть.{0,30}возможн|есть.{0,30}функц|есть.{0,30}инструм|что.{0,20}умееш).{0,80}(?:инн|огрн|компани|директор|выручк|реквизит)/i;
 // Only capability/question words, NOT action verbs (собери/собрать/найди → those are tasks, go to Claude)
-const EXPO_CAPABILITY_INTENT = /(?:скил|skill|умееш|можешь|есть.{0,30}(?:скил|инструм|возможн)).{0,80}(?:участник|экспонент|выставк|expo)/i;
 const GC_CAPABILITY_INTENT   = /(?:умееш|можешь|есть.{0,30}(?:скил|инструм|возможн|функц)|что.{0,20}умееш).{0,80}(?:геткурс|getcourse|курс|урок|ученик|школ)/i;
 const AUDIO_CAPABILITY_INTENT = /(?:умееш|можешь|поддержива|транскрибир|распознаёш|распознаеш|расшифр).{0,60}(?:аудио|голосов|голос\b|запись|речь|звук|mp3|wav|ogg|voice|audio)|(?:транскрибац|транскрипц|расшифровк|распознавани).{0,40}(?:аудио|голосов|речи|записей|звука|файлов?)|(?:аудио|голосов).{0,40}(?:транскрибац|транскрипц|расшифровк|распознавани)|(?:умееш|можешь).{0,40}(?:из\s+)?(?:аудио|голосовых?\s+сообщений?|голосов(?:ого)?|записей?)\s+(?:в\s+текст|получить\s+текст|сделать\s+текст)|(?:можн[оа]|умееш|можешь).{0,20}(?:прислать|отправить|скинуть)\s+(?:аудио|голосов)/i;
 // "на какой email шарить", "почта SA", "дай адрес google" — always read from disk, never hallucinate
@@ -176,10 +176,6 @@ function isSlashCommand(task) {
 function shouldAttemptQuickAnswer(forceClaude, task) {
   return !forceClaude || isSlashCommand(task);
 }
-// Explicit request patterns only — NOT "целевых компаний" buried in a long instruction
-const EXPO_CRITERIA_INTENT  = /требовани.{0,20}(?:целев|квалиф)|критери.{0,20}(?:целев|отбор|выставк)|целев.{0,20}(?:критери|требовани)|покажи.{0,15}критери|мои.{0,10}критери|expo.{0,10}criteria|target.{0,10}criteria/i;
-const EXPO_STATUS_INTENT    = /статус.{0,20}(?:пайплайн|pipeline|выставк|обработк)|pipeline.{0,10}статус|сколько.{0,15}целевых|сколько.{0,15}компаний.{0,20}(?:выставк|обработан|pipeline)|expo.{0,10}статус/i;
-const EXPO_SITE_CONFIG_INTENT = /фильтр.{0,20}(?:сайт|каталог|выставк|диапазон)|сайт.{0,20}фильтр|диапазон.{0,20}(?:выручк|сайт)|настройк.{0,20}(?:сайт|каталог)|какие.{0,10}диапазон|revenue.*filter|site.*filter/i;
 // Checks whether a service is connected ("github подключен?", "статус nalog") — NOT imperative "подключи"
 
 const TRUST_FOOTER = '\n\n🔒 Данные для входа не видны в переписке с ботом — они поступают прямо на сервер и хранятся в изолированном хранилище, отдельно от ИИ. Все обращения фиксируются в /secrets_log. Отзыв доступов: /secrets_list';
@@ -571,10 +567,16 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     return 'Есть скил генерации иллюстраций (DALL-E 3 + Ideogram), но он ещё не включён.\n\nНапиши «включи рисование» — и я активирую его для тебя.';
   }
 
-  // Capability question about exhibition participants — only if expo pipeline exists for this profile
-  if (EXPO_CAPABILITY_INTENT.test(task) && !sessionExists) {
-    if (!workDir || !fs.existsSync(path.join(workDir, 'expo-pipeline'))) return null;
-    return 'Да, умею собирать участников выставок.\n\nДай мне ссылку на сайт выставки — зайду, найду страницу участников и верну список компаний в CSV.\n\nДальше могу обогатить по ИНН: директор, выручка, сайт — скидывай сразу с таким запросом, если нужно.\n\nПришли URL сайта выставки.';
+  // Domain sibling quick answers (#1717): each sibling that ships src/quick-answers.js
+  // (sales-skill: expo capability / criteria / site config / pipeline status) answers
+  // first; null = not its message. A broken sibling only loses its own answers.
+  for (const { id, mod } of siblingModules('src/quick-answers.js')) {
+    try {
+      const answer = mod.getQuickAnswer(task, { workDir, sessionExists });
+      if (answer) return answer;
+    } catch (e) {
+      console.error(`[quick-answer] ${id} sibling error:`, e.message);
+    }
   }
 
   // Capability question about INN enrichment — answer immediately without calling Claude
@@ -622,64 +624,6 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
       '• Расставляет знаки препинания и разбивает по абзацам\n',
       'Просто отправь аудио — и я пришлю транскрипцию.',
     ].join('\n');
-  }
-
-  // Expo pipeline — target criteria (quick read from disk, no LLM)
-  // Length guard: long messages are instructions, not criteria lookup requests
-  if (EXPO_CRITERIA_INTENT.test(task) && task.length < 200 && workDir) {
-    try {
-      const pipelineDirC = path.join(workDir, 'expo-pipeline');
-      if (fs.existsSync(pipelineDirC)) {
-        const { formatCriteriaText, readCriteria } = require('../domains/sibling-lib').siblingLib('sales', 'src/mcp-skills/tools/87-expo-pipeline.js');
-        const criteria = readCriteria(workDir);
-        return formatCriteriaText(criteria);
-      }
-    } catch (e) {
-      console.error('[quick-answer] expo criteria error:', e.message);
-    }
-  }
-
-  // Expo pipeline — site config / filter ranges
-  if (EXPO_SITE_CONFIG_INTENT.test(task) && task.length < 200 && workDir) {
-    try {
-      const pipelineDir = path.join(workDir, 'expo-pipeline');
-      if (fs.existsSync(pipelineDir)) {
-        const { formatSiteConfigText, readSiteConfig } = require('../domains/sibling-lib').siblingLib('sales', 'src/mcp-skills/tools/87-expo-pipeline.js');
-        const config = readSiteConfig(workDir);
-        return formatSiteConfigText(config);
-      }
-    } catch (e) {
-      console.error('[quick-answer] expo site-config error:', e.message);
-    }
-  }
-
-  // Expo pipeline — pipeline status (quick count from disk)
-  if (EXPO_STATUS_INTENT.test(task) && workDir) {
-    try {
-      const pipelineBase = require('path').join(workDir, 'expo-pipeline');
-      if (require('fs').existsSync(pipelineBase)) {
-        const dirs = require('fs').readdirSync(pipelineBase, { withFileTypes: true })
-          .filter(e => e.isDirectory());
-        if (dirs.length === 0) return 'Нет активных pipeline. Запусти обработку выставки чтобы начать.';
-        const lines = dirs.map(d => {
-          const dir = require('path').join(pipelineBase, d.name);
-          function count(f, key) {
-            try {
-              const data = JSON.parse(require('fs').readFileSync(require('path').join(dir, f), 'utf8'));
-              const arr = Array.isArray(data) ? data : (data[key] || data.companies || data.results || []);
-              return arr.length;
-            } catch (e) { console.warn('[runner] expo count parse:', e.message); return null; }
-          }
-          const c = count('companies.json', 'companies');
-          const e = count('enriched.json', 'companies');
-          const t = count('targets.json', 'companies');
-          return `📁 ${d.name}\n   Компаний: ${c ?? '—'} | Обогащено: ${e ?? '—'} | Целевых: ${t ?? '—'}`;
-        });
-        return '📊 Статус pipeline:\n\n' + lines.join('\n\n');
-      }
-    } catch (e) {
-      console.error('[quick-answer] expo status error:', e.message);
-    }
   }
 
   // Check user-connected sites (custom intents generated during crawl)

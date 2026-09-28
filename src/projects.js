@@ -26,6 +26,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { siblingModules } = require('./domains/sibling-lib');
 
 const PROJECTS_DIR = 'projects';
 const META_FILE = 'project.json';
@@ -37,10 +38,15 @@ const MAX_NAME = 120;
 // Each type declares: matching prefixes, a human label, the folder scaffold to roll
 // out on creation, and a PROFILE.md seed with domain rules that stack with the persona.
 // Start with `recruiting` (structure matches the existing interview/applylink paths so
-// migration is a move, not a rewrite). Add sales/production later by the same schema.
+// migration is a move, not a rewrite). Domain siblings add their own types by the same
+// schema in src/project-types.js (sales-skill: `expo`, #1717) — merged below.
+// `hint` marks a user-selectable type: shown to the project-classifier LLMs
+// (project-summary, reproject) and accepted by POST /web/project-create. Reserved
+// types (bugs) carry none.
 const TYPES = {
   recruiting: {
     label: 'Рекрутинг',
+    hint: 'подбор/вакансии/интервью',
     prefixes: ['recruiting', 'рекрутинг', 'hr', 'вакансия', 'найм'],
     dirs: ['interviews', 'interviews/transcripts', 'interviews/analysis', 'applylink'],
     seedFiles: {
@@ -52,28 +58,6 @@ const TYPES = {
       '- Разборы интервью — через interview_analyze; эталон — criteria.md этого проекта.\n' +
       '- Отклики/форма — applylink/ этого проекта.\n' +
       '- Все транскрипты и анализы кладём в interviews/, не в корень профиля.\n',
-  },
-  expo: {
-    label: 'Выставка',
-    prefixes: ['expo', 'выставка', 'exhibition', 'экспо'],
-    dirs: ['site', 'site/_archive', 'deploy', 'data'],
-    seedFiles: {
-      'EVENT.md':
-        '# Выставка\n\n' +
-        '- EVENT_KEY: <напр. flowersexpo2026>\n' +
-        '- Дата / город:\n' +
-        '- Каталог-сайт: site/<slug>.html → deploy/<slug>/index.html\n' +
-        '- Telegram-бот: deploy/<slug>/telegram_companies.json\n' +
-        '- Деплой: npx wrangler pages deploy deploy/<slug> --project-name <slug>\n',
-    },
-    profile:
-      '# Домен проекта: Выставка (Flexi)\n\n' +
-      '- Одна выставка = один проект. Time-boxed: собрали участников → каталог → отработали стенды → закрыли.\n' +
-      '- Каталог-сайт живёт в site/, собранный деплой — в deploy/<slug>/ (index.html + telegram_companies.json).\n' +
-      '- Пер-выставочные pipeline-данные (участники, ИНН, финансы, EX-массив) — в data/, не в корень профиля.\n' +
-      '- Общие данные (brands.json, cpm-list.json, критерии классификации) — durable-инфра профиля, НЕ копируются в проект.\n' +
-      '- Классификация target/near-target и revenue-фильтры — через expo_* инструменты.\n' +
-      '- Деплой: npx wrangler pages deploy deploy/<slug> --project-name <slug>.\n',
   },
   bugs: {
     label: 'Баги и фичи',
@@ -119,12 +103,31 @@ const TYPES = {
   },
   generic: {
     label: 'Проект',
+    hint: 'всё остальное',
     prefixes: ['project', 'проект'],
     dirs: [],
     seedFiles: {},
     profile: '# Проект\n\nДоменных правил пока нет. Добавь их сюда — они попадут в системный промпт сессий этого проекта.\n',
   },
 };
+
+for (const { id, mod } of siblingModules('src/project-types.js')) {
+  for (const [key, def] of Object.entries(mod)) {
+    if (TYPES[key]) console.warn(`[projects] ${id} sibling type "${key}" ignored: core already defines it`);
+    else TYPES[key] = def;
+  }
+}
+
+// User-selectable type keys, `generic` last (the classifier prompts' fallback).
+function selectableTypes() {
+  const keys = Object.keys(TYPES).filter(k => TYPES[k].hint);
+  return [...keys.filter(k => k !== 'generic'), 'generic'];
+}
+
+// "recruiting" (подбор/вакансии/интервью), "expo" (…), "generic" (всё остальное)
+function selectableTypesPrompt() {
+  return selectableTypes().map(k => `"${k}" (${TYPES[k].hint})`).join(', ');
+}
 
 function typeOf(key) {
   return TYPES[key] || TYPES.generic;
@@ -525,6 +528,8 @@ function notesText(workDir, id) {
 
 module.exports = {
   TYPES,
+  selectableTypes,
+  selectableTypesPrompt,
   parseTypedName,
   slugify,
   projectsRoot,
