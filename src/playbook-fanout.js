@@ -358,7 +358,7 @@ function normalizeElements(items) {
     const it = typeof raw === 'string' ? { goal: raw } : (raw || {});
     const goal = String(it.goal || '').trim();
     if (!goal) throw new Error(`items[${i}]: нужен goal`);
-    let key = String(it.key || it.name || `item-${i + 1}`).trim().slice(0, 80);
+    let key = String(it.key || it.name || goal.replace(/^https?:\/\//, '').replace(/\/+$/, '') || `item-${i + 1}`).trim().slice(0, 80);
     while (seen.has(key)) key = `${key}-${i + 1}`;
     seen.add(key);
     return { key, name: it.name ? String(it.name).slice(0, 120) : null, goal, vars: it.vars && typeof it.vars === 'object' ? it.vars : undefined, status: 'queued' };
