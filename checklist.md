@@ -1,5 +1,5 @@
-Goal: remove VM-wide Go/OpenRouter toggle; all chats default to Go deepseek-v4.1-flash
+Goal: Fix CI failure on PR #1691 — doctor fallback profile (#1689)
 
-- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1593
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1691
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live

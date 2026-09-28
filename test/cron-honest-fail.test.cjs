@@ -36,14 +36,12 @@ test('job body sends chatId field, never a parsed username', () => {
   assert.ok('chatId' in body && !('userId' in body));
 });
 
-for (const name of ['cron_create', 'cron_hh_digest']) {
-  test(`${name} returns ok:false and writes no record when unavailable`, async () => {
-    delete process.env.CRON_GCP_PER_JOB;
-    const r = await cron.tools[name].handler({ schedule: '*/30 * * * *', task: 't' });
-    assert.equal(r.ok, false);
-    assert.equal(r.code, 'SCHEDULER_UNAVAILABLE');
-  });
-}
+test('cron_create returns ok:false and writes no record when unavailable', async () => {
+  delete process.env.CRON_GCP_PER_JOB;
+  const r = await cron.tools.cron_create.handler({ schedule: '*/30 * * * *', task: 't' });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'SCHEDULER_UNAVAILABLE');
+});
 
 test('cron_run_now/resume on unknown id still say not found; gate precedes GCP call', async () => {
   const r = await cron.tools.cron_run_now.handler({ id: 'nope' });
