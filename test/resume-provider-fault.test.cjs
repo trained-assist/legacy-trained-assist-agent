@@ -18,6 +18,8 @@ test('provider faults are recognised (dead key, quota, rate limit, 5xx)', () => 
     'Unexpected server error',
     '503 Service Unavailable',
     'model overloaded',
+    'TypeError: fetch failed (ECONNREFUSED llm-ladder.trainedassist.store)',
+    '{"error":{"type":"ladder_error"}}',
   ]) assert.equal(isProviderFault(t), true, t);
 });
 
@@ -30,6 +32,7 @@ test('runner wiring: fallback skipped on provider fault, retry keeps the engine 
   const src = fs.readFileSync(path.join(__dirname, '../src/runner/index.js'), 'utf8');
   assert.match(src, /if \(resumeSessionId && !resumeFallbackDone && !restartShutdown && !providerFault\)/);
   assert.match(src, /resumeSessionId: providerFault \? resumeSessionId : null/);
-  assert.match(src, /opencodeGoKeys\.noteFailure\(ocActiveModel, resumeErrText\)/);
+  // Go key rotation moved to the llm-ladder worker (#1687) — the runner never touches Go keys.
+  assert.doesNotMatch(src, /opencodeGoKeys|opencode-go-keys/);
   assert.doesNotMatch(src, /попытка \$\{resumeAttempts \+ 1\}\/\$\{MAX_RESUME_ATTEMPTS\}/, 'no "4/3" counter');
 });

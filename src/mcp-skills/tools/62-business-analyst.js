@@ -29,7 +29,7 @@ module.exports = {
 
   tools: {
     ba_development_playbook: {
-      description: 'Engineering playbook for durable planning (Playbook v1 "development", resolved from profile → sibling repo → system). Expand into concrete items, then persist atomically with task_create. No model call or execution. Optional: if the playbook is not connected, returns available:false and the caller just works without the process scaffold.',
+      description: 'Read-only view of the legacy "development" playbook (Playbook v1, resolved from profile → sibling repo → system). Not needed to start a plan: playbook_run(playbook_id, goal) compiles any playbook — including feature/debugging/new-software — directly. No model call or execution. Optional: if the playbook is not connected, returns available:false and the caller just works without the process scaffold.',
       inputSchema: { type: 'object', properties: {} },
       handler: async (_args, ctx) => {
         // Opt-in: the playbook lives in its domain repo (trained-assist-engineering),

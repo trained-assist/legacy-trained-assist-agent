@@ -72,13 +72,6 @@ function systemFlagsDir() {
   return path.join(SYSTEM_ROOT, 'system-flags');
 }
 
-function candidateHistoryPath(username, negotiationId) {
-  return path.join(SYSTEM_ROOT, 'hh', String(username), 'candidates', `${negotiationId}.json`);
-}
-
-function negotiationsCachePath(username) {
-  return path.join(SYSTEM_ROOT, 'hh', String(username), 'negotiations-cache.json');
-}
 
 function pendingTaskPath(taskId) {
   return path.join(SYSTEM_ROOT, 'pending-tasks', `${taskId}.json`);
@@ -158,8 +151,6 @@ module.exports = {
   projectDir,
   executionHistoryPath,
   systemFlagsDir,
-  candidateHistoryPath,
-  negotiationsCachePath,
   pendingTaskPath,
   sessionIndexPath,
   sessionFilePath,

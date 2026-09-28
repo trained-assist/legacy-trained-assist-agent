@@ -1475,16 +1475,6 @@ async function main() {
     console.log(`assist-agent listening on :${PORT}`);
   });
 
-  // A deploy rewrites the opencode-go auth.json to the pool's first key even when that key is
-  // parked as dead/exhausted — without this, every restart re-broke Go for the whole VM (2026-09-26).
-  {
-    const goKeys = require('./opencode-go-keys');
-    const healed = goKeys.ensureUsableActiveKey();
-    console.log(healed
-      ? `[opencode-go-keys] startup: active key#${healed.fromIndex} is parked — switched to key#${healed.toIndex} (${goKeys.activeKeyFingerprint()})`
-      : `[opencode-go-keys] startup: active ${goKeys.activeKeyFingerprint()} of ${goKeys.readPool().length}`);
-  }
-
   // Drive watcher: poll every 2 min for new files shared with the SA
   const driveOpts = { botToken: secrets.BOT_TOKEN, tgBase: process.env.TELEGRAM_API_URL };
   const drivePoll = () => {

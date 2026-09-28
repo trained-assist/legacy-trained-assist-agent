@@ -58,8 +58,8 @@ module.exports = {
       description:
         'Suggest/pre-select the default playbook for an audience (bot surface) — e.g. freelance specs, exhibition ' +
         'catalog, engineering. Read-only: it only reports the suggestion and whether the profile can actually see ' +
-        'that playbook; it never compiles, runs or activates a plan (the explicit draft→active step stays with the ' +
-        'caller). Resolution: env AUDIENCE_DEFAULT_PLAYBOOK → config/audience-default-playbooks.json → built-ins, ' +
+        'that playbook; it never compiles, runs or activates a plan (activation is playbook_run activate=true once the user ' +
+        'agreed to the task, or task_update status=active). Resolution: env AUDIENCE_DEFAULT_PLAYBOOK → config/audience-default-playbooks.json → built-ins, ' +
         'falling back to "development".',
       inputSchema: {
         type: 'object',
@@ -161,8 +161,10 @@ module.exports = {
         'Compile a saved Playbook v1 into a concrete durable plan: bind the playbook to a goal, render every step, pin ' +
         '{playbook_id, playbook_version} and persist one draft plan through the same atomic task_create path ' +
         '(user_value rendered from the template; acceptance_criteria derived from the step validations when omitted). ' +
-        'The result is a DRAFT plan — stored, not executed; editing the playbook later never mutates a plan already pinned ' +
-        'to its version. Repo/draft playbooks must be saved first (resolution sees saved playbooks only).',
+        'By default the result is a DRAFT plan — stored, not executed. Pass activate=true when the user has ALREADY agreed ' +
+        'to do this task (asked for it, said «делай», pressed an action button): that agreement is the activation consent, ' +
+        'so the plan is created and set active in one call — do not ask again. Editing the playbook later never mutates a ' +
+        'plan already pinned to its version. Repo/draft playbooks must be saved first (resolution sees saved playbooks only).',
       inputSchema: {
         type: 'object',
         required: ['playbook_id', 'goal'],
@@ -178,11 +180,17 @@ module.exports = {
             description: 'Explicit consent to run external-effect hooks (notify/create_issue/publish) for this run. ' +
               'Without it those hooks are recorded as skipped and never fail the task.',
           },
+          activate: {
+            type: 'boolean',
+            description: 'Create the plan already active (status=active) so the durable executor starts it. Use when the ' +
+              'user has already agreed to the task; omit to leave a draft for the user to approve. Does NOT approve ' +
+              'external-effect hooks — that stays approve_hooks.',
+          },
           project_id: { type: 'string', description: 'Optional project to bind the plan (and its checklist.md projection) to' },
           session_id: { type: 'string', description: 'Optional session to attach the plan to' },
         },
       },
-      handler: safe(async ({ playbook_id, goal, version, user_value, acceptance_criteria, vars, project_id, session_id, approve_hooks }, ctx) => {
+      handler: safe(async ({ playbook_id, goal, version, user_value, acceptance_criteria, vars, project_id, session_id, approve_hooks, activate }, ctx) => {
         const profileId = requireUser(ctx);
         const playbook = new PlaybookStore({ profileId }).get(playbook_id, version);
         if (!playbook) throw playbookError('PLAYBOOK_NOT_FOUND', `плейбук «${playbook_id}» не найден`);
@@ -202,8 +210,16 @@ module.exports = {
           project_id: project_id || undefined,
           session_id: session_id || undefined,
         }, ctx);
+        // Activation goes through task_update — the same single write path the
+        // user-driven «запускай» step uses — so no status write bypasses the store.
+        let task = persisted.task;
+        if (activate === true && task && task.status === 'draft') {
+          const { task_update } = require('./101-durable-tasks').tools;
+          const updated = await task_update.handler({ task_id: task.id, status: 'active' }, ctx);
+          if (updated && updated.task) task = updated.task;
+        }
         return {
-          task: persisted.task,
+          task,
           items: persisted.items,
           projection: persisted.projection,
           projection_warning: persisted.projection_warning,

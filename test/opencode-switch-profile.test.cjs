@@ -1,8 +1,8 @@
 'use strict';
 // infra/opencode-switch-profile.sh runs on every deploy and writes the machine-wide
-// ~/.config/opencode/opencode.json. #1476 moved profiles to `ladderRef`, the script only knew
-// `ladder`/`model`, wrote `"model": null`, and opencode then rejected the whole config — every
-// OpenCode task exited 1 at start. Run the real script against every real profile.
+// ~/.config/opencode/opencode.json. A `"model": null` there makes opencode reject the whole config
+// (every OpenCode task exits 1 at start). Since #1687 the script takes the shape from
+// src/opencode-ladder-provider.js — run the real script against every profile.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -12,8 +12,7 @@ const { spawnSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'infra', 'opencode-switch-profile.sh');
-const routing = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'model-routing.json'), 'utf8'));
-const PUBLIC = ['max', 'value', 'free', 'russian'];
+const provider = require('../src/opencode-ladder-provider');
 
 function run(profile, env = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-switch-'));
@@ -26,18 +25,15 @@ function run(profile, env = {}) {
   return { r, out };
 }
 
-for (const profile of PUBLIC) {
-  test(`${profile}: writes a string model = first rung of its ladder`, () => {
+for (const profile of provider.PROFILES) {
+  test(`${profile}: writes the worker provider and the ladder model per role`, () => {
     const { r, out } = run(profile);
     assert.strictEqual(r.status, 0, r.stderr);
     const cfg = JSON.parse(fs.readFileSync(out, 'utf8'));
-    const p = JSON.parse(fs.readFileSync(path.join(ROOT, '.opencode', 'profiles', `${profile}.json`), 'utf8'));
-    const ladder = p.ladderRef ? routing.ladders[p.ladderRef] : p.ladder;
-    assert.strictEqual(typeof cfg.model, 'string');
-    assert.strictEqual(cfg.model, p.model || ladder.build[0]);
-    for (const [role, rungs] of Object.entries(ladder)) {
-      assert.strictEqual(cfg.agent[role].model, rungs[0], `${profile}.${role}`);
-    }
+    assert.strictEqual(cfg.model, provider.modelFor(profile, 'build'));
+    for (const role of provider.ROLES) assert.strictEqual(cfg.agent[role].model, provider.modelFor(profile, role), `${profile}.${role}`);
+    assert.ok(cfg.provider.ladder.options.baseURL.endsWith('/v1'));
+    assert.strictEqual(cfg.agent.review.permission.edit, 'deny', 'base.json agent fields survive the merge');
   });
 }
 
@@ -47,9 +43,9 @@ test('russian keeps its reviewer rolePrompt', () => {
   assert.match(JSON.parse(fs.readFileSync(out, 'utf8')).agent.review.prompt, /рецензент/);
 });
 
-test('unresolvable ladder: exits non-zero and keeps the previous config', () => {
-  const prev = '{"model":"opencode-go/glm-5.3"}';
-  const { r, out } = run('max', { PRE: prev, OPENCODE_ROUTING_FILE: '/nonexistent/routing.json' });
+test('unknown profile: exits non-zero and keeps the previous config', () => {
+  const prev = '{"model":"ladder/deepseek:build"}';
+  const { r, out } = run('nonexistent', { PRE: prev });
   assert.notStrictEqual(r.status, 0);
   assert.strictEqual(fs.readFileSync(out, 'utf8'), prev);
 });

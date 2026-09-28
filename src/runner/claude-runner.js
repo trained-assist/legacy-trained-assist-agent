@@ -164,8 +164,8 @@ function resolveEngineCwd(user = {}) {
 // task's cwd — it could leak into a diff/commit or fast_verify. Callers pass user.workDir, and
 // the absolute path goes to opencode via OPENCODE_CONFIG.
 //
-// ocProfileOverrides (optional): the {model, agent: {build|plan|explore|general|review: {model}}}
-// shape from .opencode/profiles/<name>.json (see profiles.getOcProfile). Folding it in here —
+// ocProfileOverrides (optional): the {provider, model, agent: {build|plan|explore|general|review:
+// {model}}} shape from src/opencode-ladder-provider.js (llm-ladder worker, #1687). Folding it in here —
 // same per-invocation file, same deep-merge-on-top-of-global-file behaviour — replaces the old
 // opencode-switch-profile.sh, which overwrote the one shared ~/.config/opencode/opencode.json
 // for every profile on the VM. Deep merge means agent.review's base fields (prompt/permission/
@@ -192,10 +192,16 @@ function writeOpencodeMcpConfig(configDir, mcpConfig, ocProfileOverrides) {
   return configPath;
 }
 
+function ocLadderTokenEnv() {
+  const { TOKEN_ENV, ladderToken } = require('../opencode-ladder-provider');
+  const token = ladderToken();
+  return token ? { [TOKEN_ENV]: token } : {};
+}
+
 // Reads opencode.json and returns agent-name -> shortened model-id map (for footer breakdown).
 // ocProfileOverrides (optional): the per-invocation {model, agent} this run actually got via
 // OPENCODE_CONFIG. It wins over the global opencode.json — without it every step/error log line
-// named the global profile's model (opencode-go/gpt-6-luna) even when the run was on OpenRouter,
+// named the global profile's model even when the run was on another one,
 // which hid a whole day of metered OpenRouter spend behind a Go label (2026-09-27).
 function readOcAgentModels(ocProfileOverrides = null) {
   try {
@@ -387,7 +393,9 @@ async function runEngineProcess(opts) {
       CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0', // disable 600s background-task kill
       // opencode's config file goes to user.workDir (outside the code cwd) — see
       // writeOpencodeMcpConfig for why it must never land in the git worktree.
-      ...(engine === 'opencode' && mcpConfig ? { OPENCODE_CONFIG: writeOpencodeMcpConfig(user.workDir || os.tmpdir(), mcpConfig, ocProfileOverrides) } : {}),
+      ...(engine === 'opencode' && (mcpConfig || ocProfileOverrides) ? { OPENCODE_CONFIG: writeOpencodeMcpConfig(user.workDir || os.tmpdir(), mcpConfig, ocProfileOverrides) } : {}),
+      // Engine credential for the `ladder` provider (src/opencode-ladder-provider.js, #1687).
+      ...(engine === 'opencode' ? ocLadderTokenEnv() : {}),
   };
   // T0 hardening (issue #1649): with AGENT_ENV_ALLOWLIST / AGENT_RUN_AS_USERS the engine
   // gets an allowlisted env (no server secrets), MCP goes through the run-token bridge,
@@ -737,15 +745,10 @@ async function runEngineProcess(opts) {
             }
           } else if (event.type === 'error') {
             const errMsg = event.error?.data?.message || event.error?.message || JSON.stringify(event.error);
-            // Model + Go key fingerprint on the SAME line: "Invalid credential" vs quota vs a
-            // model-specific fault is otherwise undiagnosable from journalctl (2026-09-26).
+            // Model on the SAME line as the error — otherwise undiagnosable from journalctl.
             try { if (!ocAgentModels || !Object.keys(ocAgentModels).length) ocAgentModels = readOcAgentModels(ocProfileOverrides); } catch {}
             const errModel = (ocAgentModels && (ocAgentModels[currentOcAgent] || ocAgentModels._default)) || null;
-            let keyTag = '';
-            if (/^opencode-go\//.test(errModel || '')) {
-              try { keyTag = ' ' + require('../opencode-go-keys').activeKeyFingerprint(); } catch {}
-            }
-            console.warn(`[${taskId}] opencode error event: model=${errModel || '?'} agent=${currentOcAgent || '?'}${keyTag}:`, errMsg);
+            console.warn(`[${taskId}] opencode error event: model=${errModel || '?'} agent=${currentOcAgent || '?'}:`, errMsg);
             codexErrorMsg = errMsg;
             const isRateLimit = /429|rate.?limit|too many requests/i.test(errMsg);
             const userErrMsg = isRateLimit

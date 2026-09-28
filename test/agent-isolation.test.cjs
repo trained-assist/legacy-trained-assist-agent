@@ -305,6 +305,18 @@ test('a slot left by an interrupted run is revoked before its next lease', async
   run.release();
 });
 
+test('codex is not moved to a slot user (allowlist only) — its home needs to be slot-owned first', async () => {
+  const { prepareEngineSpawn } = require('../src/runner/engine-isolation');
+  const cfg = { ...iso.isolationConfig({ AGENT_RUN_AS_USERS: 's1', AGENT_SERVICE_USER: 'svc' }), slotLockDir: path.join(tmpRoot, 'slots-codex'), slotWaitMs: 0 };
+  const wd = fs.mkdtempSync(path.join(tmpRoot, 'codex-'));
+  const r = await prepareEngineSpawn({ engine: 'codex', taskId: 't-codex', user: { username: 'u', workDir: wd }, cwd: wd, engineEnv: { ...SERVER_ENV }, userTokens: {}, bridgedServers: {}, config: cfg });
+  try {
+    assert.equal(r.runAs, null);
+    assert.deepEqual(r.wrap('codex', ['exec']), ['codex', ['exec']]);
+    assert.ok(!('AGENT_SECRET' in r.env), 'allowlist still applies');
+  } finally { r.release(); }
+});
+
 test('engine home staging: claude gets an access token via env, never the refresh token file', () => {
   const svcHome = fs.mkdtempSync(path.join(tmpRoot, 'svc-'));
   fs.mkdirSync(path.join(svcHome, '.claude'), { recursive: true });
