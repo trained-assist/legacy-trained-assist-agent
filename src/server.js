@@ -40,6 +40,7 @@ const PORT = process.env.PORT || 3001;
 // Single source of truth (src/data-paths.js) — do not re-derive from HOME.
 const BASE_USERS_DIR = dataPaths.USERS_ROOT;
 const userWorkDir = dataPaths.userWorkDir;
+const workspacePath = dataPaths.workspacePath;
 
 // RU-IP edge (src/ru-edge.js, issue #1288) — thin RU-only service holding the
 // nalog.ru/ESIA Playwright login (geo-blocked outside Russia). This agent never
@@ -742,7 +743,7 @@ async function main() {
       const ifId = url.searchParams.get('id');
       if (!ifUsername || !/^[a-zA-Z0-9_-]{1,64}$/.test(ifUsername)) return json(res, 400, { error: 'invalid username' });
       if (!ifId || !/^[a-f0-9]{16,64}$/.test(ifId)) return json(res, 400, { error: 'invalid id' });
-      const storeDir = path.join(BASE_USERS_DIR, ifUsername, 'media', 'intake-store', ifId);
+      const storeDir = workspacePath(ifUsername, 'media', 'intake-store', ifId);
       if (req.method === 'PUT') {
         const rawName = url.searchParams.get('name') || 'file';
         const safeName = path.basename(rawName).replace(/[^a-zA-Z0-9._\-() ]/g, '_').slice(0, 200);
@@ -866,7 +867,7 @@ async function main() {
       const { userId, query } = payload;
       if (!userId || !query) return json(res, 400, { error: 'missing fields' });
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(userId))) return json(res, 400, { error: 'invalid userId' });
-      const workDir = path.join(BASE_USERS_DIR, String(userId));
+      const workDir = workspacePath(String(userId));
       const start = Date.now();
       const answer = getQuickAnswer(String(query), String(userId), workDir) || null;
       return json(res, 200, { answer, ms: Date.now() - start });
@@ -1128,7 +1129,7 @@ async function main() {
         return json(res, 400, { error: 'params must be an object' });
       }
 
-      const workDir = path.join(BASE_USERS_DIR, username);
+      const workDir = workspacePath(username);
       fs.mkdirSync(workDir, { recursive: true });
 
       try {
@@ -1484,6 +1485,11 @@ async function main() {
   setInterval(drivePoll, 2 * 60 * 1000);
 
   scheduleNalogExpiryChecks(secrets);
+  // Sustained-overload alert to the operator chat (src/load-watch.js): load above
+  // ratio×cores for the sustain window → Telegram with the top CPU processes.
+  if (process.env.TEST_MODE !== '1') {
+    require('./load-watch').startLoadWatch({ botToken: secrets.BOT_TOKEN, chatId: secrets.OPERATOR_CHAT_ID || '1714048' });
+  }
   if (hhNeg.scheduleHhBackgroundScoring) hhNeg.scheduleHhBackgroundScoring();
 // Cold search runs on the generic cron (#1489 S7.1): one job per vacancy, managed by
 // hh_proactive_schedule in hh-skill. No HH timer in core.

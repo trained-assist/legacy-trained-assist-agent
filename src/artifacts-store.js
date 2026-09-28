@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { userWorkDir } = require('./data-paths');
+const { appendBuffered, bufferedRecords } = require('./jsonl-batched-flush');
 
 const VALID_TYPES = new Set([
   'contact', 'decision', 'config', 'url', 'error',
@@ -19,18 +20,19 @@ function getArtifactsPath(username) {
 
 function readAll(username) {
   const p = getArtifactsPath(username);
+  let records;
   try {
-    return fs.readFileSync(p, 'utf8')
+    records = fs.readFileSync(p, 'utf8')
       .split('\n')
       .filter(l => l.trim())
       .map(l => { try { return JSON.parse(l); } catch { return null; } })
       .filter(Boolean);
-  } catch { return []; }
+  } catch { records = []; }
+  return records.concat(bufferedRecords(p));
 }
 
 function appendRecord(username, record) {
-  const p = getArtifactsPath(username);
-  fs.appendFileSync(p, JSON.stringify(record) + '\n');
+  appendBuffered(getArtifactsPath(username), record);
 }
 
 /**

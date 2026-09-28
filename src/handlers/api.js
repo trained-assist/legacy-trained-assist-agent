@@ -10,6 +10,7 @@ const os = require('os');
 const path = require('path');
 const { execSync, execFile } = require('child_process');
 const dataPaths = require('../data-paths');
+const workspacePath = dataPaths.workspacePath;
 const { listSessions, getSession: getSessionData, archiveSessions, needsSummary, setSummary } = require('../session-store');
 const { generateSummary } = require('../session-summary');
 const { getResumeStats } = require('../resume-stats');
@@ -17,7 +18,7 @@ const { computeSkillsList } = require('../capabilities-skills');
 const { presentSiblings } = require('../skill-siblings');
 
 async function handleApi(req, url, res, ctx) {
-  const { json, readBody, BASE_USERS_DIR, secrets } = ctx;
+  const { json, readBody, secrets } = ctx;
 
     // GET /capabilities?userId=XXX — list services with tokens on this machine
     if (req.method === 'GET' && url.pathname === '/capabilities') {
@@ -75,14 +76,12 @@ async function handleApi(req, url, res, ctx) {
       const { getUsageLog } = require('../usage-store');
       // Usage logs live in each profile's workspace (USERS_ROOT/<u>/usage.json),
       // not the legacy SYSTEM_ROOT/sessions tree.
-      const sessionsDir = dataPaths.USERS_ROOT;
       const totals = { tasks: 0, input: 0, output: 0, cost_usd: 0 };
       const byDate = {};   // date → { model → { input, output, cost, tasks } }
       const byUser = {};   // username → { tasks, input, output, cost_usd }
       try {
-        const users = fs.existsSync(sessionsDir) ? fs.readdirSync(sessionsDir) : [];
-        for (const username of users) {
-          const workDir = path.join(sessionsDir, username);
+        for (const username of dataPaths.listProfiles()) {
+          const workDir = dataPaths.userWorkDir(username);
           if (!fs.statSync(workDir).isDirectory()) continue;
           const log = getUsageLog(workDir);
           if (!log || !log.length) continue;
@@ -173,7 +172,7 @@ async function handleApi(req, url, res, ctx) {
       // omitted -> 'default', matching every project created before this feature existed.
       const audience = url.searchParams.get('audience') || 'default';
 
-      const workDir = path.join(BASE_USERS_DIR, username);
+      const workDir = workspacePath(username);
       try {
         const { listProjects, sortByUsage } = require('../projects');
         const sessions = require('../session-store');
@@ -214,7 +213,7 @@ async function handleApi(req, url, res, ctx) {
         return json(res, 200, { action: 'quick', choices: [], active: null });
       }
 
-      const workDir = path.join(BASE_USERS_DIR, username);
+      const workDir = workspacePath(username);
       try {
         const projects = require('../projects');
         const sessions = require('../session-store');
@@ -254,7 +253,7 @@ async function handleApi(req, url, res, ctx) {
       // audience scopes the list to the calling bot/surface (see AUDIENCE-SCOPE-SPEC);
       // omitted -> 'default', matching every session created before this feature existed.
       const audience = url.searchParams.get('audience') || 'default';
-      const workDir = path.join(BASE_USERS_DIR, username);
+      const workDir = workspacePath(username);
       let sessionList = listSessions(workDir, limit, audience);
       // Lazily backfill durable summaries so external consumers (Telegram gateway,
       // web UI) get a meaningful {title, gist} — not a raw first-message truncation.
@@ -300,7 +299,7 @@ async function handleApi(req, url, res, ctx) {
         return json(res, 400, { error: 'invalid username' });
       if (!Array.isArray(sessionIds) || sessionIds.length === 0)
         return json(res, 400, { error: 'sessionIds must be a non-empty array' });
-      const workDir = path.join(BASE_USERS_DIR, username);
+      const workDir = workspacePath(username);
       const archived = archiveSessions(workDir, sessionIds);
       return json(res, 200, { archived });
     }
@@ -312,7 +311,7 @@ async function handleApi(req, url, res, ctx) {
       const username = url.searchParams.get('username');
       if (!username || !/^[a-zA-Z0-9_-]+$/.test(username))
         return json(res, 400, { error: 'invalid username' });
-      const workDir = path.join(BASE_USERS_DIR, username);
+      const workDir = workspacePath(username);
       const session = getSessionData(workDir, id);
       if (!session) return json(res, 404, { error: 'not found' });
       return json(res, 200, session);
@@ -325,7 +324,7 @@ async function handleApi(req, url, res, ctx) {
       if (!username || !/^[a-zA-Z0-9_-]+$/.test(username))
         return json(res, 400, { error: 'invalid username' });
 
-      const workDir = path.join(BASE_USERS_DIR, username);
+      const workDir = workspacePath(username);
       const target  = path.resolve(path.join(workDir, relPath));
       if (target !== workDir && !target.startsWith(workDir + path.sep))
         return json(res, 400, { error: 'path traversal' });
@@ -360,7 +359,7 @@ async function handleApi(req, url, res, ctx) {
       if (!username || !/^[a-zA-Z0-9_-]+$/.test(username))
         return json(res, 400, { error: 'invalid username' });
 
-      const workDir = path.join(BASE_USERS_DIR, username);
+      const workDir = workspacePath(username);
       const target  = path.resolve(path.join(workDir, relPath));
       if (target !== workDir && !target.startsWith(workDir + path.sep))
         return json(res, 400, { error: 'path traversal' });
