@@ -179,9 +179,25 @@ function buildAwaitingUserNotice(profileId, { store = null } = {}) {
     const s = store || require('./gtd-controller').durableStore();
     rows = s.listItemsAwaitingUser(String(profileId));
   } catch { return ''; }
-  if (!rows || !rows.length) return '';
+  // Batches waiting for the owner: one reply resumes every element — list the batch once
+  // and hide its children's individual asks (N identical «нужен токен» lines otherwise).
+  let batches = [];
+  try {
+    const s = store || require('./gtd-controller').durableStore();
+    batches = require('./playbook-fanout').listBatchesAwaitingOwner(s, profileId);
+    if (batches.length) {
+      const hidden = new Set(batches.flatMap(b => b.children));
+      rows = (rows || []).filter(r => !hidden.has(r.task_id));
+    }
+  } catch { batches = []; }
+  if ((!rows || !rows.length) && !batches.length) return '';
   const lines = ['[ПЛАНЫ ЖДУТ ОТВЕТА ПОЛЬЗОВАТЕЛЯ]',
     'Эти шаги durable-планов уснули до ответа пользователя. Если текущее сообщение отвечает на один из них — вызови task_item_wake(item_id, message: <ответ>), и план продолжится сам. Если не отвечает — ничего не делай с ними.'];
+  for (const b of batches.slice(0, 3)) {
+    const names = b.asks.map(a => a.name).join(', ');
+    const why = (b.asks[0] && b.asks[0].ask) || (b.paused && b.paused.reason) || 'ответ';
+    lines.push(`- ПАЧКА batch_task_id=${b.task_id} «${String(b.title).slice(0, 80)}»${b.paused ? ' (на паузе)' : ''} · ждут: ${names || '—'} · ${String(why).slice(0, 300)} → если сообщение отвечает на это (или причина устранена): playbook_batch_control(batch_task_id, action: "resume", message: <ответ>) — одним вызовом продолжит все элементы.`);
+  }
   for (const r of rows.slice(0, 5)) {
     const w = parseWait(r) || {};
     lines.push(`- item_id=${r.id} · план «${String(r.goal).slice(0, 120)}» · шаг «${String(r.title).slice(0, 120)}» · ждём: ${String(w.reason || 'ответ').slice(0, 300)}`);

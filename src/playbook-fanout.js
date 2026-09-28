@@ -85,7 +85,8 @@ function childState(store, childId, profileId, { now = Date.now(), stallMs = DEF
   }
   // A step parked on a user answer (task_item_wait awaiting_user) also waits for the owner.
   const asking = items.find(i => i.status === 'waiting' && i.wait_json && (() => {
-    try { const w = JSON.parse(i.wait_json); return w && w.awaiting_user === true && !w.resolved; } catch { return false; }
+    // A woken wait (the owner answered; the next run consumes it) no longer asks.
+    try { const w = JSON.parse(i.wait_json); return w && w.awaiting_user === true && !w.resolved && !w.woken_at; } catch { return false; }
   })());
   if (asking) {
     let reason = null;
@@ -363,7 +364,7 @@ async function advanceFanout(store, { task, item, now = Date.now(), notify = nul
       byAsk.get(k).push(el.name || el.key);
     }
     for (const [ask, names] of byAsk) {
-      messages.push(`❓ Пачка «${state.config.title}»: ${names.length > 1 ? `${names.length} элемента ждут` : `«${names[0]}» ждёт`} твоего ответа${names.length > 1 ? ` (${names.join(', ')})` : ''}:\n${ask}`);
+      messages.push(`❓ Пачка «${state.config.title}»: ${names.length > 1 ? `${names.length} элемента ждут` : `«${names[0]}» ждёт`} твоего ответа${names.length > 1 ? ` (${names.join(', ')})` : ''}:\n${ask}\nОтветь один раз — продолжу ${names.length > 1 ? 'все' : 'его'}.`);
     }
   }
 
@@ -476,7 +477,7 @@ function batchStatus(store, taskId, profileId) {
 }
 
 // Owner control: resume a paused batch, retry / skip one element, add a late element.
-function controlBatch(store, taskId, profileId, { action, key = null, reason = null, goal = null, name = null }) {
+function controlBatch(store, taskId, profileId, { action, key = null, reason = null, goal = null, name = null, message = null }) {
   const item = findFanoutItem(store, taskId, profileId);
   const state = parseFanout(item);
   if (!state) return { error: 'task is not a batch' };
@@ -484,8 +485,26 @@ function controlBatch(store, taskId, profileId, { action, key = null, reason = n
   const el = key ? state.elements.find(e => e.key === key) : null;
   if (key && !el) return { error: `element not found: ${key}` };
   if (action === 'resume') {
+    // One owner answer resumes the whole batch: children paused by the batch AND children
+    // that paused themselves waiting for the owner are re-activated, and every step parked
+    // on the owner is woken with the same message (no per-child task_item_wake round).
     state.paused = null;
-    for (const e of state.elements) if (e.childId && e.status === 'running') setChildPaused(store, e.childId, profileId, false);
+    let woken = 0;
+    for (const e of state.elements) {
+      if (!e.childId || !['running', 'escalated', 'retrying'].includes(e.status)) continue;
+      setChildPaused(store, e.childId, profileId, false);
+      if (e.ownerAsk) {
+        const t = store.getTask(e.childId, profileId);
+        if (t && t.status === 'paused') store.updateTask(e.childId, profileId, { status: 'active' });
+      }
+      for (const it of store.listTaskItems(e.childId, profileId)) {
+        if (it.status !== 'waiting' || !awaitsOwner(it)) continue;
+        const r = store.wakeItem(it.id, profileId, { message: message || reason || 'владелец возобновил пачку', by: 'batch-resume' });
+        if (r && !r.error) woken += 1;
+      }
+      e.ownerAsk = null;
+    }
+    state.journal.push({ at: now, key: null, event: 'resume_woke', woken });
   } else if (action === 'retry') {
     if (!el) return { error: 'key required' };
     if (el.childId) {
@@ -535,6 +554,28 @@ function stageLockedBySibling(store, task, item) {
   return !!row;
 }
 
+function awaitsOwner(item) {
+  try { const w = JSON.parse(item.wait_json || 'null'); return !!w && w.awaiting_user === true && !w.resolved && !w.woken_at; } catch { return false; }
+}
+
+// Batches of this profile waiting for the owner (paused, or elements asking) — for the chat
+// notice, so one owner reply resumes the whole batch instead of waking N children one by one.
+function listBatchesAwaitingOwner(store, profileId) {
+  const rows = store.db.prepare(`SELECT t.id AS task_id, i.fanout_json FROM durable_tasks t JOIN task_items i ON i.task_id = t.id
+    WHERE t.profile_id = ? AND t.status = 'active' AND i.fanout_json IS NOT NULL AND i.status NOT IN ('done','skipped')`).all(String(profileId));
+  const out = [];
+  for (const r of rows) {
+    const state = parseFanout(r);
+    if (!state) continue;
+    const asking = state.elements.filter(e => e.ownerAsk && !TERMINAL.has(e.status));
+    if (!state.paused && !asking.length) continue;
+    out.push({ task_id: r.task_id, title: state.config.title, paused: state.paused || null,
+      children: state.elements.map(e => e.childId).filter(Boolean),
+      asks: asking.map(e => ({ key: e.key, name: e.name || e.key, ask: e.ownerAsk })) });
+  }
+  return out;
+}
+
 // A child's plan changed state — make its parent's fanout step due now.
 function nudgeParent(store, task) {
   if (!task || !task.parent_item_id) return false;
@@ -560,6 +601,6 @@ function makeFanoutJoinedValidator({ getItem = null } = {}) {
 
 module.exports = {
   parseFanout, saveFanout, joined, childState, advanceFanout, spawnChild, createBatch, batchStatus, controlBatch,
-  stageLockedBySibling, nudgeParent, makeFanoutJoinedValidator, normalizeElements,
+  stageLockedBySibling, nudgeParent, listBatchesAwaitingOwner, makeFanoutJoinedValidator, normalizeElements,
   defaultDecision, sanitizeDecision, decide, SUPERVISOR_SYSTEM, ACTIONS, DEFAULT_POLL_MS,
 };
