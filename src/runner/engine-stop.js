@@ -15,59 +15,121 @@
 // бегут от сервис-пользователя, их добивает isolation.release() →
 // bridge.unregisterRun() на 'close' движка (agent-mcp-bridge.js:44).
 //
-// Эскалация: SIGTERM → 5с → SIGKILL (spec §2). Таймер делает KILL только пока
-// процесс жив — как только движок вышел, слот уже мог быть переарендован
-// чужому рану, и слепой pkill убил бы невиновного.
+// Эскалация: SIGTERM → 5с → SIGKILL (spec §2).
+//
+// «Жив» — это НЕ «жива обёртка». Под изоляцией `proc` — sudo-обёртка: движок мог
+// выйти, а его ребёнок пережить TERM (или держать stdout-pipe — тогда 'close' не
+// придёт и слот не освободится). Поэтому живость рана = жива обёртка ИЛИ слот ещё
+// арендован ЭТИМ раном и в нём есть процессы (pgrep -u <slot>).
+//
+// Аренда (lease): claude-runner кладёт в state `slotLease = { slot, released }` и
+// выставляет `released = true` в том же хендлере 'close', где isolation.release()
+// добивает слот (reapSlot) и отдаёт lock. Сигнал слоту уходит ТОЛЬКО пока lease
+// наш: после release слот мог достаться чужому рану (другого юзера), и слепой
+// `pkill -u <slot>` убил бы невиновного. После release добивать нечего — release
+// сам делает reapSlot до отдачи lock.
+//
+// Все вызовы sudo — асинхронные: Стоп не имеет права блокировать event loop
+// (execFileSync с таймаутом 10с замораживал бы весь сервер на каждом Стопе).
 
-const { execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 const { isolationConfig } = require('../agent-isolation');
 
 const STOP_ESCALATE_MS = 5000;
+const SUDO_TIMEOUT_MS = 10_000;
 
-/** Отправить сигнал всем процессам слота. false = ничего не совпало / нет прав. */
-function signalSlot(slot, signal, exec = execFileSync) {
+// fire-and-forget: ошибку (pkill выходит с 1, когда нечего убивать) глотаем.
+function defaultExec(bin, argv, opts) {
+  execFile(bin, argv, opts, () => { /* exit 1 = nothing matched — не ошибка */ });
+}
+
+/** Отправить сигнал всем процессам слота. false = нечего/не удалось запустить. */
+function signalSlot(slot, signal, exec = defaultExec) {
   if (!slot) return false;
   try {
     exec(
       isolationConfig().sudoBin,
       ['-n', '-u', slot, '--', 'pkill', `-${signal}`, '-u', slot],
-      { stdio: ['ignore', 'ignore', 'pipe'], timeout: 10_000 },
+      { stdio: ['ignore', 'ignore', 'pipe'], timeout: SUDO_TIMEOUT_MS },
     );
     return true;
-  } catch { return false; } // pkill выходит с 1, когда нечего убивать
+  } catch { return false; }
 }
 
+/** Есть ли у слота процессы. Любая ошибка кроме «ничего не найдено» → true (осторожно: не подтверждаем). */
+function slotHasProcesses(slot, run = execFile) {
+  if (!slot) return Promise.resolve(false);
+  return new Promise(resolve => {
+    try {
+      run(isolationConfig().sudoBin, ['-n', '-u', slot, '--', 'pgrep', '-u', slot],
+        { timeout: SUDO_TIMEOUT_MS }, (err) => {
+          if (!err) return resolve(true);          // pgrep нашёл процессы
+          resolve(err.code === 1 ? false : true);  // 1 = пусто; иное (sudo/таймаут) — не знаем → «жив»
+        });
+    } catch { resolve(true); }
+  });
+}
+
+// `== null`: у ChildProcess до выхода оба поля null; объект без этих полей
+// (обёртки/тестовые дублёры) считаем живым — ошибиться в сторону «жив» дешевле:
+// лишний сигнал мёртвому процессу безвреден, пропущенный живому — инцидент §0.
 function alive(proc) {
-  return !!proc && proc.exitCode === null && proc.signalCode === null;
+  return !!proc && proc.exitCode == null && proc.signalCode == null;
 }
 
 /**
- * Остановить ран по state из activeTimers: TERM слоту + прямому ребёнку,
- * через 5с — KILL (если процесс ещё жив). Ставит `state.userStopped = true`,
+ * Слот, который СЕЙЧАС арендован этим раном, иначе null. Без lease-объекта
+ * (старые вызовы/тесты) — `state.slot`, но только пока жив процесс: мёртвый
+ * процесс без lease-флага мог уже отдать слот.
+ */
+function leasedSlot(state) {
+  if (!state) return null;
+  if (state.slotLease) return state.slotLease.released ? null : (state.slotLease.slot || null);
+  return alive(state.proc) ? (state.slot || null) : null;
+}
+
+/** Жив ли ран: обёртка или процессы в ещё НАШЕМ слоте. */
+async function runAlive(state, { hasProcesses = slotHasProcesses } = {}) {
+  if (alive(state?.proc)) return true;
+  const slot = leasedSlot(state);
+  return slot ? hasProcesses(slot) : false;
+}
+
+/**
+ * Остановить ран по state из activeTimers: TERM слоту (пока lease наш) + прямому
+ * ребёнку, через 5с — KILL тем, кто ещё жив. Ставит `state.userStopped = true`,
  * чтобы хендлер close не ушёл в автопродолжение (R5).
  *
- * @param {{proc?:object, slot?:string|null, userStopped?:boolean}} state
+ * @param {{proc?:object, slot?:string|null, slotLease?:{slot:string,released:boolean}, userStopped?:boolean}} state
  * @param {object} [opts]
- * @param {Function} [opts.exec]  — подмена execFileSync (тесты)
+ * @param {Function} [opts.exec]  — подмена запуска sudo (тесты)
  * @param {Function} [opts.setTimeout] — подмена таймера эскалации (тесты)
- * @returns {boolean} был ли отправлен TERM
+ * @returns {boolean} был ли отправлен хоть один сигнал
  */
-function stopEngineProcess(state, { exec = execFileSync, setTimeout: schedule = setTimeout } = {}) {
+function stopEngineProcess(state, { exec = defaultExec, setTimeout: schedule = setTimeout } = {}) {
   if (!state || !state.proc) return false;
   state.userStopped = true;
-  signalSlot(state.slot, 'TERM', exec);
-  try { state.proc.kill('SIGTERM'); } catch { /* уже вышел */ }
+  const slot = leasedSlot(state);
+  const procAlive = alive(state.proc);
+  if (!slot && !procAlive) return false; // всё уже вышло, слот отдан — сигналить некому
+  if (slot) signalSlot(slot, 'TERM', exec);
+  if (procAlive) { try { state.proc.kill('SIGTERM'); } catch { /* уже вышел */ } }
   if (state.stopEscalateTimer) return true;
-  const slot = state.slot || null;
   state.stopEscalateTimer = schedule(() => {
     state.stopEscalateTimer = null;
-    if (!alive(state.proc)) return; // вышел сам — слот мог уже уйти другому рану
-    signalSlot(slot, 'KILL', exec);
-    try { state.proc.kill('SIGKILL'); } catch { /* уже вышел */ }
-    console.warn(`[stop] engine survived SIGTERM for ${STOP_ESCALATE_MS / 1000}s — escalated to SIGKILL`);
+    // Перепроверка lease на момент эскалации: слот, отданный за эти 5с, чужой.
+    const stillLeased = leasedSlot(state);
+    const stillAlive = alive(state.proc);
+    if (!stillLeased && !stillAlive) return;
+    if (stillLeased) signalSlot(stillLeased, 'KILL', exec);
+    if (stillAlive) { try { state.proc.kill('SIGKILL'); } catch { /* уже вышел */ } }
+    console.warn(`[stop] run survived SIGTERM for ${STOP_ESCALATE_MS / 1000}s — escalated to SIGKILL`);
   }, STOP_ESCALATE_MS);
-  state.stopEscalateTimer.unref?.();
+  state.stopEscalateTimer?.unref?.();
   return true;
 }
 
-module.exports = { stopEngineProcess, signalSlot, STOP_ESCALATE_MS, _internals: { alive } };
+module.exports = {
+  stopEngineProcess, signalSlot, slotHasProcesses, runAlive, leasedSlot, STOP_ESCALATE_MS,
+  _internals: { alive },
+};

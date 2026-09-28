@@ -951,7 +951,10 @@ async function main() {
       const rawWaitMs = payload?.waitMs;
       const waitMs = Number.isFinite(rawWaitMs) ? Math.min(Math.max(rawWaitMs, 0), 4500) : 2500;
       const owner = { username, audience: audience || null, chatId: chatId ?? null, threadId };
-      const { stopUserTask, killTaskByUsername, stopTracesFor, confirmStopped } = require('./runner');
+      const { stopUserTask, killTaskByUsername, stopTracesFor, confirmStopped, countIdleLiveRuns } = require('./runner');
+      // Раны владельца без процесса (очередь, retry/resume-backoff) — считаем ДО
+      // отметки: после неё гейт их снимет, и они уйдут из реестра.
+      const idleRuns = countIdleLiveRuns(owner);
       const scoped = stopUserTask(username, owner.chatId, owner.audience, threadId);
       // Profile-wide (no chatId) callers keep the audience-wide kill semantics.
       const killed = (chatId == null && !scoped) ? killTaskByUsername(username, owner.audience) : (scoped ? 1 : 0);
@@ -959,19 +962,20 @@ async function main() {
       // stop-функции, но цепочку закрывать не должны (см. runner). Вызов
       // идемпотентен — трейсы одного владельца дают один и тот же набор.
       const stoppedTraces = stopTracesFor(owner);
-      // GTD: чат-скоуп, если шлюз прислал chatId, иначе профильный — симметрично
-      // профильному kill выше. Записи, созданные ПОСЛЕ остановки, не трогаются
-      // (clearGtd закрывает только существующие open-записи).
+      // GTD: закрываем ровно записи помеченных трейсов — тем же предикатом, что
+      // и тик (trace остановлен не раньше создания записи). И для чат-, и для
+      // профильного Стопа: clearAllGtd закрыл бы доводки соседних чатов/ботов,
+      // которые в момент Стопа даже не выполнялись (ревью B1).
       let gtdCancelled = 0;
       try {
-        const gtd = require('./gtd-controller');
-        const workDir = userWorkDir(username);
-        gtdCancelled = owner.chatId != null
-          ? gtd.clearGtdForChat(workDir, owner.chatId, threadId)
-          : gtd.clearAllGtd(workDir);
-      } catch (e) { console.warn('[tasks/stop] gtd clear:', e.message); }
+        gtdCancelled = require('./gtd-controller').closeStoppedGtd(userWorkDir(username));
+      } catch (e) { console.warn('[tasks/stop] gtd close:', e.message); }
       const confirmed = await confirmStopped(owner, waitMs);
-      const stopped = killed > 0 || stoppedTraces > 0 || gtdCancelled > 0;
+      // stopped — «что-то реально остановлено»: сигнал живому рану, снятый с
+      // очереди/backoff'а ран или закрытая доводка. Сама запись отметки (её
+      // stopTracesFor ставит всегда, в т.ч. в пустом чате) — НЕ остановка:
+      // иначе шлюз не отличит «⛔ Остановлено» от «🤷 Нет активной задачи» (SS-03).
+      const stopped = killed > 0 || idleRuns > 0 || gtdCancelled > 0;
       return json(res, 200, {
         ok: true,
         // killed — прежняя семантика (сколько процессов получили сигнал), её

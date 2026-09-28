@@ -26,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { stoppedTracesDir } = require('./data-paths');
+const { atomicJson } = require('./atomic-json');
 const { fromLegacyTelegram, conversationKey } = require('./core/conversation-ref');
 
 const STOP_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -81,7 +82,9 @@ function markTraceStopped(traceId, meta = {}) {
   const stoppedAt = Number.isFinite(meta.stoppedAt) ? meta.stoppedAt : now;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(file, JSON.stringify({
+    // Атомарно (tmp+fsync+rename): оборванная запись не оставляет битый файл,
+    // который читался бы fail-closed (см. traceStoppedAt).
+    atomicJson(file, {
       traceId,
       stoppedAt,
       expiresAt: now + STOP_TOMBSTONE_TTL_MS,
@@ -91,7 +94,7 @@ function markTraceStopped(traceId, meta = {}) {
       audience: meta.audience ?? null,
       sessionId: meta.sessionId ?? null,
       reason: meta.reason || 'user-stop',
-    }, null, 2), { mode: 0o600 });
+    }, { space: 2, mode: 0o600 });
     sweepStoppedTraces();
     return true;
   } catch (e) {
@@ -167,11 +170,11 @@ function sweepStoppedTraces() {
       let mtime = now;
       try { mtime = fs.statSync(file).mtimeMs; } catch { /* keep now */ }
       try {
-        fs.writeFileSync(file, JSON.stringify({
+        atomicJson(file, {
           traceId: null, stoppedAt: mtime, expiresAt: now + STOP_TOMBSTONE_TTL_MS,
           username: null, chatId: null, threadId: null, audience: null, sessionId: null,
           reason: 'healed-corrupt',
-        }, null, 2), { mode: 0o600 });
+        }, { space: 2, mode: 0o600 });
       } catch { /* best-effort */ }
       continue;
     }

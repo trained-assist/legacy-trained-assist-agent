@@ -24,7 +24,8 @@ const assert = require('node:assert/strict');
 
 const STOP_MSG = '⛔ Остановлено до начала выполнения.';
 const stopTrace = require('../src/stop-trace');
-const { stopEngineProcess, signalSlot, STOP_ESCALATE_MS } = require('../src/runner/engine-stop');
+const { stopEngineProcess, signalSlot, runAlive, leasedSlot, STOP_ESCALATE_MS } = require('../src/runner/engine-stop');
+const gtdCtl = require('../src/gtd-controller');
 const runner = require('../src/runner');
 
 // У каждого кейса свой диалог/профиль: tombstones живут на диске на весь файл,
@@ -153,9 +154,9 @@ test('kill: эскалация шлёт KILL, только пока процес
     exec: (_bin, argv) => deadSignals.push(argv.find(a => /^-(TERM|KILL)$/.test(a))),
     setTimeout: fn => { escalate2 = fn; return { unref() {} }; },
   });
-  escalate2();
-  assert.deepEqual(deadSignals, ['-TERM'], 'мёртвому — только исходный TERM, эскалация пропущена');
-  assert.equal(dead.killed, 'SIGTERM', 'KILL прямому ребёнку не шлётся');
+  assert.equal(escalate2, undefined, 'мёртвому процессу без аренды слота сигналить некому — таймер не ставится');
+  assert.deepEqual(deadSignals, [], 'P4: слот мог уйти чужому рану — даже первый TERM не уходит');
+  assert.equal(dead.killed, null, 'прямому ребёнку тоже ничего');
 });
 
 test('kill: двойной Stop не плодит таймеры; без изоляции — только прямой ребёнок', () => {
@@ -324,8 +325,11 @@ test('контракт: /tasks/stop отвечает аддитивно, /run п
   const body = server.slice(at, server.indexOf("url.pathname === '/run'", at));
   assert.ok(body.includes('killed, stopped, stoppedTraces, gtdCancelled, confirmed'),
     'аддитивные поля, прежний killed не тронут (обратная совместимость с шлюзом)');
-  assert.ok(/gtd\.clearGtdForChat\(/.test(body) && /gtd\.clearAllGtd\(/.test(body),
-    'chatId → clearGtdForChat, иначе профильный clearAllGtd (R3)');
+  assert.ok(/closeStoppedGtd\(/.test(body), 'GTD закрывается по предикату трейса (R3)');
+  assert.ok(!/clearAllGtd\(/.test(body),
+    'B1: профильный Стоп не закрывает доводки соседних чатов/ботов');
+  assert.ok(/const stopped = killed > 0 \|\| idleRuns > 0 \|\| gtdCancelled > 0;/.test(body),
+    'B2: запись отметки сама по себе не «остановлено»');
   assert.ok(/await confirmStopped\(owner, waitMs\)/.test(body), 'подтверждение выхода перед ответом (SS-03)');
   assert.ok(/fromUser: true, task: effectiveTask/.test(server), 'POST /run = fromUser → гейт его не блокирует (K1/SS-05)');
   assert.ok(/fromUser: true/.test(read('src/web-routes.js')), 'web-ран тоже fromUser');
@@ -358,4 +362,156 @@ test('контракт: stop-trace живёт на диске и наследу�
   const dp = read('src/data-paths.js');
   assert.ok(/function stoppedTracesDir\(\)/.test(dp));
   assert.ok(!/stoppedChainsDir/.test(dp), 'chainId-ключи удалены вместе с реестром цепочек');
+});
+
+// ── 7. Ревью PR #1800: слот, «stopped», GTD соседей, дедлоки ─────────────────
+
+const sigOf = argv => argv.find(a => /^-(TERM|KILL)$/.test(a));
+
+test('P4: слот отдан (lease released) — pkill по слоту не уходит, только прямому ребёнку', () => {
+  const signals = [];
+  const proc = fakeProc();
+  const state = { proc, slot: 'ta-agent-3', slotLease: { slot: 'ta-agent-3', released: true } };
+  let escalate;
+  stopEngineProcess(state, { exec: (_b, a) => signals.push(sigOf(a)), setTimeout: fn => { escalate = fn; return { unref() {} }; } });
+  assert.deepEqual(signals, [], 'слот уже мог достаться чужому рану — ни TERM, ни KILL по нему');
+  assert.equal(proc.killed, 'SIGTERM');
+  escalate();
+  assert.deepEqual(signals, [], 'и на эскалации тоже');
+  assert.equal(proc.killed, 'SIGKILL');
+});
+
+test('P3: обёртка вышла, а слот ещё наш (ребёнок держит pipe) — эскалация добивает слот', () => {
+  const signals = [];
+  const proc = fakeProc(false);
+  const lease = { slot: 'ta-agent-5', released: false };
+  let escalate;
+  const sent = stopEngineProcess({ proc, slotLease: lease }, { exec: (_b, a) => signals.push(sigOf(a)), setTimeout: fn => { escalate = fn; return { unref() {} }; } });
+  assert.equal(sent, true);
+  assert.deepEqual(signals, ['-TERM']);
+  escalate();
+  assert.deepEqual(signals, ['-TERM', '-KILL'], 'выживший в слоте ребёнок получает KILL, хотя обёртка мертва');
+  assert.equal(proc.killed, null, 'мёртвой обёртке не сигналим');
+
+  // lease отдан за эти 5с → KILL уже не наш
+  const s2 = [];
+  let esc2;
+  const lease2 = { slot: 'ta-agent-6', released: false };
+  stopEngineProcess({ proc: fakeProc(false), slotLease: lease2 }, { exec: (_b, a) => s2.push(sigOf(a)), setTimeout: fn => { esc2 = fn; return { unref() {} }; } });
+  lease2.released = true;
+  esc2();
+  assert.deepEqual(s2, ['-TERM'], 'lease перепроверяется на момент эскалации');
+});
+
+test('P3: runAlive/confirmStopped смотрят на слот, а не на обёртку', async () => {
+  const lease = { slot: 'ta-agent-7', released: false };
+  const state = { username: 'carol', audience: 'default', chatId: 7, threadId: null, proc: fakeProc(false), slotLease: lease };
+  assert.equal(leasedSlot(state), 'ta-agent-7');
+  assert.equal(await runAlive(state, { hasProcesses: async () => true }), true, 'обёртка мертва, в слоте процессы → жив');
+  assert.equal(await runAlive(state, { hasProcesses: async () => false }), false);
+  lease.released = true;
+  assert.equal(await runAlive(state, { hasProcesses: async () => { throw new Error('после release слот не опрашиваем'); } }), false);
+
+  lease.released = false;
+  runner._activeTimers.clear();
+  runner._activeTimers.set('carol-1', state);
+  assert.equal(await runner.confirmStopped({ username: 'carol', audience: 'default' }, 60, { runAlive: async () => true }), false,
+    'в слоте остались процессы → «подтверждено» не говорим');
+  assert.equal(await runner.confirmStopped({ username: 'carol', audience: 'default' }, 60, { runAlive: async () => false }), true);
+  runner._activeTimers.clear();
+});
+
+test('B2: idle-раны считаются, раны с процессом и чужие — нет', () => {
+  runner._liveRuns.clear(); runner._activeTimers.clear();
+  const owner = { username: 'dave', audience: 'default', chatId: 900 };
+  assert.equal(runner.countIdleLiveRuns(owner), 0, 'пустой чат → 0: «stopped» будет false');
+  runner._liveRuns.set('dave-q#1', { username: 'dave', chatId: 900, threadId: null, audience: 'default', sessionId: null, taskId: 'dave-q' });
+  assert.equal(runner.countIdleLiveRuns(owner), 1, 'ран в очереди/backoff без процесса');
+  runner._activeTimers.set('dave-q', { username: 'dave', audience: 'default', chatId: 900, proc: fakeProc() });
+  assert.equal(runner.countIdleLiveRuns(owner), 0, 'ран с процессом учтён в killed, не здесь');
+  assert.equal(runner.countIdleLiveRuns({ username: 'dave', audience: 'default', chatId: 901 }), 0, 'другой чат');
+  runner._liveRuns.clear(); runner._activeTimers.clear();
+});
+
+test('B1: closeStoppedGtd закрывает только доводки помеченных трейсов', () => {
+  const wd = workDir('erin');
+  const now = Date.now();
+  const mk = (sessionId, chatId, createdAt) => gtdCtl.writeGtd(wd, {
+    sessionId, chatId: String(chatId), threadId: null, username: 'erin', audience: 'default',
+    createdAt, dueAt: now + 3600_000, etaMinutes: 60, iterations: 0, maxIterations: 5, status: 'open',
+  });
+  mk('s-erin-a', 7001, now - 60_000);
+  mk('s-erin-b', 7002, now - 60_000);
+  runner.stopTracesFor({ username: 'erin', chatId: 7001, audience: 'default' });
+  assert.equal(gtdCtl.closeStoppedGtd(wd), 1, 'закрыта ровно одна');
+  assert.equal(gtdCtl.readGtd(wd, 's-erin-a').closedReason, 'user-stop');
+  assert.equal(gtdCtl.readGtd(wd, 's-erin-b').status, 'open', 'доводка соседнего чата жива (была бы убита clearAllGtd)');
+  assert.equal(gtdCtl.closeStoppedGtd(wd), 0, 'идемпотентно');
+});
+
+test('D2: доводка, созданная ПОСЛЕ Стопа в том же диалоге, не считается остановленной', () => {
+  const wd = workDir('erin');
+  runner.stopTracesFor({ username: 'erin', chatId: 7003, audience: 'default' });
+  const rec = {
+    sessionId: 's-erin-c', chatId: '7003', threadId: null, username: 'erin', audience: 'default',
+    createdAt: Date.now() + 5, dueAt: Date.now() + 3600_000, status: 'open',
+  };
+  assert.equal(gtdCtl.isGtdStopped(wd, rec), false, 'новая задача юзера после Стопа (K1) доводится');
+  assert.equal(gtdCtl.isGtdStopped(wd, { ...rec, createdAt: Date.now() - 60_000 }), true);
+  const src = read('src/gtd-controller.js');
+  assert.equal((src.match(/!closeIfStopped\(workDir, (r|existing)\)/g) || []).length, 4,
+    'все 4 места «уже есть open-запись» пропускают приговорённую Стопом запись, а не возвращают её');
+});
+
+test('D1: сообщение, отправленное до Стопа, но принятое после — его хопы не блокируются', async () => {
+  const wd = workDir('frank');
+  const t = trace(8080, 'frank');
+  assert.equal(stopTrace.markTraceStopped(t, { username: 'frank', chatId: 8080 }), true);
+  const stoppedAt = stopTrace.traceStoppedAt(t);
+  // Не спавнить движок: consumePendingStop отвечает до спавна (как в контрольном кейсе выше).
+  runner._queuedByOwner.set(runner._ownerKey('frank', 's-d1'), 1);
+  runner.stopSessionTask('frank', 's-d1');
+  const p = runner.runTask({
+    taskId: 'frank-held-1',
+    user: { id: 8080, name: 'frank', username: 'frank', workDir: wd },
+    task: 'ещё вот это', context: null, sessionId: 's-d1',
+    fromUser: true,
+    // шлюз: msg.date*1000 — время отправки, floor до секунды, раньше отметки
+    initiatedAt: Math.floor((stoppedAt - 1500) / 1000) * 1000,
+    secrets: {}, initialMsgId: null,
+  });
+  const journaled = runner.getPendingTasks().find(x => x.taskId === 'frank-held-1');
+  assert.ok(journaled, 'запрос человека проходит гейт');
+  assert.ok(journaled.initiatedAt > stoppedAt, 'якорь цепочки = приём агентом, не время отправки');
+  assert.equal(stopTrace.isRunStopped({ traceId: t, initiatedAt: journaled.initiatedAt, fromUser: false }), false,
+    'ретрай/продолжение/резюм этой задачи (fromUser не наследуется) не умрёт на первом хопе');
+  await p;
+  runner._queuedByOwner.clear();
+});
+
+test('D1: ран без fromUser и без конфликта initiatedAt не трогает', () => {
+  const src = read('src/runner/index.js');
+  const at = src.indexOf('if (opts.fromUser && runTrace && Number.isFinite(opts.initiatedAt))');
+  assert.ok(at > 0 && at < src.indexOf('// Journal BEFORE waiting'), 're-anchor стоит ДО журнала');
+  assert.ok(src.slice(at, at + 400).includes('opts.initiatedAt <= stoppedAt'), 'двигаем только при реальном конфликте');
+});
+
+test('тумбстоун пишется атомарно (битый файл читается fail-closed)', () => {
+  const src = read('src/stop-trace.js');
+  assert.ok(!/fs\.writeFileSync\(/.test(src), 'никаких неатомарных записей отметки');
+  assert.ok((src.match(/atomicJson\(/g) || []).length >= 2);
+  assert.ok(!/execFileSync/.test(read('src/runner/engine-stop.js').replace(/\/\/.*$/gm, '')),
+    'D5: Стоп не блокирует event loop синхронным sudo');
+});
+
+test('D3: хоп, снятый гейтом в очереди, гасит pending-stop сессии (контракт)', () => {
+  // Поведенчески: A (хоп) в очереди → Стоп (pending-stop + отметка) → B (новое
+  // сообщение ПОСЛЕ Стопа) встаёт за A. A снимается гейтом; если он не погасит
+  // pending-stop, его «съест» B и умрёт «до начала выполнения». Спавн B в юнит-
+  // тесте не поднять без движка, поэтому фиксируем контракт нижнего гейта.
+  const src = read('src/runner/index.js');
+  const at = src.indexOf('stop-gate: blocked in admission queue');
+  const block = src.slice(at, src.indexOf('return STOP_NOT_STARTED_MSG;', at));
+  assert.ok(/consumePendingStop\(opts\.user\.username, opts\.sessionId\);/.test(block),
+    'нижний гейт гасит pending-stop сессии');
 });

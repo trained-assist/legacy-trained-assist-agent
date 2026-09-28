@@ -89,8 +89,8 @@ const {
 const { runEngineProcess, buildEngineCommand, inputInspectionRows, resolveEngineCwd } = require('./claude-runner');
 // «Стоп»: реальный kill дерева процессов под run-as изоляцией + trace-тумбстоуны
 // (spec: docs/user-scenarios/core/02-stop-and-supplement.md §2/§2а).
-const { stopEngineProcess } = require('./engine-stop');
-const { traceIdFor, markTraceStopped, isRunStopped } = require('../stop-trace');
+const { stopEngineProcess, runAlive } = require('./engine-stop');
+const { traceIdFor, markTraceStopped, isRunStopped, traceStoppedAt } = require('../stop-trace');
 
 const STREAM_INTERVAL_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 3000;
@@ -644,33 +644,51 @@ function killTaskByUsername(username, audience = null) {
 }
 
 /**
- * Подтверждение остановки (spec SS-03): ждём, пока процессы, подходящие под
- * owner, действительно выйдут — до `waitMs`. Нужно, чтобы шлюз мог отличить
+ * Подтверждение остановки (spec SS-03): ждём, пока раны, подходящие под owner,
+ * действительно выйдут — до `waitMs`. Нужно, чтобы шлюз мог отличить
  * «⛔ Остановлено» от «⚠️ не подтвердилось» вместо слепого `killed > 0`.
  *
- * Под изоляцией прямой ребёнок — sudo-обёртка: она завершается вместе с
- * движком, так что исчезновение записи из activeTimers (либо ненулевой
- * exitCode/signalCode) честно означает «двигатель мёртв».
+ * «Вышел» — по runAlive (engine-stop.js), а не по обёртке: под изоляцией sudo-
+ * обёртка может выйти раньше, чем ребёнок движка в слоте (он пережил TERM или
+ * держит pipe). Пока слот арендован этим раном, живость = pgrep -u <slot>.
  * true = всё вышло (или нечему было выходить), false = ждали и не дождались —
  * эскалация SIGKILL уходит по таймеру из stopEngineProcess.
  */
-async function confirmStopped(owner, waitMs = 2500) {
+async function confirmStopped(owner, waitMs = 2500, { runAlive: isAlive = runAlive } = {}) {
   const deadline = Date.now() + Math.max(0, waitMs);
-  const aliveMatches = () => {
+  const anyAlive = async () => {
     for (const s of activeTimers.values()) {
       if (!s.proc || !taskOwnedBy(s, owner)) continue;
-      if (s.proc.exitCode === null && s.proc.signalCode === null) return true;
+      if (await isAlive(s)) return true;
     }
     return false;
   };
-  while (aliveMatches()) {
+  while (await anyAlive()) {
     if (Date.now() >= deadline) {
       console.warn(`[stop] not confirmed within ${waitMs}ms for ${owner.username || '?'} — SIGKILL escalation is armed`);
       return false;
     }
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise(r => setTimeout(r, 150));
   }
   return true;
+}
+
+/**
+ * Сколько принятых ранов владельца сейчас БЕЗ процесса (admission-очередь,
+ * retry-backoff, resume-backoff). Это то, что Стоп реально останавливает помимо
+ * kill: гейт трейса не даст им стартовать. Для поля `stopped` ответа /tasks/stop —
+ * сама по себе запись тумбстоуна «остановлено» не означает.
+ */
+function countIdleLiveRuns(owner = {}) {
+  const running = new Set();
+  for (const [taskId, s] of activeTimers.entries()) if (s?.proc) running.add(taskId);
+  let n = 0;
+  for (const m of liveRuns.values()) {
+    if (!_liveRunMatches(m, owner)) continue;
+    if (m.taskId && running.has(m.taskId)) continue;
+    n++;
+  }
+  return n;
 }
 
 /**
@@ -1018,6 +1036,25 @@ function _runTaskInner(opts) {
     chatId: opts.user.id, audience: opts.user.audience, threadId: runThreadId,
     username: opts.user.username, sessionId: opts.sessionId || opts.activitySessionId,
   });
+  // Якорь цепочки для запроса человека (D1 анализа дедлоков). Шлюз шлёт
+  // initiatedAt = msg.date*1000 — время ОТПРАВКИ, с точностью до секунды (floor).
+  // Сообщение, отправленное до Стопа и доставленное после (держатель/буфер
+  // шлюза), или в ту же секунду, что Стоп, получает initiatedAt <= stoppedAt:
+  // сам ран проходит (fromUser), но все его ретраи/продолжения/резюм после
+  // рестарта — нет, и новая задача молча умирает на первом же хопе до 24ч.
+  // Запрос человека, ПРИНЯТЫЙ после Стопа, — это новая цепочка: её якорь —
+  // момент приёма агентом. Двигаем только при реальном конфликте с отметкой,
+  // иначе initiatedAt (BV-08 claimFreshChecklist) не трогаем. До журнала —
+  // резюм после рестарта прочитает уже исправленное значение (fromUser в
+  // журнал не пишется).
+  if (opts.fromUser && runTrace && Number.isFinite(opts.initiatedAt)) {
+    const stoppedAt = traceStoppedAt(runTrace);
+    if (stoppedAt != null && opts.initiatedAt <= stoppedAt) {
+      const anchored = Math.max(Date.now(), stoppedAt + 1);
+      console.log(`[${opts.taskId}] stop-gate: user request initiatedAt ${opts.initiatedAt} <= stoppedAt ${stoppedAt} — re-anchored to ${anchored}`);
+      opts.initiatedAt = anchored;
+    }
+  }
   if (isRunStopped({ traceId: runTrace, initiatedAt: opts.initiatedAt, fromUser: opts.fromUser })) {
     // Без правки сообщения: до этого Стоп уже ответил в чат, а убитое
     // продолжение не имеет права стирать сохранённый частичный результат (SS-02).
@@ -1080,6 +1117,11 @@ function _runTaskInner(opts) {
       // действительно останавливался (ENOENT — быстрый промах).
       if (isRunStopped({ traceId: runTrace, initiatedAt: opts.initiatedAt, fromUser: opts.fromUser })) {
         console.log(`[${opts.taskId}] stop-gate: blocked in admission queue (trace=${runTrace || 'none'})`);
+        // D3: pending-stop сессии адресован именно этому стоявшему в очереди
+        // рану — гасим его здесь. Иначе он «достанется» следующему запросу той
+        // же сессии (например, новому сообщению, присланному уже ПОСЛЕ Стопа),
+        // и тот умрёт «до начала выполнения».
+        consumePendingStop(opts.user.username, opts.sessionId);
         await status.finish(STOP_NOT_STARTED_MSG);
         return STOP_NOT_STARTED_MSG;
       }
@@ -3012,7 +3054,7 @@ module.exports = {
   runTask, getQuickAnswer, runQuickAnswer, shouldAttemptQuickAnswer, generateConnectLink, getPendingTasks, clearPendingTask,
   resolveRunSession,
   isTaskRunning, isChatTaskRunning, isSessionRunning, isSessionQueuedFor, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,
-  stopTracesFor, confirmStopped,
+  stopTracesFor, confirmStopped, countIdleLiveRuns,
   reconcileSoftContinuations,
   // Exported for intent-coverage tests only
   _intents: { HH_MY_VACANCIES_INTENT, HH_FUNNEL_INTENT, HH_RESPONSES_INTENT, HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT, ENGINE_SWITCH_INTENT },

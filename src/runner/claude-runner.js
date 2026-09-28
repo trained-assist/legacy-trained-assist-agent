@@ -438,7 +438,11 @@ async function runEngineProcess(opts) {
       ...(engine === 'codex' || engine === 'opencode' ? { stdio: ['pipe', 'pipe', 'pipe'] } : {}),
     });
   } catch (e) { isolation.release(); throw e; }
-  proc.once('close', () => isolation.release());
+  // Аренда слота для «Стопа» (runner/engine-stop.js): сигнал `pkill -u <slot>`
+  // законен только пока слот наш. Флаг ставится в том же тике, где release()
+  // добивает слот и отдаёт lock, — окна «lock отдан, флаг ещё нет» не бывает.
+  const slotLease = { slot: isolation.runAs || null, released: false };
+  proc.once('close', () => { slotLease.released = true; isolation.release(); });
   if (engine === 'codex' || engine === 'opencode') proc.stdin.end();
 
   let streamTimer = null;
@@ -884,7 +888,7 @@ async function runEngineProcess(opts) {
   // и убить движок можно только сигналом слоту (см. runner/engine-stop.js).
   // `threadId` нужен taskOwnedBy для топик-скоупа (#255) — без него «стоп» в
   // топике A убивал бы задачу топика B.
-  const sessionState = { killFn: null, killTimer: null, extendCount: 0, proc, userStopped: false, chatId, threadId: runThreadId, sessionId, username: user.username, audience: user.audience || 'default', slot: isolation.runAs || null };
+  const sessionState = { killFn: null, killTimer: null, extendCount: 0, proc, userStopped: false, chatId, threadId: runThreadId, sessionId, username: user.username, audience: user.audience || 'default', slot: isolation.runAs || null, slotLease };
   activeTimers.set(taskId, sessionState);
   // A Stop that arrived before the process existed (queued web Stop) lands now.
   if (consumePendingStop?.()) {
