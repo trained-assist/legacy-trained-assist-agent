@@ -18,6 +18,8 @@ module.exports = function migratePlan(db) {
           execution_policy_json: 'TEXT', execution_session_id: 'TEXT', request_id: 'TEXT', blocker_reason: 'TEXT',
           // P4 (#1459): resolved playbook hooks pinned at playbook_version — task_done/task_failed.
           hooks_json: 'TEXT',
+          // Fanout (#1752): a child plan spawned by a parent's fanout step.
+          parent_task_id: 'TEXT', parent_item_id: 'TEXT', batch_item_key: 'TEXT',
         },
         task_items: {
           // P4 (#1459): resolved per-item hooks — step on_complete/on_fail and the
@@ -42,6 +44,9 @@ module.exports = function migratePlan(db) {
           // started_at, deadline_at, reason, awaiting_user, wake_message, ...}.
           // NULL = the step does not wait. See src/durable-wait.js.
           wait_json: 'TEXT',
+          // Fanout (#1752): batch config + durable state of a fanout step
+          // (queue, child task per element, supervisor journal). See src/playbook-fanout.js.
+          fanout_json: 'TEXT',
         },
         executions: { executor_role: 'TEXT', model_level: 'TEXT', context_budget: 'TEXT', profile: 'TEXT', provider: 'TEXT', attempt_number: 'INTEGER', result_json: 'TEXT' },
       };

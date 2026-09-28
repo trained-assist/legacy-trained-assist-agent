@@ -605,6 +605,8 @@ function createDefaultRegistry({ ghToken = defaultGhToken, ghFetch = defaultGhFe
     credential_present: credentialPresent,
     http_ok: makeHttpOkValidator(fetchImpl ? { fetchImpl } : {}),
     task_done: makeTaskDoneValidator({ getTask }),
+    // #1752: a fanout step is joined — every element of the batch done or skipped.
+    fanout_joined: require('./playbook-fanout').makeFanoutJoinedValidator(),
   };
 }
 
