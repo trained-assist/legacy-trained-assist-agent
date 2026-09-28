@@ -10,6 +10,12 @@ Goal: register trained-assist-search-skill as the search-skills sibling — вы
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live (search-skills в .mcp.json, ensure_sibling в журнале деплоя)
 
+Goal: research-профиль на OpenCode Go — `opencode-go/mimo-v2.6-flash` вместо gemini через openrouter, ноль стоимости на вызов сверх подписки (#1792)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1821
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live (живой hermes_research отвечает с Go-моделью в логе рана и grounded=true)
+
 Goal: поисковая лестница `search` в llm-ladder worker — opencode-go/mimo-v2.6-flash → openrouter/google/gemini-2.5-flash как фолбэк. ПОСЛЕДНИЙ пункт очереди (#1792)
 
 - [ ] В trained-assist-llm-ladder (config/ladders.json) добавлена лестница `search`: rung 1 `opencode-go/mimo-v2.6-flash`, rung 2 `openrouter/google/gemini-2.5-flash`
