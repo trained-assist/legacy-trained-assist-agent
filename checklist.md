@@ -72,6 +72,12 @@ Goal: research-профиль на OpenCode Go — `opencode-go/mimo-v2.6-flash`
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live (живой hermes_research отвечает с Go-моделью в логе рана и grounded=true)
 
+Goal: ротация Go-ключей доходит до движка — OPENCODE_GO_API_KEYS (оба ключа через запятую) маппится на OPENCODE_API_KEY (#1792)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1827
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live (в логе рана research уходит с обоими ключами, оба опросены по отдельности)
+
 Goal: поисковая лестница `search` в llm-ladder worker — opencode-go/mimo-v2.6-flash → openrouter/google/gemini-2.5-flash как фолбэк. ПОСЛЕДНИЙ пункт очереди (#1792)
 
 - [ ] В trained-assist-llm-ladder (config/ladders.json) добавлена лестница `search`: rung 1 `opencode-go/mimo-v2.6-flash`, rung 2 `openrouter/google/gemini-2.5-flash`
