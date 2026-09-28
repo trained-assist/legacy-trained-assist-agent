@@ -36,6 +36,10 @@ const readVacancyState = (workDir) => (hhAvailable('hh-vacancy') ? hhLib('hh-vac
 const persona = require('../persona');
 const profiles = require('../profiles');
 const { TOKENS_ROOT } = require('../data-paths');
+// Profile maintenance lock (epic #1784): a file-based gate the profile migrator
+// (a separate process) holds while it mutates a workspace. Checked here, before
+// a run is journaled — see the block comment in _runTaskInner.
+const { isProfileLocked, waitForProfileUnlocked } = require('../profile-lock');
 const answerRouter = require('../answer-router');
 const promptDomains = require('../prompt-domains');
 // Slice C of #1573: offer the audience-default playbook at the start of a
@@ -745,7 +749,7 @@ function runTask(opts) {
   return ret;
 }
 
-function _runTaskInner(opts) {
+async function _runTaskInner(opts) {
   opts = taskDelivery(opts);
   // Forum topic identity for every outbound on this run (#255). Null for private
   // chats and non-forum groups — nothing thread-related is then emitted.
@@ -964,11 +968,43 @@ function _runTaskInner(opts) {
     return Promise.resolve(msg);
   }
 
+  // ── Profile maintenance lock (epic #1784) ────────────────────────────────────
+  // A lock holder — the profile migrator, a SEPARATE process — must see NO new
+  // work start on this profile while it snapshots it. In-flight runs are
+  // unaffected: they already hold their admission scopes and simply finish; the
+  // migrator waits for THEM. Everything from here down writes into the profile
+  // workspace (a quick answer appends its exchange, a queued run appends its
+  // session), so the gate sits at the earliest point AFTER the control commands
+  // above — /stop, /restart, /wakeup, /skip and the read-only checklist links,
+  // which have to keep working DURING maintenance. Scopes still never include
+  // the profile (src/core/admission.js): this file lock is the profile gate.
+  //
+  // Deliberately BEFORE savePendingTask, not inside admission.run: a task that
+  // is merely WAITING for the lock must not exist as a journal entry, or the
+  // migrator's drain (which waits for in-flight work of the profile) would wait
+  // for a run that waits for the lock — deadlock. Everything journaled from
+  // here on is real in-flight work the migrator waits out. Cost: a crash during
+  // the wait loses that accepted task — bounded by the maintenance window, and
+  // the lock's TTL still lets every later run through if the migrator dies.
+  // While parked the task is also not yet in queuedSessions/queuedByOwner: /stop
+  // reports "no active task" and GTD does not see it — a parked task is not a
+  // queued task — and both self-correct the moment the lock clears.
+  const status = require('../admission-status').createAdmissionStatus(opts, { edit: tgEdit, send: tgSend });
+  if (isProfileLocked(opts.user.username)) {
+    console.log('[%s] profile "%s" under maintenance lock — waiting before start', opts.taskId, opts.user.username);
+    status.waiting('🛠 Профиль на обслуживании — задача начнётся сразу после завершения обслуживания.');
+    await waitForProfileUnlocked(opts.user.username);
+    console.log('[%s] maintenance lock released — proceeding', opts.taskId);
+  }
+
   // Pure-info quick answers (/agent_info, /secrets_list, /usage, ...) bypass the queue
   // entirely, same as /stop above — they read local state synchronously and don't touch
   // Claude or the session transcript, so there's no reason to make them wait behind
   // whatever this chat's admission queue is currently running (issue: "/agent_info waits
   // for the previous task to finish, but it doesn't need to call the agent at all").
+  // They do NOT bypass the profile maintenance lock above: recordQuickExchange appends
+  // into the workspace, and an append after the migrator archived the file is exactly
+  // the re-creation risk R2 this lock exists to close (epic #1784).
   // forceClaude means the user explicitly wants Claude (e.g. a "proработка" button tap on
   // one of these commands' replies) — respect that and fall through to the normal path.
   if (humanInput && !opts.forceClaude && isPreQueueQuickIntent((opts.task || '').trim())) {
@@ -986,6 +1022,11 @@ function _runTaskInner(opts) {
       });
       const extra = { reply_markup: { inline_keyboard: escalateRows(qaSessionId) } };
       return (async () => {
+        // Disarm the maintenance status from the lock gate above: this answer goes
+        // out through the send path below, and a live «Ожидание: N с» ticker would
+        // overwrite it every 15s. Awaiting the tail also orders our edit after any
+        // in-flight status edit.
+        await status.close();
         if (botToken) {
           const im = opts.initialMsgId;
           try {
@@ -1062,32 +1103,47 @@ function _runTaskInner(opts) {
   if (isRunStopped({ traceId: runTrace, initiatedAt: opts.initiatedAt, fromUser: opts.fromUser })) {
     // Без правки сообщения: до этого Стоп уже ответил в чат, а убитое
     // продолжение не имеет права стирать сохранённый частичный результат (SS-02).
+    // status.close() (#1784): if the profile maintenance gate above armed the
+    // «Ожидание…» ticker, a blocked hop must not keep editing the chat either.
+    status.close();
     console.log(`[${opts.taskId}] stop-gate: blocked before queue (trace=${runTrace || 'none'})`);
     return Promise.resolve(STOP_NOT_STARTED_MSG);
   }
-  // Journal BEFORE waiting: a restart must not silently lose accepted work.
-  savePendingTask(opts.taskId, {
-    phase: 'queued', activitySessionId: opts.activitySessionId, taskId: opts.taskId, rootTaskId: opts.rootTaskId, requestId: opts.requestId, userId: opts.user.id, username: opts.user.username, threadId: opts.threadId,
-    task: opts.task, context: opts.context,
-    sessionId: opts.sessionId, contextFromSession: opts.contextFromSession,
-    forceClaude: opts.forceClaude, forceNew: opts.forceNew, webExactSession: opts.webExactSession, mode: opts.mode, userMessageRecorded: opts.userMessageRecorded,
-    projectId: opts.projectId, projectPicked: opts.projectPicked, newProjectName: opts.newProjectName, engine: opts.engine,
-    initialMsgId: opts.initialMsgId, pinnedMsgId: opts.pinnedMsgId, fileRefs: opts.fileRefs,
-    profileId: opts.user.profileId, telegramUserId: opts.user.telegramUserId, audience: opts.user.audience,
-    continuationCount: opts.continuationCount, retryCount: opts.retryCount, internalGtd: opts.internalGtd,
-    resumedAfterRestart: opts.resumedAfterRestart, resumeAttempts: opts.resumeAttempts,
-    startedAt: opts.acceptedAt || Date.now(), initiatedAt: opts.initiatedAt,
-    // Where the result goes (#1671): telegram (userId) | web | durable. Lets a restart
-    // resume the run whatever its surface, not only a Telegram chat.
-    resumeSink: opts.resumeSink || null,
-    ocProfile: opts.ocProfile || null, ocRole: opts.ocRole || null, stepTimeoutMs: opts.stepTimeoutMs || null,
-  });
-  const status = require('../admission-status').createAdmissionStatus(opts, { edit: tgEdit, send: tgSend });
+  // Journal BEFORE waiting (lane/session admission, RAM, slots): a restart must not
+  // silently lose accepted work. The profile maintenance lock above is the one wait
+  // that comes BEFORE this journal — see its comment (migrator drain deadlock).
+  try {
+    savePendingTask(opts.taskId, {
+      phase: 'queued', activitySessionId: opts.activitySessionId, taskId: opts.taskId, rootTaskId: opts.rootTaskId, requestId: opts.requestId, userId: opts.user.id, username: opts.user.username, threadId: opts.threadId,
+      task: opts.task, context: opts.context,
+      sessionId: opts.sessionId, contextFromSession: opts.contextFromSession,
+      forceClaude: opts.forceClaude, forceNew: opts.forceNew, webExactSession: opts.webExactSession, mode: opts.mode, userMessageRecorded: opts.userMessageRecorded,
+      projectId: opts.projectId, projectPicked: opts.projectPicked, newProjectName: opts.newProjectName, engine: opts.engine,
+      initialMsgId: opts.initialMsgId, pinnedMsgId: opts.pinnedMsgId, fileRefs: opts.fileRefs,
+      profileId: opts.user.profileId, telegramUserId: opts.user.telegramUserId, audience: opts.user.audience,
+      continuationCount: opts.continuationCount, retryCount: opts.retryCount, internalGtd: opts.internalGtd,
+      resumedAfterRestart: opts.resumedAfterRestart, resumeAttempts: opts.resumeAttempts,
+      startedAt: opts.acceptedAt || Date.now(), initiatedAt: opts.initiatedAt,
+      // Where the result goes (#1671): telegram (userId) | web | durable. Lets a restart
+      // resume the run whatever its surface, not only a Telegram chat.
+      resumeSink: opts.resumeSink || null,
+      ocProfile: opts.ocProfile || null, ocRole: opts.ocRole || null, stepTimeoutMs: opts.stepTimeoutMs || null,
+    });
+  } catch (e) {
+    // The status object now exists BEFORE the journal (the lock gate needs it to
+    // announce a maintenance wait). If the journal write throws, its «Ожидание…»
+    // ticker must not keep editing the chat every 15s for a run that died here —
+    // close it with an explicit failure (this is also the user's only signal:
+    // before, a journal error just vanished into a console line).
+    await status.finish('❌ Не удалось принять задачу — попробуй отправить её ещё раз.').catch(() => {});
+    throw e;
+  }
   // No per-profile / per-project / per-workDir locks: a stale promise in those
   // left chats saying "waiting for previous work" with nothing running. Tasks of
   // one profile run concurrently across dialogs and sessions — context is rebuilt
   // from the session store (no `claude --resume`), so parallel claudes never
-  // share a transcript file.
+  // share a transcript file. The ONE profile-wide gate is the file lock checked
+  // above (epic #1784): maintenance, not concurrency.
   // Scopes held for the whole run (epic #1365 §2.3): the Telegram dialog lane
   // (endpoint+chat+topic — different sessions in one dialog wait for each other)
   // and the session writer guard (every channel, incl. Web: one writer per

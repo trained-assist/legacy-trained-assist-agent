@@ -50,6 +50,18 @@ function createAdmissionStatus(opts, { edit, send, intervalMs = 15000 }) {
       timer = null;
       await publish(text);
     },
+    // Stop the waiting ticker WITHOUT publishing — the caller delivers its own
+    // message through the normal send path instead (a pre-queue quick answer
+    // that parked on the profile maintenance lock, #1784: without this the
+    // «Ожидание: N с» interval would overwrite its ⚡ reply every 15s). Returns
+    // the pending tail so the caller can order its own edit AFTER an in-flight
+    // status edit.
+    close() {
+      closed = true;
+      if (timer) clearInterval(timer);
+      timer = null;
+      return tail;
+    },
   };
 }
 module.exports = { createAdmissionStatus };

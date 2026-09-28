@@ -11,6 +11,11 @@
 // Profile / project / workDir are never scopes — different dialogs and
 // sessions of one profile/folder run in parallel.
 //
+// The profile-wide gate that DOES exist is not a scope: the maintenance lock
+// (src/profile-lock.js, epic #1784) is a file held by a separate process (the
+// migrator), so it cannot be granted through this process-local table. The
+// runner checks it before a run is journaled — see runner/index.js.
+//
 // Grant is all-or-nothing (no partial holds → no deadlock) and FIFO per scope:
 // a waiter is skipped while any EARLIER waiter still wants one of its scopes,
 // so a later request can never overtake an earlier one on a shared scope

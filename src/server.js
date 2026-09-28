@@ -449,6 +449,10 @@ async function resumePendingTasks(secrets) {
       try {
         // runTask journals its replacement synchronously before returning its promise.
         // Keep the old durable entry throughout backoff and until that handoff succeeds.
+        // Exception — profile maintenance lock (#1784): runTask waits for the lock first,
+        // so the new entry lands later and the old one below is already gone by then.
+        // Accepted: a run waiting for the lock must NOT be an in-flight journal entry
+        // (the migrator's drain would wait for it while it waits for the migrator).
         const running = runTask({
           taskId: `${p.username}-resume-${Date.now()}`,
           user, task: resumeTask, context: p.context || null,
@@ -1157,7 +1161,10 @@ async function main() {
           }
         }
 
-        // runTask journals synchronously, before any await or acknowledgement.
+        // runTask journals synchronously, before any await or acknowledgement —
+        // except while the profile holds a maintenance lock (#1784): then it waits
+        // first and journals when the lock clears (a lock-waiter must not read as
+        // in-flight work to the migrator's drain). 202 stays the acceptance signal.
         // fromUser: POST /run — это запрос человека (или его явный «▶️ Запустить»
         // из держателя). Trace-гейт Стопа его не блокирует никогда: K1 (новый
         // запрос юзера всегда запускается) и SS-05 (сообщения, присланные во время
