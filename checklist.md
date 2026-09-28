@@ -72,12 +72,29 @@ Goal: research-профиль на OpenCode Go — `opencode-go/mimo-v2.6-flash`
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live (живой hermes_research отвечает с Go-моделью в логе рана и grounded=true)
 
+Goal: ротация Go-ключей доходит до движка — OPENCODE_GO_API_KEYS (оба ключа через запятую) маппится на OPENCODE_API_KEY (#1792) — СУПЕРСЕДОВАН #1832: запятую движок не принимает, смежено до замера с чистым HOME
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1827
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live (в логе рана research уходит с обоими ключами, оба опросены по отдельности)
+
 Goal: profile maintenance lock + POST /internal/flush-profile — safety precondition for running the migration LIVE (#1784 G1+G2)
 
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1812
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
 
+Goal: profile maintenance lock + POST /internal/flush-profile — safety precondition for running the migration LIVE (#1784 G1+G2)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1812
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
+
+Goal: profile-lock waitedMs flake fix — immediate unlock reports 0, main CI red после #1812
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1829
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
 Goal: ротация Go-ключей — один ключ на ран из OPENCODE_GO_API_KEYS, запятая никогда не уходит в движок (#1792)
 
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1832
