@@ -28,6 +28,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { readTokenValue } = require('./token-value');
+const { readCredentialFile } = require('./credential-store');
 const { DurableTaskStore } = require('./durable-task-store');
 const { criterionIdForItem } = require('./durable-task-plan');
 const { durableTaskDbPath, userWorkDir, projectDir: projectDirPath, listProfiles } = require('./data-paths');
@@ -1398,7 +1399,7 @@ const PR_REF_RE = /github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/;
 function _ghToken(username) {
   try {
     const p = path.join(TOKENS_ROOT, String(username), 'github');
-    if (fs.existsSync(p)) return readTokenValue(fs.readFileSync(p, 'utf8'));
+    if (fs.existsSync(p)) return readTokenValue(readCredentialFile(p));
   } catch { /* no token on disk */ }
   return null;
 }

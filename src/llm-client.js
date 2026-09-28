@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { readCredentialFile } = require('./credential-store');
 
 // ─── OpenRouter (fallback) ────────────────────────────────────────────────────
 
@@ -125,7 +126,7 @@ function readGigachatKey(username) {
   const tokensBase = process.env.AGENT_TOKENS_DIR || path.join(os.homedir(), 'agent-tokens');
   const file = path.join(tokensBase, String(username), 'gigachat');
   if (fs.existsSync(file)) {
-    const key = fs.readFileSync(file, 'utf8').trim();
+    const key = readCredentialFile(file).trim();
     if (key) return key;
   }
   return process.env.GIGACHAT_API_KEY || null;
@@ -145,7 +146,7 @@ function readOrKey(username) {
   const tokensBase = process.env.AGENT_TOKENS_DIR || path.join(os.homedir(), 'agent-tokens');
   const file = path.join(tokensBase, String(username), 'openrouter');
   if (fs.existsSync(file)) {
-    const key = fs.readFileSync(file, 'utf8').trim();
+    const key = readCredentialFile(file).trim();
     if (key) return key;
   }
   return process.env.OPENROUTER_API_KEY || null;

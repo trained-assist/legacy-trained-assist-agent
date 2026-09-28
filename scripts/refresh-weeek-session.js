@@ -24,6 +24,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { readCredentialFile, writeCredential } = require('../src/credential-store');
 
 const CF_ACCOUNT_ID  = process.env.CF_ACCOUNT_ID  || 'd740a05e9442c1d0feacae2dfc673e93';
 const CF_WORKER_NAME = process.env.CF_WORKER_NAME  || 'flexi-telegram-deal-bot';
@@ -80,7 +81,7 @@ async function captureViaPlaywright(profiles) {
     for (const filename of ['weeek-login', 'weeek']) {
       const file = path.join(os.homedir(), 'agent-tokens', profile, filename);
       try {
-        const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+        const raw = JSON.parse(readCredentialFile(file));
         if (raw.email && raw.password) { creds = raw; credsProfile = profile; break; }
       } catch { /* not found or no creds */ }
     }
@@ -238,9 +239,7 @@ async function main() {
 
   // Save to agent-tokens for profiles that need L2 Weeek session locally
   for (const profile of LOCAL_SESSION_PROFILES) {
-    const tokenDir = path.join(os.homedir(), 'agent-tokens', profile);
-    fs.mkdirSync(tokenDir, { recursive: true });
-    fs.writeFileSync(path.join(tokenDir, 'weeek-session'), cookieStr, 'utf8');
+    writeCredential(profile, 'weeek-session', cookieStr);
     console.log(`[refresh-weeek] Saved session to ~/agent-tokens/${profile}/weeek-session (via ${captureMethod})`);
   }
 
