@@ -2,6 +2,17 @@
 
 _Last updated: 2026-09-03_
 
+> **Status — implemented (P0 C4, epic #1789).** `src/credential-store.js` is the
+> single module (envelope format, `.meta` sidecars, `.index.json`, plaintext
+> fallback); every credential read/write under `TOKENS_ROOT` in `src/` and
+> `scripts/` goes through it; `scripts/encrypt-tokens.mjs` is the one-time
+> migration (`--dry-run` to preview, originals backed up to
+> `agent-tokens/.backup-<ts>/`). TTL filtering of `/capabilities` (Phase 2) and
+> key rotation are still open. **Rollout is gated on the key**: with no
+> `CRED_ENCRYPTION_KEY` in `secrets.env` everything stays plaintext, so the
+> encryption switch-on must follow the sibling domain repos getting decrypt
+> support (they still read these files with raw `fs.readFileSync`).
+
 ## Problem Statement
 
 User credentials (GitHub, Weeek, nalog tokens, etc.) are stored as **plain text files** on the VM:
@@ -65,9 +76,9 @@ Base64-encoded, stored as a text file. Version byte allows future format changes
 
 | VM | Source | Key name |
 |----|--------|----------|
-| GCP VM | GCP Secret Manager | `CRED_ENCRYPTION_KEY` |
-| RU VM | `/home/vova/secrets.env` | `CRED_ENCRYPTION_KEY` |
-| Dev/test | `CRED_ENCRYPTION_KEY` env var | (test-specific 32-byte hex key) |
+| GCP VM | GitHub Actions secret → CI writes `/home/vova/secrets.env` → systemd `EnvironmentFile=` → `process.env` (same channel as `AGENT_SECRET` / `INN_*`) | `CRED_ENCRYPTION_KEY` |
+| RU VM | — (not written: `agent-tokens` on RU holds only `.chatid` plus the legacy local `nalog` copy, which has no reader there — it stays plaintext with a warning) | `CRED_ENCRYPTION_KEY` |
+| Dev/test | `CRED_ENCRYPTION_KEY` env var | (test-specific 32-byte hex key; test harnesses delete it so fixtures stay plaintext) |
 
 **Key generation:**
 ```bash
@@ -136,17 +147,24 @@ isTokenValid(userId, service)  // checks expiry
 
 ### Phase 4: Migration of existing tokens — ~30min
 
-- On first `readToken()` call for a user: detect plain text (no v2 header), re-encrypt, write back
-- This is transparent — no migration script needed, happens lazily
-- Log: `[credential-store] migrated username=efi service=github to encrypted format`
+- **As implemented:** `node scripts/encrypt-tokens.mjs` does it in one pass
+  (backed up, idempotent, `--dry-run` to preview). Reads never rewrite: a legacy
+  plaintext file is read transparently and re-encrypted on its **next write**, so
+  nothing is mutated behind the caller's back.
+- Lazy "re-encrypt on first read" (the earlier idea) was rejected: a read that
+  writes back can race with concurrent writers and turns a read-only diagnostic
+  into a mutation.
 
 ---
 
 ## Changes Required
 
 ### New files
-- `src/credential-store.js` — encryption + TTL layer
-- `tests/unit/credential-store.test.js` — full unit coverage
+- `src/credential-store.js` — encryption layer + `.meta` / `.index.json` bookkeeping
+- `test/credential-store.test.cjs` — round-trip, legacy plaintext, tamper detection,
+  missing-key fallback, index, mode 0600 (runs in `npm run test:cjs`)
+- `scripts/encrypt-tokens.mjs` — one-time migration (`--dry-run`, idempotent,
+  originals backed up to `agent-tokens/.backup-<ts>/`)
 
 ### Modified files
 - `src/user-tokens.js` — use `credential-store.js` instead of direct `fs` calls
@@ -155,15 +173,19 @@ isTokenValid(userId, service)  // checks expiry
 - `infra/env-manifest.json` — add `CRED_ENCRYPTION_KEY` to secrets list
 - `scripts/check-env-sync.js` — will auto-pick up from manifest
 
-### CI / infra
-- Add `CRED_ENCRYPTION_KEY` to GCP Secret Manager
-- Add `CRED_ENCRYPTION_KEY` to GitHub Actions Secrets
-- Add to `ci.yml` printf blocks for both VMs
-- Run `node scripts/check-env-sync.js` — will fail if not added (by design)
+### CI / infra (done in the C4 PR)
+- `infra/env-manifest.json` → `github_actions_secrets.app`, `written_to: ["gcp"]`
+- `ci.yml` **and** `deploy-manual.yml` GCP printf blocks write it into
+  `/home/vova/secrets.env` — a manual deploy rewrites that file, so both workflows
+  must carry the key or the next manual deploy silently drops it
+- Run `node scripts/check-env-sync.js` — validates manifest ↔ ci.yml (green)
+- **Operator step (not in the repo):** `gh secret set CRED_ENCRYPTION_KEY --body "$(openssl rand -hex 32)"`.
+  Until the secret exists the printf writes an empty value → the store stays
+  plaintext (by design: safe default, warning logged)
 
 ---
 
-## Tests to write (`tests/unit/credential-store.test.js`)
+## Tests (implemented — `test/credential-store.test.cjs`)
 
 ```js
 // Encrypt/decrypt round-trip

@@ -15,6 +15,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { readCredentialFile } = require('./credential-store');
 
 const TG_BASE = (process.env.TELEGRAM_API_URL || 'https://api.telegram.org').replace(/\/$/, '');
 
@@ -153,7 +154,7 @@ async function _checkUser(userId, botToken) {
   if (!fs.existsSync(saFile)) return;
 
   let sa;
-  try { sa = JSON.parse(fs.readFileSync(saFile, 'utf8')); }
+  try { sa = JSON.parse(readCredentialFile(saFile)); }
   catch { return; }
   if (!sa?.client_email || !sa?.private_key) return;
 

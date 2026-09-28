@@ -13,6 +13,7 @@ const sessions = require('../session-store');
 const { generateSummary } = require('../session-summary');
 const projects = require('../projects');
 const { revokeService, generateConnectLink } = require('../user-tokens');
+const { readCredentialFile } = require('../credential-store');
 const { runHostAction } = require('../mcp-action');
 
 // Outbound HH effects (send / mass reject) can take longer than a read.
@@ -510,7 +511,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
   if ((GDRIVE_SHARE_INTENT.test(task) || GDRIVE_SA_EMAIL_INTENT.test(task)) && userId) {
     const gdriveFile2 = path.join(os.homedir(), 'agent-tokens', String(userId), 'gdrive');
     try {
-      const sa2 = JSON.parse(fs.readFileSync(gdriveFile2, 'utf8'));
+      const sa2 = JSON.parse(readCredentialFile(gdriveFile2));
       if (sa2.client_email) {
         return [
           '📂 Чтобы дать мне доступ к файлу или папке в Google Drive:',

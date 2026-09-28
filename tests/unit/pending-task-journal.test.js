@@ -155,3 +155,57 @@ describe('pending-task journal — terminal-phase safety net (watchdog step 1b)'
     expect(after.username).toBe('bob');
   });
 });
+
+// Epic #1789 P1 — profile mobility: the journal identifies a task's profile by
+// username/profileId and never by a machine path, so a profile copied to
+// another directory (or another VM) resumes its unfinished session and pending
+// tasks from the NEW location. The workspace is derived at read time through
+// src/data-paths.js (Identity ≠ location, its header).
+describe('pending-task journal stores profile identity, not machine paths (#1789 P1)', () => {
+  const { resolvePendingWorkDir } = require('../../src/pending-task-resume');
+  const { userWorkDir } = require('../../src/data-paths');
+  const readJournal = (taskId) => JSON.parse(require('fs').readFileSync(join(tmpDir, 'pending-tasks', `${taskId}.json`), 'utf8'));
+
+  it('a new record keeps no absolute workDir and resolves by username', () => {
+    const R = freshRunner();
+    const stalePath = join(tmpDir, 'somewhere-else', 'alice'); // what the old runner used to persist
+    R.savePendingTask('alice-1', {
+      taskId: 'alice-1', username: 'alice', profileId: 'alice',
+      workDir: stalePath, phase: 'queued', task: 'do X', startedAt: Date.now(),
+    });
+
+    const record = readJournal('alice-1');
+    expect(Object.hasOwn(record, 'workDir'), 'journal must not persist a machine path').toBe(false);
+    expect(record.username).toBe('alice', 'profile identity stays in the record');
+    expect(resolvePendingWorkDir(record)).toBe(userWorkDir('alice'));
+    expect(resolvePendingWorkDir(record)).not.toBe(stalePath);
+  });
+
+  it('legacy record with an absolute workDir still reads back, resolves by identity, drops the path on rewrite', () => {
+    const dir = join(tmpDir, 'pending-tasks');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'bob-1.json'), JSON.stringify({
+      taskId: 'bob-1', username: 'bob', workDir: '/mnt/old/users/bob',
+      phase: 'running', task: 'y', startedAt: Date.now(),
+    }));
+
+    const R = freshRunner();
+    const record = R.getPendingTasks().find(p => p.taskId === 'bob-1');
+    expect(record, 'a legacy journal entry must still be listed (resumable)').toBeTruthy();
+    expect(record.workDir).toBe('/mnt/old/users/bob', 'read path never rewrites the record on its own');
+    expect(resolvePendingWorkDir(record)).toBe(userWorkDir('bob'), 'profile identity wins — this is what makes a copied profile resume');
+
+    R.savePendingTask('bob-1', { phase: 'interrupted' });
+    expect(Object.hasOwn(readJournal('bob-1'), 'workDir'), 'legacy machine path retired on the first rewrite').toBe(false);
+    expect(readJournal('bob-1').phase).toBe('interrupted');
+  });
+
+  it('legacy record with no profile identity falls back to its stored workDir', () => {
+    const dir = join(tmpDir, 'pending-tasks');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'noname-1.json'), JSON.stringify({ taskId: 'noname-1', workDir: '/mnt/old/users/bob', phase: 'running' }));
+
+    const record = freshRunner().getPendingTasks().find(p => p.taskId === 'noname-1');
+    expect(resolvePendingWorkDir(record)).toBe('/mnt/old/users/bob');
+  });
+});

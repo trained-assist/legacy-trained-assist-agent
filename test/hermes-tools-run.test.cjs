@@ -19,7 +19,8 @@ const SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } } };
 
   ok(typeof hermesRunWithTools === 'function', 'hermesRunWithTools is exported as a function');
 
-  ok(require('../src/opencode-ladder-provider').buildOcProfileOverrides('research').agent.explore.model.includes('gemini'), 'research profile starts on Gemini');
+  const researchModel = require('../src/opencode-ladder-provider').buildOcProfileOverrides('research').agent.explore.model;
+  ok(researchModel === 'opencode-go/mimo-v2.6-flash', `research runs on OpenCode Go (got ${researchModel})`);
   process.env.HERMES_RESEARCH_ENGINE = 'claude';
   ok(process.env.HERMES_RESEARCH_ENGINE === 'claude', 'Claude rollback switch is available');
   delete process.env.HERMES_RESEARCH_ENGINE;
