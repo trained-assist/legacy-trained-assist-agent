@@ -28,7 +28,7 @@ UNIT="assist-agent"
 MODE="run-as"                 # run-as | allowlist
 UMASK_VALUE="0027"
 LOOPBACK_POLICY="blocklist"   # blocklist | deny
-BLOCK_PORTS="3000,8080,9090,9224,5900,6080"
+BLOCK_PORTS="2053,3000,5900,6080,7070,8080,8081,8888,9090,9222:9299,20241"
 ENGINE_BINS="claude codex opencode gh node git"
 USERS_DIR_OPT=""
 TOKENS_DIR_OPT=""
@@ -54,8 +54,10 @@ Usage: agent-isolation-setup.sh --service-user USER [options]
   --unit NAME             systemd unit of the agent service (default assist-agent)
   --mode run-as|allowlist run-as: switch users + env allowlist; allowlist: env allowlist + MCP bridge only
   --umask MASK            UMask for the service (default 0027)
-  --loopback-policy P     blocklist (default): reject listed local ports; deny: reject all loopback TCP
-  --block-ports LIST      local ports slots may not connect to (default 3000,8080,9090,9224,5900,6080)
+  --loopback-policy P     blocklist (default): reject listed local ports; deny: reject all TCP to this host
+  --block-ports LIST      local ports slots may not connect to, on ANY address of this host
+                          (default 2053,3000,5900,6080,7070,8080,8081,8888,9090,9222:9299,20241;
+                          ranges as a:b). List what listens here: ss -ltnp
   --engine-bins LIST      binaries to make reachable for slots when installed under the service home
   --skip-users --skip-sudoers --skip-perms --skip-engines --skip-firewall --skip-systemd --skip-sa-review
 EOF
@@ -102,7 +104,7 @@ say() { echo; echo "== $*"; }
 [[ "$PREFIX" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "bad --prefix"
 [[ "$GROUP" =~ ^[a-z_][a-z0-9_-]*$ ]] || die "bad --group"
 [[ "$SLOTS" =~ ^[0-9]+$ ]] && [ "$SLOTS" -ge 1 ] && [ "$SLOTS" -le 64 ] || die "--slots must be 1..64"
-[[ "$BLOCK_PORTS" =~ ^[0-9,]*$ ]] || die "bad --block-ports"
+[[ "$BLOCK_PORTS" =~ ^[0-9,:]*$ ]] || die "bad --block-ports"
 case "$MODE" in run-as|allowlist) ;; *) die "--mode must be run-as or allowlist" ;; esac
 case "$LOOPBACK_POLICY" in blocklist|deny) ;; *) die "--loopback-policy must be blocklist or deny" ;; esac
 [ "$APPLY" = 0 ] || [ "$(id -u)" = 0 ] || die "--apply must run as root"
@@ -271,15 +273,17 @@ iptables -A TA_AGENTS_OUT -d 169.254.0.0/16 -j REJECT
 # local DNS stub stays reachable
 iptables -A TA_AGENTS_OUT -d 127.0.0.53 -p udp --dport 53 -j RETURN
 iptables -A TA_AGENTS_OUT -d 127.0.0.53 -p tcp --dport 53 -j RETURN"
+  # Destination = any address of THIS host (addrtype LOCAL), not only 127.0.0.0/8:
+  # services bound to 0.0.0.0 are otherwise reachable through the host's own IPs.
   if [ "$LOOPBACK_POLICY" = deny ]; then
     FW_RULES="$FW_RULES
-iptables -A TA_AGENTS_OUT -d 127.0.0.0/8 -p tcp -j REJECT
-ip6tables -A TA_AGENTS_OUT -d ::1/128 -p tcp -j REJECT 2>/dev/null || true"
+iptables -A TA_AGENTS_OUT -m addrtype --dst-type LOCAL -p tcp -j REJECT
+ip6tables -A TA_AGENTS_OUT -m addrtype --dst-type LOCAL -p tcp -j REJECT 2>/dev/null || true"
   else
     for port in ${BLOCK_PORTS//,/ }; do
       FW_RULES="$FW_RULES
-iptables -A TA_AGENTS_OUT -d 127.0.0.0/8 -p tcp --dport $port -j REJECT
-ip6tables -A TA_AGENTS_OUT -d ::1/128 -p tcp --dport $port -j REJECT 2>/dev/null || true"
+iptables -A TA_AGENTS_OUT -m addrtype --dst-type LOCAL -p tcp --dport $port -j REJECT
+ip6tables -A TA_AGENTS_OUT -m addrtype --dst-type LOCAL -p tcp --dport $port -j REJECT 2>/dev/null || true"
     done
   fi
   printf '%s\n' "$FW_RULES" | write_file "$FW_SCRIPT" 0755
