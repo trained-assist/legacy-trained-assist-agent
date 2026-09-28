@@ -28,12 +28,14 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { readTokenValue } = require('./token-value');
+const { readCredentialFile } = require('./credential-store');
 const { DurableTaskStore } = require('./durable-task-store');
 const { criterionIdForItem } = require('./durable-task-plan');
 const { durableTaskDbPath, userWorkDir, projectDir: projectDirPath, listProfiles } = require('./data-paths');
 const { atomicText } = require('./atomic-json');
 const { logDefect } = require('./playbook-defects-log');
 const { resolveStepExecution, planLevelMap } = require('./playbook-executor');
+const { traceIdFor, traceStoppedAt, isUserStoppedReply } = require('./stop-trace');
 
 // Engines this step already failed on with credentials/config — retrying them is
 // pointless, the fallback ladder skips them.
@@ -777,6 +779,18 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
 async function _settleDurableReply(ctx, reply) {
   const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier } = ctx;
   const said = typeof reply === 'string' ? reply : '';
+  // R4 / SS-04: «⛔ Остановлено…» — волеизъявление пользователя, а не провал шага.
+  // Раньше ответ без DURABLE-маркера уходил в recoverDurableItem, и остановленный
+  // шаг ретраили. USER_STOP должен быть терминальным (recovery-policy.js уже
+  // возвращает для него null) — помечаем прямо здесь, не достигая recovery.
+  if (isUserStoppedReply(said)) {
+    const errText = 'user stopped (⛔)';
+    store.failItem(itemSnap.id, task.profile_id, { executionId, error: errText });
+    store.updateTaskItem(itemSnap.id, { last_failure_class: 'USER_STOP', last_recovery_action: 'terminal' }, task.profile_id);
+    store.finishExecution(executionId, { status: 'failed', error_class: 'USER_STOP', error_text: errText });
+    console.log(`[gtd-durable] item ${itemSnap.id.slice(0, 8)}: user stop — terminal, no retry`);
+    return;
+  }
   if (lastDurableMarker(said) === 'waiting') {
     // The agent parked the step on a durable wait (task_item_wait during the
     // run). Not a failure: the attempt is refunded and nothing is completed.
@@ -1256,7 +1270,7 @@ async function maybeSchedule({ workDir, sessionId, chatId, username, task, apiKe
   if (!intent.wanted) return null;
   const chatIdStr = chatId != null ? String(chatId) : null;
   if (chatIdStr) {
-    const conflict = listGtd(workDir).find(r => r.status === 'open' && r.chatId === chatIdStr);
+    const conflict = listGtd(workDir).find(r => r.status === 'open' && r.chatId === chatIdStr && !closeIfStopped(workDir, r));
     if (conflict) {
       console.warn(`[gtd] skip: open GTD for chatId=${chatIdStr} already exists (session=${conflict.sessionId})`);
       return conflict;
@@ -1318,7 +1332,9 @@ async function scheduleFromChecklist({ workDir, sessionId, chatId, username, pro
     console.log(`[gtd] skip(checklist): section owner=${checklist.owner || '(none)'} != session=${sessionId} in ${projectDir}`);
     return null;
   }
-  if (existing && existing.status === 'open') return existing; // уже трекается — не сбрасываем прогресс/backoff
+  // уже трекается — не сбрасываем прогресс/backoff. Кроме записи, приговорённой
+  // Стопом (D2): её возврат оставил бы новую работу этой сессии без доводки.
+  if (existing && existing.status === 'open' && !closeIfStopped(workDir, existing)) return existing;
   // Один трекер на работу (#1719): у сессии есть активный durable-план → его ведёт
   // durable-исполнитель со своей проекцией; второй GTD-цикл по корневому
   // checklist.md гонял бы ту же работу параллельно. Ошибка стора → fail-open.
@@ -1333,13 +1349,13 @@ async function scheduleFromChecklist({ workDir, sessionId, chatId, username, pro
   }
   const chatIdStr = chatId != null ? String(chatId) : null;
 // Dedup by projectDir: same checklist.md already tracked by another session
-  const projectConflict = listGtd(workDir).find(r => r.status === 'open' && r.projectDir === projectDir && r.sessionId !== sessionId);
+  const projectConflict = listGtd(workDir).find(r => r.status === 'open' && r.projectDir === projectDir && r.sessionId !== sessionId && !closeIfStopped(workDir, r));
   if (projectConflict) {
     console.warn(`[gtd] skip(checklist): open GTD for projectDir=${projectDir} already exists (session=${projectConflict.sessionId})`);
     return projectConflict;
   }
   if (chatIdStr) {
-    const conflict = listGtd(workDir).find(r => r.status === 'open' && r.chatId === chatIdStr && r.sessionId !== sessionId);
+    const conflict = listGtd(workDir).find(r => r.status === 'open' && r.chatId === chatIdStr && r.sessionId !== sessionId && !closeIfStopped(workDir, r));
     if (conflict) {
       console.warn(`[gtd] skip(checklist): open GTD for chatId=${chatIdStr} already exists (session=${conflict.sessionId})`);
       return conflict;
@@ -1383,7 +1399,7 @@ const PR_REF_RE = /github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/;
 function _ghToken(username) {
   try {
     const p = path.join(TOKENS_ROOT, String(username), 'github');
-    if (fs.existsSync(p)) return readTokenValue(fs.readFileSync(p, 'utf8'));
+    if (fs.existsSync(p)) return readTokenValue(readCredentialFile(p));
   } catch { /* no token on disk */ }
   return null;
 }
@@ -1542,7 +1558,10 @@ function settleResumedGtd(workDir, sessionId, reply, { now = Date.now() } = {}) 
   const rec = readGtd(workDir, sessionId);
   if (!rec || rec.status !== 'open') return null;
   const said = typeof reply === 'string' ? reply : '';
-  if (DONE_RE.test(said)) rec.closedReason = 'done';
+  // Ответ остановки — терминал, а не «поставить dueAt заново» (иначе остановленная
+  // доводка перерождается на следующем тике, ровно инцидент §0).
+  if (isUserStoppedReply(said)) rec.closedReason = 'user-stop';
+  else if (DONE_RE.test(said)) rec.closedReason = 'done';
   else if (ESCALATED_RE.test(said)) rec.closedReason = 'complexity-escalated';
   else if (BLOCKED_RE.test(said)) rec.closedReason = 'awaiting-human';
   else { rec.dueAt = now + rec.etaMinutes * 60 * 1000; writeGtd(workDir, rec); return rec; }
@@ -1550,6 +1569,62 @@ function settleResumedGtd(workDir, sessionId, reply, { now = Date.now() } = {}) 
   writeGtd(workDir, rec);
   console.log(`[gtd] closed ${sessionId}: ${rec.closedReason} (resumed after restart)`);
   return rec;
+}
+
+// «Стоп» и GTD — ОДИН предикат для всех мест (тик, /tasks/stop, конфликт при
+// планировании): запись остановлена, если трейс её диалога помечен Стопом НЕ
+// раньше её создания. Запись, созданная после Стопа (новая задача юзера, K1),
+// не трогается. Координаты — как у тика: rec.* приоритетнее сессии (#1302 §3.3).
+function gtdTraceOf(workDir, rec, session) {
+  const sess = session === undefined ? require('./session-store').getSession(workDir, rec.sessionId) : session;
+  const chatId = rec.chatId || sess?.liveChatId || sess?.ownerChatId || null;
+  const audience = rec.audience ?? sess?.audience ?? 'default';
+  return traceIdFor({ chatId, audience, threadId: rec.threadId || null, username: rec.username, sessionId: rec.sessionId });
+}
+
+function isGtdStopped(workDir, rec, { session, trace } = {}) {
+  if (!rec || rec.status !== 'open') return false;
+  const t = trace !== undefined ? trace : gtdTraceOf(workDir, rec, session);
+  const stoppedAt = traceStoppedAt(t);
+  if (stoppedAt == null) return false;
+  // Запись без createdAt (до этого поля) создана заведомо раньше отметки.
+  const createdAt = Number.isFinite(rec.createdAt) ? rec.createdAt : 0;
+  return stoppedAt >= createdAt;
+}
+
+function closeGtdAsStopped(workDir, rec) {
+  rec.status = 'closed'; rec.closedReason = 'user-stop';
+  writeGtd(workDir, rec);
+}
+
+// D2 анализа дедлоков: «конфликтующая» open-запись, которую Стоп уже приговорил
+// (тик её ещё не дошёл), не должна заслонять новую проработку юзера — иначе
+// maybeSchedule вернёт старую запись, тик закроет её как user-stop, и новая
+// задача останется без доводки. true = запись закрыта, конфликта нет.
+function closeIfStopped(workDir, rec) {
+  try {
+    if (!isGtdStopped(workDir, rec)) return false;
+    closeGtdAsStopped(workDir, rec);
+    console.log(`[gtd] closed ${rec.sessionId}: user-stop (stale, found at scheduling)`);
+    return true;
+  } catch { return false; } // не смогли проверить — прежнее поведение (конфликт)
+}
+
+// /tasks/stop: закрыть ровно те open-записи, чьи трейсы только что помечены
+// Стопом (тот же предикат, что у тика — просто раньше, чтобы ответ шлюзу был
+// честным). В отличие от clearAllGtd не трогает соседние чаты/боты профиля:
+// трейс включает бота+чат+топик, а метятся только трейсы владельца Стопа.
+function closeStoppedGtd(workDir) {
+  let count = 0;
+  for (const rec of listGtd(workDir)) {
+    try {
+      if (!isGtdStopped(workDir, rec)) continue;
+      closeGtdAsStopped(workDir, rec);
+      console.log(`[gtd] closed ${rec.sessionId}: user-stop (via /tasks/stop)`);
+      count++;
+    } catch (e) { console.warn(`[gtd] closeStoppedGtd ${rec?.sessionId}: ${e.message}`); }
+  }
+  return count;
 }
 
 // Cancel all open GTD records for a profile (all its chats). Only meant for a
@@ -1735,6 +1810,21 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
         continue;
       }
 
+      // R3/SK-04: «Стоп» в этом диалоге закрывает доводку. Проверяем ДО
+      // инкремента, чтобы остановленная запись не сжигала итерацию и не
+      // будила Claude. Записи, созданные ПОСЛЕ отметки Стопа (rec.createdAt
+      // > stoppedAt) — новая задача юзера — продолжают работать (K1).
+      {
+        const trace = traceIdFor({
+          chatId, audience, threadId: rec.threadId || null, username, sessionId: rec.sessionId,
+        });
+        if (isGtdStopped(workDir, rec, { trace })) {
+          closeGtdAsStopped(workDir, rec);
+          console.log(`[gtd] closed ${rec.sessionId}: user-stop (trace stopped)`);
+          continue;
+        }
+      }
+
       // Инкремент + persist ДО запуска — durable, переживает краш итерации.
       rec.iterations += 1;
       rec.lastFiredAt = now;
@@ -1786,6 +1876,7 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
         const doneAt = Date.now();
         // Терминал: итерация сказала done/escalated, либо исчерпали cap.
         const said = typeof reply === 'string' ? reply : '';
+        const stoppedNow = isUserStoppedReply(said);
         const doneNow      = DONE_RE.test(said);
         const escalatedNow = ESCALATED_RE.test(said);
         const blockedNow   = BLOCKED_RE.test(said);
@@ -1794,7 +1885,14 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
         const fresh = readGtd(workDir, _recSnap.sessionId);
         if (!fresh) { console.log(`[gtd] ${_recSnap.sessionId}: record gone at completion — not resurrecting`); return; }
         if (fresh.status !== 'open') { console.log(`[gtd] ${_recSnap.sessionId}: already ${fresh.status} at completion — leaving as-is`); return; }
-        if (doneNow) {
+        if (stoppedNow) {
+          // R3: итерация вернулась «⛔ Остановлено…» (гейт либо живой kill).
+          // Запись закрывается, а не переносится на dueAt — иначе доводка
+          // «перерождается» на следующем тике (инцидент §0).
+          fresh.status = 'closed'; fresh.closedReason = 'user-stop';
+          writeGtd(workDir, fresh);
+          console.log(`[gtd] closed ${_recSnap.sessionId}: user-stop (iteration replied with a stop)`);
+        } else if (doneNow) {
           fresh.status = 'closed'; fresh.closedReason = 'done';
           writeGtd(workDir, fresh);
           console.log(`[gtd] closed ${_recSnap.sessionId}: done`);
@@ -1861,7 +1959,7 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
 
 module.exports = {
   detectIntent, maybeSchedule, scheduleFromChecklist, runDue, buildReopenMessage,
-  readGtd, writeGtd, clearGtd, clearGtdForChat, listGtd, settleResumedGtd,
+  readGtd, writeGtd, clearGtd, clearGtdForChat, clearAllGtd, closeStoppedGtd, isGtdStopped, listGtd, settleResumedGtd,
   readChecklist, trackedChecklist, checklistSummary, computeMaxIterations,
   setChecklistOwner, markChecklistCancelled, claimFreshChecklist, _tgNotify,
   checklistCheapPrecheck, writeChecklistDone, mirrorGtdChecklist, CHECKLIST_API_BASE, checklistAutologinUrl,

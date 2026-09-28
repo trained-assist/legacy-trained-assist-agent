@@ -183,7 +183,7 @@ test('with AGENT_ENV_ALLOWLIST=1 the engine sees no server-only env, MCP keeps i
   }
 });
 
-test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + config env refs), nothing else', async () => {
+test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + OpenCode Go + config env refs), nothing else', async () => {
   process.env.AGENT_ENV_ALLOWLIST = '1';
   const svcHome = fs.mkdtempSync(path.join(tmpRoot, 'svc-oc-'));
   fs.mkdirSync(path.join(svcHome, '.config', 'opencode'), { recursive: true });
@@ -194,11 +194,17 @@ test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + co
     const outDir = fs.mkdtempSync(path.join(tmpRoot, 'oc-'));
     const opts = baseOpts(outDir, fakeEngine(outDir));
     opts.engine = 'opencode';
-    opts.cleanEnv = { ...SERVER_ENV, GIGACHAT_TOKEN: 'gc-key', OTHER_PROVIDER_KEY: 'other-key' };
+    opts.cleanEnv = { ...SERVER_ENV, GIGACHAT_TOKEN: 'gc-key', OTHER_PROVIDER_KEY: 'other-key', OPENCODE_GO_API_KEY: 'oc-test-go-key' };
     const r = await runEngineProcess(opts);
     assert.equal(r.exitCode, 0);
     const env = parseEnvFile(path.join(outDir, 'engine.env'));
     assert.equal(env.OPENROUTER_API_KEY, 'srv-openrouter', 'opencode needs its OpenRouter key');
+    // OpenCode Go: the box ships OPENCODE_GO_API_KEY, the built-in opencode-go provider
+    // reads OPENCODE_API_KEY — runEngineProcess maps it, the allowlist must let it through.
+    assert.equal(env.OPENCODE_API_KEY, 'oc-test-go-key', 'GO key is exposed to the engine under the name its provider reads');
+    assert.ok(!( 'OPENCODE_GO_API_KEY' in env), 'the original name is not needed by the engine');
+    assert.ok(iso.engineCredentialNames('opencode').includes('OPENCODE_API_KEY'), 'Go key is an engine credential, not a server-only secret');
+    assert.deepEqual(iso.engineCredentialNames('codex'), ['OPENAI_API_KEY'], 'codex credential set is unchanged');
     assert.equal(env.GIGACHAT_TOKEN, 'gc-key', '${VAR} reference in the opencode config');
     assert.equal(env.OTHER_PROVIDER_KEY, 'other-key', '{env:VAR} reference in the opencode config');
     for (const k of ['AGENT_SECRET', 'TELEGRAM_BOT_TOKEN', 'DEEPGRAM_API_KEY', 'INN_DADATA_SECRET', 'SOME_SERVER_ONLY_SETTING']) assert.ok(!(k in env), `${k} dropped`);
@@ -280,10 +286,18 @@ test('prepareIsolatedRun: exclusive slots, gate opened for one slot only, everyt
   assert.ok(calls.some(c => c[0] === 'setfacl' && c[1] === '-x' && c[2] === 'g:ta-agents' && c[3] === wdA), 'group access removed from the gate itself');
   assert.ok(fs.existsSync(path.join(wdA, iso.GATE_MARKER)));
   assert.equal(a.env.HOME, path.join(wdA, '.agent-home'));
-  assert.deepEqual(a.spawnArgv('/bin/true', ['x']), ['sudo', ['-n', '-u', a.slot, '--', '/bin/true', 'x']]);
+  assert.equal(a.env.TMPDIR, path.join(wdA, '.agent-home', 'tmp', a.slot), 'temp dir per slot inside the profile');
+  // TMPDIR goes as a sudo argv assignment (glibc strips it from setuid env, #1791)
+  assert.deepEqual(a.spawnArgv('/bin/true', ['x']), ['sudo', ['-n', '-u', a.slot, `TMPDIR=${a.env.TMPDIR}`, '--', '/bin/true', 'x']]);
+  assert.deepEqual(a.spawnArgv('/bin/true', [], { TMPDIR: '/t', GH_TOKEN: 'secret', PATH: '/bin' }), ['sudo', ['-n', '-u', a.slot, 'TMPDIR=/t', '--', '/bin/true']],
+    'only glibc-stripped allowlisted names go to argv');
 
   calls.length = 0;
   a.release();
+  const clearAt = calls.findIndex(c => c.join(' ') === `sudo -n -u ${a.slot} -- find ${a.env.TMPDIR} -xdev -mindepth 1 -delete`);
+  const firstRevoke = calls.findIndex(c => c[0] === 'setfacl' && c[1] === '-x');
+  assert.ok(clearAt >= 0, 'release clears the temp dir as the slot');
+  assert.ok(clearAt > calls.findIndex(c => c.includes('pkill')) && clearAt < firstRevoke, 'after the reap, while the gate is still open');
   const revoked = calls.filter(c => c[0] === 'setfacl' && c[1] === '-x').map(c => c[3]);
   assert.deepEqual(new Set(revoked), new Set(a.aclPaths));
   assert.ok(calls.some(c => c.includes('pkill')), 'slot processes reaped');
@@ -353,6 +367,40 @@ test('ops script: dry run is the default and changes nothing', () => {
   assert.ok(!fs.existsSync(path.join(home2, 'users', 'alice', iso.GATE_MARKER)), 'dry run does not mark');
   const bad = spawnSync('bash', [script, '--service-user', 'svc', '--apply'], { encoding: 'utf8' });
   if (process.getuid && process.getuid() !== 0) assert.notEqual(bad.status, 0, '--apply refuses without root');
+});
+
+// ── #1791: env names glibc strips from setuid programs ─────────────────────────
+
+test('every allowlisted name glibc strips from setuid env travels via sudo argv, and none is a secret', () => {
+  const stripped = [...iso.ENGINE_ENV_ALLOW].filter(k => iso.GLIBC_SETUID_STRIPPED_ENV.has(k));
+  assert.deepEqual(iso.ARGV_ENV, stripped);
+  assert.ok(iso.ARGV_ENV.includes('TMPDIR'));
+  for (const k of iso.ARGV_ENV) assert.doesNotMatch(k, /TOKEN|KEY|SECRET|PASS|COOKIE/, `${k} would be visible in ps`);
+  const env = Object.fromEntries(stripped.map(k => [k, `/v/${k}`]));
+  const [, argv] = iso.sudoArgv({ sudoBin: 'sudo' }, 's1', '/bin/true', [], { ...env, PATH: '/bin' });
+  for (const k of stripped) assert.ok(argv.includes(`${k}=/v/${k}`), k);
+  assert.ok(!argv.some(a => a.startsWith('PATH=')), 'the rest stays in the process env');
+});
+
+test('the stripped-name list matches the host glibc loader (when there is one)', (t) => {
+  const ld = ['/lib64/ld-linux-x86-64.so.2', '/lib/ld-linux-aarch64.so.1'].find(f => fs.existsSync(f));
+  if (!ld) return t.skip('no glibc loader here');
+  const strings = new Set(fs.readFileSync(ld).toString('latin1').split(/[^\x20-\x7e]+/));
+  if (!strings.has('TMPDIR')) return t.skip('loader without the unsecvars table');
+  for (const k of iso.GLIBC_SETUID_STRIPPED_ENV) {
+    if (k.startsWith('LD_')) continue; // spelled via a prefix in some builds
+    assert.ok(strings.has(k), `${k} not in ${ld} — list drifted from glibc`);
+  }
+});
+
+test('clearSlotTmp: own dir emptied as the slot; stale sweep spares the own dir', () => {
+  const calls = [];
+  iso.clearSlotTmp({ sudoBin: 'sudo' }, 's1', '/p/.agent-home/tmp/s1', { exec: (b, a) => calls.push([b, ...a]), stale: true });
+  assert.deepEqual(calls[0], ['sudo', '-n', '-u', 's1', '--', 'find', '/p/.agent-home/tmp/s1', '-xdev', '-mindepth', '1', '-delete']);
+  assert.deepEqual(calls[1].slice(0, 13), ['sudo', '-n', '-u', 's1', '--', 'find', '/p/.agent-home/tmp', '-xdev', '-mindepth', '1', '-maxdepth', '1', '!']);
+  assert.ok(calls[1].includes('+1440') && calls[1].includes('s1'));
+  // best effort: a failing find never throws
+  iso.clearSlotTmp({ sudoBin: 'sudo' }, 's1', '/nonexistent/tmp/s1', { exec: () => { throw new Error('boom'); }, stale: true });
 });
 
 test.after(async () => {

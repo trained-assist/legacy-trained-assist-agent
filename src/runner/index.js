@@ -27,6 +27,7 @@ const {
   listConnectedServices,
   generateConnectLink,
 } = require('../user-tokens');
+const { readCredentialFile, isMetaSidecar } = require('../credential-store');
 const { initLog, readLog } = require('../requirements-log');
 const { hhLib, hhAvailable } = require('../domains/hh/lib');
 const { writeVacancyState } = hhLib('hh-vacancy');
@@ -91,6 +92,10 @@ const {
 // Engine execution (spawn + stream-json + timeout/close) lives in claude-runner.js
 // (issue #942 P1.3) so the process machinery is a self-contained testable unit.
 const { runEngineProcess, buildEngineCommand, inputInspectionRows, resolveEngineCwd } = require('./claude-runner');
+// «Стоп»: реальный kill дерева процессов под run-as изоляцией + trace-тумбстоуны
+// (spec: docs/user-scenarios/core/02-stop-and-supplement.md §2/§2а).
+const { stopEngineProcess, runAlive } = require('./engine-stop');
+const { traceIdFor, markTraceStopped, isRunStopped, traceStoppedAt } = require('../stop-trace');
 
 const STREAM_INTERVAL_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 3000;
@@ -99,54 +104,48 @@ const MAX_MSG_LEN = 3500;
 
 // Telegram cards report token usage only; monetary estimates are not displayed.
 //
-// The model reads the WHOLE prompt every step (fresh input + cache read + cache
-// write), so reporting only input_tokens made a ~57K-step look like "вход 6K"
-// and misled the owner into doubting the system-prompt size (#149 follow-up,
-// owner decision 27.09.2026 "давай да поправим"). When any cache part is
-// present we show the honest total with a breakdown; with no cache at all the
-// footer is unchanged (total === input anyway).
+// Owner decision 29.09.2026: the card must not leak internal engine/model slugs
+// ("deepseek:build") and must read as plain language. The wording below is the
+// owner's own dictation, kept verbatim:
+//   «ИИ натренированный на рабочие вопросы. Расход токенов: вход: X, обработка: Y, ответ: Z»
+//   вход      — prompt tokens read for the FIRST time this step (fresh input + cache write);
+//   обработка — prompt tokens re-read from the cache: the model re-reads them on every step,
+//               so this is where the real volume of a long session shows up (#149 follow-up);
+//   ответ     — generated tokens.
+// All three slots are always present, in this order, so the card looks identical whatever
+// engine or model ran, and no number (cache write included) is reported silently.
+function usageFooter({ input, output, cacheRead, cacheWrite }) {
+  const fmtK = n => {
+    const v = Math.round(n);
+    return v >= 1e6 ? `${Math.round(v / 1e4) / 100}M`
+      : v >= 1000 ? `${Math.round(v / 100) / 10}K` : String(v);
+  };
+  return '\n\nИИ натренированный на рабочие вопросы. Расход токенов: '
+    + `вход: ${fmtK(input + cacheWrite)}, обработка: ${fmtK(cacheRead)}, ответ: ${fmtK(output)}`;
+}
+
+// Claude shape: { input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens }.
 function formatCostFooter(usage) {
   if (!usage) return '';
-  const inp = usage.input_tokens || 0;
-  const out = usage.output_tokens || 0;
-  const cr  = usage.cache_read_input_tokens || 0;
-  const cw  = usage.cache_creation_input_tokens || 0;
-  const fmt = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-  const fmtK = n => n >= 1e6 ? `${Math.round(n / 1e4) / 100}M`
-    : n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
-  const parts = [inputPart(inp, cr, cw, fmt, fmtK), `выход ${fmt(out)}`];
-  return `\n\nИспользование: ${parts.join(' · ')}`;
+  return usageFooter({
+    input: usage.input_tokens || 0,
+    output: usage.output_tokens || 0,
+    cacheRead: usage.cache_read_input_tokens || 0,
+    cacheWrite: usage.cache_creation_input_tokens || 0,
+  });
 }
 
-// "вход N" when no cache; "вход всего T (новых N, из кэша R, в кэш +W)" otherwise.
-function inputPart(inp, cr, cw, fmt, fmtK) {
-  if (cr <= 0 && cw <= 0) return `вход ${fmt(inp)}`;
-  const bits = [`новых ${fmtK(inp)}`];
-  if (cr > 0) bits.push(`из кэша ${fmtK(cr)}`);
-  if (cw > 0) bits.push(`в кэш +${fmtK(cw)}`);
-  return `вход всего ${fmtK(inp + cr + cw)} (${bits.join(', ')})`;
-}
-
-// breakdown: [{ agent, model, input, output, cacheRead, cacheWrite, cost }]
-// Одна строка, словами, без иконок. Показываем только реально использованную
-// модель (в проде из всего конфига профиля реально работает одна).
-function formatOcFooter(usage, breakdown) {
+// OpenCode shape: { input, output, cacheRead, cacheWrite, cost } aggregated over the run.
+// `cost` and the per-agent breakdown are deliberately ignored — the card reports tokens only
+// and must not name the model (owner decision 29.09.2026).
+function formatOcFooter(usage) {
   if (!usage) return '';
-  const fmt = n => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '\u202f');
-  const fmtK = n => n >= 1e6 ? `${Math.round(n / 1e4) / 100}M`
-    : n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
-  let model = '';
-  if (breakdown) {
-    for (const s of breakdown) {
-      if (s.model) { model = s.model.split('/').pop().replace(/:free$/, ''); break; }
-    }
-  }
-  const inp = usage.input || 0;
-  const cr  = usage.cacheRead || 0;
-  const cw  = usage.cacheWrite || 0;
-  const parts = [inputPart(inp, cr, cw, fmt, fmtK), `выход ${fmt(usage.output)}`];
-  const m = model ? ` ${model}` : '';
-  return `\n\nИспользование${m}: ${parts.join(' · ')}`;
+  return usageFooter({
+    input: usage.input || 0,
+    output: usage.output || 0,
+    cacheRead: usage.cacheRead || 0,
+    cacheWrite: usage.cacheWrite || 0,
+  });
 }
 
 // Pick the text shown to the user. Prefer Claude's clean result-event string; otherwise
@@ -174,6 +173,10 @@ function isScratchpadFallback(claudeResult, lastAssistantMsg) {
 }
 
 const CLAUDE_TIMEOUT_MS = 40 * 60 * 1000; // 40 min hard limit
+// Единый ответ на заблокированный гейтом Стопа хоп и на consumePendingStop —
+// isUserStoppedReply (stop-trace.js) матчит его, поэтому GTD/durable закрывают
+// запись как user-stop, а не уходят в ретрай (R3/R4).
+const STOP_NOT_STARTED_MSG = '⛔ Остановлено до начала выполнения.';
 const WARN_TIMEOUT_MS  = 38 * 60 * 1000; // 38 min — graceful SIGTERM + Telegram warning before hard kill
 const MAX_CONTINUATIONS = 10; // auto-resume after timeout up to 10 times
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 min silence → kill + auto-restart (all engines)
@@ -216,13 +219,21 @@ function savePendingTask(taskId, params) {
   let previous = null;
   try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); }
   catch (e) { if (e.code !== 'ENOENT') throw e; }
-  atomicJson(file, { ...previous, ...params, threadId: params.threadId ?? previous?.threadId ?? null,
+  const record = { ...previous, ...params, threadId: params.threadId ?? previous?.threadId ?? null,
     // Identity survives phase rewrites and restart-resume (epic #1365 CH-08): the first
     // taskId/requestId of a request stay attached to every later attempt.
     rootTaskId: previous?.rootTaskId ?? params.rootTaskId ?? taskId,
     requestId: previous?.requestId ?? params.requestId ?? null,
     // Retries and transition to running must never refresh the original intent.
-    initiatedAt: previous ? (Object.hasOwn(previous, 'initiatedAt') ? previous.initiatedAt : null) : (Object.hasOwn(params, 'initiatedAt') ? params.initiatedAt : null) });
+    initiatedAt: previous ? (Object.hasOwn(previous, 'initiatedAt') ? previous.initiatedAt : null) : (Object.hasOwn(params, 'initiatedAt') ? params.initiatedAt : null) };
+  // Identity ≠ location (epic #1789 P1, src/data-paths.js header): the journal
+  // names the profile by username/profileId and the workspace is derived from it
+  // at read time (pending-task-resume resolvePendingWorkDir). A persisted absolute
+  // workDir pins resume to one machine path, so a profile copied to another
+  // directory (or another VM) would resume into the old location. Stripping here
+  // also retires the field from legacy records on their first rewrite.
+  delete record.workDir;
+  atomicJson(file, record);
 }
 
 function recordTaskActivity(_opts, _at = Date.now()) {
@@ -232,6 +243,7 @@ function recordTaskActivity(_opts, _at = Date.now()) {
 function bindTaskActivity(taskId, user, sessionId) {
   const file = path.join(PENDING_DIR, `${taskId}.json`);
   const pending = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete pending.workDir; // #1789 P1 — identity, not a machine path (see savePendingTask)
   atomicJson(file, { ...pending, sessionId, activitySessionId: sessionId });
   if (Number.isFinite(pending.initiatedAt)) recordTaskActivity({ user, sessionId, threadId: pending.threadId }, pending.initiatedAt);
 }
@@ -337,8 +349,10 @@ function stopTask(taskId, owner = null) {
     console.warn(`[runner] stopTask refused: owner missing/mismatch for ${taskId}`);
     return { ok: false, forbidden: true, error: 'forbidden: task belongs to another owner' };
   }
-  s.userStopped = true;
-  try { s.proc.kill('SIGTERM'); } catch (e) { console.warn('[runner] stopTask SIGTERM:', e.message); }
+  stopEngineProcess(s);
+  // Координаты берём из САМОГО рана, а не из запроса: адрес диалога должен
+  // совпадать с тем, что посчитал гейт, иначе retry этой задачи ускользнёт.
+  stopTracesFor({ username: s.username, chatId: s.chatId, audience: s.audience, threadId: s.threadId ?? null, sessionId: s.sessionId });
   console.log(`[${taskId}] stopped by user`);
   return { ok: true };
 }
@@ -362,8 +376,7 @@ function stopUserTask(username, chatId = null, audience = null, threadId = null)
     // when both sides carry one), never a taskId prefix. Keeps this path and
     // stopTask(taskId, owner) from drifting apart.
     if (!taskOwnedBy(s, { username, audience: scopedAudience, chatId, threadId })) continue;
-    s.userStopped = true;
-    try { s.proc.kill('SIGTERM'); } catch (e) { console.warn('[runner] stopUserTask SIGTERM:', e.message); }
+    stopEngineProcess(s);
     console.log(`[${taskId}] stopped by user command`);
     stopped = true;
   }
@@ -476,6 +489,81 @@ function isChatTaskRunning(chatId) {
   return false;
 }
 
+// ── Live-run registry — координаты всех принятых, ещё не завершённых ранов ──
+// Нужен только для одного: кнопка Стоп приходит от шлюза как `{username}` без
+// chatId/threadId (agent-client.js:316), а чтобы поставить trace-тумбстоун
+// нужен адрес диалога. activeTimers видит только УЖЕ заспавненные процессы;
+// ран в admission-очереди, в retry-backoff'е или в resume-бэкоффе процесса не
+// имеет и для Стопа был бы невидим — ровно R1/R2 («перерождается»).
+//
+// Ключ — уникальный на каждый вызов runTask (не chainId: реестр отвечает только
+// на вопрос «какие диалоги сейчас заняты», адрес диалога и так выводится из
+// координат). Вставка синхронная, ДО первого await — иначе Стоп, пришедший
+// сразу после 202, не нашёл бы ран. Снятие — на settle внешнего промиса
+// runTask'а, который включает `queuedRetry`: реестр живёт через весь
+// retry-backoff, пока таймер ещё не стрельнул.
+const liveRuns = new Map(); // runKey -> { username, chatId, threadId, audience, sessionId, taskId }
+let liveRunSeq = 0;
+
+function registerLiveRun(opts) {
+  const runKey = `${opts.taskId || 'run'}#${++liveRunSeq}`;
+  liveRuns.set(runKey, {
+    username: opts.user?.username ?? null,
+    chatId: opts.user?.id ?? null,
+    threadId: Number.isInteger(opts.threadId) && opts.threadId > 0 ? opts.threadId : null,
+    audience: opts.user?.audience || 'default',
+    sessionId: opts.sessionId || null,
+    taskId: opts.taskId || null,
+  });
+  return runKey;
+}
+
+// Правило владельца — то же, что taskOwnedBy (#1303): точный username, audience,
+// chatId только когда он есть у ОБЕИХ сторон, threadId — только когда есть у обеих.
+function _liveRunMatches(m, owner) {
+  if (!owner?.username || m.username !== owner.username) return false;
+  if ((m.audience || 'default') !== (owner.audience || 'default')) return false;
+  if (owner.chatId != null && m.chatId != null && String(m.chatId) !== String(owner.chatId)) return false;
+  if (owner.threadId != null && m.threadId != null && Number(m.threadId) !== Number(owner.threadId)) return false;
+  if (owner.sessionId != null && m.sessionId != null && m.sessionId !== owner.sessionId) return false;
+  return true;
+}
+
+/**
+ * Тумбстоун для Стопа: адреса диалогов, которые этот владелец сейчас занимает.
+ *
+ * Три источника, все дедуплицируются по trace:
+ *   1. owner сам по себе — если у него есть chatId/sessionId (чат-скоуп Стопа
+ *      даже когда сейчас ничего не бежит: tombstone защищает и GTD, и resume);
+ *   2. liveRuns — принятные раны без процесса (очередь, backoff);
+ *   3. pending-tasks — журнал, переживающий рестарт (K14: resume не поднимет
+ *      цепочку, остановленную до рестарта).
+ *
+ * Fail-open внутри markTraceStopped: не записалось → просто не блокируем.
+ */
+function stopTracesFor(owner = {}) {
+  const traces = new Set();
+  const add = (coords) => {
+    const t = traceIdFor(coords);
+    if (t) traces.add(t);
+  };
+  if (owner.chatId != null || owner.sessionId != null) add(owner);
+  for (const m of liveRuns.values()) if (_liveRunMatches(m, owner)) add(m);
+  for (const p of getPendingTasks()) {
+    const coords = {
+      username: p.username, chatId: p.userId ?? null, threadId: p.threadId ?? null,
+      audience: p.audience || 'default', sessionId: p.sessionId || null,
+    };
+    if (_liveRunMatches(coords, owner)) add(coords);
+  }
+  let n = 0;
+  for (const t of traces) {
+    if (markTraceStopped(t, { username: owner.username ?? null, chatId: owner.chatId ?? null, threadId: owner.threadId ?? null })) n++;
+  }
+  if (n) console.log(`[stop] tombstoned ${n} trace(s) for ${owner.username || '?'}${owner.chatId != null ? ` chat=${owner.chatId}` : ''}`);
+  return n;
+}
+
 // Release the chat counter and push run-finished to the gateway. Called exactly
 // once per runTask invocation from the runTask wrapper below — every code path
 // (quick answer, stop, admission, error) funnels through there.
@@ -513,20 +601,19 @@ function stopSessionTask(username, sessionId) {
   for (const [taskId, state] of activeTimers.entries()) {
     if (state.username !== username || !state?.proc) continue;
     if (state.sessionId !== sessionId) continue;
-    state.userStopped = true;
-    try {
-      state.proc.kill('SIGTERM');
-      stopped = true;
-      console.log(`[${taskId}] stopped by exact session ${sessionId}`);
-    } catch (e) {
-      console.warn('[runner] stopSessionTask SIGTERM:', e.message);
-    }
+    stopEngineProcess(state);
+    stopped = true;
+    console.log(`[${taskId}] stopped by exact session ${sessionId}`);
   }
   if (!stopped && queuedByOwner.get(ownerKey(username, sessionId))) {
     pendingSessionStops.add(ownerKey(username, sessionId));
     console.log(`[runner] stop queued for ${username} session ${sessionId} (no process yet)`);
     stopped = true;
   }
+  // Тумбстоун web-трейса: без него retry/продолжение этой сессии перезапустится
+  // после «остановлено» — web-раны приходят не из POST /run, поэтому гейт по
+  // fromUser их не пропускает, и защита должна идти от отметки.
+  stopTracesFor({ username, sessionId });
   return stopped;
 }
 
@@ -550,8 +637,7 @@ function killTaskByUsername(username, audience = null) {
     if (!taskOwnedBy(state, { username, audience: scopedAudience })) continue;
     try {
       if (state.proc) {
-        state.userStopped = true;
-        state.proc.kill('SIGTERM');
+        stopEngineProcess(state);
         killed++;
         console.log(`[runner] killTaskByUsername: killed ${taskId}`);
       }
@@ -559,7 +645,58 @@ function killTaskByUsername(username, audience = null) {
       console.warn(`[runner] killTaskByUsername error on ${taskId}:`, e.message);
     }
   }
+  // Профильный скоуп без chatId: трейсы берутся из реестра живых ранов и
+  // журнала pending. Вызывается только из явных Stop-путей (/tasks/stop) —
+  // killTaskByUsername как таковой не «Стоп», а его профильный фолбэк.
   return killed;
+}
+
+/**
+ * Подтверждение остановки (spec SS-03): ждём, пока раны, подходящие под owner,
+ * действительно выйдут — до `waitMs`. Нужно, чтобы шлюз мог отличить
+ * «⛔ Остановлено» от «⚠️ не подтвердилось» вместо слепого `killed > 0`.
+ *
+ * «Вышел» — по runAlive (engine-stop.js), а не по обёртке: под изоляцией sudo-
+ * обёртка может выйти раньше, чем ребёнок движка в слоте (он пережил TERM или
+ * держит pipe). Пока слот арендован этим раном, живость = pgrep -u <slot>.
+ * true = всё вышло (или нечему было выходить), false = ждали и не дождались —
+ * эскалация SIGKILL уходит по таймеру из stopEngineProcess.
+ */
+async function confirmStopped(owner, waitMs = 2500, { runAlive: isAlive = runAlive } = {}) {
+  const deadline = Date.now() + Math.max(0, waitMs);
+  const anyAlive = async () => {
+    for (const s of activeTimers.values()) {
+      if (!s.proc || !taskOwnedBy(s, owner)) continue;
+      if (await isAlive(s)) return true;
+    }
+    return false;
+  };
+  while (await anyAlive()) {
+    if (Date.now() >= deadline) {
+      console.warn(`[stop] not confirmed within ${waitMs}ms for ${owner.username || '?'} — SIGKILL escalation is armed`);
+      return false;
+    }
+    await new Promise(r => setTimeout(r, 150));
+  }
+  return true;
+}
+
+/**
+ * Сколько принятых ранов владельца сейчас БЕЗ процесса (admission-очередь,
+ * retry-backoff, resume-backoff). Это то, что Стоп реально останавливает помимо
+ * kill: гейт трейса не даст им стартовать. Для поля `stopped` ответа /tasks/stop —
+ * сама по себе запись тумбстоуна «остановлено» не означает.
+ */
+function countIdleLiveRuns(owner = {}) {
+  const running = new Set();
+  for (const [taskId, s] of activeTimers.entries()) if (s?.proc) running.add(taskId);
+  let n = 0;
+  for (const m of liveRuns.values()) {
+    if (!_liveRunMatches(m, owner)) continue;
+    if (m.taskId && running.has(m.taskId)) continue;
+    n++;
+  }
+  return n;
 }
 
 /**
@@ -591,15 +728,23 @@ function runTask(opts) {
   const rawChatId = Number(delivery.user?.id);
   const acceptedChatId = Number.isSafeInteger(rawChatId) && rawChatId !== 0 ? rawChatId : null;
   _bumpAcceptedByChat(acceptedChatId);
+  // Реестр живых ранов — синхронно, до первого await: Стоп, пришедший сразу
+  // после 202, обязан найти координаты рана. Ключ пробрасывается в _runTaskInner
+  // через opts (taskDelivery копирует поля), там он добирается sessionId.
+  delivery._liveRunKey = registerLiveRun(delivery);
   let ret;
   try {
     ret = _runTaskInner(delivery);
   } catch (e) {
     ret = Promise.reject(e);
   }
+  // ret — это current.then(result => result?.queuedRetry || result): он
+  // разрешается только после ВСЕЙ retry-цепочки, т.е. через бэкофф. Реестр
+  // живёт ровно столько же — иначе Стоп во время 30с/3м/10м ожидания не найдёт
+  // координат (R1).
   Promise.resolve(ret).then(
-    () => { _finishAcceptedChatRun(acceptedChatId, delivery, 'done'); },
-    () => { _finishAcceptedChatRun(acceptedChatId, delivery, 'error'); },
+    () => { delivery._liveRunKey && liveRuns.delete(delivery._liveRunKey); _finishAcceptedChatRun(acceptedChatId, delivery, 'done'); },
+    () => { delivery._liveRunKey && liveRuns.delete(delivery._liveRunKey); _finishAcceptedChatRun(acceptedChatId, delivery, 'error'); },
   ).catch(e => console.warn(`[${opts.taskId}] run-finished side chain: ${e.message}`));
   return ret;
 }
@@ -627,6 +772,10 @@ async function _runTaskInner(opts) {
     // this chat's task/GTD tracking, not a profile-mate's or another bot's —
     // workDir is shared across chats AND audiences (#1302 §3.2).
     const stopped = stopUserTask(username, chatId, opts.user.audience, runThreadId);
+    // Явный «Стоп» → тумбстоун: retry/продолжение этого диалога не переродятся.
+    // (wakeup/skip зовут stopUserTask, но НЕ ставят отметку — их контракт
+    // «убить и дать очереди поех дальше», а не «закрыть цепочку».)
+    stopTracesFor({ username, chatId, audience: opts.user.audience, threadId: runThreadId });
     let gtdCancelled = 0;
     if (workDir) {
       try { gtdCancelled = require('../gtd-controller').clearGtdForChat(workDir, chatId, runThreadId); }
@@ -654,6 +803,7 @@ async function _runTaskInner(opts) {
     const workDir = opts.user.workDir;
     const chatId = opts.user.id;
     stopUserTask(username, chatId, opts.user.audience, runThreadId);
+    stopTracesFor({ username, chatId, audience: opts.user.audience, threadId: runThreadId });
     let gtdCancelled = 0;
     if (workDir) {
       try { gtdCancelled = require('../gtd-controller').clearGtdForChat(workDir, chatId, runThreadId); }
@@ -905,6 +1055,13 @@ async function _runTaskInner(opts) {
     }
   }
   if (!Object.hasOwn(opts, 'activitySessionId')) opts.activitySessionId = opts.sessionId || getCurrentSessionId(opts.user.workDir, opts.user.id, opts.user.audience, runThreadId) || null;
+  // sessionId резолвится уже внутри _runTaskInner — добиваем им запись реестра,
+  // чтобы Stop по sessionId (web) нашёл координаты. Для TG sessionId в trace не
+  // входит, так что здесь просто добивается полнота меты.
+  if (opts._liveRunKey && liveRuns.has(opts._liveRunKey) && (opts.sessionId || opts.activitySessionId)) {
+    const rec = liveRuns.get(opts._liveRunKey);
+    if (!rec.sessionId) rec.sessionId = opts.sessionId || opts.activitySessionId;
+  }
   if (opts.sessionId && !opts.forceNew && opts.user.id) {
     try {
       const ref = fromLegacyTelegram({ chatId: opts.user.id, audience: opts.user.audience, threadId: runThreadId });
@@ -913,13 +1070,52 @@ async function _runTaskInner(opts) {
   }
   if (!Object.hasOwn(opts, 'initiatedAt')) opts.initiatedAt = opts.acceptedAt || Date.now();
   if (Number.isFinite(opts.initiatedAt)) recordTaskActivity(opts, opts.initiatedAt);
+  // Гейт «Стопа», первая из двух проверок (spec §2/§2а). Ловит хоп ДО того, как
+  // он попадёт в журнал и в очередь: retry после backoff'а, продолжение после
+  // таймаута, resume после рестарта (K14). Хоп считается «цепочкой остановленной»,
+  // если его initiatedAt (момент исходного запроса юзера) не позже отметки Стопа
+  // в trace-тумбстоуне. fromUser-раны (POST /run, web) проходят всегда — K1 и
+  // удержанные сообщения шлюза (SS-05) не должны блокироваться. Вторая проверка —
+  // в admission.run: хоп мог стоять в очереди, когда Стоп пришёл.
+  const runTrace = traceIdFor({
+    chatId: opts.user.id, audience: opts.user.audience, threadId: runThreadId,
+    username: opts.user.username, sessionId: opts.sessionId || opts.activitySessionId,
+  });
+  // Якорь цепочки для запроса человека (D1 анализа дедлоков). Шлюз шлёт
+  // initiatedAt = msg.date*1000 — время ОТПРАВКИ, с точностью до секунды (floor).
+  // Сообщение, отправленное до Стопа и доставленное после (держатель/буфер
+  // шлюза), или в ту же секунду, что Стоп, получает initiatedAt <= stoppedAt:
+  // сам ран проходит (fromUser), но все его ретраи/продолжения/резюм после
+  // рестарта — нет, и новая задача молча умирает на первом же хопе до 24ч.
+  // Запрос человека, ПРИНЯТЫЙ после Стопа, — это новая цепочка: её якорь —
+  // момент приёма агентом. Двигаем только при реальном конфликте с отметкой,
+  // иначе initiatedAt (BV-08 claimFreshChecklist) не трогаем. До журнала —
+  // резюм после рестарта прочитает уже исправленное значение (fromUser в
+  // журнал не пишется).
+  if (opts.fromUser && runTrace && Number.isFinite(opts.initiatedAt)) {
+    const stoppedAt = traceStoppedAt(runTrace);
+    if (stoppedAt != null && opts.initiatedAt <= stoppedAt) {
+      const anchored = Math.max(Date.now(), stoppedAt + 1);
+      console.log(`[${opts.taskId}] stop-gate: user request initiatedAt ${opts.initiatedAt} <= stoppedAt ${stoppedAt} — re-anchored to ${anchored}`);
+      opts.initiatedAt = anchored;
+    }
+  }
+  if (isRunStopped({ traceId: runTrace, initiatedAt: opts.initiatedAt, fromUser: opts.fromUser })) {
+    // Без правки сообщения: до этого Стоп уже ответил в чат, а убитое
+    // продолжение не имеет права стирать сохранённый частичный результат (SS-02).
+    // status.close() (#1784): if the profile maintenance gate above armed the
+    // «Ожидание…» ticker, a blocked hop must not keep editing the chat either.
+    status.close();
+    console.log(`[${opts.taskId}] stop-gate: blocked before queue (trace=${runTrace || 'none'})`);
+    return Promise.resolve(STOP_NOT_STARTED_MSG);
+  }
   // Journal BEFORE waiting (lane/session admission, RAM, slots): a restart must not
   // silently lose accepted work. The profile maintenance lock above is the one wait
   // that comes BEFORE this journal — see its comment (migrator drain deadlock).
   try {
     savePendingTask(opts.taskId, {
       phase: 'queued', activitySessionId: opts.activitySessionId, taskId: opts.taskId, rootTaskId: opts.rootTaskId, requestId: opts.requestId, userId: opts.user.id, username: opts.user.username, threadId: opts.threadId,
-      workDir: opts.user.workDir, task: opts.task, context: opts.context,
+      task: opts.task, context: opts.context,
       sessionId: opts.sessionId, contextFromSession: opts.contextFromSession,
       forceClaude: opts.forceClaude, forceNew: opts.forceNew, webExactSession: opts.webExactSession, mode: opts.mode, userMessageRecorded: opts.userMessageRecorded,
       projectId: opts.projectId, projectPicked: opts.projectPicked, newProjectName: opts.newProjectName, engine: opts.engine,
@@ -974,6 +1170,21 @@ async function _runTaskInner(opts) {
   if (qKey) queuedByOwner.set(qKey, (queuedByOwner.get(qKey) || 0) + 1);
   const current = admission.run(admissionScopes, async () => {
     try {
+      // Гейт «Стопа», вторая точка (R2): хоп уже прошёл верхний гейт и стоял в
+      // очереди/на RAM- или slot-ожидании, когда пришёл Стоп. Проверяем прямо
+      // перед расходом слота — иначе остановленная цепочка заберёт ресурс и
+      // проспавнится. Второй вызов дешёвый: читает файл только если trace
+      // действительно останавливался (ENOENT — быстрый промах).
+      if (isRunStopped({ traceId: runTrace, initiatedAt: opts.initiatedAt, fromUser: opts.fromUser })) {
+        console.log(`[${opts.taskId}] stop-gate: blocked in admission queue (trace=${runTrace || 'none'})`);
+        // D3: pending-stop сессии адресован именно этому стоявшему в очереди
+        // рану — гасим его здесь. Иначе он «достанется» следующему запросу той
+        // же сессии (например, новому сообщению, присланному уже ПОСЛЕ Стопа),
+        // и тот умрёт «до начала выполнения».
+        consumePendingStop(opts.user.username, opts.sessionId);
+        await status.finish(STOP_NOT_STARTED_MSG);
+        return STOP_NOT_STARTED_MSG;
+      }
       // Global admission control: wait for a free slot + enough RAM before we
       // actually spawn `claude`. This is the OOM guard — the only remaining gate.
       const ramT0 = Date.now();
@@ -985,8 +1196,8 @@ async function _runTaskInner(opts) {
       try {
         if (consumePendingStop(opts.user.username, opts.sessionId)) {
           console.log(`[${opts.taskId}] stopped before start`);
-          await status.finish('⛔ Остановлено до начала выполнения.');
-          return '⛔ Остановлено до начала выполнения.';
+          await status.finish(STOP_NOT_STARTED_MSG);
+          return STOP_NOT_STARTED_MSG;
         }
         await status.finish('🧠 Начинаю работу…');
         const runT0 = Date.now();
@@ -1075,7 +1286,7 @@ function buildContextCard(username, workDir, chatId, actualModel = null, threadI
   const gcConfig = path.join(TOKENS_ROOT, String(username), 'getcourse', 'config.json');
   let gcDomain = null;
   if (fs.existsSync(gcConfig)) {
-    try { gcDomain = JSON.parse(fs.readFileSync(gcConfig, 'utf8')).accountDomain || null; } catch (e) { console.warn('[runner] gcConfig parse:', e.message); }
+    try { gcDomain = JSON.parse(readCredentialFile(gcConfig)).accountDomain || null; } catch (e) { console.warn('[runner] gcConfig parse:', e.message); }
   }
 
   const serviceLabels = services.map(s => {
@@ -1319,7 +1530,7 @@ function ensureProfileLayoutSkill(workDir, username) {
     ).toString().trim();
     const tokenDir = path.join(TOKENS_ROOT, username);
     const tokens = fs.existsSync(tokenDir)
-      ? fs.readdirSync(tokenDir).filter(f => !f.startsWith('.')).join(', ')
+      ? fs.readdirSync(tokenDir).filter(f => !f.startsWith('.') && !isMetaSidecar(f)).join(', ')
       : '(нет)';
     const content = [
       '# Карта профиля агента (auto-generated)',
@@ -1654,7 +1865,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   const audience = user.audience || 'default';
 
   savePendingTask(taskId, {
-    phase: 'running', taskId, userId: user.id, username: user.username, workDir: user.workDir, audience,
+    phase: 'running', taskId, userId: user.id, username: user.username, audience,
     profileId: user.profileId, telegramUserId: user.telegramUserId, continuationCount, retryCount, internalGtd,
     task, context, sessionId, contextFromSession, forceClaude, forceNew, webExactSession, mode, projectId, projectPicked, newProjectName,
     initialMsgId, pinnedMsgId, initiatedAt, threadId, resumedAfterRestart, resumeAttempts,
@@ -2252,7 +2463,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   }
 
   // Timeout / inactivity kill → durable partial + auto-continuation.
-  if (timedOut) {
+  // R5: userStopped приоритетнее timedOut. Стоп, пришедший во время уже
+  // посланного warn-SIGTERM/inactivity-kill, раньше падал в ветку автопродолжения
+  // и «перерождал» задачу через 10 ретраев. Теперь такая задача уходит в ветку
+  // sessionState.userStopped ниже — частичный результат + CANCELLED.
+  if (timedOut && !sessionState?.userStopped) {
     const nextCount = continuationCount + 1;
     const partialText = fullOutput.text.trim();
     // Durable record keeps the full progress; the Telegram summary shows only
@@ -2714,8 +2929,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     });
   } catch (e) { console.warn('[runner] prompt-audit:', e.message); }
   const costFooter = engine === 'opencode'
-    ? formatOcFooter(opencodeUsage, opencodeBreakdown)
-    : formatCostFooter(claudeUsage, claudeModel);
+    ? formatOcFooter(opencodeUsage)
+    : formatCostFooter(claudeUsage);
   const gtdFooter = (!internalGtd && !incomplete && user.workDir)
     ? (() => { try { return require('../gtd-controller').listGtd(user.workDir).filter(r => r.status === 'open').length > 0 ? '\n\n📋 Чеклист активен — /show_active_cheklist · /checklist_turn_off' : ''; } catch { return ''; } })()
     : '';
@@ -2897,8 +3112,12 @@ function interruptForRestart() {
 module.exports = {
   interruptForRestart, MAX_RESUME_ATTEMPTS, isProviderFault,
   runTask, getQuickAnswer, runQuickAnswer, shouldAttemptQuickAnswer, generateConnectLink, getPendingTasks, clearPendingTask,
+  // Exported for the journal path-hygiene test (epic #1789 P1): the journal must
+  // never persist an absolute workDir, including over a legacy record.
+  savePendingTask,
   resolveRunSession,
   isTaskRunning, isChatTaskRunning, isSessionRunning, isSessionQueuedFor, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,
+  stopTracesFor, confirmStopped, countIdleLiveRuns,
   reconcileSoftContinuations,
   // Exported for intent-coverage tests only
   _intents: { HH_MY_VACANCIES_INTENT, HH_FUNNEL_INTENT, HH_RESPONSES_INTENT, HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT, ENGINE_SWITCH_INTENT },
@@ -2912,6 +3131,8 @@ module.exports = {
   _footer: { formatOcFooter, formatCostFooter },
   // Exported for isSessionRunning tests only — the real Map backing activeTimers
   _activeTimers: activeTimers,
+  // Exported for stop-trace tests only — the live-run registry (spec §2а)
+  _liveRuns: liveRuns,
   // Exported for isSessionRunning tests only — the real Set of queued sessions
   _queuedSessions: queuedSessions, _queuedByOwner: queuedByOwner, _consumePendingStop: consumePendingStop, _ownerKey: ownerKey,
   // Exported for provider-alternation wiring tests only (unified crash-retry, issue #1132 follow-up)

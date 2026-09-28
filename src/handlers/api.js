@@ -28,7 +28,9 @@ async function handleApi(req, url, res, ctx) {
       const SKIP = new Set(['.secrets_log', 'gdrive-seen', 'gdrive-catalog', 'gdrive-catalog.json']);
       let capabilities = [];
       if (fs.existsSync(tokensDir)) {
-        capabilities = fs.readdirSync(tokensDir).filter(f => !SKIP.has(f) && !f.startsWith('.'));
+        // .meta sidecars (epic #1789 C4) describe a service, they are not one.
+        capabilities = fs.readdirSync(tokensDir)
+          .filter(f => !SKIP.has(f) && !f.startsWith('.') && !f.endsWith('.meta'));
       }
       // skills[] — MCP tool categories available on this agent: core tools plus the
       // tools of every sibling domain repo checked out on this host (#942, #1470).

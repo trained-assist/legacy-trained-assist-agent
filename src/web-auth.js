@@ -1,7 +1,5 @@
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+const { writeCredential, readCredentialFile } = require('./credential-store');
 
 const PASSWD_FILE = '.webpasswd';
 const TOKEN_COOKIE = 'web_token';
@@ -160,18 +158,18 @@ function listAuthedProfiles(req, secret) {
 // ── Password file helpers ─────────────────────────────────────────────────────
 
 function passwdPath(username) {
-  return path.join(os.homedir(), 'agent-tokens', username, PASSWD_FILE);
+  // data-paths is required per call so a redirected token root (tests) is honored.
+  return require('./data-paths').tokenPath(String(username), PASSWD_FILE);
 }
 
 function savePassword(username, plain) {
-  const dir = path.join(os.homedir(), 'agent-tokens', username);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(passwdPath(username), hashPassword(plain), { mode: 0o600 });
+  // .webpasswd is a credential — encrypted at rest like any other (#1789 C4).
+  writeCredential(String(username), PASSWD_FILE, hashPassword(plain));
 }
 
 function checkPassword(username, plain) {
   try {
-    const stored = fs.readFileSync(passwdPath(username), 'utf8').trim();
+    const stored = readCredentialFile(passwdPath(username)).trim();
     return verifyPassword(plain, stored);
   } catch {
     return false;

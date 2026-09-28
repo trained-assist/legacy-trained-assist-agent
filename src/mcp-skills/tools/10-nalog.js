@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { readCredentialFile, writeCredentialFile } = require('../../credential-store');
 
 const USER_ID = process.env.USER_ID || '';
 
@@ -22,13 +23,11 @@ function tokenPath(userId) {
 function readToken(userId) {
   const file = tokenPath(userId);
   if (!fs.existsSync(file)) return null;
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+  try { return JSON.parse(readCredentialFile(file)); } catch { return null; }
 }
 
 function writeToken(userId, data) {
-  const file = tokenPath(userId);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data), { mode: 0o600 });
+  writeCredentialFile(tokenPath(userId), JSON.stringify(data), { expiresAt: data.expires || null });
 }
 
 async function nalogFetch(endpoint, { method = 'GET', body, token } = {}) {

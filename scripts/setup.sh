@@ -22,6 +22,18 @@ mkdir -p "$HOME/agent-data" "$HOME/users" "$HOME/agent-tokens"
 echo "==> Installing systemd service..."
 sudo cp "$REPO_DIR/systemd/assist-agent.service" "/etc/systemd/system/$SERVICE.service"
 sudo cp "$REPO_DIR/systemd/assist-agent-notify-failure.service" "/etc/systemd/system/assist-agent-notify-failure.service"
+# Host-specific part of the unit (storage roots, documented per-host vars) —
+# a new VM boots from code, not from hand-edited /etc state (epic #1789 P1).
+DROPIN_SRC="$REPO_DIR/infra/systemd/assist-agent.service.d"
+DROPIN_DST="/etc/systemd/system/$SERVICE.service.d"
+if [ -d "$DROPIN_SRC" ]; then
+  echo "==> Installing systemd drop-ins from $DROPIN_SRC ..."
+  sudo mkdir -p "$DROPIN_DST"
+  for f in "$DROPIN_SRC"/*.conf; do
+    [ -e "$f" ] || continue
+    sudo cp "$f" "$DROPIN_DST/$(basename "$f")"
+  done
+fi
 # The service runs from the release symlink; point it at the repo until the
 # first release deploy repoints it (scripts/deploy.sh does this on the VM too).
 sudo ln -sfn "$REPO_DIR" /home/vova/agent-master

@@ -38,5 +38,8 @@ test('runner honors a pending stop at the admission gate and at process registra
   assert.match(idx, /if \(consumePendingStop\(opts\.user\.username, opts\.sessionId\)\)/);
   assert.match(idx, /consumePendingStop: \(\) => consumePendingStop\(user\.username, activeSessionId\)/);
   const cr = fs.readFileSync(path.join(__dirname, '../src/runner/claude-runner.js'), 'utf8');
-  assert.match(cr, /activeTimers\.set\(taskId, sessionState\);\n[^\n]*\n  if \(consumePendingStop\?\.\(\)\) \{\n    sessionState\.userStopped = true;/);
+  // The pending stop is honored at process registration. stopEngineProcess sets
+  // `userStopped = true` itself (and escalates SIGTERM→SIGKILL via the slot), so
+  // the assertion pins the call, not the field assignment.
+  assert.match(cr, /activeTimers\.set\(taskId, sessionState\);\n[^\n]*\n  if \(consumePendingStop\?\.\(\)\) \{\n    stopEngineProcess\(sessionState\);/);
 });
