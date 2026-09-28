@@ -430,7 +430,8 @@ async function getDigestFor(username, sessionId, { llm } = {}) {
     cached: false,
     ttlMs: DIGEST_TTL_MS,
   };
-  writeCache(cacheFile, { key, createdAt: Date.now(), digest: out });
+  // Degraded (LLM down) is served but not cached — the next click retries pass B.
+  if (!out.degraded) writeCache(cacheFile, { key, createdAt: Date.now(), digest: out });
   return out;
 }
 

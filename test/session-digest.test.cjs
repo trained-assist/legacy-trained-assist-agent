@@ -191,6 +191,13 @@ test('getDigestFor: session without an opencode trace degrades to a messages-onl
   assert.equal(r.ok, true, 'never an error for a missing trace');
   assert.equal(r.engine, null);
   assert.ok(r.artifacts.pi.some(a => a.value === '+79161234567'), 'artifacts still come from messages');
+
+  // A transient LLM outage must not pin a summary-less digest for the whole TTL.
+  assert.equal(r.degraded, true);
+  assert.ok(!fs.existsSync(path.join(wd, 'sessions', 's_claude.digest.json')), 'degraded digest is not cached');
+  const again = await getDigestFor('bob', 's_claude', { llm: async () => '{"activities":[],"summary":"Записал телефон."}' });
+  assert.equal(again.cached, false);
+  assert.equal(again.summary, 'Записал телефон.', 'next click retries the LLM once it is back');
 });
 
 // ── Slice 4: wiring of the endpoint twins (same pattern as trace) ──────────
