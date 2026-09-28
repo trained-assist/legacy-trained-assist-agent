@@ -242,8 +242,26 @@ function recoverSlot(cfg, slot, { exec } = {}) {
   let paths = [];
   try { paths = JSON.parse(fs.readFileSync(file, 'utf8')).paths || []; } catch { return; }
   console.warn(`[isolation] ${slot}: revoking ${paths.length} ACL entr(ies) left by an interrupted run`);
+  // The interrupted run's gates are the paths it could write (its traverse-only
+  // ancestors are skipped by find's -user filter at no cost).
+  shareSlotFiles(cfg, slot, paths.filter(p => fs.existsSync(path.join(p, GATE_MARKER))), { exec });
   revokePaths(cfg, slot, paths, { exec });
   fs.rmSync(file, { force: true });
+}
+
+// Files a slot creates carry the mode the program asked for (sqlite, most CLIs: 0644).
+// With the gate's default ACL that mode becomes the ACL mask, so the group entry is
+// cut to read-only and the NEXT run — another slot — cannot write them (opencode's
+// session DB failed exactly like that). Only the owner may change it, so the slot
+// itself opens its files to the group before its access to the gate is revoked.
+function shareSlotFiles(cfg, slot, dirs, { exec } = {}) {
+  for (const d of dirs) {
+    try {
+      runCmd([cfg.sudoBin, '-n', '-u', slot, '--', 'find', d, '-xdev', '-user', slot, '!', '-type', 'l',
+        '(', '!', '-perm', '-g+rw', '-o', '-type', 'd', '!', '-perm', '-g+x', ')',
+        '-exec', 'chmod', 'g+rwX', '{}', '+'], exec);
+    } catch (e) { console.warn(`[isolation] ${slot}: could not share its files in ${d}: ${e.message}`); }
+  }
 }
 
 // Kill everything the slot user still runs (background jobs the agent left behind).
@@ -393,6 +411,7 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
   let aclPaths = [];
   const undo = () => {
     reapSlot(cfg, slot, { exec });
+    if (aclPaths.length) shareSlotFiles(cfg, slot, gates, { exec }); // while the gate is still open
     revokePaths(cfg, slot, aclPaths, { exec });
     fs.rmSync(journalPath(cfg, slot), { force: true });
   };
@@ -446,6 +465,7 @@ module.exports = {
   journalPath,
   recoverSlot,
   reapSlot,
+  shareSlotFiles,
   engineHomeDir,
   engineStagePlan,
   stageEngineHome,
