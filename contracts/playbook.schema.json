@@ -14,6 +14,15 @@
     "goal_template": { "type": "string", "minLength": 1 },
     "user_value_template": { "type": "string" },
     "defaults": { "$ref": "#/$defs/defaults" },
+    "requires": {
+      "description": "What the playbook needs from a profile: skill-catalog sections that must be enabled and MCP tools it calls. Checked by scripts/check-playbook-reachability.mjs and the playbook_health tool (issue #1756).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sections": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "tools": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" } }
+      }
+    },
     "stages": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/stage" } },
     "hooks": { "$ref": "#/$defs/hooks" }
   },

@@ -21,7 +21,12 @@
 //   no-shadow                the id lives at one level only (else edits hit a dead copy)
 //   sections / sibling-mounted / section-enabled / tools-visible / pointer-in-prompt
 //                            skills.resolve() for one profile: is it visible to THAT profile
+//   requires                 the playbook's own declaration {sections, tools}: every section is
+//                            in skill-catalog, every tool is defined by some tools module
 //   audience-map             optional: the id is the default for the asked audience
+//
+// With `requires` declared, exposure gates key on it (section-enabled / tools-visible are hard
+// FAILs); without it they fall back to the section carrying the A1 pointer (a heuristic).
 //
 // Pure over its inputs: fs reads only, no network, no LLM. Every input is injectable so
 // tests (and a domain repo's CI, which checks core out next to itself) run it hermetically.
@@ -48,17 +53,33 @@ function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// tools/*.js dirs to scan for route C: core + every sibling checkout present on disk.
+// tools/*.js dirs to scan (route C, requires.tools): core + every sibling checkout on disk.
+// Entries are {dir, server}; a bare string (tests) is a dir of unknown server.
 function defaultToolDirs(catalog, siblingRepoDir) {
-  const dirs = [path.join(REPO_ROOT, 'src', 'mcp-skills', 'tools')];
-  for (const s of Object.values(catalog.servers || {})) {
+  const dirs = [{ dir: path.join(REPO_ROOT, 'src', 'mcp-skills', 'tools'), server: LOCAL_SERVER }];
+  for (const [serverId, s] of Object.entries(catalog.servers || {})) {
     if (s.kind !== 'sibling' || !s.repo) continue;
     let base = null;
     try { base = siblingRepoDir(s.repo); } catch { /* hh sibling lookup may throw off-host */ }
     const d = base ? path.join(base, 'src', 'mcp-skills', 'tools') : null;
-    if (d && fs.existsSync(d)) dirs.push(d);
+    if (d && fs.existsSync(d)) dirs.push({ dir: d, server: serverId });
   }
   return dirs;
+}
+
+// Catalog module key of the file defining MCP tool `name` (`<name>: {` in a tools module).
+function findToolModule(name, toolDirs) {
+  const re = new RegExp(`^\\s*['"]?${escapeRe(name)}['"]?\\s*:\\s*\\{`, 'm');
+  for (const { dir, server } of toolDirs) {
+    let files = [];
+    try { files = fs.readdirSync(dir).filter(f => f.endsWith('.js')).sort(); } catch { continue; }
+    for (const f of files) {
+      if (re.test(fs.readFileSync(path.join(dir, f), 'utf8'))) {
+        return { server, file: f, key: !server || server === LOCAL_SERVER ? f : `${server}/${f}` };
+      }
+    }
+  }
+  return null;
 }
 
 function checkPlaybookReachability(id, opts = {}) {
@@ -90,10 +111,12 @@ function checkPlaybookReachability(id, opts = {}) {
     || readJson(path.join(REPO_ROOT, 'config', 'audience-default-playbooks.json'), {}).playbooks || {};
   const devFamily = opts.devFamily || require('./dev-task-playbook-suggestion').ENGINEERING_FAMILY;
   const siblingRepos = opts.siblingRepos || DEFAULT_SIBLING_REPOS;
-  const toolDirs = opts.toolDirs || [
-    ...(repoDir ? [path.join(repoDir, 'src', 'mcp-skills', 'tools')] : []),
+  const repoServer = repoDir && (Object.entries(catalog.servers || {})
+    .find(([, s]) => s.repo === (REPO_ALIASES[path.basename(repoDir)] || path.basename(repoDir))) || [])[0];
+  const toolDirs = (opts.toolDirs || [
+    ...(repoDir ? [{ dir: path.join(repoDir, 'src', 'mcp-skills', 'tools'), server: repoServer || null }] : []),
     ...defaultToolDirs(catalog, catalogLib.siblingRepoDir),
-  ];
+  ]).map(t => (typeof t === 'string' ? { dir: t, server: null } : t));
   // Route F scans the owning repo's src/ (null → derived from the resolved file below).
   let launcherDir = opts.launcherDir !== undefined ? opts.launcherDir : null;
 
@@ -157,7 +180,7 @@ function checkPlaybookReachability(id, opts = {}) {
   const audienceHits = Object.entries(audienceMap).filter(([, v]) => v === id).map(([k]) => k);
   const devOffer = devFamily.includes(id);
   const metaHits = [];
-  for (const dir of toolDirs) {
+  for (const { dir } of toolDirs) {
     let files = [];
     try { files = fs.readdirSync(dir).filter(f => f.endsWith('.js')); } catch { continue; }
     for (const f of files) {
@@ -210,6 +233,24 @@ function checkPlaybookReachability(id, opts = {}) {
     }
   }
 
+  // ── requires: the playbook's own declaration of what it needs ──────────────
+  const req = pb && pb.requires ? pb.requires : null;
+  const reqSections = (req && req.sections) || [];
+  const reqTools = [];
+  if (req) {
+    const unknown = reqSections.filter(sid => !(catalog.sections || {})[sid]);
+    for (const name of req.tools || []) reqTools.push({ name, mod: findToolModule(name, toolDirs) });
+    const missing = reqTools.filter(t => !t.mod).map(t => t.name);
+    const problems = [
+      unknown.length ? `нет в skill-catalog секций: ${unknown.join(', ')}` : null,
+      missing.length ? `ни один tools-модуль не определяет: ${missing.join(', ')}` : null,
+    ].filter(Boolean);
+    add('requires', problems.length === 0, problems.length ? problems.join('; ')
+      : `секции: ${reqSections.join(', ') || '—'}; тулы: ${reqTools.map(t => `${t.name}←${t.mod.key}`).join(', ') || '—'}`);
+  } else if (pb) {
+    add('requires', true, 'не объявлено (секции и тулы угадываются по указателю) — объяви requires {sections, tools}', { warn: true });
+  }
+
   // ── sections: who can switch the playbook's tools on ───────────────────────
   const owningSections = [];
   if (owningServer) {
@@ -224,9 +265,13 @@ function checkPlaybookReachability(id, opts = {}) {
   // Gate on the section whose prompt domain carries the A1 pointer, not on any section of
   // the owning server: another section (e.g. recruiting/company) may own the same sibling
   // modules and would give a false positive while the carrier section is off.
-  const hardGating = pointerHits.size > 0;
+  const declared = reqSections.length > 0;
+  const hardGating = declared || pointerHits.size > 0;
   const carrier = owningSections.filter(s => s.promptDomains.some(d => pointerHits.has(d)));
-  const gated = hardGating && carrier.length ? carrier : owningSections;
+  const gated = declared
+    ? reqSections.filter(sid => (catalog.sections || {})[sid]).map(sid => ({
+      sid, mods: (catalog.sections[sid].modules || []), promptDomains: catalog.sections[sid].promptDomains || [] }))
+    : (pointerHits.size && carrier.length ? carrier : owningSections);
 
   // ── exposure for one profile ───────────────────────────────────────────────
   if (profileId && owningServer) {
@@ -245,21 +290,30 @@ function checkPlaybookReachability(id, opts = {}) {
       }
       return r;
     })();
-    const r = resolveSkills(catalog, profileSkills, readiness);
+    // opts.resolved: what the live run actually resolved (workDir/.skills-resolved.json, real
+    // probed readiness) — the in-agent playbook_health passes it; offline callers compute it.
+    const r = opts.resolved || resolveSkills(catalog, profileSkills, readiness);
 
     const mounted = owningServer === LOCAL_SERVER || r.siblings.includes(owningServer);
     add('sibling-mounted', mounted, mounted
       ? (owningServer === LOCAL_SERVER ? 'core-сервер' : `монтируются: ${r.siblings.join(', ')}`)
       : `${owningServer} не смонтирован у ${profileId} (нет в .mcp.json)`);
 
-    if (owningSections.length) {
+    if (gated.length) {
+      // declared sections must ALL be on; the heuristic needs any one carrier section.
       const on = gated.filter(s => r.sections.includes(s.sid));
-      add('section-enabled', on.length > 0, on.length
+      const off = gated.filter(s => !r.sections.includes(s.sid));
+      const sectionsOk = declared ? off.length === 0 : on.length > 0;
+      add('section-enabled', sectionsOk, sectionsOk
         ? `включены: ${on.map(s => s.sid).join(', ')}`
+        : declared ? `у ${profileId} выключены объявленные секции: ${off.map(s => s.sid).join(', ')}`
         : `у ${profileId} выключены все секции-носители (${gated.map(s => s.sid).join('/')}); skills.json enabled: ${profileSkills ? (profileSkills.enabled || []).join(', ') : 'legacy'}`,
         { soft: !hardGating });
 
-      const gatedMods = gated.flatMap(s => s.mods);
+      // declared tools → exactly their modules; otherwise every module of the gated sections.
+      const gatedMods = reqTools.length
+        ? [...new Set(reqTools.filter(t => t.mod).map(t => t.mod.key))]
+        : gated.flatMap(s => s.mods);
       const hidden = gatedMods.filter(m => !r.modules.includes(m) && !r.setupOnly.includes(m));
       add('tools-visible', hidden.length === 0, hidden.length
         ? `скрыты модули: ${hidden.join(', ')}`
