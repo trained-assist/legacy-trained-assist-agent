@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { userWorkDir } = require('./data-paths');
+const { atomicJson } = require('./atomic-json');
 
 function sitesRoot(username) {
   // Connected-site config lives in the profile workspace (USERS_ROOT/<u>/sites).
@@ -42,13 +43,13 @@ function getSite(username, slug) {
 function saveSiteConfig(username, slug, config) {
   const dir = path.join(sitesRoot(username), slug);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config, null, 2));
+  atomicJson(path.join(dir, 'config.json'), config, { space: 2 });
 }
 
 function saveSiteCreds(username, slug, creds) {
   const dir = path.join(sitesRoot(username), slug);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'creds.json'), JSON.stringify(creds), { mode: 0o600 });
+  atomicJson(path.join(dir, 'creds.json'), creds, { mode: 0o600 });
 }
 
 function readSiteCreds(username, slug) {
@@ -58,10 +59,7 @@ function readSiteCreds(username, slug) {
 }
 
 function saveCrawlReport(username, slug, report) {
-  fs.writeFileSync(
-    path.join(sitesRoot(username), slug, 'crawl.json'),
-    JSON.stringify(report, null, 2)
-  );
+  atomicJson(path.join(sitesRoot(username), slug, 'crawl.json'), report, { space: 2 });
 }
 
 function readCrawlReport(username, slug) {
@@ -71,10 +69,7 @@ function readCrawlReport(username, slug) {
 }
 
 function saveIntents(username, slug, intents) {
-  fs.writeFileSync(
-    path.join(sitesRoot(username), slug, 'intents.json'),
-    JSON.stringify(intents, null, 2)
-  );
+  atomicJson(path.join(sitesRoot(username), slug, 'intents.json'), intents, { space: 2 });
 }
 
 function readIntents(username, slug) {
@@ -86,7 +81,7 @@ function readIntents(username, slug) {
 function saveStorageState(username, slug, state) {
   const dir = path.join(sitesRoot(username), slug);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'storage-state.json'), JSON.stringify(state), { mode: 0o600 });
+  atomicJson(path.join(dir, 'storage-state.json'), state, { mode: 0o600 });
 }
 
 function readStorageState(username, slug) {

@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const { resolve } = require('./resolve');
+const { atomicJson } = require('../atomic-json');
 
 const EFFECTIVE_FILE = '.skills-effective.json';
 const LOCAL = 'trained-skills';
@@ -83,7 +84,7 @@ function planFor(workDir, { catalog, warn = console.warn } = {}) {
 function writeEffective(workDir, plan, { warn = console.warn } = {}) {
   const file = path.join(workDir, EFFECTIVE_FILE);
   try {
-    fs.writeFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...plan }, null, 2));
+    atomicJson(file, { at: new Date().toISOString(), ...plan }, { space: 2 });
     return file;
   } catch (e) {
     warn(`[skills] write ${file}: ${e.message} — legacy exposure`);

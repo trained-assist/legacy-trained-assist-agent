@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { atomicJson } = require('./atomic-json');
 
 const USAGE_FILE = 'usage.json';
 const MAX_LOG_ENTRIES = 500;
@@ -44,7 +45,7 @@ function recordUsage(workDir, { taskId, sessionId, engine, model, input_tokens =
     if (breakdown && breakdown.length) entry.breakdown = breakdown;
     data.log.push(entry);
     if (data.log.length > MAX_LOG_ENTRIES) data.log.splice(0, data.log.length - MAX_LOG_ENTRIES);
-    fs.writeFileSync(usagePath(workDir), JSON.stringify(data, null, 2));
+    atomicJson(usagePath(workDir), data, { space: 2 });
   } catch (e) {
     console.error('[usage-store] recordUsage error:', e.message);
   }
