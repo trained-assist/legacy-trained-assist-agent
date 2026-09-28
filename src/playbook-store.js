@@ -35,7 +35,7 @@ const SYSTEM_PLAYBOOKS_DIR = path.join(REPO_ROOT, 'playbooks');
 // the new one — the first that exists wins for an id.
 // trained-assist-sales-skill carries the sales/exhibition playbooks (issue
 // #1470 domain extraction): domain playbook content belongs there, not in core.
-const DEFAULT_SIBLING_REPOS = ['software-engineering-playbooks', 'trained-assist-engineering', 'trained-assist-freelance-skill', 'trained-assist-hh-skill', 'trained-assist-sales-skill', 'trained-assist-documents-skill', 'trained-assist-speech-skill'];
+const DEFAULT_SIBLING_REPOS = ['software-engineering-playbooks', 'trained-assist-engineering', 'trained-assist-freelance-skill', 'trained-assist-hh-skill', 'trained-assist-sales-skill', 'trained-assist-documents-skill', 'trained-assist-speech-skill', 'trained-assist-search-skill'];
 
 const PLAYBOOK_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
