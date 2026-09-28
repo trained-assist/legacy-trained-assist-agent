@@ -100,6 +100,7 @@ try { RUNTIME_REVISION = require('./release-info').getReleaseSha(); if (RUNTIME_
 const { classifyMessage, CLASSIFY_MAX_AGE_MS } = require('./classify-message');
 const { checkCompleteness } = require('./intake-gate');
 const { startShadow: startInputRouterShadow } = require('./input-router');
+const notifyProfileModule = require('./notify-profile');
 
 function readChatId(username) {
   try { return fs.readFileSync(path.join(dataPaths.TOKENS_ROOT, String(username), '.chatid'), 'utf8').trim() || null; }
@@ -215,6 +216,10 @@ const isHhPath = (pathname) => /^\/(?:(?:api\/)?hh\/|calltips-)/.test(pathname);
 // state (secrets) is added per call.
 const hhCtx = {
   readChatId,
+  // Audience-aware profile notify (#1754) — deps injected here so the module stays
+  // testable; server secrets are read at call time (loaded once in main()).
+  notifyProfile: (username, text, extra) =>
+    notifyProfileModule(username, text, { ...extra, secrets: _secretsCache || {}, readChatId, userWorkDir }),
   BASE_USERS_DIR,
   PORT,
   runMcpTool,
