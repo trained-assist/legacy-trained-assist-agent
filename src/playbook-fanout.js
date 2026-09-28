@@ -75,7 +75,23 @@ function childState(store, childId, profileId, { now = Date.now(), stallMs = DEF
         attempts: failed.attempt_count || 0 },
     };
   }
-  if (task.status === 'paused') return { state: 'paused', progress };
+  if (task.status === 'paused') {
+    // Paused by the batch (pause_batch) → quiet. Paused by its own agent / by hand →
+    // the child waits for the owner: surface it instead of looking «running».
+    let policy = {};
+    try { policy = task.execution_policy_json ? JSON.parse(task.execution_policy_json) : {}; } catch { policy = {}; }
+    if (policy && policy.paused_by_batch) return { state: 'paused', progress };
+    return { state: 'needs_owner', progress, ask: task.blocker_reason || 'план поставлен на паузу своим агентом' };
+  }
+  // A step parked on a user answer (task_item_wait awaiting_user) also waits for the owner.
+  const asking = items.find(i => i.status === 'waiting' && i.wait_json && (() => {
+    try { const w = JSON.parse(i.wait_json); return w && w.awaiting_user === true && !w.resolved; } catch { return false; }
+  })());
+  if (asking) {
+    let reason = null;
+    try { reason = JSON.parse(asking.wait_json).reason || null; } catch { /* none */ }
+    return { state: 'needs_owner', progress, ask: reason || `шаг «${asking.title}» ждёт ответа владельца`, askingItem: { id: asking.id, title: asking.title } };
+  }
   const lastActivity = Math.max(task.updated_at || 0, ...items.map(i => i.updated_at || 0));
   const current = items.find(i => !['done', 'skipped'].includes(i.status));
   if (now - lastActivity > stallMs) {
@@ -177,8 +193,18 @@ function retryChildStep(store, childId, profileId, failedItemId) {
 function setChildPaused(store, childId, profileId, paused) {
   const t = store.getTask(childId, profileId);
   if (!t) return;
-  if (paused && t.status === 'active') store.updateTask(childId, profileId, { status: 'paused' });
-  if (!paused && t.status === 'paused') store.updateTask(childId, profileId, { status: 'active' });
+  let policy = {};
+  try { policy = t.execution_policy_json ? JSON.parse(t.execution_policy_json) : {}; } catch { policy = {}; }
+  const writePolicy = p => store.db.prepare('UPDATE durable_tasks SET execution_policy_json = ? WHERE id = ?').run(JSON.stringify(p), childId);
+  if (paused && t.status === 'active') {
+    writePolicy({ ...policy, paused_by_batch: true });
+    store.updateTask(childId, profileId, { status: 'paused' });
+  }
+  if (!paused && t.status === 'paused' && policy.paused_by_batch) {
+    const { paused_by_batch, ...rest } = policy;
+    writePolicy(rest);
+    store.updateTask(childId, profileId, { status: 'active' });
+  }
 }
 
 // Spawn one element as a child plan: compile the child playbook for the element's
@@ -264,6 +290,7 @@ async function advanceFanout(store, { task, item, now = Date.now(), notify = nul
   const messages = [];
   state.journal = state.journal || [];
   state.notes = state.notes || [];
+  const ownerAsks = [];
 
   // 1-2. observe running children, react to changes.
   for (const el of state.elements) {
@@ -273,6 +300,18 @@ async function advanceFanout(store, { task, item, now = Date.now(), notify = nul
     // An escalated child the owner repaired by hand moves on by itself.
     if (el.status === 'escalated' && cs.state === 'running') { el.status = 'running'; continue; }
     if (el.status === 'escalated' && cs.state !== 'done') continue;
+    // A child waiting for the owner: say so ONCE per distinct ask (no model needed —
+    // only a human can answer). Several elements asking the same thing → one message.
+    if (cs.state === 'needs_owner') {
+      if (el.ownerAsk !== cs.ask) {
+        el.ownerAsk = cs.ask;
+        state.journal.push({ at: now, key: el.key, event: 'child_needs_owner', action: 'escalate_owner', reason: String(cs.ask).slice(0, 400), by: 'policy' });
+        events.push({ key: el.key, type: 'child_needs_owner', action: 'escalate_owner' });
+        ownerAsks.push({ el, ask: cs.ask });
+      }
+      continue;
+    }
+    if (el.ownerAsk) el.ownerAsk = null; // answered — the child moves again
     if (cs.state === 'running' || cs.state === 'paused') { if (el.status === 'retrying') el.status = 'running'; continue; }
     if (cs.state === 'stalled' && el.stallNotedAt && now - el.stallNotedAt < stallMs) continue;
     const type = cs.state === 'done' ? 'child_done' : cs.state === 'stalled' ? 'child_stalled' : 'child_failed';
@@ -314,6 +353,18 @@ async function advanceFanout(store, { task, item, now = Date.now(), notify = nul
     }
     const text = eventText(state, el, event, decision);
     if (text) messages.push(text);
+  }
+
+  if (ownerAsks.length) {
+    const byAsk = new Map();
+    for (const { el, ask } of ownerAsks) {
+      const k = String(ask).trim().slice(0, 300);
+      if (!byAsk.has(k)) byAsk.set(k, []);
+      byAsk.get(k).push(el.name || el.key);
+    }
+    for (const [ask, names] of byAsk) {
+      messages.push(`❓ Пачка «${state.config.title}»: ${names.length > 1 ? `${names.length} элемента ждут` : `«${names[0]}» ждёт`} твоего ответа${names.length > 1 ? ` (${names.join(', ')})` : ''}:\n${ask}`);
+    }
   }
 
   // 3. spawn queued elements (no batch cap — host slots gate the actual step fires).
