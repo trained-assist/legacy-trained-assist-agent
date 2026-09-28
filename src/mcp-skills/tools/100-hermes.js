@@ -14,6 +14,26 @@ const { withKeepalive } = require('../../mcp-keepalive');
 
 const USER_ID = process.env.USER_ID || '';
 
+// Anti-recursion floor for hermes_research (triage 2026-09-28).
+// hermes_research spawns a headless engine that gets THIS SAME MCP toolset, so without a
+// floor the chain reproduces itself: engine → hermes_research → engine → hermes_research
+// → … (measured: a new engine every ~15–20 s until the service was restarted). The depth
+// travels in the MCP server env of the nested run (hermes-tools-run.js → browser.js
+// extraEnv), because config env wins over the engine's env. Read at call time, not load
+// time, so a server that inherits the flag rejects without a restart.
+// Only hermes_research is floored: hermes_run/hermes_candidate_report are a single raw
+// LLM call that cannot spawn anything.
+function nestedRefusal() {
+  const depth = Number.parseInt(process.env.HERMES_DEPTH || '0', 10) || 0;
+  if (depth < 1) return null;
+  return (
+    `Вложенный Гермес (depth=${depth}) не запускается: этот движок уже работает внутри ` +
+    'hermes_research, и повторный запуск плодит бесконечную цепочку движков. ' +
+    'Выполни задачу сам этим же запуском: сходи в сеть через доступные инструменты ' +
+    'и собери результат, а наружу отдай JSON по схеме.'
+  );
+}
+
 const CANDIDATE_REPORT_SCHEMA = {
   type: 'object',
   properties: {
@@ -30,6 +50,8 @@ const CANDIDATE_REPORT_SCHEMA = {
 
 module.exports = {
   isReady: () => true,
+  // Exported for the anti-recursion contract test (test/hermes-nested-guard.test.cjs).
+  nestedRefusal,
 
   tools: {
     hermes_run: {
@@ -111,6 +133,8 @@ module.exports = {
         required: ['task', 'output_schema'],
       },
       handler: async ({ task, context, output_schema }) => {
+        const refusal = nestedRefusal();
+        if (refusal) throw new Error(refusal);
         const result = await withKeepalive(() =>
           hermesRunWithTools({ username: USER_ID, task, context, outputSchema: output_schema, engine: process.env.HERMES_RESEARCH_ENGINE || 'opencode', ocProfile: 'research' }));
         const delivery = await persistAndDeliver({ task, result });

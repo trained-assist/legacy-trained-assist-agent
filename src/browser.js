@@ -81,7 +81,7 @@ function buildStorageState(tokensDir) {
  * `siblingPaths` (optional, test seam): overrides for the sibling checkout entrypoints
  * below; production always uses the computed repo-relative paths.
  */
-function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths } = {}) {
+function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, extraEnv } = {}) {
   // Note: --user-data-dir creates a persistent context, which is incompatible
   // with --storage-state (Playwright limitation). We rely on --storage-state
   // for both cookie injection and session persistence. Per-user isolation is
@@ -163,6 +163,10 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths } 
     } : {}),
     // Registry (src/mcp-skills/registry.js) skips the catalog modules hidden by this file.
     ...(skillsFile ? { SKILLS_RESOLVED: skillsFile } : {}),
+    // Per-run flags for the MCP server processes themselves (HERMES_DEPTH). This env
+    // wins over the engine's env — see the note below — so it is the one place a run
+    // can stamp a fact the server must see.
+    ...(extraEnv || {}),
     // NO AGENT_SESSION_FILE here: .mcp.json is ONE file per profile, rewritten by every run,
     // and config env overrides the engine's env — parallel sessions of a profile (different
     // chats) would read each other's session file and get_chat_history would answer for the
