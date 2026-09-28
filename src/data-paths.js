@@ -36,6 +36,14 @@ const SYSTEM_ROOT = process.env.AGENT_DATA_DIR || path.join(HOME, 'agent-data');
 // ~/agent-tokens — the source of thousands of leaked test profiles (see issue).
 const TOKENS_ROOT = process.env.AGENT_TOKENS_DIR || process.env.AGENT_TOKENS_ROOT || path.join(HOME, 'agent-tokens');
 
+// ── Workspace mode bits ───────────────────────────────────────────────────────
+// When the workspace is synced to GCS (GCS_WORKSPACE_SYNC), POSIX mode bits are
+// meaningless — GCS objects have no permissions model. Workspace writers pass no
+// mode at all instead of pretending one will stick. Unset = unchanged behavior.
+function writeMode(mode) {
+  return process.env.GCS_WORKSPACE_SYNC ? undefined : { mode };
+}
+
 // ── Per-user Claude workspace (USERS_ROOT) ────────────────────────────────────
 
 function userWorkDir(username) {
@@ -138,6 +146,7 @@ function engineeringWorkspacesDir(username) {
 }
 
 module.exports = {
+  writeMode,
   engineeringWorkspacesDir,
   engineeringWorkspaceRoot,
   engineeringMirrorsRoot,
