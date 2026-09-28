@@ -24,6 +24,12 @@
 // promised a search tool: never describe an instrument in the prompt that the
 // resolved engine does not actually have — say so plainly instead (buildPrompt).
 //
+// Search ladder (2026-09-28, #1792): level 1 is OURS — `search_serp_free`
+// (src/mcp-skills/tools/99c-search-searxng.js, no key, no quota). It runs in this
+// server process before the engine even starts, so the model always receives a real
+// SERP in the prompt regardless of what search the engine exposes. Level 2 = the
+// engine's built-in websearch, level 3 = fetch/browser for a concrete URL.
+//
 // Research runs on the Gemini-backed OpenCode ladder. Set HERMES_RESEARCH_ENGINE=claude
 // for the temporary rollback path.
 
@@ -46,7 +52,55 @@ function hermesWorkDir(username) {
   return dir;
 }
 
-function buildPrompt(task, context, outputSchema) {
+// ── Level 1: keyless search, run here before the engine starts ───────────────
+
+// A research task is free text, not a query — take its first sentence and cap it.
+function searchQueryFromTask(task) {
+  const flat = String(task || '').replace(/\s+/g, ' ').trim();
+  if (!flat) return '';
+  const first = flat.split(/(?<=[.!?…])\s+/)[0] || flat;
+  return first.slice(0, 160).trim();
+}
+
+/**
+ * Run `search_serp_free` once against the task and return the SERP for the prompt.
+ * Never throws and never fails the research run: a blocked/slow upstream comes back
+ * as { results: [], reason } so buildPrompt can say "level 1 is down, go to level 2".
+ * `fetchImpl` is a test seam (see test/hermes-search-first-level.test.cjs).
+ */
+async function prefetchLevel1(task, { fetchImpl } = {}) {
+  const query = searchQueryFromTask(task);
+  if (!query || process.env.HERMES_PREFETCH_SEARCH === '0') return null;
+  try {
+    const { tools } = require('./mcp-skills/tools/99c-search-searxng');
+    const handler = tools && tools.search_serp_free && tools.search_serp_free.handler;
+    if (typeof handler !== 'function') return null;
+    const out = await handler({ query, num: 8 }, fetchImpl ? { fetchImpl } : {});
+    if (out && Array.isArray(out.results) && out.results.length) return { query, results: out.results };
+    return { query, results: [], reason: (out && (out.message || out.error)) || 'пустая выдача' };
+  } catch (e) {
+    return { query, results: [], reason: (e && e.message) || 'search failed' };
+  }
+}
+
+function formatLevel1(level1) {
+  if (!level1) return '';
+  if (level1.results.length) {
+    const rows = level1.results
+      .map((r, i) => `${i + 1}. ${r.title} — ${r.url}${r.snippet ? `\n   ${r.snippet}` : ''}`)
+      .join('\n');
+    return (
+      'УРОВЕНЬ 1 — предварительный поиск уже сделан за тебя (search_serp_free, запрос «' +
+      `${level1.query}»), ${level1.results.length} результатов:\n${rows}\n\n`
+    );
+  }
+  return (
+    `УРОВЕНЬ 1 — предварительный поиск search_serp_free не дал результатов: ${level1.reason}. ` +
+    'Не выдумывай источники — переходи на УРОВЕНЬ 2 (встроенный веб-поиск) и дальше открывай страницы.\n\n'
+  );
+}
+
+function buildPrompt(task, context, outputSchema, level1 = null) {
   const schemaHint = JSON.stringify(outputSchema, null, 2);
   return (
     'Ты — Hermes, исследовательский воркер внутри trained-assist. Только исследуй и подготовь ' +
@@ -55,10 +109,17 @@ function buildPrompt(task, context, outputSchema) {
     // Never claim an instrument the resolved engine may not have. Before 2026-09-28 this
     // promised «встроенный веб-поиск» unconditionally — opencode had no such tool — so the
     // model never complained about the missing search, it just invented sources.
-    'Инструменты: веб-поиск, загрузка страниц, браузер (Playwright MCP) и внутренние ' +
-    'MCP-скилы. Сначала сделай ОДИН пробный вызов поиска. Если поиска нет или он вернул ' +
-    'ошибку — НЕ ВЫДУМЫВАЙ источники: явно напиши, что живых данных нет, и опирайся только ' +
-    'на то, что реально удалось открыть.\n\n' +
+    'Порядок инструментов (уровни):\n' +
+    '1) search_serp_free (MCP trained-skills, ключей и квот не требует) — ОСНОВНОЙ поиск: ' +
+    'все поисковые запросы, включая уточняющие, делай им. Если предварительного поиска ниже ' +
+    'нет — сделай один пробный вызов поиска, прежде чем решить, что живых данных нет.\n' +
+    '2) Встроенный веб-поиск движка (websearch/WebSearch) — только если уровень 1 вернул ' +
+    'ошибку или мало полезного.\n' +
+    '3) Загрузка страниц и браузер (Playwright MCP) — когда нужен конкретный URL или ' +
+    'содержимое страницы.\n' +
+    'Если поиск недоступен — НЕ ВЫДУМЫВАЙ источники: явно напиши, что живых данных нет, ' +
+    'и опирайся только на то, что реально удалось открыть.\n\n' +
+    formatLevel1(level1) +
     'Ссылки обязаны быть настоящими: URL из поисковой выдачи или страницы, которую ты ' +
     'открыл. Каждое неочевидное утверждение подкрепи полем `sources` (title + url + quote). ' +
     'Пустой `sources` при наличии утверждений означает, что research не состоялся.\n\n' +
@@ -95,7 +156,10 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
     workDir, username,
     { extraEnv: { HERMES_DEPTH: String(hermesDepth) }, siblings: false },
     { bridged: isolationConfig().envAllowlist });
-  const prompt = buildPrompt(task, context, outputSchema);
+  // Level 1 runs HERE (server process, no isolation/env-allowlist concerns) so the model
+  // starts from a real SERP even when the engine's own search is missing or rate-limited.
+  const level1 = await prefetchLevel1(task);
+  const prompt = buildPrompt(task, context, outputSchema, level1);
   const resolvedEngine = engine || process.env.HERMES_RESEARCH_ENGINE || 'opencode';
   const resolvedProfile = ocProfile || (resolvedEngine === 'opencode' ? 'research' : null);
   const ocProfileOverrides = resolvedEngine === 'opencode'
@@ -142,4 +206,4 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
   return parseLlmJson(text);
 }
 
-module.exports = { hermesRunWithTools, buildPrompt };
+module.exports = { hermesRunWithTools, buildPrompt, prefetchLevel1, searchQueryFromTask };
