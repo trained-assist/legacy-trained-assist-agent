@@ -444,6 +444,10 @@ async function resumePendingTasks(secrets) {
       try {
         // runTask journals its replacement synchronously before returning its promise.
         // Keep the old durable entry throughout backoff and until that handoff succeeds.
+        // Exception — profile maintenance lock (#1784): runTask waits for the lock first,
+        // so the new entry lands later and the old one below is already gone by then.
+        // Accepted: a run waiting for the lock must NOT be an in-flight journal entry
+        // (the migrator's drain would wait for it while it waits for the migrator).
         const running = runTask({
           taskId: `${p.username}-resume-${Date.now()}`,
           user, task: resumeTask, context: p.context || null,
@@ -1113,7 +1117,10 @@ async function main() {
           }
         }
 
-        // runTask journals synchronously, before any await or acknowledgement.
+        // runTask journals synchronously, before any await or acknowledgement — except
+        // while the profile holds a maintenance lock (#1784): then it waits first and
+        // journals when the lock clears (a lock-waiter must not read as in-flight work
+        // to the migrator's drain). 202 below stays the acceptance signal either way.
         const completion = runTask({ taskId, requestId: requestId || null, user, threadId, ...(Object.hasOwn(payload, 'initiatedAt') ? { initiatedAt } : {}), task: effectiveTask, context, sessionId: sessionId || null, contextFromSession: contextFromSession || null, forceClaude: !!forceClaude, forceNew: !!forceNew, initialMsgId: initialMsgId || null, pinnedMsgId: pinnedMsgId || null, secrets, fileRefs: effectiveFileRefs, mode: mode || null, projectId: projectId || null, projectPicked: projectPicked === true, newProjectName: newProjectName || null });
         completion.catch(err => console.error(`[${taskId}] runTask error:`, err.message));
         if (requestId) atomicJson(receipt, { taskId, audience: audience || 'default', acceptedAt: Date.now() });

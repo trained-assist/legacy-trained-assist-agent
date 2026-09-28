@@ -24,11 +24,12 @@ function bufferedRecords(file) {
   return pending.get(file) || [];
 }
 
+// Returns how many buffered records were written (0 = nothing to do).
 function flushFile(file) {
   const buffered = pending.get(file);
-  if (!buffered || !buffered.length) return;
+  if (!buffered || !buffered.length) return 0;
   pending.delete(file);
-  if (!fs.existsSync(path.dirname(file))) return;
+  if (!fs.existsSync(path.dirname(file))) return 0;
   let existing = '';
   try { existing = fs.readFileSync(file, 'utf8'); } catch { existing = ''; }
   if (existing && !existing.endsWith('\n')) existing += '\n';
@@ -43,12 +44,19 @@ function flushFile(file) {
     clearInterval(flushTimer);
     flushTimer = null;
   }
+  return buffered.length;
 }
 
+// Write every buffered file now. Returns the number of records flushed — the
+// profile migrator's POST /internal/flush-profile turns it into {flushed}, the
+// evidence that no buffered record can re-create a file it is about to archive
+// (epic #1784 risk R2).
 function flushAll() {
+  let flushed = 0;
   for (const file of [...pending.keys()]) {
-    try { flushFile(file); } catch (e) { console.warn(`[jsonl-batched-flush] flush failed for ${file}: ${e.message}`); }
+    try { flushed += flushFile(file); } catch (e) { console.warn(`[jsonl-batched-flush] flush failed for ${file}: ${e.message}`); }
   }
+  return flushed;
 }
 
 function ensureTimer() {
