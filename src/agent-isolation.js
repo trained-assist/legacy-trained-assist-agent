@@ -230,16 +230,30 @@ function shareServiceFiles(cfg, gate, { exec } = {}) {
   } catch (e) { console.warn(`[isolation] could not share service files in ${gate}: ${e.message}`); }
 }
 
-// Fix ACL masks on files left by ANY slot. When a slot creates files (e.g.,
-// SQLite's opencode.db), the file-creation mode (0644) intersects with the
-// default ACL mask (rwx) to produce mask r-- — too restrictive for the NEXT slot.
-// shareSlotFiles only fixes files owned by the current slot, so cross-slot files
-// stay broken. Running as root (service user has passwordless sudo) lets us fix
-// any file regardless of owner.
+// Fix ACL masks on files left by ANY slot. Safety net for files created before
+// the umask fix (issue below) or by tools that hardcode mode 0600.
+//
+// Why this exists despite umask 0007 in sudoArgv: umask only affects NEW files.
+// Pre-existing files (e.g. opencode.db from a run before the umask deploy) keep
+// their old mask. This function runs as root (service user has sudo) to fix them
+// once; subsequent runs won't need it (umask keeps new files at rw-).
 function fixSlotFileMasks(cfg, gate, { exec } = {}) {
   const home = path.join(gate, '.agent-home');
   if (!fs.existsSync(home)) return;
   try {
+    // Count files that actually need fixing (group lacks rw)
+    let fileCount = 0, dirCount = 0;
+    try {
+      const out = execFileSync(cfg.sudoBin, ['-n', 'find', home, '-xdev',
+        '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
+        '(', '-type', 'f', '!', '-perm', '-g+rw', '-o',
+        '-type', 'd', '!', '-perm', '-g+rwx', ')',
+        '-print'], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
+      const lines = out.toString().split('\n').filter(Boolean);
+      fileCount = lines.length; // includes both files and dirs; good enough for logging
+    } catch { /* count is best-effort */ }
+    if (fileCount === 0) return;
+    console.log(`[isolation] fixSlotFileMasks: fixing ${fileCount} path(s) in ${home}`);
     // Files: ensure group has read+write
     runCmd([cfg.sudoBin, '-n', 'find', home, '-xdev',
       '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
@@ -291,12 +305,23 @@ function recoverSlot(cfg, slot, { exec } = {}) {
 function shareSlotFiles(cfg, slot, dirs, { exec } = {}) {
   for (const d of dirs) {
     try {
+      // First: count how many files need fixing (for logging)
+      let count = 0;
+      try {
+        const out = execFileSync(cfg.sudoBin, ['-n', '-u', slot, '--', 'find', d, '-xdev',
+          '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
+          '-user', slot, '!', '-type', 'l',
+          '(', '!', '-perm', '-g+rw', '-o', '-type', 'd', '!', '-perm', '-g+x', ')',
+          '-print'], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
+        count = out.toString().split('\n').filter(Boolean).length;
+      } catch { /* count is best-effort */ }
       // chrome/: the live browser profile — service-owned, huge, never the slot's.
       runCmd([cfg.sudoBin, '-n', '-u', slot, '--', 'find', d, '-xdev',
         '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
         '-user', slot, '!', '-type', 'l',
         '(', '!', '-perm', '-g+rw', '-o', '-type', 'd', '!', '-perm', '-g+x', ')',
         '-exec', 'chmod', 'g+rwX', '{}', '+'], exec);
+      if (count > 0) console.log(`[isolation] ${slot}: shared ${count} file(s) in ${d}`);
     } catch (e) { console.warn(`[isolation] ${slot}: could not share its files in ${d}: ${e.message}`); }
   }
 }
@@ -431,8 +456,14 @@ function resolveBin(bin, envPath = process.env.PATH || '') {
 
 // argv for running `bin args…` as `slot`. The env travels through the process
 // environment (sudoers: !env_reset for the slot users), never through argv.
+// umask 0007: files created with mode 0644 (sqlite, most CLIs) become 0640,
+// so the POSIX ACL mask lands at rw- instead of r-- — the group can write.
 function sudoArgv(cfg, slot, bin, args) {
-  return [cfg.sudoBin, ['-n', '-u', slot, '--', resolveBin(bin), ...args]];
+  const resolved = resolveBin(bin);
+  // exec replaces the shell so signals propagate to the engine process.
+  const shellCmd = ['umask 0007;', 'exec', resolved,
+    ...args.map(a => `'${a.replace(/'/g, "'\\''")}'`)].join(' ');
+  return [cfg.sudoBin, ['-n', '-u', slot, '--', 'sh', '-c', shellCmd]];
 }
 
 /**
