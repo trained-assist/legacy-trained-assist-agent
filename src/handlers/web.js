@@ -294,6 +294,28 @@ async function handleWeb(req, url, res, ctx) {
     }
   }
 
+  // ── POST /web/session-digest — «📋 Сжатый лог» for external frontends ─────
+  // Bearer twin of GET /web/session/:id/digest (the Cloudflare worker can't
+  // hold a WEB_JWT cookie). Same delegation pattern as /web/session-trace:
+  // {username,id} in, the full digest out ({ok:true,...} or {ok:false,error}).
+  // Pass B is one cheap LLM call — first hit may take seconds, results are
+  // cached on disk by getDigestFor.
+  if (req.method === 'POST' && url.pathname === '/web/session-digest') {
+    const verifySecret = secrets.WEB_VERIFY_SECRET || secrets.AGENT_SECRET;
+    const auth = req.headers['authorization'] || '';
+    if (!verifySecret || auth !== `Bearer ${verifySecret}`) return json(res, 401, { error: 'unauthorized' });
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const { username, id } = body || {};
+    if (!username || !/^[a-zA-Z0-9_-]{1,64}$/.test(username)) return json(res, 400, { error: 'invalid username' });
+    try {
+      const { getDigestFor } = require('../session-digest');
+      return json(res, 200, await getDigestFor(username, id));
+    } catch (e) {
+      return json(res, 500, { error: 'session digest failed' });
+    }
+  }
+
   // ── POST /web/intake-file-bearer — store one web attachment durably ──────
   // The Cloudflare worker owns browser uploads first. Before a real run/reply it
   // copies each file here so the agent can materialize it into media/intake and
