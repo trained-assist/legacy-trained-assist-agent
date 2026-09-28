@@ -183,7 +183,7 @@ test('with AGENT_ENV_ALLOWLIST=1 the engine sees no server-only env, MCP keeps i
   }
 });
 
-test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + config env refs), nothing else', async () => {
+test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + OpenCode Go + config env refs), nothing else', async () => {
   process.env.AGENT_ENV_ALLOWLIST = '1';
   const svcHome = fs.mkdtempSync(path.join(tmpRoot, 'svc-oc-'));
   fs.mkdirSync(path.join(svcHome, '.config', 'opencode'), { recursive: true });
@@ -194,11 +194,18 @@ test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + co
     const outDir = fs.mkdtempSync(path.join(tmpRoot, 'oc-'));
     const opts = baseOpts(outDir, fakeEngine(outDir));
     opts.engine = 'opencode';
-    opts.cleanEnv = { ...SERVER_ENV, GIGACHAT_TOKEN: 'gc-key', OTHER_PROVIDER_KEY: 'other-key' };
+    opts.cleanEnv = { ...SERVER_ENV, GIGACHAT_TOKEN: 'gc-key', OTHER_PROVIDER_KEY: 'other-key', OPENCODE_GO_API_KEY: 'oc-test-single', OPENCODE_GO_API_KEYS: 'oc-k1,oc-k2' };
     const r = await runEngineProcess(opts);
     assert.equal(r.exitCode, 0);
     const env = parseEnvFile(path.join(outDir, 'engine.env'));
     assert.equal(env.OPENROUTER_API_KEY, 'srv-openrouter', 'opencode needs its OpenRouter key');
+    // OpenCode Go: the box ships a two-key rotation list as OPENCODE_GO_API_KEYS, while the
+    // built-in opencode-go provider reads OPENCODE_API_KEY — runEngineProcess maps the LIST
+    // (both keys, so rotation survives), not just the singular entry.
+    assert.equal(env.OPENCODE_API_KEY, 'oc-k1,oc-k2', 'the whole Go key list reaches the engine under the name its provider reads');
+    assert.ok(!('OPENCODE_GO_API_KEY' in env) && !('OPENCODE_GO_API_KEYS' in env), 'the box names are not needed by the engine');
+    assert.ok(iso.engineCredentialNames('opencode').includes('OPENCODE_API_KEY'), 'Go key is an engine credential, not a server-only secret');
+    assert.deepEqual(iso.engineCredentialNames('codex'), ['OPENAI_API_KEY'], 'codex credential set is unchanged');
     assert.equal(env.GIGACHAT_TOKEN, 'gc-key', '${VAR} reference in the opencode config');
     assert.equal(env.OTHER_PROVIDER_KEY, 'other-key', '{env:VAR} reference in the opencode config');
     for (const k of ['AGENT_SECRET', 'TELEGRAM_BOT_TOKEN', 'DEEPGRAM_API_KEY', 'INN_DADATA_SECRET', 'SOME_SERVER_ONLY_SETTING']) assert.ok(!(k in env), `${k} dropped`);

@@ -4,9 +4,9 @@
 // Wired to FakeTelegram events via onFinalMessage().
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
-const { decideFirstAction, decideNextAction } = require('./mainstream-decider');
+const { decideFirstAction, decideNextAction, fallbackAction } = require('./mainstream-decider');
+const { SYSTEM_ROOT } = require('../data-paths');
 
 const STEP_TIMEOUT_MS = 180_000; // 3 min per step (Claude can be slow)
 const TEST_CHAT_ID = 999_000_001;
@@ -14,8 +14,13 @@ const TEST_CHAT_ID = 999_000_001;
 // Durable cross-run bug log — separate from the per-invocation stateDir (which
 // stays isolated to avoid GTD spillover between agent instances). Every bug
 // from every run also lands here so bugs accumulate instead of being scattered
-// across timestamped directories.
-const GLOBAL_BUGS_FILE = path.join(os.homedir(), 'agent-data', 'mainstream-test', 'bugs.jsonl');
+// across timestamped directories. Holds PRODUCT bugs (agent responses) only.
+const GLOBAL_BUGS_FILE = path.join(SYSTEM_ROOT, 'mainstream-test', 'bugs.jsonl');
+// Failures of the test driver ITSELF (decider LLM, POST /run, step waits) get their
+// own log: 27/27 entries in bugs.jsonl were driver errors, so the file had stopped
+// reporting agent bugs at all (2026-09-28).
+const DRIVER_LOG_FILE = path.join(SYSTEM_ROOT, 'mainstream-test', 'driver-errors.jsonl');
+const DRIVER_ERROR_KINDS = new Set(['decider_error', 'send_error', 'timeout', 'run_fatal']);
 
 // Patterns that indicate something went wrong in the agent response.
 const BUG_PATTERNS = [
@@ -46,14 +51,32 @@ class Orchestrator {
     fs.writeFileSync(this.stateFile, JSON.stringify(this.state, null, 2));
   }
 
+  // Product bugs go to bugs.jsonl (agent problems); driver failures go to
+  // driver-errors.jsonl as type=driver_error with the original kind in `kind`.
+  // Both keep landing in this state.bugs array / the per-run bugsFile.
   _logBug(bug) {
     const entry = { ...bug, runId: this.state?.runId, at: new Date().toISOString() };
+    const isDriver = DRIVER_ERROR_KINDS.has(bug.type);
+    if (isDriver) {
+      entry.kind = bug.type;
+      entry.type = 'driver_error';
+      fs.mkdirSync(path.dirname(DRIVER_LOG_FILE), { recursive: true });
+      fs.appendFileSync(DRIVER_LOG_FILE, JSON.stringify(entry) + '\n');
+      console.warn(`[driver] kind=${entry.kind} step=${bug.step ?? '?'} detail=${(bug.detail || '').slice(0, 120)}`);
+    } else {
+      fs.mkdirSync(path.dirname(GLOBAL_BUGS_FILE), { recursive: true });
+      fs.appendFileSync(GLOBAL_BUGS_FILE, JSON.stringify(entry) + '\n');
+      console.warn(`[bug] type=${bug.type} step=${bug.step ?? '?'} detail=${(bug.detail || '').slice(0, 120)}`);
+    }
+    fs.mkdirSync(this.stateDir, { recursive: true });
     fs.appendFileSync(this.bugsFile, JSON.stringify(entry) + '\n');
-    fs.mkdirSync(path.dirname(GLOBAL_BUGS_FILE), { recursive: true });
-    fs.appendFileSync(GLOBAL_BUGS_FILE, JSON.stringify(entry) + '\n');
     this.state.bugs.push(entry);
     this._saveState();
-    console.warn(`[bug] type=${bug.type} step=${bug.step ?? '?'} detail=${(bug.detail || '').slice(0, 120)}`);
+  }
+
+  _bugCounts() {
+    const driver = this.state.bugs.filter(b => b.type === 'driver_error').length;
+    return { product: this.state.bugs.length - driver, driver };
   }
 
   _detectBugs(text, step) {
@@ -157,7 +180,8 @@ class Orchestrator {
 
       this.state.status = 'completed';
       this._saveState();
-      console.log(`[orchestrator] Run ${runId} done. Bugs found: ${this.state.bugs.length}`);
+      const { product, driver } = this._bugCounts();
+      console.log(`[orchestrator] Run ${runId} done. Bugs found: ${product} (product) + ${driver} driver errors`);
     } catch (err) {
       this.state.status = 'error';
       this._logBug({ type: 'run_fatal', detail: err.message });
@@ -222,7 +246,8 @@ previousActions,
         console.log(`[orchestrator] Next action: ${JSON.stringify(action)}`);
       } catch (err) {
         this._logBug({ type: 'decider_error', step, detail: err.message });
-        action = { type: 'text', content: 'помоги' }; // fallback
+        // Same deterministic diversity as the LLM-less fallback — never a fixed word.
+        action = fallbackAction({ buttons, previousActions });
       }
     }
   }

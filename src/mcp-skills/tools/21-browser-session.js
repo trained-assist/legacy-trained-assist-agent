@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execSync, execFileSync } = require('child_process');
+const { readCredentialFile } = require('../../credential-store');
 
 const USER_ID = process.env.USER_ID || '';
 
@@ -258,7 +259,7 @@ const tools = [
       }
 
       let creds;
-      try { creds = JSON.parse(fs.readFileSync(credsFile, 'utf8')); }
+      try { creds = JSON.parse(readCredentialFile(credsFile)); }
       catch { return { error: 'invalid_credentials_file', message: `Could not read credentials for "${service}".` }; }
 
       if (!creds.email || !creds.password) {

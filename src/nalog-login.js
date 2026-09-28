@@ -4,10 +4,8 @@
 // Manages in-process Playwright sessions between the credential step
 // and the optional 2FA code step.
 
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
 const crypto = require('crypto');
+const { writeCredential } = require('./credential-store');
 
 // sessionId → { browser, page, context, userId, expires }
 const pendingSessions = new Map();
@@ -355,9 +353,8 @@ async function extractAndSave(page, browser, userId) {
 
     if (!tokens.auth_token) return { error: 'Вошли, но auth.token не появился в sessionStorage' };
 
-    const dir = path.join(os.homedir(), 'agent-tokens', String(userId));
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'nalog'), JSON.stringify(tokens, null, 2), { mode: 0o600 });
+    // Encrypted at rest on this VM too (#1789 C4); GCP gets its own copy via the token sink.
+    writeCredential(String(userId), 'nalog', JSON.stringify(tokens, null, 2), { expiresAt: tokens.expires || null });
     console.log('[nalog-login] token saved locally, userId=%s, expires=%s', userId, tokens.expires);
 
     // Push the token to GCP too (issue #1288): this module now runs only on the

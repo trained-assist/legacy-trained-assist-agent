@@ -14,11 +14,19 @@
 # leaving all other crontab entries untouched.
 set -e
 REPO_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-WRAPPER="$REPO_DIR/ops/cron/claude-token-refresh.sh"
+# The cron entry must point at the STABLE ~/agent-master symlink, never at
+# $REPO_DIR: deploy runs this from /home/vova/agent-releases/<sha>, and that
+# path dies with the next release GC (ops/cron/install.sh resolves the same way).
+# $REPO_DIR stays as the dev fallback (a plain checkout has no agent-master).
+CRON_BASE=${AGENT_CURRENT:-}
+if [ -z "$CRON_BASE" ]; then
+  if [ -d "$HOME/agent-master" ]; then CRON_BASE="$HOME/agent-master"; else CRON_BASE="$REPO_DIR"; fi
+fi
+WRAPPER="$CRON_BASE/ops/cron/claude-token-refresh.sh"
 BEGIN="# >>> trained-assist claude-oauth-refresh (managed by scripts/install-claude-token-refresh.sh) >>>"
 END="# <<< trained-assist claude-oauth-refresh <<<"
 
-chmod +x "$WRAPPER"
+chmod +x "$WRAPPER" 2>/dev/null || true  # release dir may be root-owned
 
 block() {
   echo "$BEGIN"

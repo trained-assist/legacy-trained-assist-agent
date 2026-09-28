@@ -27,6 +27,7 @@ const {
   listConnectedServices,
   generateConnectLink,
 } = require('../user-tokens');
+const { readCredentialFile, isMetaSidecar } = require('../credential-store');
 const { initLog, readLog } = require('../requirements-log');
 const { hhLib, hhAvailable } = require('../domains/hh/lib');
 const { writeVacancyState } = hhLib('hh-vacancy');
@@ -35,6 +36,10 @@ const readVacancyState = (workDir) => (hhAvailable('hh-vacancy') ? hhLib('hh-vac
 const persona = require('../persona');
 const profiles = require('../profiles');
 const { TOKENS_ROOT } = require('../data-paths');
+// Profile maintenance lock (epic #1784): a file-based gate the profile migrator
+// (a separate process) holds while it mutates a workspace. Checked here, before
+// a run is journaled — see the block comment in _runTaskInner.
+const { isProfileLocked, waitForProfileUnlocked } = require('../profile-lock');
 const answerRouter = require('../answer-router');
 const promptDomains = require('../prompt-domains');
 // Slice C of #1573: offer the audience-default playbook at the start of a
@@ -99,54 +104,48 @@ const MAX_MSG_LEN = 3500;
 
 // Telegram cards report token usage only; monetary estimates are not displayed.
 //
-// The model reads the WHOLE prompt every step (fresh input + cache read + cache
-// write), so reporting only input_tokens made a ~57K-step look like "вход 6K"
-// and misled the owner into doubting the system-prompt size (#149 follow-up,
-// owner decision 27.09.2026 "давай да поправим"). When any cache part is
-// present we show the honest total with a breakdown; with no cache at all the
-// footer is unchanged (total === input anyway).
+// Owner decision 29.09.2026: the card must not leak internal engine/model slugs
+// ("deepseek:build") and must read as plain language. The wording below is the
+// owner's own dictation, kept verbatim:
+//   «ИИ натренированный на рабочие вопросы. Расход токенов: вход: X, обработка: Y, ответ: Z»
+//   вход      — prompt tokens read for the FIRST time this step (fresh input + cache write);
+//   обработка — prompt tokens re-read from the cache: the model re-reads them on every step,
+//               so this is where the real volume of a long session shows up (#149 follow-up);
+//   ответ     — generated tokens.
+// All three slots are always present, in this order, so the card looks identical whatever
+// engine or model ran, and no number (cache write included) is reported silently.
+function usageFooter({ input, output, cacheRead, cacheWrite }) {
+  const fmtK = n => {
+    const v = Math.round(n);
+    return v >= 1e6 ? `${Math.round(v / 1e4) / 100}M`
+      : v >= 1000 ? `${Math.round(v / 100) / 10}K` : String(v);
+  };
+  return '\n\nИИ натренированный на рабочие вопросы. Расход токенов: '
+    + `вход: ${fmtK(input + cacheWrite)}, обработка: ${fmtK(cacheRead)}, ответ: ${fmtK(output)}`;
+}
+
+// Claude shape: { input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens }.
 function formatCostFooter(usage) {
   if (!usage) return '';
-  const inp = usage.input_tokens || 0;
-  const out = usage.output_tokens || 0;
-  const cr  = usage.cache_read_input_tokens || 0;
-  const cw  = usage.cache_creation_input_tokens || 0;
-  const fmt = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-  const fmtK = n => n >= 1e6 ? `${Math.round(n / 1e4) / 100}M`
-    : n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
-  const parts = [inputPart(inp, cr, cw, fmt, fmtK), `выход ${fmt(out)}`];
-  return `\n\nИспользование: ${parts.join(' · ')}`;
+  return usageFooter({
+    input: usage.input_tokens || 0,
+    output: usage.output_tokens || 0,
+    cacheRead: usage.cache_read_input_tokens || 0,
+    cacheWrite: usage.cache_creation_input_tokens || 0,
+  });
 }
 
-// "вход N" when no cache; "вход всего T (новых N, из кэша R, в кэш +W)" otherwise.
-function inputPart(inp, cr, cw, fmt, fmtK) {
-  if (cr <= 0 && cw <= 0) return `вход ${fmt(inp)}`;
-  const bits = [`новых ${fmtK(inp)}`];
-  if (cr > 0) bits.push(`из кэша ${fmtK(cr)}`);
-  if (cw > 0) bits.push(`в кэш +${fmtK(cw)}`);
-  return `вход всего ${fmtK(inp + cr + cw)} (${bits.join(', ')})`;
-}
-
-// breakdown: [{ agent, model, input, output, cacheRead, cacheWrite, cost }]
-// Одна строка, словами, без иконок. Показываем только реально использованную
-// модель (в проде из всего конфига профиля реально работает одна).
-function formatOcFooter(usage, breakdown) {
+// OpenCode shape: { input, output, cacheRead, cacheWrite, cost } aggregated over the run.
+// `cost` and the per-agent breakdown are deliberately ignored — the card reports tokens only
+// and must not name the model (owner decision 29.09.2026).
+function formatOcFooter(usage) {
   if (!usage) return '';
-  const fmt = n => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '\u202f');
-  const fmtK = n => n >= 1e6 ? `${Math.round(n / 1e4) / 100}M`
-    : n >= 1000 ? `${Math.round(n / 100) / 10}K` : String(n);
-  let model = '';
-  if (breakdown) {
-    for (const s of breakdown) {
-      if (s.model) { model = s.model.split('/').pop().replace(/:free$/, ''); break; }
-    }
-  }
-  const inp = usage.input || 0;
-  const cr  = usage.cacheRead || 0;
-  const cw  = usage.cacheWrite || 0;
-  const parts = [inputPart(inp, cr, cw, fmt, fmtK), `выход ${fmt(usage.output)}`];
-  const m = model ? ` ${model}` : '';
-  return `\n\nИспользование${m}: ${parts.join(' · ')}`;
+  return usageFooter({
+    input: usage.input || 0,
+    output: usage.output || 0,
+    cacheRead: usage.cacheRead || 0,
+    cacheWrite: usage.cacheWrite || 0,
+  });
 }
 
 // Pick the text shown to the user. Prefer Claude's clean result-event string; otherwise
@@ -220,13 +219,21 @@ function savePendingTask(taskId, params) {
   let previous = null;
   try { previous = JSON.parse(fs.readFileSync(file, 'utf8')); }
   catch (e) { if (e.code !== 'ENOENT') throw e; }
-  atomicJson(file, { ...previous, ...params, threadId: params.threadId ?? previous?.threadId ?? null,
+  const record = { ...previous, ...params, threadId: params.threadId ?? previous?.threadId ?? null,
     // Identity survives phase rewrites and restart-resume (epic #1365 CH-08): the first
     // taskId/requestId of a request stay attached to every later attempt.
     rootTaskId: previous?.rootTaskId ?? params.rootTaskId ?? taskId,
     requestId: previous?.requestId ?? params.requestId ?? null,
     // Retries and transition to running must never refresh the original intent.
-    initiatedAt: previous ? (Object.hasOwn(previous, 'initiatedAt') ? previous.initiatedAt : null) : (Object.hasOwn(params, 'initiatedAt') ? params.initiatedAt : null) });
+    initiatedAt: previous ? (Object.hasOwn(previous, 'initiatedAt') ? previous.initiatedAt : null) : (Object.hasOwn(params, 'initiatedAt') ? params.initiatedAt : null) };
+  // Identity ≠ location (epic #1789 P1, src/data-paths.js header): the journal
+  // names the profile by username/profileId and the workspace is derived from it
+  // at read time (pending-task-resume resolvePendingWorkDir). A persisted absolute
+  // workDir pins resume to one machine path, so a profile copied to another
+  // directory (or another VM) would resume into the old location. Stripping here
+  // also retires the field from legacy records on their first rewrite.
+  delete record.workDir;
+  atomicJson(file, record);
 }
 
 function recordTaskActivity(_opts, _at = Date.now()) {
@@ -236,6 +243,7 @@ function recordTaskActivity(_opts, _at = Date.now()) {
 function bindTaskActivity(taskId, user, sessionId) {
   const file = path.join(PENDING_DIR, `${taskId}.json`);
   const pending = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete pending.workDir; // #1789 P1 — identity, not a machine path (see savePendingTask)
   atomicJson(file, { ...pending, sessionId, activitySessionId: sessionId });
   if (Number.isFinite(pending.initiatedAt)) recordTaskActivity({ user, sessionId, threadId: pending.threadId }, pending.initiatedAt);
 }
@@ -741,7 +749,7 @@ function runTask(opts) {
   return ret;
 }
 
-function _runTaskInner(opts) {
+async function _runTaskInner(opts) {
   opts = taskDelivery(opts);
   // Forum topic identity for every outbound on this run (#255). Null for private
   // chats and non-forum groups — nothing thread-related is then emitted.
@@ -960,11 +968,43 @@ function _runTaskInner(opts) {
     return Promise.resolve(msg);
   }
 
+  // ── Profile maintenance lock (epic #1784) ────────────────────────────────────
+  // A lock holder — the profile migrator, a SEPARATE process — must see NO new
+  // work start on this profile while it snapshots it. In-flight runs are
+  // unaffected: they already hold their admission scopes and simply finish; the
+  // migrator waits for THEM. Everything from here down writes into the profile
+  // workspace (a quick answer appends its exchange, a queued run appends its
+  // session), so the gate sits at the earliest point AFTER the control commands
+  // above — /stop, /restart, /wakeup, /skip and the read-only checklist links,
+  // which have to keep working DURING maintenance. Scopes still never include
+  // the profile (src/core/admission.js): this file lock is the profile gate.
+  //
+  // Deliberately BEFORE savePendingTask, not inside admission.run: a task that
+  // is merely WAITING for the lock must not exist as a journal entry, or the
+  // migrator's drain (which waits for in-flight work of the profile) would wait
+  // for a run that waits for the lock — deadlock. Everything journaled from
+  // here on is real in-flight work the migrator waits out. Cost: a crash during
+  // the wait loses that accepted task — bounded by the maintenance window, and
+  // the lock's TTL still lets every later run through if the migrator dies.
+  // While parked the task is also not yet in queuedSessions/queuedByOwner: /stop
+  // reports "no active task" and GTD does not see it — a parked task is not a
+  // queued task — and both self-correct the moment the lock clears.
+  const status = require('../admission-status').createAdmissionStatus(opts, { edit: tgEdit, send: tgSend });
+  if (isProfileLocked(opts.user.username)) {
+    console.log('[%s] profile "%s" under maintenance lock — waiting before start', opts.taskId, opts.user.username);
+    status.waiting('🛠 Профиль на обслуживании — задача начнётся сразу после завершения обслуживания.');
+    await waitForProfileUnlocked(opts.user.username);
+    console.log('[%s] maintenance lock released — proceeding', opts.taskId);
+  }
+
   // Pure-info quick answers (/agent_info, /secrets_list, /usage, ...) bypass the queue
   // entirely, same as /stop above — they read local state synchronously and don't touch
   // Claude or the session transcript, so there's no reason to make them wait behind
   // whatever this chat's admission queue is currently running (issue: "/agent_info waits
   // for the previous task to finish, but it doesn't need to call the agent at all").
+  // They do NOT bypass the profile maintenance lock above: recordQuickExchange appends
+  // into the workspace, and an append after the migrator archived the file is exactly
+  // the re-creation risk R2 this lock exists to close (epic #1784).
   // forceClaude means the user explicitly wants Claude (e.g. a "proработка" button tap on
   // one of these commands' replies) — respect that and fall through to the normal path.
   if (humanInput && !opts.forceClaude && isPreQueueQuickIntent((opts.task || '').trim())) {
@@ -982,6 +1022,11 @@ function _runTaskInner(opts) {
       });
       const extra = { reply_markup: { inline_keyboard: escalateRows(qaSessionId) } };
       return (async () => {
+        // Disarm the maintenance status from the lock gate above: this answer goes
+        // out through the send path below, and a live «Ожидание: N с» ticker would
+        // overwrite it every 15s. Awaiting the tail also orders our edit after any
+        // in-flight status edit.
+        await status.close();
         if (botToken) {
           const im = opts.initialMsgId;
           try {
@@ -1058,32 +1103,47 @@ function _runTaskInner(opts) {
   if (isRunStopped({ traceId: runTrace, initiatedAt: opts.initiatedAt, fromUser: opts.fromUser })) {
     // Без правки сообщения: до этого Стоп уже ответил в чат, а убитое
     // продолжение не имеет права стирать сохранённый частичный результат (SS-02).
+    // status.close() (#1784): if the profile maintenance gate above armed the
+    // «Ожидание…» ticker, a blocked hop must not keep editing the chat either.
+    status.close();
     console.log(`[${opts.taskId}] stop-gate: blocked before queue (trace=${runTrace || 'none'})`);
     return Promise.resolve(STOP_NOT_STARTED_MSG);
   }
-  // Journal BEFORE waiting: a restart must not silently lose accepted work.
-  savePendingTask(opts.taskId, {
-    phase: 'queued', activitySessionId: opts.activitySessionId, taskId: opts.taskId, rootTaskId: opts.rootTaskId, requestId: opts.requestId, userId: opts.user.id, username: opts.user.username, threadId: opts.threadId,
-    workDir: opts.user.workDir, task: opts.task, context: opts.context,
-    sessionId: opts.sessionId, contextFromSession: opts.contextFromSession,
-    forceClaude: opts.forceClaude, forceNew: opts.forceNew, webExactSession: opts.webExactSession, mode: opts.mode, userMessageRecorded: opts.userMessageRecorded,
-    projectId: opts.projectId, projectPicked: opts.projectPicked, newProjectName: opts.newProjectName, engine: opts.engine,
-    initialMsgId: opts.initialMsgId, pinnedMsgId: opts.pinnedMsgId, fileRefs: opts.fileRefs,
-    profileId: opts.user.profileId, telegramUserId: opts.user.telegramUserId, audience: opts.user.audience,
-    continuationCount: opts.continuationCount, retryCount: opts.retryCount, internalGtd: opts.internalGtd,
-    resumedAfterRestart: opts.resumedAfterRestart, resumeAttempts: opts.resumeAttempts,
-    startedAt: opts.acceptedAt || Date.now(), initiatedAt: opts.initiatedAt,
-    // Where the result goes (#1671): telegram (userId) | web | durable. Lets a restart
-    // resume the run whatever its surface, not only a Telegram chat.
-    resumeSink: opts.resumeSink || null,
-    ocProfile: opts.ocProfile || null, ocRole: opts.ocRole || null, stepTimeoutMs: opts.stepTimeoutMs || null,
-  });
-  const status = require('../admission-status').createAdmissionStatus(opts, { edit: tgEdit, send: tgSend });
+  // Journal BEFORE waiting (lane/session admission, RAM, slots): a restart must not
+  // silently lose accepted work. The profile maintenance lock above is the one wait
+  // that comes BEFORE this journal — see its comment (migrator drain deadlock).
+  try {
+    savePendingTask(opts.taskId, {
+      phase: 'queued', activitySessionId: opts.activitySessionId, taskId: opts.taskId, rootTaskId: opts.rootTaskId, requestId: opts.requestId, userId: opts.user.id, username: opts.user.username, threadId: opts.threadId,
+      task: opts.task, context: opts.context,
+      sessionId: opts.sessionId, contextFromSession: opts.contextFromSession,
+      forceClaude: opts.forceClaude, forceNew: opts.forceNew, webExactSession: opts.webExactSession, mode: opts.mode, userMessageRecorded: opts.userMessageRecorded,
+      projectId: opts.projectId, projectPicked: opts.projectPicked, newProjectName: opts.newProjectName, engine: opts.engine,
+      initialMsgId: opts.initialMsgId, pinnedMsgId: opts.pinnedMsgId, fileRefs: opts.fileRefs,
+      profileId: opts.user.profileId, telegramUserId: opts.user.telegramUserId, audience: opts.user.audience,
+      continuationCount: opts.continuationCount, retryCount: opts.retryCount, internalGtd: opts.internalGtd,
+      resumedAfterRestart: opts.resumedAfterRestart, resumeAttempts: opts.resumeAttempts,
+      startedAt: opts.acceptedAt || Date.now(), initiatedAt: opts.initiatedAt,
+      // Where the result goes (#1671): telegram (userId) | web | durable. Lets a restart
+      // resume the run whatever its surface, not only a Telegram chat.
+      resumeSink: opts.resumeSink || null,
+      ocProfile: opts.ocProfile || null, ocRole: opts.ocRole || null, stepTimeoutMs: opts.stepTimeoutMs || null,
+    });
+  } catch (e) {
+    // The status object now exists BEFORE the journal (the lock gate needs it to
+    // announce a maintenance wait). If the journal write throws, its «Ожидание…»
+    // ticker must not keep editing the chat every 15s for a run that died here —
+    // close it with an explicit failure (this is also the user's only signal:
+    // before, a journal error just vanished into a console line).
+    await status.finish('❌ Не удалось принять задачу — попробуй отправить её ещё раз.').catch(() => {});
+    throw e;
+  }
   // No per-profile / per-project / per-workDir locks: a stale promise in those
   // left chats saying "waiting for previous work" with nothing running. Tasks of
   // one profile run concurrently across dialogs and sessions — context is rebuilt
   // from the session store (no `claude --resume`), so parallel claudes never
-  // share a transcript file.
+  // share a transcript file. The ONE profile-wide gate is the file lock checked
+  // above (epic #1784): maintenance, not concurrency.
   // Scopes held for the whole run (epic #1365 §2.3): the Telegram dialog lane
   // (endpoint+chat+topic — different sessions in one dialog wait for each other)
   // and the session writer guard (every channel, incl. Web: one writer per
@@ -1226,7 +1286,7 @@ function buildContextCard(username, workDir, chatId, actualModel = null, threadI
   const gcConfig = path.join(TOKENS_ROOT, String(username), 'getcourse', 'config.json');
   let gcDomain = null;
   if (fs.existsSync(gcConfig)) {
-    try { gcDomain = JSON.parse(fs.readFileSync(gcConfig, 'utf8')).accountDomain || null; } catch (e) { console.warn('[runner] gcConfig parse:', e.message); }
+    try { gcDomain = JSON.parse(readCredentialFile(gcConfig)).accountDomain || null; } catch (e) { console.warn('[runner] gcConfig parse:', e.message); }
   }
 
   const serviceLabels = services.map(s => {
@@ -1470,7 +1530,7 @@ function ensureProfileLayoutSkill(workDir, username) {
     ).toString().trim();
     const tokenDir = path.join(TOKENS_ROOT, username);
     const tokens = fs.existsSync(tokenDir)
-      ? fs.readdirSync(tokenDir).filter(f => !f.startsWith('.')).join(', ')
+      ? fs.readdirSync(tokenDir).filter(f => !f.startsWith('.') && !isMetaSidecar(f)).join(', ')
       : '(нет)';
     const content = [
       '# Карта профиля агента (auto-generated)',
@@ -1805,7 +1865,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   const audience = user.audience || 'default';
 
   savePendingTask(taskId, {
-    phase: 'running', taskId, userId: user.id, username: user.username, workDir: user.workDir, audience,
+    phase: 'running', taskId, userId: user.id, username: user.username, audience,
     profileId: user.profileId, telegramUserId: user.telegramUserId, continuationCount, retryCount, internalGtd,
     task, context, sessionId, contextFromSession, forceClaude, forceNew, webExactSession, mode, projectId, projectPicked, newProjectName,
     initialMsgId, pinnedMsgId, initiatedAt, threadId, resumedAfterRestart, resumeAttempts,
@@ -2869,8 +2929,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     });
   } catch (e) { console.warn('[runner] prompt-audit:', e.message); }
   const costFooter = engine === 'opencode'
-    ? formatOcFooter(opencodeUsage, opencodeBreakdown)
-    : formatCostFooter(claudeUsage, claudeModel);
+    ? formatOcFooter(opencodeUsage)
+    : formatCostFooter(claudeUsage);
   const gtdFooter = (!internalGtd && !incomplete && user.workDir)
     ? (() => { try { return require('../gtd-controller').listGtd(user.workDir).filter(r => r.status === 'open').length > 0 ? '\n\n📋 Чеклист активен — /show_active_cheklist · /checklist_turn_off' : ''; } catch { return ''; } })()
     : '';
@@ -3052,6 +3112,9 @@ function interruptForRestart() {
 module.exports = {
   interruptForRestart, MAX_RESUME_ATTEMPTS, isProviderFault,
   runTask, getQuickAnswer, runQuickAnswer, shouldAttemptQuickAnswer, generateConnectLink, getPendingTasks, clearPendingTask,
+  // Exported for the journal path-hygiene test (epic #1789 P1): the journal must
+  // never persist an absolute workDir, including over a legacy record.
+  savePendingTask,
   resolveRunSession,
   isTaskRunning, isChatTaskRunning, isSessionRunning, isSessionQueuedFor, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,
   stopTracesFor, confirmStopped, countIdleLiveRuns,

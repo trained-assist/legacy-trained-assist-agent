@@ -1,15 +1,27 @@
 'use strict';
 
 // Persistent context store — key-value per skill, survives session restarts.
-// Storage: {workDir}/contexts/{skill}/{key}.json
-// workDir = process.cwd() (inherited from Claude Code, which runs in user's workDir)
+// Storage: {profileRoot}/contexts/{skill}/{key}.json
+//
+// Profile root = $USERS_DIR/<AGENT_USER_ID> (identity ≠ location,
+// src/data-paths.js). process.cwd() is only a fallback for runs with no bound
+// profile (tests, plain CLI): Claude's cwd is the profile root just for
+// sessions without a project — with a project bound it is
+// <profile>/projects/<id>, which is where the old process.cwd() write silently
+// parked this store (bug from the #1784 preconditions, epic #1789 P1).
 
 const fs = require('fs');
 const path = require('path');
 const { atomicJson } = require('../../atomic-json');
+const { userWorkDir } = require('../../data-paths');
+
+function profileRoot() {
+  const username = process.env.AGENT_USER_ID;
+  return username ? userWorkDir(username) : process.cwd();
+}
 
 function contextPath(skill, key) {
-  return path.join(process.cwd(), 'contexts', skill, `${key}.json`);
+  return path.join(profileRoot(), 'contexts', skill, `${key}.json`);
 }
 
 function readContext(skill, key) {
@@ -80,7 +92,7 @@ module.exports = {
         },
       },
       handler: async ({ skill } = {}) => {
-        const base = path.join(process.cwd(), 'contexts');
+        const base = path.join(profileRoot(), 'contexts');
         if (!fs.existsSync(base)) return { entries: [], count: 0 };
 
         const skills = skill

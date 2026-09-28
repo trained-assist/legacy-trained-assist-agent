@@ -13,6 +13,7 @@ const sessions = require('../session-store');
 const { generateSummary } = require('../session-summary');
 const projects = require('../projects');
 const { revokeService, generateConnectLink } = require('../user-tokens');
+const { readCredentialFile } = require('../credential-store');
 const { runHostAction } = require('../mcp-action');
 
 // Outbound HH effects (send / mass reject) can take longer than a read.
@@ -76,6 +77,12 @@ const PDF_CAPABILITY_INTENT = /(?:умееш|можешь|сможешь|мож�
 const GDRIVE_CAPABILITY_INTENT =/(?:можешь|умеешь|можно|способен|поддержива).{0,40}(?:гугл|google|sheets|docs|csv|таблиц|документ|гшит|spreadsheet)/i;
 const GDRIVE_NOTIF_OFF_INTENT  = /\/gdrive_notif_off|\/google_drive_sharing_notifications_switch_off|выключи.{0,30}(?:уведомлени.{0,30}(?:гугл|google|drive|шаринг)|шаринг.{0,30}уведомлени)|отключи.{0,30}(?:уведомлени.{0,30}(?:гугл|google|drive|шаринг)|шаринг.{0,30}уведомлени)|не.{0,10}уведомля.{0,30}(?:гугл|google|drive|шаринг|файл)|без.{0,20}уведомлени.{0,30}(?:гугл|google|drive|шаринг)/i;
 const GDRIVE_NOTIF_ON_INTENT   = /\/gdrive_notif_on|\/google_drive_sharing_notifications_switch_on|включи.{0,30}(?:уведомлени.{0,30}(?:гугл|google|drive|шаринг)|шаринг.{0,30}уведомлени)|верн.{0,20}уведомлени.{0,30}(?:гугл|google|drive|шаринг)/i;
+// Background-task notifications (owner 29.09): «every step, start and finish, and
+// if something is interrupted». Opt-in flag written here, delivered by the durable
+// executor — see src/bg-notify.js + gtd-controller.bgNotice.
+const BG_NOTIFY_STATUS_INTENT = /(?:^|\s)\/?bg_notify_status(?:\s|$|@)|(?:^|\s)background\s+(?:tasks?|playbooks?|steps?)\s+notifications?\s+status(?:\s|$)|(?:статус|состояние|есть\s+ли).{0,30}уведомлен.{0,50}(?:фонов|плейбук|шаг)/i;
+const BG_NOTIFY_ON_INTENT = /(?:^|\s)\/?bg_notify_on(?:\s|$|@)|(?:^|\s)background\s+(?:tasks?|playbooks?|steps?)\s+notifications?\s+on(?:\s|$)|(?:включи|включить|нужны|хочу|надо|надо бы)\s[^.!?]{0,70}уведомлен[^.!?]{0,70}(?:фонов|плейбук|шаг|фоно)/i;
+const BG_NOTIFY_OFF_INTENT = /(?:^|\s)\/?bg_notify_off(?:\s|$|@)|(?:^|\s)background\s+(?:tasks?|playbooks?|steps?)\s+notifications?\s+off(?:\s|$)|(?:выключи|выключить|отключи|отключить|убери|прибери)\s[^.!?]{0,70}уведомлен[^.!?]{0,70}(?:фонов|плейбук|шаг|фоно)/i;
 const SESSIONS_INTENT       = /^\/sessions$|мои.{0,10}диалог|мои.{0,10}сессии|список.{0,10}диалог|покажи.{0,10}истори|мои.{0,10}задач/i;
 // /bug_or_feature — Bugs & Features intake entry point (BUGS-AND-FEATURES-SPEC §3.4):
 // opens a fresh session in the reserved bugs-and-features project; the gateway
@@ -510,7 +517,7 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
   if ((GDRIVE_SHARE_INTENT.test(task) || GDRIVE_SA_EMAIL_INTENT.test(task)) && userId) {
     const gdriveFile2 = path.join(os.homedir(), 'agent-tokens', String(userId), 'gdrive');
     try {
-      const sa2 = JSON.parse(fs.readFileSync(gdriveFile2, 'utf8'));
+      const sa2 = JSON.parse(readCredentialFile(gdriveFile2));
       if (sa2.client_email) {
         return [
           '📂 Чтобы дать мне доступ к файлу или папке в Google Drive:',
@@ -541,6 +548,24 @@ function getQuickAnswerUnchecked(task, userId, workDir, sessionExists = false, c
     const mutedFile = path.join(os.homedir(), 'agent-tokens', String(userId), 'gdrive-notif-muted');
     if (fs.existsSync(mutedFile)) fs.unlinkSync(mutedFile);
     return '🔔 Уведомления о шаринге Google Drive включены.\n\nБуду писать когда кто-то откроет доступ к файлу или папке.';
+  }
+
+  // Background-task notifications (owner 29.09): «шаг начат / шаг готов / прервано»,
+  // so an owner can watch the playbooks run instead of wondering whether the
+  // executor died. Opt-in flag; delivery lives in the durable executor.
+  if (userId && (BG_NOTIFY_STATUS_INTENT.test(task) || BG_NOTIFY_OFF_INTENT.test(task) || BG_NOTIFY_ON_INTENT.test(task))) {
+    const { readBgNotify, writeBgNotify } = require('../bg-notify');
+    if (BG_NOTIFY_STATUS_INTENT.test(task)) {
+      const flag = readBgNotify(userId);
+      if (!flag?.enabled) return '🔕 Уведомления о фоновых шагах: выключены.\n\nВключить: `/bg_notify_on`';
+      return `🔔 Уведомления о фоновых шагах: включены${flag.updated_at ? ` (с ${new Date(flag.updated_at).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })})` : ''}.\n\nПишу в чат про каждый шаг фоновых задач: ▶️ начат · ✅ готов · ⚠️ не удался · 🏁 задача завершена · 🔁 прервано рестартом. Выключить: \`/bg_notify_off\``;
+    }
+    if (BG_NOTIFY_OFF_INTENT.test(task)) {
+      writeBgNotify(userId, { enabled: false });
+      return '🔕 Уведомления о фоновых шагах отключены.\n\nВключить обратно: `/bg_notify_on`';
+    }
+    writeBgNotify(userId, { enabled: true, chatId: chatId ?? null, audience: audience || 'default', threadId: threadId ?? null });
+    return '🔔 Уведомления о фоновых шагах включены.\n\nБуду писать в этот чат: ▶️ шаг начат · ✅ шаг готов · ⚠️ шаг не удался · 🏁 задача завершена · 🔁 прервано рестартом. Выключить: `/bg_notify_off`';
   }
 
   // Capability question about illustration generation

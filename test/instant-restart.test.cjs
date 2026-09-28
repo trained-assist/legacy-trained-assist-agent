@@ -37,7 +37,7 @@ test('SIGTERM handler flags the restart and exits without draining', () => {
   assert.doesNotMatch(body, /drain|paused|maintenance\.pause/);
 });
 
-const { isTaskResumable, resumeSinkOf } = require('../src/pending-task-resume');
+const { isTaskResumable, resumeSinkOf, resolvePendingWorkDir } = require('../src/pending-task-resume');
 
 function resumeHarness({ pending, now = Date.now(), retryDelayMs = () => 0, engineSessionIds = {}, secrets = { BOT_TOKEN: 'tok' } }) {
   const start = serverSrc.indexOf('const RESUME_WINDOW_MS');
@@ -48,7 +48,7 @@ function resumeHarness({ pending, now = Date.now(), retryDelayMs = () => 0, engi
     path, console: { log() {}, error() {}, warn() {} }, Date: class extends Date { static now() { return now; } },
     BASE_USERS_DIR: '/users', AbortSignal, Promise,
     setTimeout: (fn, ms) => { delays.push(ms); fn(); return 0; },
-    process: { env: {} }, isTaskResumable, resumeSinkOf, MAX_RESUME_ATTEMPTS: 3,
+    process: { env: {} }, isTaskResumable, resumeSinkOf, resolvePendingWorkDir, MAX_RESUME_ATTEMPTS: 3,
     getRetryDelayMs: attempt => retryDelayMs(attempt),
     getPendingTasks: () => pending,
     clearPendingTask: id => cleared.push(id),
@@ -168,7 +168,7 @@ test('a resumed task that fails to start tells the user', async () => {
   const sandbox = {
     taskDelivery: require('../src/bot-delivery').taskDelivery,
     path, console: { log() {}, error() {}, warn() {} }, BASE_USERS_DIR: '/users', AbortSignal, Promise,
-    setTimeout: fn => { fn(); return 0; }, process: { env: {} }, isTaskResumable, resumeSinkOf, MAX_RESUME_ATTEMPTS: 3,
+    setTimeout: fn => { fn(); return 0; }, process: { env: {} }, isTaskResumable, resumeSinkOf, resolvePendingWorkDir, MAX_RESUME_ATTEMPTS: 3,
     getRetryDelayMs: () => 0,
     getPendingTasks: () => pending, clearPendingTask() {},
     getEngineSessionId: () => null,

@@ -29,6 +29,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { readCredentialFile } = require('../src/credential-store');
 
 const MODEL = 'deepseek/deepseek-chat';
 const PARAPHRASES_PER_SEED = 3;
@@ -38,7 +39,7 @@ function loadApiKey() {
   const userId = process.env.USER_ID;
   if (userId) {
     const tokenFile = path.join(os.homedir(), 'agent-tokens', String(userId), 'openrouter');
-    if (fs.existsSync(tokenFile)) return fs.readFileSync(tokenFile, 'utf8').trim();
+    if (fs.existsSync(tokenFile)) return readCredentialFile(tokenFile).trim();
   }
   return null;
 }

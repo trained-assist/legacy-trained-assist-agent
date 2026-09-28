@@ -29,10 +29,27 @@ const PROFILE_LADDER = Object.freeze({
   russian: 'deepseek',  // GigaChat ladder dropped; keeps its strict Russian reviewer prompt
 });
 
-// Research (hermes_research) stays on Gemini (owner: «gemini для рисеча … прямо гуд»; the worker
-// README keeps research off the worker). A single pinned model — no ladder, no failover.
+// Research (hermes_research) is pinned, not laddered — but on OpenCode Go, not OpenRouter.
+// Go is a flat $10/mo subscription with a per-model monthly allowance (MiMo-V2.6-Flash:
+// $0.14/$0.28 per 1M, ~150k requests/month included), so the research profile has no
+// marginal per-call cost and can be offered without counting tokens — which is exactly
+// the point of a researcher that runs on every research-shaped task. ladder-log already
+// classifies `opencode-go/*` as tier `subscription`.
+//
+// `opencode-go` is a built-in provider (auth: OPENCODE_API_KEY, endpoint
+// https://opencode.ai/zen/go/v1); runEngineProcess maps the box's OPENCODE_GO_API_KEY
+// onto it. Verified live on the prod VM 2026-09-28: `opencode run -m
+// opencode-go/mimo-v2.6-flash` on the shipped client (1.18.31) answers, even though the
+// model is newer than that build's registry.
+//
+// Failover: the box carries TWO Go keys in rotation (`OPENCODE_GO_API_KEYS`, both passed
+// through as OPENCODE_API_KEY — verified live, the comma-joined pair is accepted), so one
+// exhausted key does not stop research. What is still missing is a rung BENEATH Go: when
+// both keys are spent the run fails instead of degrading. That rung is
+// `openrouter/google/gemini-2.5-flash`, and it lives in the `search` ladder — the last
+// item on checklist.md, in the llm-ladder worker where ladders belong (#1687).
 const DIRECT_MODEL = Object.freeze({
-  research: 'openrouter/google/gemini-2.5-flash',
+  research: 'opencode-go/mimo-v2.6-flash',
 });
 
 const ROLE_PROMPTS = Object.freeze({

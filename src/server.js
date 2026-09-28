@@ -4,7 +4,7 @@ process.once('exit', () => executionOwner.close());
 const { atomicJson } = require('./atomic-json');
 const { deliverySecrets, taskDelivery } = require('./bot-delivery');
 const { withDedupLock } = require('./request-dedup-lock');
-const { isTaskResumable, resumeSinkOf } = require('./pending-task-resume');
+const { isTaskResumable, resumeSinkOf, resolvePendingWorkDir } = require('./pending-task-resume');
 const { isNonTaskMessage } = require('./resume-hygiene');
 const { recordResume } = require('./resume-stats');
 const { getRetryDelayMs } = require('./retry-policy');
@@ -34,6 +34,9 @@ const { createHhNegotiations } = hhLib('hh-negotiations');
 
 const profiles = require('./profiles');
 const dataPaths = require('./data-paths');
+// Encrypted credential store (epic #1789 P0 C4) — every credential read/write below
+// goes through it so plaintext and v2-encrypted files behave identically.
+const { readCredentialFile, writeCredential, writeCredentialFile } = require('./credential-store');
 const { installCrashGuards } = require('./stream-gone');
 
 const PORT = process.env.PORT || 3001;
@@ -98,7 +101,7 @@ let GIT_COMMIT = 'unknown';
 try { RUNTIME_REVISION = require('./release-info').getReleaseSha(); if (RUNTIME_REVISION) GIT_COMMIT = RUNTIME_REVISION.slice(0, 7); } catch {}
 
 const { classifyMessage, CLASSIFY_MAX_AGE_MS } = require('./classify-message');
-const { checkCompleteness } = require('./intake-gate');
+const { checkCompleteness, loadLastAssistant } = require('./intake-gate');
 const { startShadow: startInputRouterShadow } = require('./input-router');
 const notifyProfileModule = require('./notify-profile');
 
@@ -120,7 +123,7 @@ function scheduleNalogExpiryChecks(secrets) {
       const nalogFile = path.join(AGENT_TOKENS_DIR, username, 'nalog');
       if (!fs.existsSync(nalogFile)) continue;
       let tokenData;
-      try { tokenData = JSON.parse(fs.readFileSync(nalogFile, 'utf8')); } catch { continue; }
+      try { tokenData = JSON.parse(readCredentialFile(nalogFile)); } catch { continue; }
       if (!tokenData.expires || !tokenData.auth_token) continue;
       const expiresMs = new Date(tokenData.expires).getTime();
       if (isNaN(expiresMs)) continue;
@@ -140,7 +143,7 @@ function scheduleNalogExpiryChecks(secrets) {
       const nalogCredsFile = path.join(AGENT_TOKENS_DIR, username, 'nalog-creds');
       if (fs.existsSync(nalogCredsFile)) {
         let creds;
-        try { creds = JSON.parse(fs.readFileSync(nalogCredsFile, 'utf8')); } catch {}
+        try { creds = JSON.parse(readCredentialFile(nalogCredsFile)); } catch {}
         if (creds && creds.login && creds.password) {
           console.log('[nalog-expiry] nalog-creds found for %s — auto re-login', username);
           const tgBase2 = (process.env.TELEGRAM_API_URL || 'https://api.telegram.org').replace(/\/$/, '');
@@ -332,7 +335,7 @@ async function resumePendingTasks(secrets) {
   const notifyFailure = (p, text) => {
     if (!p.userId || !secrets?.BOT_TOKEN) return Promise.resolve(); // Telegram sink only
     let token;
-    try { token = taskDelivery({ user: { audience: p.audience, workDir: p.workDir || path.join(BASE_USERS_DIR, p.username) }, sessionId: p.sessionId, secrets }).secrets.BOT_TOKEN; }
+    try { token = taskDelivery({ user: { audience: p.audience, workDir: resolvePendingWorkDir(p) }, sessionId: p.sessionId, secrets }).secrets.BOT_TOKEN; }
     catch (e) { console.error('[resume] delivery unavailable:', e.message); return Promise.resolve(); }
     return p.initialMsgId
       ? tgCall(token, 'editMessageText', { chat_id: p.userId, message_id: p.initialMsgId, text })
@@ -401,7 +404,9 @@ async function resumePendingTasks(secrets) {
     // deploy flurry (34 restarts/day), so a perfectly resumable task "gave up after 3 attempts"
     // without a single genuine failure. Reuse the journaled number; a fresh task starts at 1.
     const attempt = p.resumeAttempts || 1;
-    const workDir = p.workDir || path.join(BASE_USERS_DIR, p.username);
+    // Workspace by profile identity, not by a path remembered in the journal
+    // (epic #1789 P1) — legacy records still resolve through their stored workDir.
+    const workDir = resolvePendingWorkDir(p);
 
     // Native resume (#1234): claude (Sub-2), codex (Sub-3) and opencode (Sub-4) are wired.
     // Source: the pending journal (written mid-run, survives SIGKILL) with the durable session
@@ -444,6 +449,10 @@ async function resumePendingTasks(secrets) {
       try {
         // runTask journals its replacement synchronously before returning its promise.
         // Keep the old durable entry throughout backoff and until that handoff succeeds.
+        // Exception — profile maintenance lock (#1784): runTask waits for the lock first,
+        // so the new entry lands later and the old one below is already gone by then.
+        // Accepted: a run waiting for the lock must NOT be an in-flight journal entry
+        // (the migrator's drain would wait for it while it waits for the migrator).
         const running = runTask({
           taskId: `${p.username}-resume-${Date.now()}`,
           user, task: resumeTask, context: p.context || null,
@@ -694,9 +703,9 @@ async function main() {
       const { username, tokens } = body || {};
       if (!username || !/^[a-zA-Z0-9_-]{1,64}$/.test(username)) return json(res, 400, { error: 'invalid username' });
       if (!tokens || typeof tokens !== 'object' || !tokens.auth_token) return json(res, 400, { error: 'missing tokens.auth_token' });
-      const dir = path.join(dataPaths.TOKENS_ROOT, username);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'nalog'), JSON.stringify(tokens, null, 2), { mode: 0o600 });
+      // expires_at lands in the .meta sidecar (#1789 C4): the TTL is what /capabilities
+      // and the expiry scheduler will key off once Phase 2 lands.
+      writeCredential(username, 'nalog', JSON.stringify(tokens, null, 2), { expiresAt: tokens.expires || null });
       console.log('[nalog/token-store] saved token for username=%s expires=%s', username, tokens.expires);
       return json(res, 200, { ok: true });
     }
@@ -1152,7 +1161,10 @@ async function main() {
           }
         }
 
-        // runTask journals synchronously, before any await or acknowledgement.
+        // runTask journals synchronously, before any await or acknowledgement —
+        // except while the profile holds a maintenance lock (#1784): then it waits
+        // first and journals when the lock clears (a lock-waiter must not read as
+        // in-flight work to the migrator's drain). 202 stays the acceptance signal.
         // fromUser: POST /run — это запрос человека (или его явный «▶️ Запустить»
         // из держателя). Trace-гейт Стопа его не блокирует никогда: K1 (новый
         // запрос юзера всегда запускается) и SS-05 (сообщения, присланные во время
@@ -1227,7 +1239,7 @@ async function main() {
       try {
         if (fs.statSync(tokenFilePath).isDirectory()) tokenFilePath = path.join(tokenFilePath, 'credentials.json');
       } catch { /* path doesn't exist yet — write flat file */ }
-      fs.writeFileSync(tokenFilePath, storedValue, { mode: 0o600 });
+      writeCredentialFile(tokenFilePath, storedValue);
       console.log(`[tokens] saved label="${label}" userId=${userId} path=${tokenFilePath}`);
 
       // Dispatch service-specific post-save actions (Playwright login, notifications, etc.)
@@ -1379,7 +1391,7 @@ async function main() {
       const body = await readBody(req);
       let payload;
       try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid json' }); }
-      const { text } = payload;
+      const { text, username, chatId, threadId } = payload;
       if (typeof text !== 'string') return json(res, 400, { error: 'missing text' });
       // #1542 P1: router SHADOW next to the legacy completeness gate — never awaited.
       const routerShadow = startInputRouterShadow({
@@ -1387,13 +1399,17 @@ async function main() {
         openrouterKey: secrets.OPENROUTER_API_KEY,
       });
       try {
-        const result = await checkCompleteness(text, secrets.OPENROUTER_API_KEY);
+        // The continuation verdict needs the assistant's last line in THIS chat
+        // (owner 29.09: «продолжай» counts only when the previous answer makes the
+        // continuation obvious). Missing username/chatId → text-only, conservative.
+        const lastAssistant = loadLastAssistant({ username, chatId, threadId });
+        const result = await checkCompleteness(text, secrets.OPENROUTER_API_KEY, { lastAssistant });
         routerShadow.record({ completeness: result?.level || null, complete: !!result?.complete });
         return json(res, 200, result);
       } catch (e) {
         console.error('[intake-gate] error:', e.message);
         routerShadow.record({ completeness: 'error', complete: false });
-        return json(res, 200, { level: 'insufficient', complete: false }); // preserve intake; manual launch remains available
+        return json(res, 200, { level: 'insufficient', complete: false, delayMs: null, announce: null }); // preserve intake; manual launch remains available
       }
     }
 
@@ -1433,7 +1449,7 @@ async function main() {
         execSync(`node "${refreshScript}"`, { env, timeout: 90000, stdio: 'pipe' });
         // Read back the freshly written cookie
         const cookiePath = path.join(os.homedir(), 'agent-tokens', profiles[0], 'weeek-session');
-        const cookie = fs.existsSync(cookiePath) ? fs.readFileSync(cookiePath, 'utf8').trim() : '';
+        const cookie = fs.existsSync(cookiePath) ? readCredentialFile(cookiePath).trim() : '';
         if (!cookie) return json(res, 500, { ok: false, error: 'Refresh succeeded but cookie file is empty' });
         console.log('[weeek-session] Sync refresh done, profile=%s, cookie length=%d', profiles[0], cookie.length);
         return json(res, 200, { ok: true, cookie });

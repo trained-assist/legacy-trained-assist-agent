@@ -117,6 +117,15 @@ function pendingTaskPath(taskId) {
   return path.join(SYSTEM_ROOT, 'pending-tasks', `${taskId}.json`);
 }
 
+// Per-profile MAINTENANCE lock (epic #1784, src/profile-lock.js) — held by the
+// profile migrator (a SEPARATE process) while it archives/deletes workspace
+// files, so the server starts no new run for that profile. Server-side state,
+// never profile content: it must survive a workspace wipe and must never be
+// archived with the profile.
+function profileLockPath(username) {
+  return path.join(SYSTEM_ROOT, 'agent-locks', `${username}.lock`);
+}
+
 // One shared SQLite file for all profiles — DurableTaskStore scopes every
 // query by profile_id, so a single DB is simpler than one-file-per-profile
 // and matches durable-task-orchestrator-spec-2026-09-23.md (dedicated
@@ -204,6 +213,7 @@ module.exports = {
   systemFlagsDir,
   stoppedTracesDir,
   pendingTaskPath,
+  profileLockPath,
   sessionIndexPath,
   sessionFilePath,
   groupHistoryPath,

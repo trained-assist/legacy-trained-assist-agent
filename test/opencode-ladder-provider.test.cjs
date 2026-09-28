@@ -45,11 +45,16 @@ test('provider = the llm-ladder worker (openai-compatible, token from env), ever
   assert.deepStrictEqual(Object.keys(o.provider), ['ladder'], 'one provider, no other routes');
 });
 
-test('russian keeps its strict reviewer prompt; research is a pinned Gemini model, not a ladder', () => {
+test('russian keeps its strict reviewer prompt; research is a pinned OpenCode Go model, not a ladder', () => {
   assert.match(p.buildOcProfileOverrides('russian').agent.review.prompt, /рецензент/);
   const r = p.buildOcProfileOverrides('research');
-  assert.strictEqual(r.agent.explore.model, 'openrouter/google/gemini-2.5-flash');
-  assert.strictEqual(p.ladderFor('research'), null);
+  assert.strictEqual(r.agent.explore.model, 'opencode-go/mimo-v2.6-flash');
+  assert.strictEqual(p.ladderFor('research'), null, 'research bypasses the worker ladder for now');
+  assert.strictEqual(p.modelFor('research', 'build'), 'opencode-go/mimo-v2.6-flash');
+  // The search ladder (opencode-go/mimo-v2.6-flash → openrouter/google/gemini-2.5-flash)
+  // lives in the llm-ladder worker and is the last item on checklist.md — until then a
+  // flat Go pin means no fallback, which is exactly why the pin must be Go-priced.
+  assert.ok(p.DIRECT_MODEL.research.startsWith('opencode-go/'), 'research must stay on the subscription tier');
 });
 
 test('worker failure categories', () => {
