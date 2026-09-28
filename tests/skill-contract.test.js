@@ -49,7 +49,7 @@ describe('checkMcpConformance', () => {
     expect(errors.length).toBe(6);
   }, 30000);
 
-  for (const sibling of ['trained-assist-hh-skill', 'trained-assist-freelance-skill', 'trained-assist-engineering']) {
+  for (const sibling of ['trained-assist-hh-skill', 'trained-assist-freelance-skill', 'trained-assist-engineering', 'trained-assist-speech-skill']) {
     const repo = path.join(__dirname, '..', '..', sibling);
     it.skipIf(!fs.existsSync(path.join(repo, 'src', 'mcp-skills', 'index.js')))(`${sibling} conforms`, async () => {
       const { errors } = await checkMcpConformance(repo);
