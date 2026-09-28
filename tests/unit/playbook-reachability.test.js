@@ -93,6 +93,24 @@ describe('checkPlaybookReachability', () => {
     expect(r.rows.find(x => x.gate === 'dispatch').detail).toMatch(/F запуск из кода.*hub\.js/);
   });
 
+  it('--strict: weak routes alone fail, A1 passes', () => {
+    expect(status(run('demo-pb', { strict: true, audienceMap: { exhibition: 'demo-pb' } }), 'dispatch')).toBe('fail');
+    expect(status(run('demo-pb', { strict: true, domains: [pointer] }), 'dispatch')).toBe('pass');
+  });
+
+  it('repoDir: a domain repo in its own CI is read from its checkout (playbooks + prompt domains)', () => {
+    const repo = join(root, 'trained-assist-sales-skill');
+    mkdirSync(join(repo, 'src', 'prompt-domains'), { recursive: true });
+    writeFileSync(join(repo, 'src', 'prompt-domains', 'expo.md'),
+      '---\nserver: sales-skills\nmodule: 85-expo.js\nwhen: ready\n---\n' + pointer.body + '\n');
+    const r = checkPlaybookReachability('demo-pb', {
+      repoDir: repo, catalog, audienceMap: {}, devFamily: [], launcherDir: false, strict: true,
+      siblingRepos: ['trained-assist-sales-skill'],
+    });
+    expect(status(r, 'resolve')).toBe('pass');
+    expect(status(r, 'dispatch')).toBe('pass');
+  });
+
   it('fails an unknown id', () => {
     const r = run('nope');
     expect(status(r, 'resolve')).toBe('fail');

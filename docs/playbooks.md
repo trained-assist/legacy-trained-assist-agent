@@ -100,6 +100,16 @@ prompt route led to it. Gates: `resolve`, `schema-scope`, `compile`, `sibling-re
 (`skills.resolve()` for that profile); with `--audience` also `audience-map`. `--all` checks every
 visible id. Exit 1 on any FAIL.
 
+In a domain repo's CI (core checked out inside it as `.core`, as the sibling CIs already do):
+
+```bash
+node .core/scripts/check-playbook-reachability.mjs --repo . --all --strict
+```
+
+`--repo` reads the repo's own playbooks, prompt domains and tools from its checkout (core's
+`<core>/../<repo>` sibling lookup misses that layout). `--strict` accepts only a direct A1
+pointer, so deleting the pointer turns the repo's CI red.
+
 `dispatch` routes: **A1** prompt domain names `playbook_run` + `"<id>"` (strong); **A2** id next to
 "playbook/плейбук" in a prompt domain; **B** audience map; **E** dev-task auto-offer
 (`ENGINEERING_FAMILY`, only when `DEV_TASK_RE` matches); **C** a tools module names it (list_skills);

@@ -73,14 +73,27 @@ function checkPlaybookReachability(id, opts = {}) {
 
   const profileId = opts.profileId || null;
   const audience = opts.audience || null;
-  const store = opts.store || new PlaybookStore({ profileId });
+  // repoDir: a domain repo checked in its own CI, with core checked out inside it (.core).
+  // Core's sibling lookup (<core>/../<repo>) misses that layout, so the repo under check is
+  // read from its own checkout first: playbooks, prompt domains, tools.
+  const repoDir = opts.repoDir ? path.resolve(opts.repoDir) : null;
+  const store = opts.store || new PlaybookStore(repoDir ? { profileId, siblingRoots: [repoDir] } : { profileId });
   const catalog = opts.catalog || catalogLib.loadCatalog();
-  const domains = opts.domains || require('./prompt-domains').loadDomains();
+  const domains = opts.domains || (() => {
+    const { loadDomains } = require('./prompt-domains');
+    const own = repoDir && fs.existsSync(path.join(repoDir, 'src', 'prompt-domains'))
+      ? loadDomains(path.join(repoDir, 'src', 'prompt-domains')) : [];
+    const names = new Set(own.map(d => d.name));
+    return [...own, ...loadDomains().filter(d => !names.has(d.name))];
+  })();
   const audienceMap = opts.audienceMap
     || readJson(path.join(REPO_ROOT, 'config', 'audience-default-playbooks.json'), {}).playbooks || {};
   const devFamily = opts.devFamily || require('./dev-task-playbook-suggestion').ENGINEERING_FAMILY;
   const siblingRepos = opts.siblingRepos || DEFAULT_SIBLING_REPOS;
-  const toolDirs = opts.toolDirs || defaultToolDirs(catalog, catalogLib.siblingRepoDir);
+  const toolDirs = opts.toolDirs || [
+    ...(repoDir ? [path.join(repoDir, 'src', 'mcp-skills', 'tools')] : []),
+    ...defaultToolDirs(catalog, catalogLib.siblingRepoDir),
+  ];
   // Route F scans the owning repo's src/ (null → derived from the resolved file below).
   let launcherDir = opts.launcherDir !== undefined ? opts.launcherDir : null;
 
@@ -180,7 +193,9 @@ function checkPlaybookReachability(id, opts = {}) {
   if (pointerHits.size) {
     add('dispatch', true, [`A1 playbook_run в промпт-доменах: ${[...pointerHits].join(', ')}`, ...weak].join('; '));
   } else if (weak.length) {
-    add('dispatch', true, `${weak.join('; ')}; нет прямого playbook_run("${id}") в промпт-домене`, { warn: true });
+    // strict: the repo promises a chat route — only A1 counts (weak routes alone = FAIL).
+    add('dispatch', !opts.strict, `${weak.join('; ')}; нет прямого playbook_run("${id}") в промпт-домене`
+      + (opts.strict ? ' (--strict: нужен A1)' : ''), { warn: true });
   } else {
     add('dispatch', false, 'нет маршрута: ни playbook_run(<id>) в prompt-domains/*.md, ни audience-map, ни автооффера, ни упоминания в tools, ни запуска из кода репозитория — из обычной просьбы агент плейбук не предложит');
   }
