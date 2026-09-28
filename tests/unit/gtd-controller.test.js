@@ -209,7 +209,8 @@ describe('scheduleFromChecklist', () => {
   beforeEach(() => {
     baseDir = mkTmp();
     projDir = mkTmp();
-    makeChecklist(projDir, 'Goal: do the thing\n- [x] done step\n- [ ] pending step\n');
+    // Owner-session (#1729 BV-08): only the owner session gets the checklist tracked.
+    makeChecklist(projDir, 'Goal: do the thing\nOwner-session: s-1\n- [x] done step\n- [ ] pending step\n');
   });
 
   afterEach(() => {
@@ -284,6 +285,7 @@ describe('scheduleFromChecklist', () => {
     const G = freshG();
     const wd = makeUserDir(baseDir, 'u-plan');
     const store = G.durableStore();
+    G.setChecklistOwner(projDir, 's-plan');
     const task = store.createTask({ id: `t-${Date.now()}`, profile_id: 'u-plan', goal: 'plan-driven' });
     store.attachSession(task.id, 's-plan', 'u-plan');
     expect(await G.scheduleFromChecklist({ workDir: wd, sessionId: 's-plan', username: 'u-plan', projectDir: projDir })).toBeNull();
@@ -305,7 +307,10 @@ describe('scheduleFromChecklist', () => {
   it('dedup by projectDir: same projectDir tracked by different session → returns existing', async () => {
     const G = freshG();
     const wd = makeUserDir(baseDir, 'u1');
+    G.setChecklistOwner(projDir, 's-AAA');
     const first = await G.scheduleFromChecklist({ workDir: wd, sessionId: 's-AAA', username: 'u1', projectDir: projDir });
+    // Ownership moved to s-BBB while s-AAA still tracks the file: dedup keeps ONE tracker.
+    G.setChecklistOwner(projDir, 's-BBB');
     const second = await G.scheduleFromChecklist({ workDir: wd, sessionId: 's-BBB', username: 'u1', projectDir: projDir });
     // Should return the existing record for s-AAA, not create a new one
     expect(second.sessionId).toBe('s-AAA');
@@ -320,7 +325,7 @@ describe('scheduleFromChecklist', () => {
     const wd = makeUserDir(baseDir, 'u1');
     const bigProj = mkTmp();
     // 5 unchecked items → max(3, min(25, 7)) = 7
-    makeChecklist(bigProj, Array.from({ length: 5 }, (_, i) => `- [ ] step ${i}`).join('\n'));
+    makeChecklist(bigProj, 'Owner-session: s-1\n' + Array.from({ length: 5 }, (_, i) => `- [ ] step ${i}`).join('\n'));
     try {
       const rec = await G.scheduleFromChecklist({ workDir: wd, sessionId: 's-1', username: 'u1', projectDir: bigProj });
       expect(rec.maxIterations).toBe(7);
@@ -332,7 +337,7 @@ describe('scheduleFromChecklist', () => {
   it('takes originalTask from the active (newest) section, not the first Goal', async () => {
     const G = freshG();
     const wd = makeUserDir(baseDir, 'u1');
-    makeChecklist(projDir, 'Goal: old goal\n- [x] old done\n\nGoal: current goal\n- [ ] do it\n');
+    makeChecklist(projDir, 'Goal: old goal\n- [x] old done\n\nGoal: current goal\nOwner-session: s-act\n- [ ] do it\n');
     const rec = await G.scheduleFromChecklist({ workDir: wd, sessionId: 's-act', username: 'u1', projectDir: projDir });
     expect(rec).not.toBeNull();
     expect(rec.originalTask).toBe('current goal');

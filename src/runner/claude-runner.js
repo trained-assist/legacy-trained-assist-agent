@@ -380,6 +380,9 @@ async function runEngineProcess(opts) {
       ...(user.username ? { AGENT_USER_HANDLE: user.username }   : {}),
       ...(sessionFilePath ? { AGENT_SESSION_FILE: sessionFilePath } : {}),
       AGENT_TASK_ID: taskId,
+      // Session identity for checklist ownership (#1729 BV-08): a new `Goal:` section in the
+      // project's checklist.md is signed `Owner-session: $AGENT_SESSION_ID`.
+      ...(sessionId ? { AGENT_SESSION_ID: String(sessionId) } : {}),
       // Slow MCP tools touch this while they work so the inactivity watchdog doesn't
       // mistake a pending tool call for a hung engine (see src/mcp-keepalive.js).
       AGENT_KEEPALIVE_FILE: keepaliveFile,

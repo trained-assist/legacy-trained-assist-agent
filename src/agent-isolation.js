@@ -67,7 +67,7 @@ const ENGINE_ENV_ALLOW = new Set([
   'OPENCODE_LADDER_TOKEN',
   // run identity (not secrets)
   // (no chat id: without a bot token the engine cannot use it; MCP tools get it via the bridge)
-  'AGENT_USER_ID', 'AGENT_TASK_ID', 'AGENT_THREAD_ID',
+  'AGENT_USER_ID', 'AGENT_TASK_ID', 'AGENT_THREAD_ID', 'AGENT_SESSION_ID',
   'AGENT_USER_NAME', 'AGENT_USER_HANDLE',
   // run-scoped callback credentials (src/agent-run-tokens.js, src/agent-mcp-bridge.js)
   'AGENT_RUN_TOKEN', 'AGENT_MCP_BRIDGE_SOCKET',

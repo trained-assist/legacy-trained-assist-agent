@@ -34,11 +34,12 @@ function withChecklist(projectDir) {
   {
     const workDir = tmpRoot();
     const projectDir = path.join(workDir, 'proj');
+    const runStartedAt = Date.now() - 1000; // the run wrote checklist.md (no owner line)
     withChecklist(projectDir);
     const p = hook({
       internalGtd: false, activeSessionId: 's-hook-1', explicitMode: 'reply',
       task: 'do the thing', secrets: {}, workDir, username: 'u',
-      projectDir, audience: 'default', chatId: '123', threadId: null,
+      projectDir, audience: 'default', chatId: '123', threadId: null, runStartedAt,
     });
     await ok(p && typeof p.then === 'function', 'non-deep hook returns a promise (fire-and-forget)');
     await p;
@@ -46,6 +47,8 @@ function withChecklist(projectDir) {
     await ok(rec.status === 'open', 'non-deep: GTD record written with status=open');
     await ok(rec.sessionId === 's-hook-1', 'non-deep: record keyed to the session');
     await ok(rec.maxIterations >= 2, 'non-deep: maxIterations derived from the checklist');
+    await ok(/Owner-session: s-hook-1/.test(fs.readFileSync(path.join(projectDir, 'checklist.md'), 'utf8')),
+      'BV-08: section written during the run is signed with the run session (claimFreshChecklist)');
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 
@@ -55,11 +58,12 @@ function withChecklist(projectDir) {
   {
     const workDir = tmpRoot();
     const projectDir = path.join(workDir, 'proj');
+    const runStartedAt = Date.now() - 1000;
     withChecklist(projectDir);
     const p = hook({
       internalGtd: false, activeSessionId: 's-hook-2', explicitMode: 'deep',
       task: 'hi', secrets: {}, workDir, username: 'u',
-      projectDir, audience: 'default', chatId: '123', threadId: 42,
+      projectDir, audience: 'default', chatId: '123', threadId: 42, runStartedAt,
     });
     await p;
     const rec = JSON.parse(fs.readFileSync(path.join(workDir, 'gtd', 's-hook-2.json'), 'utf8'));
@@ -80,6 +84,24 @@ function withChecklist(projectDir) {
     });
     await ok(p === null, 'internalGtd re-run: hook returns null (no self-loop)');
     await ok(!fs.existsSync(path.join(workDir, 'gtd', 's-hook-3.json')), 'internalGtd re-run: no record written');
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+
+  // 3b. BV-08 (#1729): a legacy ownerless checklist that this run did NOT touch
+  //     (mtime before run start) is not attached to the session and stays unsigned.
+  {
+    const workDir = tmpRoot();
+    const projectDir = path.join(workDir, 'proj');
+    withChecklist(projectDir);
+    const old = new Date(Date.now() - 24 * 3600 * 1000);
+    fs.utimesSync(path.join(projectDir, 'checklist.md'), old, old);
+    await hook({
+      internalGtd: false, activeSessionId: 's-hook-legacy', explicitMode: 'reply',
+      task: 'unrelated', secrets: {}, workDir, username: 'u',
+      projectDir, audience: 'default', chatId: '123', threadId: null, runStartedAt: Date.now() - 1000,
+    });
+    await ok(!fs.existsSync(path.join(workDir, 'gtd', 's-hook-legacy.json')), 'legacy ownerless checklist: no GTD for the new session');
+    await ok(!/Owner-session/.test(fs.readFileSync(path.join(projectDir, 'checklist.md'), 'utf8')), 'legacy ownerless checklist: not claimed');
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 
