@@ -18,6 +18,16 @@ const { suggestPlaybookForAudience } = require('../../audience-default-playbook'
 
 const authoring = createPlaybookAuthoring();
 
+// What the last run of this profile actually resolved (src/skills/shadow.js writes it with real
+// probed readiness). Missing/unreadable → null: playbook_health then computes from skills.json.
+function readResolvedSkills(profileId) {
+  try {
+    const { userWorkDir } = require('../../data-paths');
+    const rec = JSON.parse(require('fs').readFileSync(require('path').join(userWorkDir(profileId), '.skills-resolved.json'), 'utf8'));
+    return rec && rec.resolved && Array.isArray(rec.resolved.modules) ? rec : null;
+  } catch { return null; }
+}
+
 // Authoring rejects a missing profile loudly; playbook_run must do the same so
 // an unscoped call can never resolve a different profile's playbooks.
 function requireUser(ctx) {
@@ -69,6 +79,36 @@ module.exports = {
         const store = new PlaybookStore({ profileId: ctx?.userId });
         return suggestPlaybookForAudience(audience, { store });
       },
+    },
+
+    playbook_health: {
+      description:
+        'Check whether a playbook actually reaches THIS profile («доехал ли плейбук»): file resolves and compiles, ' +
+        'the agent has a route to it from a plain request (prompt-domain playbook_run pointer / audience map / ' +
+        'dev auto-offer / launcher), its declared requires {sections, tools} exist, and those sections/tools are ' +
+        'enabled for the caller profile in this run. Omit id to check every visible playbook. Read-only, offline, ' +
+        'no LLM. Use it to answer "а у меня этот плейбук виден?" or before promising a playbook to the user.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Playbook id; omit to check all playbooks visible to the profile' },
+          audience: { type: 'string', description: 'Also check that the id is the default for this audience' },
+        },
+      },
+      handler: safe(async ({ id, audience } = {}, ctx) => {
+        const profileId = requireUser(ctx);
+        const { checkPlaybookReachability } = require('../../playbook-reachability');
+        const resolved = readResolvedSkills(profileId);
+        const ids = id ? [id] : new PlaybookStore({ profileId }).list().playbooks.map(p => p.id);
+        const reports = ids.map(pid => checkPlaybookReachability(pid, {
+          profileId, audience, ...(resolved ? { resolved: resolved.resolved } : {}),
+        }));
+        return {
+          ok: reports.every(r => r.ok),
+          exposure_source: resolved ? `.skills-resolved.json (${resolved.at})` : 'computed from skills.json (no run record yet)',
+          reports: reports.map(r => ({ id: r.id, ok: r.ok, rows: r.rows })),
+        };
+      }),
     },
 
     playbook_get: {

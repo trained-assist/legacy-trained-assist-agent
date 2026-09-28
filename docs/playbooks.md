@@ -110,6 +110,26 @@ node .core/scripts/check-playbook-reachability.mjs --repo . --all --strict
 `<core>/../<repo>` sibling lookup misses that layout). `--strict` accepts only a direct A1
 pointer, so deleting the pointer turns the repo's CI red.
 
+### `requires` and `playbook_health`
+
+A playbook may declare what it needs from a profile (optional, additive):
+
+```json
+"requires": { "sections": ["flexi-expo"], "tools": ["expo_find_participants", "playbook_run"] }
+```
+
+The `requires` gate checks that every section exists in `config/skill-catalog.json` and every
+tool is defined by some tools module (`<name>: {` in core or a sibling `src/mcp-skills/tools/*.js`).
+With a profile, `section-enabled` / `tools-visible` then key on exactly these sections and the
+modules defining these tools (hard FAIL). Without `requires` they guess from the section carrying
+the A1 pointer. **Order matters:** the schema has `additionalProperties: false`, so a sibling
+playbook may use `requires` only after the core that accepts it is deployed. Otherwise the
+live agent refuses the file.
+
+`playbook_health(id?, audience?)` (MCP, `102-playbooks.js`) runs the same check for the calling
+profile inside the agent. Exposure comes from the run record `.skills-resolved.json` (real probed
+readiness) when present. Omit `id` to check every visible playbook.
+
 `dispatch` routes: **A1** prompt domain names `playbook_run` + `"<id>"` (strong); **A2** id next to
 "playbook/плейбук" in a prompt domain; **B** audience map; **E** dev-task auto-offer
 (`ENGINEERING_FAMILY`, only when `DEV_TASK_RE` matches); **C** a tools module names it (list_skills);
