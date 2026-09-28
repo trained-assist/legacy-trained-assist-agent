@@ -80,8 +80,13 @@ function buildStorageState(tokensDir) {
  *
  * `siblingPaths` (optional, test seam): overrides for the sibling checkout entrypoints
  * below; production always uses the computed repo-relative paths.
+ *
+ * `siblings: false` mounts only `playwright` + `trained-skills`. Used by the headless
+ * research run (hermes-tools-run.js): a researcher must not see the domain servers that
+ * carry mutating tools — engineering's `github_create_pr`/`spawn_workspace`, the hh
+ * posting tools and so on (measured 2026-09-28: a nested Hermes did create 2 PRs).
  */
-function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, extraEnv } = {}) {
+function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, extraEnv, siblings = true } = {}) {
   // Note: --user-data-dir creates a persistent context, which is incompatible
   // with --storage-state (Playwright limitation). We rely on --storage-state
   // for both cookie injection and session persistence. Per-user isolation is
@@ -197,6 +202,7 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
   // or any error → plan null → legacy, nothing hidden.
   const hiddenSiblings = new Set(skillsPlan ? skillsPlan.hidden.siblings : []);
   for (const [serverId, indexPath] of Object.entries(siblingIndexes)) {
+    if (!siblings) continue;
     if (hiddenSiblings.has(serverId)) continue;
     if (fs.existsSync(indexPath)) {
       config.mcpServers[serverId] = { command: 'node', args: [indexPath], env: mcpToolEnv };

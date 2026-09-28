@@ -27,3 +27,11 @@ Goal: profile migration M0+M1 — clean list + read-only inventory classifier + 
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1794
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
+
+Goal: research-поиск в интернете — 4 способа параллельно с запасными (эпик #1792), L0 = Гермес на opencode с веб-поиском
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1795
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live (живой hermes_research с веб-вопросом: websearch в opencode DB, настоящие URL в ответе, grounded=true → коммент в #1618)
+- [ ] L1/L2/L3 прижились и сравнены по 5 контрольным запросам → таблица в https://github.com/trained-assist/trained-assist-agent/issues/1792
+- [ ] PR fallback-цепочки (единый web_search с бэкендами) создан и смержен

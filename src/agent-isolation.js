@@ -65,6 +65,9 @@ const ENGINE_ENV_ALLOW = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
   // OpenCode's `ladder` provider key (llm-ladder worker, issue #1687)
   'OPENCODE_LADDER_TOKEN',
+  // Turns on OpenCode's built-in `websearch` tool (no API key, public Exa endpoint) —
+  // the only way an opencode run can search at all (see runEngineProcess).
+  'OPENCODE_ENABLE_EXA',
   // run identity (not secrets)
   // (no chat id: without a bot token the engine cannot use it; MCP tools get it via the bridge)
   'AGENT_USER_ID', 'AGENT_TASK_ID', 'AGENT_THREAD_ID', 'AGENT_SESSION_ID',
