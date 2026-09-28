@@ -217,6 +217,17 @@ function ancestorDirs(target, serviceHome = os.homedir()) {
   return out;
 }
 
+// Files the SERVICE wrote into a profile with mode 0600 (chat/web attachments, answer
+// modes, …) have ACL mask --- and are invisible to the slot of THIS profile's run. They
+// are the profile's own data, so before a run the service (their owner) opens them to
+// the group; other profiles stay closed by their gates. Browser profiles are skipped.
+function shareServiceFiles(cfg, gate, { exec } = {}) {
+  try {
+    runCmd(['find', gate, '-xdev', '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
+      '-type', 'f', '-user', cfg.serviceUser, '!', '-perm', '-g+r', '-exec', 'chmod', 'g+rw', '{}', '+'], exec);
+  } catch (e) { console.warn(`[isolation] could not share service files in ${gate}: ${e.message}`); }
+}
+
 function prepareGate(cfg, gate, { exec } = {}) {
   fs.mkdirSync(gate, { recursive: true, mode: 0o700 });
   const marker = path.join(gate, GATE_MARKER);
@@ -419,7 +430,7 @@ async function prepareIsolatedRun(cfg, { workDir, cwd, engine, exec, serviceHome
     reapSlot(cfg, slot, { exec });
     recoverSlot(cfg, slot, { exec });
     stage = stageEngineHome(engine, workDir, { serviceHome });
-    for (const gate of gates) prepareGate(cfg, gate, { exec });
+    for (const gate of gates) { prepareGate(cfg, gate, { exec }); shareServiceFiles(cfg, gate, { exec }); }
     const traverse = [...new Set([...gates, ...reach].flatMap(p => ancestorDirs(p, serviceHome)))]
       .filter(d => !gates.includes(d));
     aclPaths = [...traverse, ...gates];
@@ -461,6 +472,7 @@ module.exports = {
   gatePrepareCommands,
   gateOpenCommand,
   prepareGate,
+  shareServiceFiles,
   ancestorDirs,
   journalPath,
   recoverSlot,

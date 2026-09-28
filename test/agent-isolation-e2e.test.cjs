@@ -38,6 +38,9 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
     fs.writeFileSync(path.join(tokensDir, p, 'github'), `${p}-gh-token\n`, { mode: 0o600 });
   }
   fs.writeFileSync(secretsFile, 'AGENT_SECRET=srv-agent-secret\n', { mode: 0o600 });
+  // a chat attachment the service stored with 0600 (server.js intake)
+  fs.mkdirSync(path.join(users, 'alice', 'media', 'intake'), { recursive: true });
+  fs.writeFileSync(path.join(users, 'alice', 'media', 'intake', 'att.txt'), 'attachment-ok\n', { mode: 0o600 });
   // a repo in the profile, created by the service user (engineering workspaces look like this)
   const repo = path.join(users, 'alice', 'repo');
   fs.mkdirSync(repo);
@@ -74,6 +77,7 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
     `id -un`,
     `cat ${users}/alice/notes.md && echo OWN_READ_OK`,
     `echo from-agent > ${users}/alice/agent-wrote.txt && echo OWN_WRITE_OK`,
+    `cat ${users}/alice/media/intake/att.txt`,
     `cat ${users}/bob/notes.md && echo LEAK_OTHER_PROFILE`,
     `ls ${users} && echo LEAK_PROFILE_LIST`,
     `cat ${tokensDir}/bob/github && echo LEAK_OTHER_TOKENS`,
@@ -95,6 +99,7 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
   assert.match(out, new RegExp(`^${runA.slot}$`, 'm'), 'runs as the slot user');
   assert.match(out, /OWN_READ_OK/);
   assert.match(out, /OWN_WRITE_OK/);
+  assert.match(out, /^attachment-ok$/m, 'a 0600 attachment the service stored is readable by this profile\'s run');
   assert.match(out, /^GIT_STATUS_OK$/m, 'git works on a service-owned repo (safe.directory)');
   assert.match(out, /^GIT_AUTHOR=Service Bot$/m, 'commit identity from the service git config');
   for (const leak of ['LEAK_OTHER_PROFILE', 'LEAK_PROFILE_LIST', 'LEAK_OTHER_TOKENS', 'LEAK_TOKEN_FILE', 'LEAK_SECRETS_FILE']) {
