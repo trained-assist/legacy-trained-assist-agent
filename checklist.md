@@ -82,6 +82,6 @@ Goal: поисковая лестница `search` в llm-ladder worker — open
 Факты, проверенные живьём 2026-09-28 — не переисследовывать: ключ `oc_sk_…` из `OPENCODE_GO_API_KEY` валиден под именем `OPENCODE_API_KEY`; `opencode run -m opencode-go/mimo-v2.6-flash` отвечает на продовом opencode 1.18.31, хотя модели нет в клиентском реестре того билда; сервер требует заголовок `x-opencode-session`. Пока лестницы нет, пин в `DIRECT_MODEL.research` работает без фолбэка: закончившаяся месячная allowance = упавший research.
 Goal: profile maintenance lock + POST /internal/flush-profile — safety precondition for running the migration LIVE (#1784 G1+G2)
 
-- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1812
-- [ ] Merged to main
-- [ ] Deployed to prod — verified live
+- [x] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1812
+- [x] Merged to main
+- [x] Deployed to prod — verified live: обе VM отвечают commit 38045b4 (gcp-main `/health`, ru-edge `/health`); `POST /internal/flush-profile` на GCP → 401 без Bearer, 400 на неверный username, `{ok:true,flushed:0,failed:0}` на валидный (body и `?username=`); live-smoke `src/profile-lock.js` → acquire `smoke-probe` → `isProfileLocked=true` → `waitForProfileUnlocked` ждёт → release → wait 154ms → unlocked; гейт в runner деплоя на месте (`isProfileLocked` в `_runTaskInner`)
