@@ -14,6 +14,7 @@ const path = require('path');
 const os = require('os');
 const { keepaliveFilePath, lastKeepaliveAt } = require('../mcp-keepalive');
 const { prepareEngineSpawn } = require('./engine-isolation');
+const { buildAgentEnv, engineCredentialNames } = require('../agent-isolation');
 
 const STREAM_INTERVAL_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 3000;
@@ -364,18 +365,11 @@ async function runEngineProcess(opts) {
   const reportProgress = (label) => { if (onProgress) try { onProgress(label); } catch {} };
 
   const keepaliveFile = keepaliveFilePath(taskId);
-  const engineEnv = {
+  const rawEngineEnv = {
       ...cleanEnv,
       ...userTokens,
       AGENT_USER_ID: String(user.username),
       AGENT_CHAT_ID: String(chatId),
-      ...(secrets.BOT_TOKEN      ? { AGENT_BOT_TOKEN:    secrets.BOT_TOKEN }      : {}),
-      ...(secrets.DEEPGRAM_API_KEY ? { DEEPGRAM_API_KEY: secrets.DEEPGRAM_API_KEY } : {}),
-      ...(secrets.OPENAI_API_KEY ? { OPENAI_API_KEY:     secrets.OPENAI_API_KEY } : {}),
-      ...(secrets.FAL_KEY        ? { FAL_KEY:            secrets.FAL_KEY }        : {}),
-      ...(secrets.IDEOGRAM_API_KEY ? { IDEOGRAM_API_KEY: secrets.IDEOGRAM_API_KEY } : {}),
-      ...(secrets.RECRAFT_API_KEY  ? { RECRAFT_API_KEY:  secrets.RECRAFT_API_KEY }  : {}),
-      ...(secrets.CF_API_TOKEN     ? { CLOUDFLARE_API_TOKEN: secrets.CF_API_TOKEN } : {}),
       ...(user.name     ? { AGENT_USER_NAME: user.name }         : {}),
       ...(user.username ? { AGENT_USER_HANDLE: user.username }   : {}),
       ...(sessionFilePath ? { AGENT_SESSION_FILE: sessionFilePath } : {}),
@@ -400,6 +394,12 @@ async function runEngineProcess(opts) {
       // Engine credential for the `ladder` provider (src/opencode-ladder-provider.js, #1687).
       ...(engine === 'opencode' ? ocLadderTokenEnv() : {}),
   };
+  const engineEnv = buildAgentEnv(rawEngineEnv, {
+    userTokenNames: Object.keys(userTokens || {}),
+    engineCredentialNames: engineCredentialNames(engine, {
+      configFiles: rawEngineEnv.OPENCODE_CONFIG ? [rawEngineEnv.OPENCODE_CONFIG] : [],
+    }),
+  });
   // T0 hardening (issue #1649): with AGENT_ENV_ALLOWLIST / AGENT_RUN_AS_USERS the engine
   // gets an allowlisted env (no server secrets), MCP goes through the run-token bridge,
   // and the process may run as a leased unprivileged slot user. Off → unchanged inputs.
