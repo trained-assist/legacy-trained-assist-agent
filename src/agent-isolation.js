@@ -268,7 +268,10 @@ function recoverSlot(cfg, slot, { exec } = {}) {
 function shareSlotFiles(cfg, slot, dirs, { exec } = {}) {
   for (const d of dirs) {
     try {
-      runCmd([cfg.sudoBin, '-n', '-u', slot, '--', 'find', d, '-xdev', '-user', slot, '!', '-type', 'l',
+      // chrome/: the live browser profile — service-owned, huge, never the slot's.
+      runCmd([cfg.sudoBin, '-n', '-u', slot, '--', 'find', d, '-xdev',
+        '(', '-name', 'chrome', '-type', 'd', ')', '-prune', '-o',
+        '-user', slot, '!', '-type', 'l',
         '(', '!', '-perm', '-g+rw', '-o', '-type', 'd', '!', '-perm', '-g+x', ')',
         '-exec', 'chmod', 'g+rwX', '{}', '+'], exec);
     } catch (e) { console.warn(`[isolation] ${slot}: could not share its files in ${d}: ${e.message}`); }
