@@ -86,6 +86,7 @@ function parsePolicy(task) {
 }
 const { executeHooks, parseHooks, resolveHookApproval } = require('./playbook-hooks');
 const { recoverDurableItem, retryFailedItem } = require('./durable-recovery');
+const fanout = require('./playbook-fanout');
 const {
   evaluateItemValidationsModeAware, evaluateItemValidations, resolveValidationMode, getDefaultRegistry, DEFAULT_VALIDATION_MODE,
   parseValidation, FASTPASS_SKIP_MODE, parseFastpassSkip,
@@ -387,6 +388,19 @@ function defaultHookSinks({ secrets = {}, store, task }) {
   };
 }
 
+// Batch notifications (#1752) go to the chat that launched the batch (recorded on
+// the batch), else to the plan owner's chat. Failures/pauses are always delivered.
+function ownerNotifier(store, task, secrets, state) {
+  return async (text) => {
+    const target = (state && state.owner && state.owner.chatId != null) ? state.owner : resolveOwnerTarget(store, task);
+    if (!target) throw new Error('no owner chat for notification');
+    const routeSecrets = require('./bot-delivery').deliverySecrets(secrets, target.audience || 'default');
+    const token = routeSecrets?.TELEGRAM_BOT_TOKEN || routeSecrets?.BOT_TOKEN;
+    if (!token) throw new Error('no telegram token for notification');
+    await _tgNotify(token, target.chatId, text, target.threadId || null);
+  };
+}
+
 async function fireItemHooks(store, task, item, event, vars, sinks, approved) {
   const hooks = parseHooks(item && item.hooks_json)[event];
   if (!Array.isArray(hooks) || !hooks.length) return [];
@@ -525,9 +539,11 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
   // without this guard claimNextRunnable could hand it straight back and
   // double-fire it. Items fired as agent runs are 'running' and never re-claimed.
   const claimedThisPass = new Set();
+  // `fired` = steps handled (the return value); `slotsUsed` = agent runs started —
+  // only those take an engine slot, so only they count against `maxFires` (#1752).
   let fired = 0;
+  let slotsUsed = 0;
   for (;;) {
-    if (fired >= maxFires) return fired;
     const item = claimNextDurableItem(store, { now });
     if (!item) return fired;
     const task = store.db.prepare('SELECT * FROM durable_tasks WHERE id = ?').get(item.task_id);
@@ -539,7 +555,9 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     // P3d-1b/1c: per-step > per-plan policy > env > default programmatic+llm.
     const validationMode = resolveValidationMode({ task, item });
     if (claimedThisPass.has(item.id)) {
-      store.updateTaskItem(item.id, { status: 'waiting', due_at: Date.now() + FRESH_CLAIM_GRACE_MS }, task.profile_id);
+      // Past this pass's own clock too (an injected/time-travelled `now` must not
+      // hand the same item straight back → endless pass).
+      store.updateTaskItem(item.id, { status: 'waiting', due_at: Math.max(now, Date.now()) + FRESH_CLAIM_GRACE_MS }, task.profile_id);
       continue;
     }
     claimedThisPass.add(item.id);
@@ -550,6 +568,27 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     if (sessionRow && isTaskRunning(null, sessionRow.session_id)) {
       // release the claim — put back to waiting with a short re-try delay
       store.updateTaskItem(item.id, { status: 'waiting', due_at: now + FRESH_CLAIM_GRACE_MS }, task.profile_id);
+      continue;
+    }
+
+    // Fanout (#1752): advance the batch (observe children, supervisor, spawn). Not a
+    // fire — no slot, no attempt. Joined → fall through so the programmatic path
+    // records `fanout_joined` and completes the step like any other.
+    if (item.fanout_json) {
+      let adv = null;
+      try {
+        adv = await fanout.advanceFanout(store, { task, item, now, notify: ownerNotifier(store, task, secrets, fanout.parseFanout(item)) });
+      } catch (e) { console.error(`[gtd-durable] fanout ${item.id.slice(0, 8)}:`, e.message); }
+      if (!adv || !adv.joined) {
+        store.updateTaskItem(item.id, { status: 'waiting', due_at: now + fanout.DEFAULT_POLL_MS }, task.profile_id);
+        if (adv && (adv.spawned || adv.events.length)) console.log(`[gtd-durable] fanout ${item.id.slice(0, 8)}: spawned=${adv.spawned} events=${adv.events.map(e => `${e.key}:${e.type}→${e.action}`).join(',') || '-'}`);
+        if (adv && adv.spawned) kickDurable();
+        continue;
+      }
+    }
+    // A stage that touches a shared external resource runs in one sibling at a time.
+    if (task.parent_task_id && fanout.stageLockedBySibling(store, task, item)) {
+      store.updateTaskItem(item.id, { status: 'waiting', due_at: now + 60 * 1000 }, task.profile_id);
       continue;
     }
 
@@ -575,6 +614,14 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       ? resolveStepExecution(item, { levelMap: planLevelMap(parsePolicy(task)), useRoleMap: !parsePolicy(task)?.level_map })
       : { executionKind: 'agent', engine: 'claude', ocProfile: null, ocRole: null, skipModels: [] };
     if (step.executionKind === 'agent') step = pickUsableTarget(store, item, step, healthOf);
+    // No free engine slot left this pass: an agent step goes back to the queue
+    // untouched (no attempt, no execution row); programmatic steps and batch
+    // bookkeeping keep flowing — they need no slot.
+    if (step.executionKind === 'agent' && slotsUsed >= maxFires) {
+      fired -= 1;
+      store.updateTaskItem(item.id, { status: 'waiting', due_at: now + FRESH_CLAIM_GRACE_MS }, task.profile_id);
+      continue;
+    }
     if (step.degradedFrom) console.log(`[gtd-durable] ${item.id.slice(0, 8)} runs on fallback ${step.engine}${step.ocProfile ? `/${step.ocProfile}` : ''}: ${step.degradeReason}`);
     // Record WHICH engine/profile/level actually ran the step — without it there is
     // no way to see (or test) that different levels really run on different engines.
@@ -644,6 +691,9 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       continue;
     }
 
+    // Only an agent run takes an engine slot — programmatic steps never count
+    // against the per-tick budget (which is the host's free slots, see runDue).
+    slotsUsed += 1;
     const freshForPrompt = store.getTaskItem(item.id) || item;
     const resumed = resumeNote(parseWait(freshForPrompt), now);
     const digest = task.acceptance_criteria_json ? priorStepsDigest(store, task, item) : '';
@@ -703,6 +753,10 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       // admission lane and mixed contexts with the user's chat. Exact session: never
       // healed onto a chat pointer, never moves the chat's live session.
       sessionId: planSessionId(task), webExactSession: true,
+      // P0-a (#1752): the step runs INSIDE its plan's project (cwd + project rules) —
+      // the same folder its file checks resolve against. Exact binding: the runner
+      // never moves the chat's current/pinned project for a durable step.
+      projectId: task.project_id || null,
       task: prompt, forceClaude: step.engine === 'claude', engine: step.engine, secrets, internalGtd: true,
       ocProfile: step.ocProfile || null, ocRole: step.ocRole || null,
       stepTimeoutMs,
@@ -719,7 +773,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
 // validations/evidence, complete/fail/park the item, run recovery and hooks.
 // Called from runDueDurable's .then — and, after a restart, from
 // resumeDurableReply with a context rebuilt from ids.
-async function settleDurableReply(ctx, reply) {
+async function _settleDurableReply(ctx, reply) {
   const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier } = ctx;
   const said = typeof reply === 'string' ? reply : '';
   if (lastDurableMarker(said) === 'waiting') {
@@ -835,7 +889,7 @@ async function settleDurableReply(ctx, reply) {
   }
 }
 
-async function settleDurableCrash(ctx, e) {
+async function _settleDurableCrash(ctx, e) {
   const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier } = ctx;
   console.error(`[gtd-durable] runTask ${itemSnap.id.slice(0, 8)}:`, e.message);
   store.failItem(itemSnap.id, task.profile_id, { executionId, error: e.message.slice(0, 500) });
@@ -859,6 +913,22 @@ async function settleDurableCrash(ctx, e) {
 
 // Rebuild a settle context from ids after a restart (the fire-time closure died
 // with the old process). Same defaults the tick uses.
+// After ANY settle: a fanout child's parent looks at it now (not at its next poll),
+// and the next step of this plan is claimed now instead of at the next 5-min tick.
+function afterDurableSettle(ctx) {
+  try {
+    const fresh = ctx.store.getTask(ctx.task.id, ctx.task.profile_id) || ctx.task;
+    fanout.nudgeParent(ctx.store, fresh);
+  } catch (e) { console.warn('[gtd-durable] nudge parent:', e.message); }
+  kickDurable();
+}
+async function settleDurableReply(ctx, reply) {
+  try { return await _settleDurableReply(ctx, reply); } finally { afterDurableSettle(ctx); }
+}
+async function settleDurableCrash(ctx, e) {
+  try { return await _settleDurableCrash(ctx, e); } finally { afterDurableSettle(ctx); }
+}
+
 function durableSettleContext({ taskId, itemId, executionId }, { secrets = {}, store = durableStore(), registry = null, llmValidate = null, hookSinks = null } = {}) {
   const task = store.db.prepare('SELECT * FROM durable_tasks WHERE id = ?').get(taskId);
   const item = store.getTaskItem(itemId);
@@ -1545,6 +1615,38 @@ function clearGtdForChat(workDir, chatId, threadId = null) {
   return count;
 }
 
+// ── Durable fire budget + immediate claim (#1752) ─────────────────────────────
+// Budget = free engine slots when the host reports them, else the legacy cap.
+function durableBudget(freeSlots) {
+  if (typeof freeSlots !== 'function') return MAX_FIRES_PER_TICK;
+  try { const n = Number(freeSlots()); return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : MAX_FIRES_PER_TICK; }
+  catch { return MAX_FIRES_PER_TICK; }
+}
+// One durable pass at a time: the 5-min tick and the post-settle kick share a chain,
+// so two passes never claim over each other.
+let _durableChain = Promise.resolve();
+function runDurableSerialized(opts) {
+  const p = _durableChain.then(() => runDueDurable(opts));
+  _durableChain = p.catch(() => {});
+  return p;
+}
+// A settled step claims the plan's next step now instead of at the next tick.
+// Debounced; a no-op until the first tick has recorded the runtime deps.
+let _kickDeps = null;
+let _kickTimer = null;
+const KICK_DEBOUNCE_MS = Number(process.env.DURABLE_KICK_DEBOUNCE_MS || 3000);
+function kickDurable() {
+  if (!_kickDeps || _kickTimer) return;
+  _kickTimer = setTimeout(() => {
+    _kickTimer = null;
+    const d = _kickDeps;
+    runDurableSerialized({ secrets: d.secrets, runTask: d.runTask, isTaskRunning: d.isTaskRunning, now: Date.now(), maxFires: durableBudget(d.freeSlots) })
+      .catch(e => console.error('[gtd-durable] kick error:', e.message));
+  }, KICK_DEBOUNCE_MS);
+  _kickTimer.unref?.();
+}
+function _setKickDeps(d) { _kickDeps = d; }
+
 // Серверный tick. Аргументы инжектятся из server.js, чтобы модуль не тянул
 // зависимости и был тестируем: { secrets, baseUsersDir, isTaskRunning, runTask, getSession }.
 // Обёртка сериализует проходы (см. _tickInFlight): перекрывающийся тик — no-op.
@@ -1568,11 +1670,12 @@ async function runDue(deps) {
   }
 }
 
-async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, getSession, canRunSession = () => true, now = Date.now() }) {
-  // Slice A: durable-task scheduler runs alongside the legacy file scan. Both
-  // share MAX_FIRES_PER_TICK via runDueDurable's own budget — combined bursts
-  // stay bounded per tick.
-  try { await runDueDurable({ secrets, runTask, isTaskRunning, now }); }
+async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, getSession, canRunSession = () => true, freeSlots = null, now = Date.now() }) {
+  // Slice A: durable-task scheduler runs alongside the legacy file scan.
+  // #1752: durable steps fire into the host's FREE engine slots (no fixed 3/tick) —
+  // slot management is the only limit; a full host fires nothing and the steps wait.
+  _kickDeps = { secrets, runTask, isTaskRunning, freeSlots };
+  try { await runDurableSerialized({ secrets, runTask, isTaskRunning, now, maxFires: durableBudget(freeSlots) }); }
   catch (e) { console.error('[gtd-durable] tick error:', e.message); }
 
   // BV-08: одно напоминание об осиротевшем чек-листе (не раньше 30 мин после
@@ -1784,7 +1887,7 @@ module.exports = {
   checklistCheapPrecheck, writeChecklistDone, mirrorGtdChecklist, CHECKLIST_API_BASE, checklistAutologinUrl,
   _ghToken, _ghFetch,
   durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
-  resumeDurableReply, resumeDurableCrash, planWorkspaceLabel,
+  resumeDurableReply, resumeDurableCrash, planWorkspaceLabel, kickDurable, durableBudget, _setKickDeps,
   tickHeartbeat, countOpenLegacy, durableItemCounts,
   DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP,
   CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,

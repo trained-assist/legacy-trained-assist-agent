@@ -15,6 +15,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { atomicText } = require('./atomic-json');
 
 const AUDIT_FILE = 'prompt-audit.jsonl';
 const MAX_LOG_LINES = 2000;
@@ -84,7 +85,7 @@ function recordPromptAudit(workDir, entry) {
     const lines = loadAudit(workDir);
     lines.push(JSON.stringify(entry));
     if (lines.length > MAX_LOG_LINES) lines.splice(0, lines.length - MAX_LOG_LINES);
-    fs.writeFileSync(auditPath(workDir), lines.join('\n') + (lines.length ? '\n' : ''), { mode: 0o600 });
+    atomicText(auditPath(workDir), lines.join('\n') + (lines.length ? '\n' : ''), { mode: 0o600 });
   } catch (e) {
     console.error('[prompt-audit] recordPromptAudit error:', e.message);
   }

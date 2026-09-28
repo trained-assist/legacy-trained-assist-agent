@@ -1191,7 +1191,7 @@ async function updateContextPin(token, chatId, workDir, card, botPinnedMsgId = n
   let entry = store.chats[key] || null;
   const save = (next) => {
     store.chats[key] = next;
-    fs.writeFileSync(pinFile, JSON.stringify(store));
+    atomicJson(pinFile, store);
   };
 
   // Seed from bot's authoritative pinned message when this chat has no local state.
@@ -1673,7 +1673,15 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   //     (created if missing). Never asks; the result becomes the chat's current project.
   let boundProjectId = null;
   let pinProject = false; // explicit user choice → becomes the chat's pinned project (#1312)
-  try {
+  // A durable plan step (#1752 P0-a) runs in its PLAN's project, exactly: cwd = that
+  // folder (where its file checks look), without touching the chat's current/pinned
+  // project — a background step must never move the user's chat to another project.
+  const durableProjectDir = resumeSink && resumeSink.kind === 'durable' && projectId
+    ? projects.resolveProjectDir(user.workDir, projectId) : null;
+  if (durableProjectDir) {
+    boundProjectId = projectId;
+    user.cwd = durableProjectDir;
+  } else try {
     const continuing = !!(sessionExists && activeSessionId);
     const s = continuing ? sessions.getSession(user.workDir, activeSessionId) : null;
     const r = projects.resolveRunProject(user.workDir, {
