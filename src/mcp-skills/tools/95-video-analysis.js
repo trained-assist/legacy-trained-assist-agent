@@ -50,11 +50,11 @@ function loadDeepgramKey() {
 // Видимая пользователю рабочая директория (~/users/<USER_ID>). Пишем сюда, а не в
 // служебную agent-data — иначе транскрипты «пропадают» в невидимой юзеру папке
 // (ровно тот баг, что ловили: инструмент отчитывался «получил транскрипты», но их
-// не было там, где юзер их ждал).
+// не было там, где юзер их ждал). Корень — только через data-paths (USERS_DIR),
+// тут раньше был неверный env AGENT_USERS_DIR (#1735 step 1).
 function userWorkspace() {
-  const usersRoot = process.env.AGENT_USERS_DIR || path.join(os.homedir(), 'users');
   if (USER_ID) {
-    const ws = path.join(usersRoot, USER_ID);
+    const ws = require('../../data-paths').userWorkDir(USER_ID);
     try { if (fs.existsSync(ws)) return ws; } catch { /* ignore */ }
   }
   return '';

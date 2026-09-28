@@ -20,11 +20,11 @@ const { loadSecrets } = require('./secrets');
 const { startNalogLogin, confirmNalogCode, closeAll: closeNalogSessions } = require('./nalog-login');
 const { receiveConnect } = require('./user-tokens');
 const { nalogFormHtml, nalogCodeFormHtml } = require('./connect-forms/nalog');
+const { workspacePath } = require('./data-paths');
 
 const PORT = process.env.PORT || 8080;
 const VM_NAME = process.env.VM_NAME || 'ru-edge';
 const TOKENS_ROOT = process.env.AGENT_TOKENS_DIR || process.env.AGENT_TOKENS_ROOT || path.join(os.homedir(), 'agent-tokens');
-const USERS_ROOT = process.env.USERS_DIR || path.join(os.homedir(), 'users');
 
 let GIT_COMMIT = 'unknown';
 try { const sha = require('./release-info').getReleaseSha(); if (sha) GIT_COMMIT = sha.slice(0, 7); } catch {}
@@ -211,7 +211,7 @@ async function main() {
       const vacancyPageMatch = url.pathname.match(/^\/vacancy\/([a-zA-Z0-9_-]+)\/([a-zA-Z0-9_-]+)$/);
       if (req.method === 'GET' && vacancyPageMatch) {
         const [, username, vacancyId] = vacancyPageMatch;
-        const htmlPath = path.join(USERS_ROOT, username, 'vacancy-drafts', `${vacancyId}.html`);
+        const htmlPath = workspacePath(username, 'vacancy-drafts', `${vacancyId}.html`);
         try {
           const html = fs.readFileSync(htmlPath, 'utf8');
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }).end(html);
@@ -238,7 +238,7 @@ async function main() {
         const parts = url.pathname.split('/');
         const applyUsername = parts[2];
         const vacancyId = parts[3];
-        const workDir = path.join(USERS_ROOT, applyUsername);
+        const workDir = workspacePath(applyUsername);
 
         let fields = {};
         try {
@@ -342,7 +342,7 @@ async function main() {
         if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username) || !/^[a-zA-Z0-9_-]{1,64}$/.test(vacancyId)) {
           return json(res, 400, { error: 'invalid username or vacancyId' });
         }
-        const draftsDir = path.join(USERS_ROOT, username, 'vacancy-drafts');
+        const draftsDir = workspacePath(username, 'vacancy-drafts');
         fs.mkdirSync(draftsDir, { recursive: true });
         fs.writeFileSync(path.join(draftsDir, `${vacancyId}.html`), html, 'utf8');
         const pageUrl = `https://platform.recruiter-assistant.ru/vacancy/${username}/${vacancyId}`;

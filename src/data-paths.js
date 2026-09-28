@@ -20,6 +20,7 @@
 
 const path = require('path');
 const os = require('os');
+const { readdirSync } = require('fs');
 
 const HOME = process.env.HOME || os.homedir();
 
@@ -38,8 +39,29 @@ const TOKENS_ROOT = process.env.AGENT_TOKENS_DIR || process.env.AGENT_TOKENS_ROO
 
 // ── Per-user Claude workspace (USERS_ROOT) ────────────────────────────────────
 
+// Cross-profile listing: names of the profile directories under `root`
+// (default USERS_ROOT). Non-directory entries are skipped, and a missing or
+// unreadable root yields [] instead of throwing — "no profiles" means
+// "nothing to do" for every cross-profile scan (gtd tick, bugs collector,
+// analytics, intake retention). Pass an explicit root only for tests that
+// scan a temp directory.
+function listProfiles(root = USERS_ROOT) {
+  try {
+    return readdirSync(root, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => d.name);
+  } catch { return []; }
+}
+
 function userWorkDir(username) {
   return path.join(USERS_ROOT, String(username));
+}
+
+// Path inside a profile's workspace. Canonical replacement for inline
+// path.join(USERS_ROOT, username, ...) / path.join(BASE_USERS_DIR, username, ...)
+// at call sites — same resolution, one place to change (issue #1735 step 1).
+function workspacePath(username, ...segments) {
+  return path.join(userWorkDir(username), ...segments);
 }
 
 function contextFilePath(username, skill, key) {
@@ -144,7 +166,9 @@ module.exports = {
   USERS_ROOT,
   SYSTEM_ROOT,
   TOKENS_ROOT,
+  listProfiles,
   userWorkDir,
+  workspacePath,
   contextFilePath,
   sessionsDirPath,
   projectsRoot,
