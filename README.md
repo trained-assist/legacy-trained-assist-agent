@@ -266,6 +266,7 @@ GitHub issues token, CHECKLIST_API_KEY) is GCP-only now too.
 | `GOOGLE_OAUTH_CLIENT_ID` | — | ✅ only | — | — | GDrive OAuth — GCP only |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | — | ✅ only | — | — | GDrive OAuth — GCP only |
 | `OPERATOR_CHAT_ID` | — | ✅ only | — | — | Operator notifications — GCP only |
+| `CRED_ENCRYPTION_KEY` | — | — | ✅ | — | AES-256-GCM master key for the encrypted credential store (epic #1789 P0 C4), 64 hex chars (`openssl rand -hex 32`). Unset = store stays plaintext with a warning (safe default). GCP only — that is where `agent-tokens` lives. |
 
 > **Single source of truth:** `infra/env-manifest.json`. Validated by `node scripts/check-env-sync.js` (runs in CI).
 
@@ -557,6 +558,7 @@ Enforced in CI (`ci.yml` → "Recruiter/HH tools must call OpenRouter, not spawn
 
 | Module / path | Description |
 |---------------|-------------|
+| `src/credential-store.js` | Encrypted credential store (epic #1789 P0 C4, [docs/credential-store-migration.md](docs/credential-store-migration.md)): AES-256-GCM per file — `base64(version_byte=2 || iv[16] || auth_tag[16] || ciphertext)`. `readCredentialFile`/`writeCredentialFile` (path) and `readCredential`/`writeCredential`/`appendMeta`/`deleteCredential` (profile+service) are the ONLY sanctioned way to touch a file under `TOKENS_ROOT` — a raw `fs.readFileSync` there returns base64 garbage. Legacy plaintext files pass through untouched and are re-encrypted on the next write; a missing `CRED_ENCRYPTION_KEY` degrades to plaintext with a warning (never a hard failure). Each write also refreshes the `<service>.meta` sidecar (non-sensitive) and the cross-user `.index.json`. One-time migration: `node scripts/encrypt-tokens.mjs [--dry-run]`. |
 | `src/ru-edge.js` | The RU-IP edge service (issue #1288) — a separate entry point (`node src/ru-edge.js`, `systemd/ru-edge.service`), not part of `server.js`'s request handler. No Claude/runner/task-queue/MCP. Runs on the RU VM only. |
 | `docs/how-to-move-a-tool-to-a-domain-repo.md` | Recipe for extracting a tool/route/prompt into a domain repo: two independent PRs (sibling wins over a core duplicate, #1648). |
 | `src/domains/sibling-lib.js` | `siblingLib(id, relPath)` — in-process access to a sibling domain repo's module for the few synchronous core paths. Same unavailable-module contract as `hhLib`. `siblingModules(relPath)` — extension points every sibling may ship (#1717): `src/quick-answers.js` (`getQuickAnswer(task, {workDir, sessionExists})`, called from core's `getQuickAnswer()`; sales-skill's expo answers) and `src/project-types.js` (merged into `src/projects.js` `TYPES`; sales-skill's `expo`). |

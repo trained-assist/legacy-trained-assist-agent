@@ -1,3 +1,9 @@
+Goal: encrypted credential store — AES-256-GCM at rest для agent-tokens (epic #1789 P0 C4): единый модуль credential-store, все чтения/записи через него, .meta + .index.json, scripts/encrypt-tokens.mjs, CRED_ENCRYPTION_KEY в env-manifest/CI
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1819
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
+
 Goal: «Стоп» реально останавливает задачу — kill дерева процессов под run-as изоляцией + trace-тумбстоун + гейт на каждой точке спавна
 
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1800

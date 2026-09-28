@@ -15,6 +15,10 @@ process.env.LADDER_LOG_DIR = join(root, 'ladder-log');
 // Provider keys from the developer's shell must not leak into tests (CI has none) — a test that
 // needs one sets it explicitly.
 for (const key of ['OPENROUTER_API_KEY', 'OPENCODE_GO_API_KEYS', 'OPENCODE_GO_API_KEY', 'LLM_LADDER_TOKEN']) delete process.env[key];
+// The credential-store master key must never come from the developer's shell: tests
+// assert on plaintext fixtures (and one asserts the plaintext fallback explicitly).
+// A test that needs encryption sets CRED_ENCRYPTION_KEY itself.
+delete process.env.CRED_ENCRYPTION_KEY;
 // Never call the live llm-ladder worker from tests: unroutable host + dummy token (mocked fetch
 // sees the worker's OpenAI-shaped protocol; anything unmocked fails soft).
 process.env.LLM_LADDER_URL = 'http://llm-ladder.invalid';

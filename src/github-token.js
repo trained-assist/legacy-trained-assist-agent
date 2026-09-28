@@ -16,6 +16,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { readTokenValue } = require('./token-value');
+const { readCredentialFile } = require('./credential-store');
 
 function githubTokenPath(tokensDir, user) {
   return path.join(tokensDir, String(user), 'github');
@@ -29,7 +30,7 @@ function resolveGithubToken({ tokensDir, user, env = process.env } = {}) {
   if (!uid) return null;
   try {
     const p = githubTokenPath(root, uid);
-    if (fs.existsSync(p)) return readTokenValue(fs.readFileSync(p, 'utf8')) || null;
+    if (fs.existsSync(p)) return readTokenValue(readCredentialFile(p)) || null;
   } catch { /* no token on disk */ }
   return null;
 }

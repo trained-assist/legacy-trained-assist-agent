@@ -27,6 +27,7 @@ const {
   listConnectedServices,
   generateConnectLink,
 } = require('../user-tokens');
+const { readCredentialFile, isMetaSidecar } = require('../credential-store');
 const { initLog, readLog } = require('../requirements-log');
 const { hhLib, hhAvailable } = require('../domains/hh/lib');
 const { writeVacancyState } = hhLib('hh-vacancy');
@@ -1229,7 +1230,7 @@ function buildContextCard(username, workDir, chatId, actualModel = null, threadI
   const gcConfig = path.join(TOKENS_ROOT, String(username), 'getcourse', 'config.json');
   let gcDomain = null;
   if (fs.existsSync(gcConfig)) {
-    try { gcDomain = JSON.parse(fs.readFileSync(gcConfig, 'utf8')).accountDomain || null; } catch (e) { console.warn('[runner] gcConfig parse:', e.message); }
+    try { gcDomain = JSON.parse(readCredentialFile(gcConfig)).accountDomain || null; } catch (e) { console.warn('[runner] gcConfig parse:', e.message); }
   }
 
   const serviceLabels = services.map(s => {
@@ -1473,7 +1474,7 @@ function ensureProfileLayoutSkill(workDir, username) {
     ).toString().trim();
     const tokenDir = path.join(TOKENS_ROOT, username);
     const tokens = fs.existsSync(tokenDir)
-      ? fs.readdirSync(tokenDir).filter(f => !f.startsWith('.')).join(', ')
+      ? fs.readdirSync(tokenDir).filter(f => !f.startsWith('.') && !isMetaSidecar(f)).join(', ')
       : '(нет)';
     const content = [
       '# Карта профиля агента (auto-generated)',

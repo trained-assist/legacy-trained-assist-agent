@@ -6,22 +6,26 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { readCredentialFile, writeCredentialFile } = require('./credential-store');
 
 function configPath(userId) {
-  return path.join(os.homedir(), 'agent-tokens', String(userId), 'getcourse', 'config.json');
+  // getcourse/ is a dir-backed credential: config.json is encrypted like any other file.
+  // data-paths is required per call so a redirected token root (tests) is always honored.
+  const { userTokensDir } = require('./data-paths');
+  return path.join(userTokensDir(String(userId)), 'getcourse', 'config.json');
 }
 
 function readConfig(userId) {
   const file = configPath(userId);
   if (!fs.existsSync(file)) return {};
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
+  try { return JSON.parse(readCredentialFile(file)); } catch { return {}; }
 }
 
 function mergeConfig(userId, patch) {
   const file = configPath(userId);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const current = readConfig(userId);
-  fs.writeFileSync(file, JSON.stringify({ ...current, ...patch }, null, 2), { mode: 0o600 });
+  writeCredentialFile(file, JSON.stringify({ ...current, ...patch }, null, 2));
 }
 
 /**
