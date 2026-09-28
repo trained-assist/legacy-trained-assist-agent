@@ -14,7 +14,7 @@
 //
 // Env:
 //   LOAD_ALERT_DISABLE=1     off entirely
-//   LOAD_ALERT_RATIO         load1 threshold per core     (default 0.9)
+//   LOAD_ALERT_RATIO         load1 threshold per core     (default 0.8)
 //   LOAD_ALERT_SUSTAIN_MIN   minutes continuously above it (default 10)
 //   LOAD_ALERT_COOLDOWN_MIN  min spacing between alerts    (default 30)
 //   LOAD_ALERT_TOP_N         processes listed in the alert  (default 12)
@@ -26,13 +26,13 @@ const { execFile } = require('child_process');
 
 /**
  * @param {object} [o]
- * @param {number} [o.ratio=0.9]        load1 per-core threshold
+ * @param {number} [o.ratio=0.8]        load1 per-core threshold
  * @param {number} [o.sustainMs=600000] how long load must stay above it
  * @param {number} [o.cooldownMs=1800000] min spacing between alerts
  * @param {number} [o.recoveryRatio=0.7] load1 drops below this → recovery notice
  * @returns {{sample: (load1:number, cores:number, now:number) => {event:'alert'|'recovery'|null, overMs:number}}}
  */
-function createLoadWatcher({ ratio = 0.9, sustainMs = 10 * 60_000, cooldownMs = 30 * 60_000, recoveryRatio = 0.7 } = {}) {
+function createLoadWatcher({ ratio = 0.8, sustainMs = 10 * 60_000, cooldownMs = 30 * 60_000, recoveryRatio = 0.7 } = {}) {
   let overSince = null;      // when load1 first crossed the threshold (null = calm)
   // -Infinity, not 0: wall-clock `now` in tests starts at 0, and 0-cooldown would
   // have suppressed the very first alert for cooldownMs.
@@ -112,7 +112,7 @@ function startLoadWatch({ botToken, chatId, intervalMs = 60_000 } = {}) {
     return { stop() {} };
   }
 
-  const ratio = _num(process.env.LOAD_ALERT_RATIO, 0.9);
+  const ratio = _num(process.env.LOAD_ALERT_RATIO, 0.8);
   const watcher = createLoadWatcher({
     ratio,
     sustainMs: _num(process.env.LOAD_ALERT_SUSTAIN_MIN, 10) * 60_000,
@@ -122,16 +122,11 @@ function startLoadWatch({ botToken, chatId, intervalMs = 60_000 } = {}) {
   const cores = os.cpus().length || 1;
   const start = Date.now();
 
+  // Outbound goes through the shared sender (runner/tg-stream) — the ratchet in
+  // test/ratchet-telegram-senders.test.cjs forbids new direct Bot API call sites.
   const send = async text => {
-    const base = (process.env.TELEGRAM_API_URL || 'https://api.telegram.org').replace(/\/$/, '');
     try {
-      const res = await fetch(`${base}/bot${botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text }),
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) console.warn(`[load-watch] telegram HTTP ${res.status}`);
+      await require('./runner/tg-stream').tgSend(botToken, chatId, text);
     } catch (e) { console.warn('[load-watch] telegram:', e.message); }
   };
 
@@ -176,7 +171,7 @@ function startLoadWatch({ botToken, chatId, intervalMs = 60_000 } = {}) {
 
   const timer = setInterval(tick, intervalMs);
   timer.unref?.();
-  console.log(`[load-watch] started: cores=${cores} interval=${intervalMs}ms ratio=${process.env.LOAD_ALERT_RATIO || 0.9} sustain=${process.env.LOAD_ALERT_SUSTAIN_MIN || 10}m`);
+  console.log(`[load-watch] started: cores=${cores} interval=${intervalMs}ms ratio=${process.env.LOAD_ALERT_RATIO || 0.8} sustain=${process.env.LOAD_ALERT_SUSTAIN_MIN || 10}m`);
   return { stop: () => clearInterval(timer) };
 }
 
