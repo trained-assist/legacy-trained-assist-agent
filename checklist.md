@@ -48,3 +48,9 @@ Goal: token access and engine env allowlist (P0 C1-C3) — единый резо
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1801
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
+
+Goal: отвязка pending-журнала и resume от абсолютных путей, context store по профилю, systemd drop-in в репо (#1789 P1)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1814
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
