@@ -72,7 +72,7 @@ function buildSystemPromptFile(workDir, basePromptFile, audience = 'default') {
       `\n\n# РОЛЬ И ЛИЧНОСТЬ АССИСТЕНТА (${source})\n` +
       text + '\n';
     const out = path.join(workDir, '.system-prompt.txt');
-    fs.writeFileSync(out, merged, { mode: 0o600 });
+    fs.writeFileSync(out, merged, { mode: 0o660 }); // group = the run's slot (issue #1649)
     return out;
   } catch (e) {
     console.warn('[persona] merge failed:', e.message);

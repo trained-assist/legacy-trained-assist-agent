@@ -2029,7 +2029,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         `\n\n# ПРОЕКТ: ${meta ? meta.name : boundProjectId} (${meta ? meta.label : 'project'}) — доменные правила\n` +
         profileTxt + '\n';
       const out = path.join(user.workDir, '.system-prompt.txt');
-      fs.writeFileSync(out, merged, { mode: 0o600 });
+      fs.writeFileSync(out, merged, { mode: 0o660 }); // group = the run's slot (issue #1649)
       systemPromptFile = out;
     }
   } catch (e) { console.warn('[runner] project profile merge:', e.message); }
@@ -2042,7 +2042,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     if (domainBlock) {
       const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
       const out = path.join(user.workDir, '.system-prompt.txt');
-      fs.writeFileSync(out, baseTxt + '\n\n' + domainBlock, { mode: 0o600 });
+      fs.writeFileSync(out, baseTxt + '\n\n' + domainBlock, { mode: 0o660 }); // group = the run's slot (issue #1649)
       systemPromptFile = out;
     }
   } catch (e) { console.warn('[runner] prompt domains:', e.message); }
@@ -2073,7 +2073,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
       const merged = baseTxt + '\n' + block + '\n';
       const out = path.join(user.workDir, '.system-prompt.txt');
-      fs.writeFileSync(out, merged, { mode: 0o600 });
+      fs.writeFileSync(out, merged, { mode: 0o660 }); // group = the run's slot (issue #1649)
       systemPromptFile = out;
     }
   } catch (e) { console.warn('[runner] answer-router block:', e.message); }
