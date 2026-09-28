@@ -72,8 +72,8 @@ auto-runs). Precedence: env `AUDIENCE_DEFAULT_PLAYBOOK` (JSON) → `config/audie
 ```json
 { "freelance": "freelance-project-spec",
   "exhibition": "exhibition-catalog-to-sales-site",
-  "development": "development",
-  "default": "development" }
+  "development": "feature",
+  "default": "feature" }
 ```
 
 ## Adding a system playbook
@@ -82,11 +82,47 @@ auto-runs). Precedence: env `AUDIENCE_DEFAULT_PLAYBOOK` (JSON) → `config/audie
 2. For a repo/system playbook, open a PR adding `playbooks/<id>.json` (`scope: "system"`), validated
    by the schema and compiling cleanly (`compilePlaybook`).
 3. Update the audience map in `config/audience-default-playbooks.json` if it should be a default.
+4. Make it reachable and prove it: a prompt domain of the owning repo must lead the agent to
+   `playbook_run(playbook_id: "<id>", …)` (route A1), then run
+   `npm run check:playbooks -- <id> [--profile <name>] [--audience <a>]` (see below).
+
+Domain playbook content lives in the owning sibling repo, not in core `playbooks/`: a core copy
+of a sibling id is shadowed at resolve time and silently never applies.
+
+## Reachability check
+
+`scripts/check-playbook-reachability.mjs` (`src/playbook-reachability.js`, issue #1756) answers
+«доехал ли плейбук» in one run, offline, no LLM. Schema/compile/conformance can each pass while the
+chain still breaks — 2026-09-28 the exhibition playbook was valid and its sibling mounted, but no
+prompt route led to it. Gates: `resolve`, `schema-scope`, `compile`, `sibling-registration`
+(skill-catalog + `DEFAULT_SIBLING_REPOS`), `dispatch`, `no-shadow`; with `--profile` also
+`sections`, `sibling-mounted`, `section-enabled`, `tools-visible`, `pointer-in-prompt`
+(`skills.resolve()` for that profile); with `--audience` also `audience-map`. `--all` checks every
+visible id. Exit 1 on any FAIL.
+
+In a domain repo's CI (core checked out inside it as `.core`, as the sibling CIs already do):
+
+```bash
+node .core/scripts/check-playbook-reachability.mjs --repo . --all --strict
+```
+
+`--repo` reads the repo's own playbooks, prompt domains and tools from its checkout (core's
+`<core>/../<repo>` sibling lookup misses that layout). `--strict` accepts only a direct A1
+pointer, so deleting the pointer turns the repo's CI red.
+
+`dispatch` routes: **A1** prompt domain names `playbook_run` + `"<id>"` (strong); **A2** id next to
+"playbook/плейбук" in a prompt domain; **B** audience map; **E** dev-task auto-offer
+(`ENGINEERING_FAMILY`, only when `DEV_TASK_RE` matches); **C** a tools module names it (list_skills);
+**F** the owning repo's code launches it (a UI button, e.g. the hh recruiting hub — reachable, but not
+from chat). A2/B/E/C/F pass with a warning; none of them → FAIL.
 
 ## Current playbooks
 
-| id | scope | source |
+Core `playbooks/` holds none; playbooks live in the domain sibling that owns their tools.
+
+| id | repo | purpose |
 |---|---|---|
-| `development` | system | engineering delivery (16 steps) |
-| `freelance-project-spec` | system | freelance project intake → GO/NO-GO |
-| `exhibition-catalog-to-sales-site` | system | exhibition catalog → registry check → sales site |
+| `feature`, `debugging`, `new-software` | software-engineering-playbooks (checked out as `trained-assist-engineering`) | engineering delivery; offered by `src/dev-task-playbook-suggestion.js` |
+| `exhibition-catalog-to-sales-site` | trained-assist-sales-skill | exhibition catalog → registry check → sales site |
+| `recruiting-vacancy-launch` | trained-assist-hh-skill | vacancy launch; started by the recruiting hub «▶ Собрать» button |
+| `freelance-project-spec`, `presentation-creation` | trained-assist-documents-skill | freelance intake → GO/NO-GO; presentation |
