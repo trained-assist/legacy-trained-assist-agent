@@ -27,6 +27,12 @@ const { readTrace } = require('./session-trace');
 
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]+$/;
 const DIGEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// Bump whenever pass A/B semantics change (idle-gap caps, detectors, labels).
+// The freshness key is content-only, so without a format version a stale
+// cache keeps serving the OLD numbers for up to TTL — a fixed bug that still
+// shows the wrong value on screen for days. Version is part of the key → one
+// bump invalidates every cached digest at once.
+const DIGEST_FORMAT_VERSION = 2;
 const MIN = 60 * 1000;
 const MAX_IDLE_GAP_MS = 120 * MIN;   // one event never claims more than 2h of "work"
 const MAX_VALUE = 500;               // chars per artifact value
@@ -379,7 +385,7 @@ function freshnessKey(events, messages) {
   const lastEventAt = events.length ? Math.max(...events.map(e => (typeof e.at === 'number' ? e.at : 0))) : 0;
   const lastMsgAt = messages.length ? Math.max(...messages.map(m => (typeof m.at === 'number' ? m.at : 0))) : 0;
   const h = crypto.createHash('sha1')
-    .update(`${events.length}|${lastEventAt}|${messages.length}|${lastMsgAt}`);
+    .update(`v${DIGEST_FORMAT_VERSION}|${events.length}|${lastEventAt}|${messages.length}|${lastMsgAt}`);
   return h.digest('hex').slice(0, 16);
 }
 
@@ -452,5 +458,6 @@ module.exports = {
   buildDigest,
   parseDigestJson,
   summarizeDigest,
+  freshnessKey,
   getDigestFor,
 };
