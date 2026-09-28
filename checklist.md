@@ -1,5 +1,5 @@
-Goal: Fix CI failure on PR #1691 — doctor fallback profile (#1689)
+Goal: Remove HH recruiting remnants from core — duplicate tests, domain-specific prompts, dead code paths
 
-- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1691
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1716
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
