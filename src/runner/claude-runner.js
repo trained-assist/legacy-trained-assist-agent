@@ -201,7 +201,7 @@ function ocLadderTokenEnv() {
 // Reads opencode.json and returns agent-name -> shortened model-id map (for footer breakdown).
 // ocProfileOverrides (optional): the per-invocation {model, agent} this run actually got via
 // OPENCODE_CONFIG. It wins over the global opencode.json — without it every step/error log line
-// named the global profile's model (opencode-go/gpt-6-luna) even when the run was on OpenRouter,
+// named the global profile's model even when the run was on another one,
 // which hid a whole day of metered OpenRouter spend behind a Go label (2026-09-27).
 function readOcAgentModels(ocProfileOverrides = null) {
   try {

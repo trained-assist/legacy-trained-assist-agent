@@ -2459,7 +2459,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   if (engine === 'opencode' && ocProfileName && ocActiveModel) {
     _logOcLadderCall(ocProfileName, ocRole, ocActiveModel, 'error', preLadderText);
   }
-  const workerFailure = engine === 'opencode' && ocProfileName ? ocLadder.classifyWorkerFailure(preLadderText) : null;
+  const workerFailure = engine === 'opencode' && ocActiveModel?.startsWith(`${ocLadder.PROVIDER_ID}/`)
+    ? ocLadder.classifyWorkerFailure(preLadderText) : null;
   if (workerFailure) {
     const ladderName = ocLadder.ladderFor(ocProfileName) || ocProfileName;
     const failMsg = workerFailure === 'context'

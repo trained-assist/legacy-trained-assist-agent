@@ -181,5 +181,5 @@ async function recoverDurableItem({
 
 module.exports = {
   recoverDurableItem, retryFailedItem,
-  RETRY_ACTIONS, MODEL_ACTIONS, PROVIDER_ACTIONS,
+  RETRY_ACTIONS, MODEL_ACTIONS,
 };

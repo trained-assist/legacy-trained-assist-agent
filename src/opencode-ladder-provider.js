@@ -78,18 +78,20 @@ function buildOcProfileOverrides(profileName) {
   return { provider: providerConfig(), model: agent.build.model, agent };
 }
 
-// Error text of a failed OpenCode run → what went wrong on the worker side, or null (not a
-// worker-level failure — the runner's generic paths handle it).
-//   worker_unreachable — DNS/connect/TLS failure or a rejected ladder token: the worker never
-//                        served the call (fail-soft: the step fails with this category).
-//   ladder_exhausted   — the worker answered 502 ladder_error: every rung failed.
+// Error text of a failed OpenCode run on a `ladder/*` model → what went wrong on the worker side,
+// or null (not a worker-level failure — the runner's generic paths handle it). Patterns are the
+// texts opencode 1.18 actually reports (checked live 2026-09-28):
+//   worker_unreachable — "Cannot connect to API: Unable to connect…", a rejected token ("unauthorized",
+//                        401) or a worker config error (unknown ladder / no provider key): the worker
+//                        never served the call (fail-soft: the step fails with this category).
+//   ladder_exhausted   — the worker's 502 ladder_error "every rung failed".
 //   context            — the prompt did not fit the model's context window.
 function classifyWorkerFailure(text) {
   const t = String(text || '');
   if (!t) return null;
   if (/context[_\s-]?length|maximum context|context window|prompt is too long|input (?:is )?too long|too many tokens/i.test(t)) return 'context';
-  if (/ladder_error|all rungs failed/i.test(t)) return 'ladder_exhausted';
-  if (/llm-ladder|fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|Unable to connect|getaddrinfo|socket hang up|\b401\b.*unauthori[sz]ed|unauthori[sz]ed.*\b401\b/i.test(t)) return 'worker_unreachable';
+  if (/ladder_error|every rung failed/i.test(t)) return 'ladder_exhausted';
+  if (/cannot connect to api|unable to connect|fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|getaddrinfo|socket hang up|unauthori[sz]ed|\b401\b|unknown ladder|no provider key configured/i.test(t)) return 'worker_unreachable';
   return null;
 }
 

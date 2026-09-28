@@ -53,9 +53,12 @@ test('russian keeps its strict reviewer prompt; research is a pinned Gemini mode
 });
 
 test('worker failure categories', () => {
-  assert.strictEqual(p.classifyWorkerFailure('Unable to connect. Is the computer able to access the url? https://llm-ladder.trainedassist.store/v1'), 'worker_unreachable');
+  // Texts opencode 1.18 reports for a ladder/* model (captured live 2026-09-28).
+  assert.strictEqual(p.classifyWorkerFailure('Cannot connect to API: Unable to connect. Is the computer able to access the url?'), 'worker_unreachable');
+  assert.strictEqual(p.classifyWorkerFailure('unauthorized'), 'worker_unreachable');
   assert.strictEqual(p.classifyWorkerFailure('TypeError: fetch failed (ECONNREFUSED)'), 'worker_unreachable');
-  assert.strictEqual(p.classifyWorkerFailure('401 Unauthorized'), 'worker_unreachable');
+  assert.strictEqual(p.classifyWorkerFailure('unknown ladder: nope'), 'worker_unreachable');
+  assert.strictEqual(p.classifyWorkerFailure('every rung failed'), 'ladder_exhausted');
   assert.strictEqual(p.classifyWorkerFailure('{"error":{"type":"ladder_error","attempts":[]}}'), 'ladder_exhausted');
   assert.strictEqual(p.classifyWorkerFailure("This model's maximum context length is 65536 tokens"), 'context');
   assert.strictEqual(p.classifyWorkerFailure('Loop guard: opencode повторил вызов'), null);

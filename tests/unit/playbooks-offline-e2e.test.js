@@ -286,7 +286,7 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     expect(prompts[2]).toContain('попытка 2');
   }, 30_000);
 
-  it('doctor without credentials walks claude → codex → opencode master', async () => {
+  it('doctor without credentials walks claude → codex → opencode on the doctor ladder', async () => {
     const G = require('../../src/gtd-controller.js');
     const { PlaybookStore } = require('../../src/playbook-store.js');
     const { compilePlaybook } = require('../../src/playbook-compiler.js');
@@ -312,7 +312,7 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     const t = await drive(G, task.id, { runTask, registry: fakeGitHub() });
     expect(t.status).toBe('done');
     const doc = calls.filter(x => /^Варианты решения/.test(x.title)).map(x => `${x.engine}/${x.ocProfile}`);
-    expect(doc).toEqual(['claude/null', 'codex/null', 'opencode/deepseek']);
+    expect(doc).toEqual(['claude/null', 'codex/null', 'opencode/doctor']);
     const ex = store.db.prepare(`SELECT engine, provider, error_class FROM executions e JOIN task_items i ON i.id = e.task_item_id
       WHERE e.task_id = ? AND i.title LIKE 'Варианты решения%' ORDER BY e.started_at`).all(task.id);
     expect(ex.map(e => [e.engine, e.provider, e.error_class])).toEqual([
