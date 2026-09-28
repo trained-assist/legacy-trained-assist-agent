@@ -31,7 +31,7 @@ async function handleApi(req, url, res, ctx) {
       }
       // skills[] — MCP tool categories available on this agent: core tools plus the
       // tools of every sibling domain repo checked out on this host (#942, #1470).
-      const toolsDir = path.join(__dirname, 'mcp-skills', 'tools');
+      const toolsDir = path.join(__dirname, '..', 'mcp-skills', 'tools');
       const siblingsHere = presentSiblings();
       const toolFilenames = [toolsDir, ...siblingsHere.map(sib => path.join(path.dirname(sib.indexPath), 'tools'))]
         .flatMap(dir => (fs.existsSync(dir) ? fs.readdirSync(dir) : []));
