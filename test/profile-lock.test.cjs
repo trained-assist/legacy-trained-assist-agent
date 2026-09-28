@@ -194,3 +194,28 @@ test('admission wait: an unlocked profile resolves immediately without waiting',
   assert.equal(res.waited, false);
   assert.equal(res.waitedMs, 0);
 });
+
+// The module header promises this: a file a reader cannot trust never WEDGES a
+// profile — fresh → held (better to wait than to start a run under the
+// migrator's feet), older than the TTL → reclaimable.
+test('unreadable or fieldless lock content: held while fresh, reclaimable by mtime', async () => {
+  const u = 'lock-corrupt';
+  fs.mkdirSync(path.dirname(lockFile(u)), { recursive: true });
+  fs.writeFileSync(lockFile(u), '{"pid": 123,', { mode: 0o600 }); // half-written
+  assert.equal(isProfileLocked(u), true, 'fresh but unparseable → treated as HELD');
+  await assert.rejects(() => acquireProfileLock(u, { timeoutMs: 200 }), err => err.code === 'PROFILE_LOCKED');
+  const old = new Date(Date.now() - DEFAULT_TTL_MS - 5000);
+  fs.utimesSync(lockFile(u), old, old);
+  assert.equal(isProfileLocked(u), false, 'older than the TTL → no longer held');
+  const rec = await acquireProfileLock(u, { ttlMs: 60_000, reason: 'takeover' });
+  try {
+    assert.equal(rec.pid, process.pid, 'reclaimed after the TTL');
+    // parseable but unverifiable ({ no pid, no expiry }) gets the same fallback
+    fs.writeFileSync(lockFile(u), '{}', { mode: 0o600 });
+    assert.equal(isProfileLocked(u), true, 'fresh unverifiable record still counts as held');
+    fs.utimesSync(lockFile(u), old, old);
+    assert.equal(isProfileLocked(u), false, 'no pid and no expiry → TTL by mtime, never a permanent wedge');
+  } finally {
+    assert.equal(releaseProfileLock(u), true);
+  }
+});

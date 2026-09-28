@@ -40,6 +40,11 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
     console, Promise, Set, Date,
     STOP_TASK_INTENT: /$^/, GTD_STOP_INTENT: /$^/, WAKEUP_INTENT: /$^/, SKIP_TASK_INTENT: /$^/, ACTIVE_CHECKLIST_INTENT: /$^/, FORGOTTEN_CHECKLISTS_INTENT: /$^/, CHECKLIST_EDIT_INTENT: /$^/,
     isPreQueueQuickIntent: () => false,
+    // Module-level runner imports the slice needs once a test lets the pre-queue
+    // quick-answer block run (see the profile-lock quick-answer test below).
+    getQuickAnswer: () => 'быстрый ответ',
+    recordQuickExchange: () => 'ex-1',
+    escalateRows: () => [],
     ...intents,
     queuedSessions: new Set(),
     queuedByOwner: new Map(), pendingSessionStops: new Set(),
@@ -219,6 +224,39 @@ test('control commands bypass the profile maintenance lock (stop never waits)', 
     const out = await h.start();
     assert.match(String(out), /Нет активной задачи|остановлен/i);
     assert.equal(profileLock.isProfileLocked(username), true, 'the lock is untouched');
+  } finally {
+    profileLock.releaseProfileLock(username);
+  }
+});
+
+// A quick answer is a profile WRITE (recordQuickExchange appends into the
+// workspace), so it parks on the maintenance lock exactly like a run — and it
+// must never become a journal entry, waiting or not.
+test('pre-queue quick answer waits for the profile lock, then answers without journaling', async () => {
+  const username = opts.user.username;
+  await profileLock.acquireProfileLock(username, { reason: 'migrate', ttlMs: 60_000 });
+  let exchanges = 0;
+  try {
+    const h = harness({
+      taskOpts: { ...opts, task: '/agent_info' },
+      intents: {
+        isPreQueueQuickIntent: () => true,
+        getQuickAnswer: () => 'модель claude',
+        recordQuickExchange: () => { exchanges++; return 'ex-1'; },
+        escalateRows: () => [],
+      },
+    });
+    const done = h.start();
+    await tick(); await tick();
+    assert.equal(exchanges, 0, 'no profile write while the lock is held');
+    assert.equal(h.journal.size, 0, 'a quick answer is never a journal entry');
+    assert.match(h.messages[0] || '', /обслуживании/, 'the wait is announced');
+    assert.ok(profileLock.releaseProfileLock(username));
+    const out = await done;
+    assert.equal(out, 'модель claude');
+    assert.equal(exchanges, 1, 'the exchange lands only after the lock clears');
+    assert.equal(h.journal.size, 0, 'still no journal entry');
+    assert.ok(h.messages.some(m => /⚡/.test(m)), 'the \u26a1 reply went out');
   } finally {
     profileLock.releaseProfileLock(username);
   }

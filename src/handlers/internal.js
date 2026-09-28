@@ -31,16 +31,19 @@ async function handleInternal(req, url, res, ctx) {
     // saw and re-create an archived file — risk R2 of the live-implementation
     // analysis. Body OR query: { username } (validated + logged; flushAll writes
     // every file this process has buffered — a buffer is never partial-profile).
-    // Response: { ok: true, flushed: <records written> }.
+    // Response: { ok, flushed, failed } — `failed > 0` means records are STILL
+    // buffered and the snapshot is not safe yet, which is a 500 so even a caller
+    // that only checks the HTTP status cannot walk into R2.
     if (req.method === 'POST' && url.pathname === '/internal/flush-profile') {
       let body = {};
       try { const raw = await readBody(req); if (raw) body = JSON.parse(raw); }
       catch { return json(res, 400, { error: 'bad json' }); }
       const username = (body && body.username) || url.searchParams.get('username') || '';
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(String(username))) return json(res, 400, { error: 'invalid username' });
-      const flushed = require('../jsonl-batched-flush').flushAll();
-      console.log('[flush-profile] username=%s flushed=%d buffered records', username, flushed);
-      return json(res, 200, { ok: true, flushed });
+      const { flushed, failed } = require('../jsonl-batched-flush').flushAll();
+      const ok = failed === 0;
+      console.log('[flush-profile] username=%s flushed=%d failed=%d', username, flushed, failed);
+      return json(res, ok ? 200 : 500, { ok, flushed, failed });
     }
 
     // GET /internal/run-input?username=X&taskId=Y — the REAL model input of a run

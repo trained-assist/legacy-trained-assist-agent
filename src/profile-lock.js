@@ -16,17 +16,18 @@
 //     THROW `code: 'PROFILE_LOCKED'` — it never steals a live lock. `renew: true`
 //     refreshes a lock this SAME process already holds: the TTL (default 10 min)
 //     is renewable, so a long migration never expires under its own feet.
-//   releaseProfileLock(u)  Drops OUR lock. Refuses (returns false) to cut a live
-//     lock owned by another process — e.g. our TTL expired mid-work and someone
-//     else legitimately reclaimed it.
+//   releaseProfileLock(u)  Drops OUR lock only. A FOREIGN lock — even a stale
+//     one — is never touched (return false): reclaiming those atomically is
+//     acquireProfileLock's job, so a TTL that lapsed mid-work cannot cut a
+//     second migrator's critical section.
 //   isProfileLocked(u)  A live (non-stale) holder exists. A stale lock never
 //     counts as held.
 //   waitForProfileUnlocked(u, {timeoutMs, pollMs, onWait})  The admission-side
 //     wait used by the runner: a new run parks here while the profile is under
-//     maintenance, logging once (then every 15s) and calling onWait so the chat
-//     can show a status. The holder going STALE while we wait (crashed migrator
-//     or TTL expiry) ENDS the wait — the run proceeds, so a wedged lock can
-//     never block a profile forever.
+//     maintenance, logging once (then every 15s) and calling onWait once so the
+//     caller can show a status. The holder going STALE while we wait (crashed
+//     migrator or TTL expiry) ENDS the wait — the run proceeds, so a wedged lock
+//     can never block a profile forever.
 //
 // Stale ⇔ holder pid is dead OR expiresAt has passed. A crashed holder wedges
 // its profile for at most the TTL (immediately if the pid is gone), which is the
@@ -72,7 +73,9 @@ function isStale(record, now = Date.now()) {
 
 // { exists, record, stale }. record === null with exists === true means the
 // content could not be parsed (partial foreign write): fresh → held, older than
-// the TTL → reclaimable.
+// the TTL → reclaimable. The same fallback covers a PARSEABLE record with no
+// usable expiry and no usable pid ({"pid":"123"}, {}): it can never prove
+// liveness, so it must not be able to wedge a profile forever either.
 function readLock(username) {
   const empty = { exists: false, record: null, stale: false };
   if (!isProfileName(username)) return empty;
@@ -81,8 +84,10 @@ function readLock(username) {
   try { stat = fs.statSync(file); } catch { return empty; }
   let record = null;
   try { record = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { record = null; }
-  if (!record || typeof record !== 'object') {
-    return { exists: true, record: null, stale: Date.now() - stat.mtimeMs > DEFAULT_TTL_MS };
+  const unverifiable = !record || typeof record !== 'object'
+    || (!Number.isFinite(record.expiresAt) && !Number.isInteger(record.pid));
+  if (unverifiable) {
+    return { exists: true, record: record || null, stale: Date.now() - stat.mtimeMs > DEFAULT_TTL_MS };
   }
   return { exists: true, record, stale: isStale(record) };
 }
@@ -140,21 +145,22 @@ async function acquireProfileLock(username, { timeoutMs = DEFAULT_ACQUIRE_TIMEOU
         console.log('[profile-lock] acquired profile=%s pid=%s ttlMs=%d reason=%s', username, record.pid, ttlMs, reason || '-');
         return record;
       }
-      continue; // lost the race — re-read immediately
+    } else {
+      const ours = state.record && state.record.pid === process.pid;
+      if (renew && ours) {
+        const record = lockRecord({ ttlMs, reason: state.record.reason ?? reason });
+        writeLock(username, record);
+        console.log('[profile-lock] renewed profile=%s pid=%s expiresAt=%s', username, record.pid, new Date(record.expiresAt).toISOString());
+        return record;
+      }
+      if (state.stale) {
+        // Ours but expired (renew was not requested) or a dead/foreign holder —
+        // either way nobody live holds it.
+        if (!reclaimStale(username)) await sleep(POLL_MS); // rename lost/failed: back off, never hot-spin
+      }
     }
-    const ours = state.record && state.record.pid === process.pid;
-    if (renew && ours) {
-      const record = lockRecord({ ttlMs, reason: state.record.reason ?? reason });
-      writeLock(username, record);
-      console.log('[profile-lock] renewed profile=%s pid=%s expiresAt=%s', username, record.pid, new Date(record.expiresAt).toISOString());
-      return record;
-    }
-    if (state.stale) {
-      // Ours but expired (renew was not requested) or a dead/foreign holder —
-      // either way nobody live holds it.
-      if (!reclaimStale(username)) await sleep(POLL_MS); // rename lost/failed: back off, never hot-spin
-      continue;
-    }
+    // Deadline checked on EVERY path — including a reclaim that keeps failing
+    // (read-only lock dir): a caller must get PROFILE_LOCKED, never a hang.
     if (Date.now() >= deadline) {
       const holder = readLock(username).record || {};
       const err = new Error(
@@ -176,12 +182,16 @@ function releaseProfileLock(username) {
   const state = readLock(username);
   if (!state.exists) return false;
   const record = state.record;
-  // Refuse to cut somebody else's LIVE critical section: our TTL expired while
-  // we worked and a second migrator legitimately reclaimed the lock. A lock with
-  // no readable pid is unowned garbage — clear it.
-  const foreignLive = record && Number.isInteger(record.pid) && record.pid !== process.pid && !state.stale;
-  if (foreignLive) {
-    console.log('[profile-lock] release refused profile=%s holder_pid=%s', username, record.pid);
+  // release only ever drops OUR OWN lock (or unreadable garbage nobody owns).
+  // A FOREIGN lock — even a stale one — belongs to whoever reclaims it:
+  // acquireProfileLock does that atomically (rename), and release must not race
+  // that path. Read-then-unlink still leaves a microsecond window in which a
+  // reclaimer could replace our (possibly expired) lock before we unlink; it
+  // additionally requires our TTL to have lapsed mid-work, which renewing
+  // prevents — accepted residual for a content-based lock without flock.
+  const ours = !record || !Number.isInteger(record.pid) || record.pid === process.pid;
+  if (!ours) {
+    console.log('[profile-lock] release refused profile=%s holder_pid=%s', username, record.pid ?? '?');
     return false;
   }
   try { fs.unlinkSync(profileLockPath(username)); }

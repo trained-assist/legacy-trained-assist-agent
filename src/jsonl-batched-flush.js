@@ -47,16 +47,18 @@ function flushFile(file) {
   return buffered.length;
 }
 
-// Write every buffered file now. Returns the number of records flushed — the
-// profile migrator's POST /internal/flush-profile turns it into {flushed}, the
-// evidence that no buffered record can re-create a file it is about to archive
-// (epic #1784 risk R2).
+// Write every buffered file now. Returns {flushed, failed} — the counts behind
+// POST /internal/flush-profile: `flushed` is what reached disk, `failed` is what
+// could not be written and is STILL buffered (flushFile re-buffers on error), so
+// a migrator about to archive files can tell "nothing was buffered" from "a
+// buffer remains and the snapshot is not safe yet" (epic #1784 risk R2).
 function flushAll() {
   let flushed = 0;
+  let failed = 0;
   for (const file of [...pending.keys()]) {
-    try { flushed += flushFile(file); } catch (e) { console.warn(`[jsonl-batched-flush] flush failed for ${file}: ${e.message}`); }
+    try { flushed += flushFile(file); } catch (e) { failed++; console.warn(`[jsonl-batched-flush] flush failed for ${file}: ${e.message}`); }
   }
-  return flushed;
+  return { flushed, failed };
 }
 
 function ensureTimer() {
