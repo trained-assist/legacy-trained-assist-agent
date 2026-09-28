@@ -66,7 +66,14 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
   const workDir = hermesWorkDir(username);
   const id = taskId || `hermes-tools-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-  const { mcpConfig, servers: bridgedServers } = writeRunMcpConfig(workDir, username, {}, { bridged: isolationConfig().envAllowlist });
+  // Stamp the nested run's depth into the MCP servers' env (browser.js extraEnv). The
+  // server side (100-hermes.js) refuses to launch a Hermes from inside a Hermes, which
+  // gives the self-reproducing chain (hermes_research → engine → hermes_research → …)
+  // a hard floor. Without it a nested engine sees hermes_research again and re-spawns.
+  const hermesDepth = (Number.parseInt(process.env.HERMES_DEPTH || '0', 10) || 0) + 1;
+  const { mcpConfig, servers: bridgedServers } = writeRunMcpConfig(
+    workDir, username, { extraEnv: { HERMES_DEPTH: String(hermesDepth) } },
+    { bridged: isolationConfig().envAllowlist });
   const prompt = buildPrompt(task, context, outputSchema);
   const resolvedEngine = engine || process.env.HERMES_RESEARCH_ENGINE || 'opencode';
   const resolvedProfile = ocProfile || (resolvedEngine === 'opencode' ? 'research' : null);
