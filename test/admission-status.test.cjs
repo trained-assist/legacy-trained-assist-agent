@@ -50,6 +50,8 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
     queuedByOwner: new Map(), pendingSessionStops: new Set(),
     ownerKey: (u, id) => `${u}\0${id}`, consumePendingStop: () => false,
     stopUserTask: () => false,
+    // module-level runner helpers the /stop block calls (#1800 stop-trace gate)
+    stopTracesFor: () => 0,
     legacyAdmissionScopes: args => { scopeCalls.push(args); return ['lane:test']; },
     getCurrentSessionId: () => null,
     sessions: {
