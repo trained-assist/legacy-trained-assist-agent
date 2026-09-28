@@ -403,14 +403,22 @@ async function runEngineProcess(opts) {
       ...(engine === 'opencode' && (mcpConfig || ocProfileOverrides) ? { OPENCODE_CONFIG: writeOpencodeMcpConfig(user.workDir || os.tmpdir(), mcpConfig, ocProfileOverrides) } : {}),
       // Engine credential for the `ladder` provider (src/opencode-ladder-provider.js, #1687).
       ...(engine === 'opencode' ? ocLadderTokenEnv() : {}),
-      // OpenCode Go subscription key for the built-in `opencode-go` provider (the research
+      // OpenCode Go subscription keys for the built-in `opencode-go` provider (the research
       // profile runs opencode-go/mimo-v2.6-flash). That provider reads OPENCODE_API_KEY,
-      // while the box keeps the value as OPENCODE_GO_API_KEY (infra/env-manifest.json) —
-      // map it here instead of renaming a shipped secret. Read off cleanEnv (the env this
-      // run actually carries), empty when absent: buildAgentEnv skips an empty
+      // while the box ships the rotation list as OPENCODE_GO_API_KEYS (two `oc_sk_…` keys,
+      // infra/env-manifest.json) plus a singular OPENCODE_GO_API_KEY — so pass the LIST,
+      // not one key, and rename nothing. Verified live 2026-09-28: a single key works, and
+      // the comma-joined pair is accepted by `opencode run` too. Read off cleanEnv (the env
+      // this run actually carries); empty when absent: buildAgentEnv skips an empty
       // engineCredentialNames value.
       ...(engine === 'opencode'
-        ? { OPENCODE_API_KEY: cleanEnv.OPENCODE_API_KEY || cleanEnv.OPENCODE_GO_API_KEY || '' }
+        ? {
+            OPENCODE_API_KEY:
+              cleanEnv.OPENCODE_API_KEY
+              || cleanEnv.OPENCODE_GO_API_KEYS
+              || cleanEnv.OPENCODE_GO_API_KEY
+              || '',
+          }
         : {}),
       // OpenCode ships a built-in `websearch` tool, but registers it ONLY when the model's
       // provider is `opencode`/`opencode-go` or one of these flags is set — never for our
