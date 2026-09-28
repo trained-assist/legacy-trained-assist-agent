@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { listConnectedServices, revokeService, getSecretsLog, SERVICE_DISPLAY } = require('../../user-tokens');
-const { deleteServiceAccount: deleteGdriveSA } = require('../../mcp-skills/tools/50-gdrive');
+const { deleteServiceAccount: deleteGdriveSA } = require('../../gdrive-sa');
 const { fuzzyInfoIntent } = require('./fuzzy');
 
 const SECRETS_LIST_INTENT   = /^\/secrets_list$|список.{0,15}подключённых|какие.{0,15}подключ|покажи.{0,15}сервис|мои.{0,15}доступ/i;

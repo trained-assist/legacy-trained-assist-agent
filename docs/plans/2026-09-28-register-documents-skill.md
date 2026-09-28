@@ -2,21 +2,21 @@
 
 ## Context
 
-`trained-assist-documents-skill` exists at `/Users/vova/Code/trained-assist-documents-skill` as a fully functional domain skill server (deck, doc-export, gdrive tools) but is NOT registered in `skill-siblings.js` or `skill-catalog.json`. Core still has duplicate tool files (`50-gdrive.js`, `62-business-analyst.js`). The goal: follow the same pattern as the hh-skill — register the sibling, move tools, remove duplicates.
+`trained-assist-documents-skill` exists as a fully functional domain skill server (deck, doc-export, gdrive, presentation-creation playbook) but is NOT registered in `skill-siblings.js` or `skill-catalog.json`. Core has duplicate tool files and the freelance-project-spec playbook that belongs in documents-skill.
 
 ## Step 1: Register documents-skill as a sibling
 
-**`src/skill-siblings.js`** — add entry:
+**`src/skill-siblings.js`** — add:
 ```js
 { id: 'documents', repo: 'trained-assist-documents-skill', mcpServerId: 'documents-skills' },
 ```
 
-**`config/skill-catalog.json`** — add server:
+**`config/skill-catalog.json`** — add server + sections:
 ```json
 "documents-skills": { "kind": "sibling", "repo": "trained-assist-documents-skill" }
 ```
 
-Add new `documents` section:
+New `documents` section:
 ```json
 "documents": {
   "siblings": ["documents-skills"],
@@ -25,7 +25,7 @@ Add new `documents` section:
 }
 ```
 
-Update `gdrive` section to use sibling:
+Update `gdrive` section:
 ```json
 "gdrive": {
   "siblings": ["documents-skills"],
@@ -34,44 +34,58 @@ Update `gdrive` section to use sibling:
 }
 ```
 
-## Step 2: Extract `deleteServiceAccount` from core's `50-gdrive.js`
+## Step 2: Make PlaybookStore discover documents-skill playbooks
 
-`src/runner/quick/secrets.js` imports `deleteServiceAccount` from core's `50-gdrive.js` (line 11). Only caller.
+**`src/playbook-store.js`** — add `'trained-assist-documents-skill'` to `DEFAULT_SIBLING_REPOS` array (line ~36).
 
-**Fix:** Create `src/gdrive-sa.js` — small module with just the SA deletion logic (uses ADC token + GCP IAM API). Update `secrets.js` to import from there.
+This makes both playbooks discoverable:
+- `presentation-creation.json` (already in documents-skill)
+- `freelance-project-spec.json` (after move in Step 3)
 
-Functions needed from core's `50-gdrive.js`:
-- `getAdcToken()` — fetches VM metadata token (lines 28–36)
-- `getSaEmail(userId)` — reads SA email from token file (inline helper)
-- `GCP_PROJECT` constant = `'trained-assist-gdrive-sa'`
+## Step 3: Move freelance-project-spec.json to documents-skill
 
-## Step 3: Delete core's `50-gdrive.js`
+**Move:** `trained-assist-agent/playbooks/freelance-project-spec.json` → `trained-assist-documents-skill/playbooks/freelance-project-spec.json`
 
-After step 2, no core code imports from it. Delete the file (1030 lines). The `gdrive` section in catalog now points to `documents-skills/50-gdrive.js`.
+The playbook references `lib/risk-engine.js` from `trained-assist-freelance-skill` — this cross-sibling dependency works because PlaybookStore resolves at runtime, and the agent process has all siblings checked out.
 
-## Step 4: Clean up `62-business-analyst.js`
+No change needed in `config/audience-default-playbooks.json` — PlaybookStore resolves by `id`, not file path.
 
-The file has 5 tools with mixed concerns:
-- **BA workflow** (keep in core): `ba_development_playbook`, `ba_clarify_requirements`, `ba_write_spec`
-- **Document export** (remove — covered by documents-skill's `doc_export`): `ba_client_spec_template`, `ba_export_client_doc`
+## Step 4: Extract `deleteServiceAccount` from core's `50-gdrive.js`
 
-**Action:** Remove `ba_client_spec_template` + `ba_export_client_doc` + helper functions (`transformWideTables`, `splitRow`, `escapeHtml`, `DOC_CSS`) from the file. Remove `pandoc`/`playwright` imports that only served those tools.
+`src/runner/quick/secrets.js` (line 11) imports `deleteServiceAccount` from core's `50-gdrive.js` — only caller.
 
-**Rename:** `62-business-analyst.js` → `62-requirements.js` (now contains only requirement analysis tools).
+**Create `src/gdrive-sa.js`** with:
+- `getAdcToken()` — VM metadata token fetch
+- `getSaEmail(userId)` — reads SA email from token file
+- `deleteServiceAccount(userId)` — GCP IAM DELETE
+- `GCP_PROJECT = 'trained-assist-gdrive-sa'`
 
-Update catalog: `freelance` section modules → `["62-requirements.js"]`.
+Update `secrets.js` import: `require('../../gdrive-sa')`.
 
-Also move `ba_development_playbook` to `engineering-skills` section (it's a development playbook, not freelance-specific). This means creating a small tool file in `trained-assist-engineering` or adding it to an existing file there.
+## Step 5: Delete core's `50-gdrive.js`
 
-## Step 5: Move tests
+1030 lines removed. All gdrive tools now come from documents-skill sibling.
 
-Core has **zero** document-related tests. Documents-skill already has full test coverage:
-- `deckgen.test.js`, `doc-export.test.js`, `google-auth.test.js`
-- `mcp-empty-result.test.js`, `skills-gating.test.js`, `presentation-playbook.test.js`
+## Step 6: Delete `62-business-analyst.js` entirely
 
-**No tests to move FROM core.** Just verify documents-skill tests pass.
+All 5 `ba_*` tools dropped:
+- `ba_development_playbook` — engineering playbook wrapper (trivial, unused without playbook)
+- `ba_clarify_requirements` — task size classifier
+- `ba_write_spec` — spec.md writer
+- `ba_client_spec_template` — client ТЗ template
+- `ba_export_client_doc` — markdown→HTML/PDF/DOCX (duplicate of documents-skill's `doc_export`)
 
-## Step 6: Verify
+No other code imports from this file (verified via grep).
+
+Rename not needed — file is deleted.
+
+## Step 7: Update catalog sections
+
+- Remove `freelance` section's reference to `62-business-analyst.js`
+- If `freelance` section has no other modules, remove it or repurpose for freelance-skill tools
+- `ba_development_playbook` is NOT moved to engineering — it's dropped with all `ba_*` tools
+
+## Step 8: Verify
 
 ```bash
 # documents-skill
@@ -79,18 +93,17 @@ cd /Users/vova/Code/trained-assist-documents-skill && npm run check && npm test
 
 # core
 cd /Users/vova/Code/trained-assist-agent && node scripts/check-env-sync.js && npm run check && npm test
-
-# After deploy on VM:
-curl -s -H "Authorization: Bearer $AGENT_SECRET" http://localhost:3000/skills | jq '.[] | select(.server == "documents-skills")'
 ```
 
-## Files to modify
+## Files summary
 
 | File | Action |
 |------|--------|
 | `src/skill-siblings.js` | Add documents entry |
-| `config/skill-catalog.json` | Add server, add documents section, update gdrive/freelance sections |
-| `src/gdrive-sa.js` | **NEW** — `deleteServiceAccount` extracted from `50-gdrive.js` |
-| `src/runner/quick/secrets.js` | Update import path for `deleteServiceAccount` |
-| `src/mcp-skills/tools/50-gdrive.js` | **DELETE** |
-| `src/mcp-skills/tools/62-business-analyst.js` | Remove doc-export tools, rename to `62-requirements.js` |
+| `config/skill-catalog.json` | Add server, add documents section, update gdrive section, remove freelance ba_* ref |
+| `src/playbook-store.js` | Add `trained-assist-documents-skill` to DEFAULT_SIBLING_REPOS |
+| `src/gdrive-sa.js` | **NEW** — deleteServiceAccount extracted from 50-gdrive.js |
+| `src/runner/quick/secrets.js` | Update import path |
+| `src/mcp-skills/tools/50-gdrive.js` | **DELETE** (1030 lines) |
+| `src/mcp-skills/tools/62-business-analyst.js` | **DELETE** (347 lines) |
+| `playbooks/freelance-project-spec.json` | **MOVE** to documents-skill |

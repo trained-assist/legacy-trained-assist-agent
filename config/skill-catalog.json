@@ -6,7 +6,8 @@
     "hh-skills": { "kind": "sibling", "repo": "trained-assist-hh-skill" },
     "freelance-skills": { "kind": "sibling", "repo": "trained-assist-freelance-skill" },
     "engineering-skills": { "kind": "sibling", "repo": "trained-assist-engineering" },
-    "sales-skills": { "kind": "sibling", "repo": "trained-assist-sales-skill" }
+    "sales-skills": { "kind": "sibling", "repo": "trained-assist-sales-skill" },
+    "documents-skills": { "kind": "sibling", "repo": "trained-assist-documents-skill" }
   },
   "audienceDefaults": {
     "recruiter": { "enabled": ["recruiting"] }
@@ -51,7 +52,7 @@
     "freelance": {
       "title": "Фриланс / аутсорс",
       "siblings": ["freelance-skills"],
-      "modules": ["62-business-analyst.js"]
+      "modules": []
     },
     "flexi-expo": {
       "title": "Выставки Flexi",
@@ -66,7 +67,13 @@
     "getcourse": { "title": "GetCourse", "modules": ["80-getcourse.js", "81-gc-discovery.js"], "promptDomains": ["getcourse", "getcourse.setup"] },
     "nalog": { "title": "Самозанятый НПД", "modules": ["10-nalog.js"], "promptDomains": ["nalog.setup"] },
     "tilda": { "title": "Tilda", "modules": ["20-tilda.js"], "promptDomains": ["tilda.setup"] },
-    "gdrive": { "title": "Google Drive", "modules": ["50-gdrive.js"], "promptDomains": ["gdrive"] },
+    "gdrive": { "title": "Google Drive", "siblings": ["documents-skills"], "modules": ["documents-skills/50-gdrive.js"], "promptDomains": ["gdrive"] },
+    "documents": {
+      "title": "Документы и презентации",
+      "siblings": ["documents-skills"],
+      "modules": ["documents-skills/10-deck.js", "documents-skills/20-doc-export.js"],
+      "promptDomains": ["presentations"]
+    },
     "illustrate": { "title": "Иллюстрации", "modules": ["95-illustrate.js", "96-label.js"] },
     "demo": { "title": "Демо-режим рекрутинга", "modules": ["hh-skills/98-demo.js"] },
     "website-api": { "title": "API из сайта (черновик)", "modules": ["98-api-from-website.js"] }

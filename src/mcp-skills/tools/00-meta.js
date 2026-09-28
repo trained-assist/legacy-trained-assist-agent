@@ -57,22 +57,11 @@ const SKILLS = [
     requires: 'Вызови connect({ service: "github" }) — получишь защищённую ссылку для ввода PAT. Scope: repo, read:org.',
   },
   {
-    id: 'business-analyst',
-    name: 'Business/Systems Analyst — постановка задач',
-    description: 'Постановка задачи ДО начала работы любого исполнительского скила (dev/ci-cd/qa/deploy) — это отдельная от кодинга роль. ' +
-      'ba_clarify_requirements классифицирует задачу по размеру (trivial/small/feature) и задаёт только те вопросы, ' +
-      'которые реально неясны для этого уровня. Для feature-уровня — ba_write_spec: durable EARS-спека (requirements, ' +
-      'acceptance criteria, out of scope, tasks) файлом в репозитории, ДО правок кода, чтобы намерение не терялось между сессиями. ' +
-      'Для больших инженерных задач — ba_development_playbook (если плейбук разработки подключён: sibling-репо trained-assist-engineering, opt-in) → конкретные items → один task_create: SQLite draft-план переживает рестарт. План исполняется durable-исполнителем после явной активации («запускай» → task_update status=active), шаги идут разными движками по контракту, финализация — только по evidence. ' +
-      'Для trivial/small — без вопросов и без спеки, это чистые накладные расходы.',
-    requires: 'Ничего — работает сразу, для любой задачи.',
-  },
-  {
     id: 'dev',
     name: 'Developer — разработка ПО',
-    description: 'Исполнение (не постановка задачи — см. business-analyst; не CI/CD-трекинг — см. ci-cd): клонирует репозиторий на VM, редактирует файлы, запускает тесты, коммитит, пушит, создаёт PR. ' +
-      'Workflow: ba_clarify_requirements/ba_write_spec (постановка) → dev_workspace_setup (clone + npm install) → ' +
-      'редактирование через Read/Edit/Write → тесты через bash → git commit/push (включая specs/) → github_create_pr → cicd_track_pr. ' +
+    description: 'Исполнение: клонирует репозиторий на VM, редактирует файлы, запускает тесты, коммитит, пушит, создаёт PR. ' +
+      'Workflow: dev_workspace_setup (clone + npm install) → ' +
+      'редактирование через Read/Edit/Write → тесты через bash → git commit/push → github_create_pr → cicd_track_pr. ' +
       'Если нет аккаунта GitHub — рекомендуй создать на github.com (бесплатно). ' +
       'Если нет репозитория — предложи dev_new_repo.',
     requires: 'GitHub токен (scope: repo). Подключи через connect({ service: "github" }).',

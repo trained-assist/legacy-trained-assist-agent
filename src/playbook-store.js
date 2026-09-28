@@ -33,7 +33,7 @@ const SYSTEM_PLAYBOOKS_DIR = path.join(REPO_ROOT, 'playbooks');
 // software-engineering-playbooks is the renamed trained-assist-engineering repo;
 // deploy.sh still links the checkout under the old name, a local clone may use
 // the new one — the first that exists wins for an id.
-const DEFAULT_SIBLING_REPOS = ['software-engineering-playbooks', 'trained-assist-engineering', 'trained-assist-freelance-skill', 'trained-assist-hh-skill'];
+const DEFAULT_SIBLING_REPOS = ['software-engineering-playbooks', 'trained-assist-engineering', 'trained-assist-freelance-skill', 'trained-assist-hh-skill', 'trained-assist-documents-skill'];
 
 const PLAYBOOK_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
