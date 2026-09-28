@@ -34,6 +34,9 @@ const { createHhNegotiations } = hhLib('hh-negotiations');
 
 const profiles = require('./profiles');
 const dataPaths = require('./data-paths');
+// Encrypted credential store (epic #1789 P0 C4) — every credential read/write below
+// goes through it so plaintext and v2-encrypted files behave identically.
+const { readCredentialFile, writeCredential, writeCredentialFile } = require('./credential-store');
 const { installCrashGuards } = require('./stream-gone');
 
 const PORT = process.env.PORT || 3001;
@@ -98,7 +101,7 @@ let GIT_COMMIT = 'unknown';
 try { RUNTIME_REVISION = require('./release-info').getReleaseSha(); if (RUNTIME_REVISION) GIT_COMMIT = RUNTIME_REVISION.slice(0, 7); } catch {}
 
 const { classifyMessage, CLASSIFY_MAX_AGE_MS } = require('./classify-message');
-const { checkCompleteness } = require('./intake-gate');
+const { checkCompleteness, loadLastAssistant } = require('./intake-gate');
 const { startShadow: startInputRouterShadow } = require('./input-router');
 const notifyProfileModule = require('./notify-profile');
 
@@ -120,7 +123,7 @@ function scheduleNalogExpiryChecks(secrets) {
       const nalogFile = path.join(AGENT_TOKENS_DIR, username, 'nalog');
       if (!fs.existsSync(nalogFile)) continue;
       let tokenData;
-      try { tokenData = JSON.parse(fs.readFileSync(nalogFile, 'utf8')); } catch { continue; }
+      try { tokenData = JSON.parse(readCredentialFile(nalogFile)); } catch { continue; }
       if (!tokenData.expires || !tokenData.auth_token) continue;
       const expiresMs = new Date(tokenData.expires).getTime();
       if (isNaN(expiresMs)) continue;
@@ -140,7 +143,7 @@ function scheduleNalogExpiryChecks(secrets) {
       const nalogCredsFile = path.join(AGENT_TOKENS_DIR, username, 'nalog-creds');
       if (fs.existsSync(nalogCredsFile)) {
         let creds;
-        try { creds = JSON.parse(fs.readFileSync(nalogCredsFile, 'utf8')); } catch {}
+        try { creds = JSON.parse(readCredentialFile(nalogCredsFile)); } catch {}
         if (creds && creds.login && creds.password) {
           console.log('[nalog-expiry] nalog-creds found for %s — auto re-login', username);
           const tgBase2 = (process.env.TELEGRAM_API_URL || 'https://api.telegram.org').replace(/\/$/, '');
@@ -696,9 +699,9 @@ async function main() {
       const { username, tokens } = body || {};
       if (!username || !/^[a-zA-Z0-9_-]{1,64}$/.test(username)) return json(res, 400, { error: 'invalid username' });
       if (!tokens || typeof tokens !== 'object' || !tokens.auth_token) return json(res, 400, { error: 'missing tokens.auth_token' });
-      const dir = path.join(dataPaths.TOKENS_ROOT, username);
-      fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'nalog'), JSON.stringify(tokens, null, 2), { mode: 0o600 });
+      // expires_at lands in the .meta sidecar (#1789 C4): the TTL is what /capabilities
+      // and the expiry scheduler will key off once Phase 2 lands.
+      writeCredential(username, 'nalog', JSON.stringify(tokens, null, 2), { expiresAt: tokens.expires || null });
       console.log('[nalog/token-store] saved token for username=%s expires=%s', username, tokens.expires);
       return json(res, 200, { ok: true });
     }
@@ -1229,7 +1232,7 @@ async function main() {
       try {
         if (fs.statSync(tokenFilePath).isDirectory()) tokenFilePath = path.join(tokenFilePath, 'credentials.json');
       } catch { /* path doesn't exist yet — write flat file */ }
-      fs.writeFileSync(tokenFilePath, storedValue, { mode: 0o600 });
+      writeCredentialFile(tokenFilePath, storedValue);
       console.log(`[tokens] saved label="${label}" userId=${userId} path=${tokenFilePath}`);
 
       // Dispatch service-specific post-save actions (Playwright login, notifications, etc.)
@@ -1381,7 +1384,7 @@ async function main() {
       const body = await readBody(req);
       let payload;
       try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid json' }); }
-      const { text } = payload;
+      const { text, username, chatId, threadId } = payload;
       if (typeof text !== 'string') return json(res, 400, { error: 'missing text' });
       // #1542 P1: router SHADOW next to the legacy completeness gate — never awaited.
       const routerShadow = startInputRouterShadow({
@@ -1389,13 +1392,17 @@ async function main() {
         openrouterKey: secrets.OPENROUTER_API_KEY,
       });
       try {
-        const result = await checkCompleteness(text, secrets.OPENROUTER_API_KEY);
+        // The continuation verdict needs the assistant's last line in THIS chat
+        // (owner 29.09: «продолжай» counts only when the previous answer makes the
+        // continuation obvious). Missing username/chatId → text-only, conservative.
+        const lastAssistant = loadLastAssistant({ username, chatId, threadId });
+        const result = await checkCompleteness(text, secrets.OPENROUTER_API_KEY, { lastAssistant });
         routerShadow.record({ completeness: result?.level || null, complete: !!result?.complete });
         return json(res, 200, result);
       } catch (e) {
         console.error('[intake-gate] error:', e.message);
         routerShadow.record({ completeness: 'error', complete: false });
-        return json(res, 200, { level: 'insufficient', complete: false }); // preserve intake; manual launch remains available
+        return json(res, 200, { level: 'insufficient', complete: false, delayMs: null, announce: null }); // preserve intake; manual launch remains available
       }
     }
 
@@ -1435,7 +1442,7 @@ async function main() {
         execSync(`node "${refreshScript}"`, { env, timeout: 90000, stdio: 'pipe' });
         // Read back the freshly written cookie
         const cookiePath = path.join(os.homedir(), 'agent-tokens', profiles[0], 'weeek-session');
-        const cookie = fs.existsSync(cookiePath) ? fs.readFileSync(cookiePath, 'utf8').trim() : '';
+        const cookie = fs.existsSync(cookiePath) ? readCredentialFile(cookiePath).trim() : '';
         if (!cookie) return json(res, 500, { ok: false, error: 'Refresh succeeded but cookie file is empty' });
         console.log('[weeek-session] Sync refresh done, profile=%s, cookie length=%d', profiles[0], cookie.length);
         return json(res, 200, { ok: true, cookie });

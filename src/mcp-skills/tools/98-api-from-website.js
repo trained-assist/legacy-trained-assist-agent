@@ -7,8 +7,8 @@
 // Phase 2 (TODO): auto-discover endpoints via Playwright/browser-session — crawl
 //   the site while logged in, capture XHR/fetch calls, build an endpoint catalog.
 //
-// ⚠️  Credentials are stored plain-text (mode 0o600) — no encryption.
-//     DO NOT use for high-security accounts. Designed for internal/partner sites.
+// Credentials are encrypted at rest through src/credential-store.js (#1789 P0 C4).
+// Still designed for internal/partner sites, not high-security accounts.
 //
 // Storage layout:
 //   ~/agent-tokens/{userId}/sites/{slug}.json  — { url, login, password, notes, saved_at }
@@ -16,6 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { readCredentialFile, writeCredentialFile } = require('../../credential-store');
 
 const USER_ID = process.env.USER_ID || '';
 
@@ -34,7 +35,7 @@ function listSites(userId) {
   return fs.readdirSync(dir)
     .filter(f => f.endsWith('.json'))
     .map(f => {
-      try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); }
+      try { return JSON.parse(readCredentialFile(path.join(dir, f))); }
       catch { return null; }
     })
     .filter(Boolean);
@@ -43,17 +44,16 @@ function listSites(userId) {
 function readSite(slug, userId) {
   const file = path.join(sitesDir(userId), `${slug}.json`);
   if (!fs.existsSync(file)) return null;
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+  try { return JSON.parse(readCredentialFile(file)); }
   catch { return null; }
 }
 
 function saveSite(slug, data, userId) {
   const dir = sitesDir(userId);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
+  writeCredentialFile(
     path.join(dir, `${slug}.json`),
-    JSON.stringify({ ...data, saved_at: new Date().toISOString() }, null, 2),
-    { mode: 0o600 }
+    JSON.stringify({ ...data, saved_at: new Date().toISOString() }, null, 2)
   );
 }
 

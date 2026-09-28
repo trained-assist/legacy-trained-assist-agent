@@ -12,6 +12,7 @@ const os = require('os');
 const { createHash } = require('crypto');
 const { marked } = require('marked');
 const { publicPageBase } = require('../../public-links');
+const { readCredentialFile, writeCredentialFile } = require('../../credential-store');
 
 const USER_ID = process.env.USER_ID || '';
 const AGENT_DATA_DIR = process.env.AGENT_DATA_DIR || path.join(os.homedir(), 'agent-data');
@@ -39,7 +40,7 @@ function ownerIndexPath(username) {
 function profileDomain(username) {
   const domainFile = path.join(os.homedir(), 'agent-tokens', String(username || USER_ID), 'publish-domain');
   try {
-    const d = fs.readFileSync(domainFile, 'utf8').trim();
+    const d = readCredentialFile(domainFile).trim();
     return publicPageBase(d);
   } catch {
     return publicPageBase(DEFAULT_BASE);
@@ -358,7 +359,7 @@ module.exports = {
         const clean = domain.trim().replace(/\/$/, '');
         const dir = path.join(os.homedir(), 'agent-tokens', USER_ID);
         fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(path.join(dir, 'publish-domain'), clean, { mode: 0o600 });
+        writeCredentialFile(path.join(dir, 'publish-domain'), clean);
         return { ok: true, domain: clean, message: `Домен установлен. Все новые ссылки будут на ${clean}/p/{slug}` };
       },
     },
