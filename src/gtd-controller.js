@@ -89,7 +89,7 @@ const { recoverDurableItem, retryFailedItem } = require('./durable-recovery');
 const fanout = require('./playbook-fanout');
 const {
   evaluateItemValidationsModeAware, evaluateItemValidations, resolveValidationMode, getDefaultRegistry, DEFAULT_VALIDATION_MODE,
-  parseValidation, FASTPASS_SKIP_MODE, parseFastpassSkip,
+  parseValidation, FASTPASS_SKIP_MODE, parseFastpassSkip, checkRunsGreen,
 } = require('./playbook-validators');
 const {
   parseWait, isActiveWait, startWait, decidePoll, nextDueAt, summarizeResults, resumeNote,
@@ -1438,7 +1438,10 @@ async function checklistCheapPrecheck(checklist, { username } = {}) {
     try {
       const checks = await _ghFetch(`https://api.github.com/repos/${owner}/${repo}/commits/${pr.head.sha}/check-runs`, token);
       const runs = checks?.check_runs || [];
-      if (runs.length) ciGreen = runs.every(r => r.status === 'completed' && r.conclusion === 'success');
+      // Same rule as the ci_green validator (checkRunsGreen): conditional jobs
+      // (autofix/notify-merge-queue/close-original) skip by design — they must
+      // not keep the checklist's CI box unticked forever.
+      if (runs.length) ciGreen = checkRunsGreen(runs);
     } catch (e) { console.warn('[gtd] precheck checks fetch:', e.message); }
   }
 
