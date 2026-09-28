@@ -465,6 +465,8 @@ Branch protection requires the `ci` job to pass. PRs auto-merge (squash) when CI
 - context worth keeping after `/clear` goes into the issue (comment) or the PR body — not a repo file;
 - open leftovers from the old log: #1652.
 
+**Plans, specs, and reviews also live in issues — never merged to main.** Analysis documents, architecture reviews, red-team reports, migration plans (e.g. `docs/vm-exit-red-team-review.md`-style files) are written into the issue body/comments directly. Do not open PRs that add planning/spec documents to `docs/`; `docs/` in main is for durable reference only (how-tos, runbooks that the code itself needs). A PR whose only content is a plan/spec/review must be declined — the issue is the artifact.
+
 ### After opening a PR — always write a checklist.md (default, unless told otherwise)
 
 **Rule: right after `gh pr create`, write/append `checklist.md` in the project root with 3 items, unless the user explicitly said not to track it:**
