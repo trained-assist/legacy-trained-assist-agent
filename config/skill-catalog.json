@@ -6,7 +6,8 @@
     "hh-skills": { "kind": "sibling", "repo": "trained-assist-hh-skill" },
     "freelance-skills": { "kind": "sibling", "repo": "trained-assist-freelance-skill" },
     "engineering-skills": { "kind": "sibling", "repo": "trained-assist-engineering" },
-    "sales-skills": { "kind": "sibling", "repo": "trained-assist-sales-skill" }
+    "sales-skills": { "kind": "sibling", "repo": "trained-assist-sales-skill" },
+    "documents-skills": { "kind": "sibling", "repo": "trained-assist-documents-skill" }
   },
   "audienceDefaults": {
     "recruiter": { "enabled": ["recruiting"] }
@@ -19,7 +20,8 @@
         "00-meta.js", "01-session-history.js", "02-chat-history.js", "03-context-store.js",
         "04-cron.js", "05-session.js", "06-reproject.js", "21-browser-session.js",
         "22-connect.js", "22-ru-browser.js", "23-credentials-form.js", "84-artifacts.js",
-        "94-tg-send.js", "97-publish.js", "100-hermes.js", "101-durable-tasks.js", "102-playbooks.js"
+        "94-tg-send.js", "97-publish.js", "100-hermes.js", "101-durable-tasks.js", "102-playbooks.js",
+        "103-content-rewrite.js"
       ],
       "promptDomains": ["cron"]
     },
@@ -30,7 +32,7 @@
     "recruiting/hh": {
       "title": "HeadHunter",
       "siblings": ["hh-skills"],
-      "modules": ["hh-skills/90-hh.js", "hh-skills/91-hh-discovery.js", "hh-skills/91b-hh-outreach.js", "hh-skills/92-hh-proactive.js", "hh-skills/93-hh-quick.js", "hh-skills/94-calltips.js", "hh-skills/95-recruiter-tools.js", "hh-skills/96-applylink.js"],
+      "modules": ["hh-skills/90-hh.js", "hh-skills/91-hh-discovery.js", "hh-skills/91b-hh-outreach.js", "hh-skills/91c-hh-sync.js", "hh-skills/92-hh-proactive.js", "hh-skills/93-hh-quick.js", "hh-skills/94-calltips.js", "hh-skills/95-recruiter-tools.js", "hh-skills/96-applylink.js"],
       "promptDomains": ["hh", "hh.setup", "hh-notify"]
     },
     "recruiting/interview": {
@@ -66,7 +68,13 @@
     "getcourse": { "title": "GetCourse", "modules": ["80-getcourse.js", "81-gc-discovery.js"], "promptDomains": ["getcourse", "getcourse.setup"] },
     "nalog": { "title": "Самозанятый НПД", "modules": ["10-nalog.js"], "promptDomains": ["nalog.setup"] },
     "tilda": { "title": "Tilda", "modules": ["20-tilda.js"], "promptDomains": ["tilda.setup"] },
-    "gdrive": { "title": "Google Drive", "modules": ["50-gdrive.js"], "promptDomains": ["gdrive"] },
+    "gdrive": { "title": "Google Drive", "siblings": ["documents-skills"], "modules": ["documents-skills/50-gdrive.js"], "promptDomains": ["gdrive"] },
+    "documents": {
+      "title": "Документы и презентации",
+      "siblings": ["documents-skills"],
+      "modules": ["documents-skills/10-deck.js", "documents-skills/20-doc-export.js"],
+      "promptDomains": ["presentations"]
+    },
     "illustrate": { "title": "Иллюстрации", "modules": ["95-illustrate.js", "96-label.js"] },
     "demo": { "title": "Демо-режим рекрутинга", "modules": ["hh-skills/98-demo.js"] },
     "website-api": { "title": "API из сайта (черновик)", "modules": ["98-api-from-website.js"] }

@@ -35,6 +35,7 @@ HH_SKILL_DIR="${HH_SKILL_DIR:-$AGENT_HOME/trained-assist-hh-skill}"
 ENGINEERING_DIR="${ENGINEERING_DIR:-$AGENT_HOME/trained-assist-engineering}"
 FREELANCE_SKILL_DIR="${FREELANCE_SKILL_DIR:-$AGENT_HOME/trained-assist-freelance-skill}"
 SALES_SKILL_DIR="${SALES_SKILL_DIR:-$AGENT_HOME/trained-assist-sales-skill}"
+DOCUMENTS_SKILL_DIR="${DOCUMENTS_SKILL_DIR:-$AGENT_HOME/trained-assist-documents-skill}"
 export REPO_DIR RELEASES_DIR CURRENT_LINK SERVICE
 
 if [ "${ASSIST_DEPLOY_LOCKED:-}" != 1 ]; then
@@ -146,6 +147,17 @@ ensure_sibling trained-assist-hh-skill "$HH_SKILL_DIR"
 ensure_sibling trained-assist-engineering "$ENGINEERING_DIR"
 ensure_sibling trained-assist-freelance-skill "$FREELANCE_SKILL_DIR"
 ensure_sibling trained-assist-sales-skill "$SALES_SKILL_DIR"
+ensure_sibling trained-assist-documents-skill "$DOCUMENTS_SKILL_DIR"
+
+# Core no longer ships the gdrive/doc-export/deck tools (#1470) — they live only in
+# trained-assist-documents-skill. `ensure_sibling` warns and continues on a failed clone,
+# which here would silently drop the whole Google Drive domain from prod, so this one
+# checkout must be hard-required. Placed before `trap on_deploy_error ERR` and before the
+# release is activated: exiting here leaves the previous release serving, no rollback.
+if [ ! -f "$RELEASES_DIR/trained-assist-documents-skill/src/mcp-skills/index.js" ]; then
+  echo "❌ trained-assist-documents-skill checkout is missing — refusing to deploy (gdrive/doc-export/deck would vanish)" >&2
+  exit 1
+fi
 
 echo "==> Validating and applying nginx config ($DEPLOY_ENV)..."
 REPO_DIR="$RELEASE_DIR" bash "$RELEASE_DIR/scripts/deploy-nginx.sh"

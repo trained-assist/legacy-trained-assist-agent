@@ -1,5 +1,5 @@
-Goal: Remove HH recruiting remnants from core — duplicate tests, domain-specific prompts, dead code paths
+Goal: Recruiting web hub — UX spec + nginx whitelist (PR for #1733/#1743); implementation lives in trained-assist-hh-skill #1742
 
-- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1716
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1745
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live

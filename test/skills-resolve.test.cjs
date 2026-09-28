@@ -17,10 +17,14 @@ const localModules = fs.readdirSync(TOOLS).filter(f => f.endsWith('.js')).sort()
 
 // Readiness of a typical "no credentials" user with every sibling on the host.
 function readiness(over = {}) {
-  const r = { 'hh-skills': true, 'freelance-skills': true, 'engineering-skills': true, 'sales-skills': true };
+  const r = { 'hh-skills': true, 'freelance-skills': true, 'engineering-skills': true, 'sales-skills': true, 'documents-skills': true };
   for (const m of localModules) r[`trained-skills/${m}`] = true;
   for (const m of ['80-getcourse.js', '81-gc-discovery.js', '10-nalog.js', '20-tilda.js',
-    '95-illustrate.js', '96-label.js', '50-gdrive.js']) r[`trained-skills/${m}`] = false;
+    '95-illustrate.js', '96-label.js']) r[`trained-skills/${m}`] = false;
+  // gdrive/doc-export/deck live in the documents domain repo (#1470); a user with no
+  // Drive Service Account has deck + export ready and gdrive present-but-unconfigured.
+  Object.assign(r, { 'documents-skills/10-deck.js': true, 'documents-skills/20-doc-export.js': true,
+    'documents-skills/50-gdrive.js': false });
   for (const m of ['85-expo.js', '86-expo-flexi.js', '87-expo-pipeline.js', '88-expo-catalog.js', '89-expo-pipeline-run.js',
     '92-flexi-sales.js']) r[`sales-skills/${m}`] = false;
   for (const m of ['40-company.js', '70-inn-enrichment.js', '71-dadata.js', '72-checko.js']) r[`sales-skills/${m}`] = true;
@@ -83,7 +87,7 @@ test('legacy mode (no skills.json) = exactly what the current code exposes', () 
   const res = resolve(catalog, null, r);
   assert.strictEqual(res.mode, 'legacy');
   assert.deepStrictEqual(res.sections, Object.keys(catalog.sections));
-  assert.deepStrictEqual(res.siblings, ['engineering-skills', 'freelance-skills', 'hh-skills', 'sales-skills']);
+  assert.deepStrictEqual(res.siblings, ['documents-skills', 'engineering-skills', 'freelance-skills', 'hh-skills', 'sales-skills']);
   // prompt domains: same answer as src/prompt-domains selectDomains on the same probe
   const probe = {};
   for (const [k, v] of Object.entries(r)) {
@@ -173,7 +177,7 @@ test('shadow: legacy profile → diff=0, writes .skills-resolved.json, audience 
   for (const [k, v] of Object.entries(r)) if (k.includes('/')) { const [s, m] = k.split('/'); (probe[s] || (probe[s] = {}))[m] = v; }
   const picked = pd.selectDomains(pd.loadDomains(), probe).map(d => d.name);
   const mcp = path.join(dir, '.mcp.json');
-  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { playwright: {}, 'trained-skills': {}, 'hh-skills': {}, 'freelance-skills': {}, 'engineering-skills': {}, 'sales-skills': {} } }));
+  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { playwright: {}, 'trained-skills': {}, 'hh-skills': {}, 'freelance-skills': {}, 'engineering-skills': {}, 'sales-skills': {}, 'documents-skills': {} } }));
   const lines = [];
   const rd = buildReadiness(catalog, { probe, siblingExists: () => true });
   assert.strictEqual(rd['engineering-skills'], true);
@@ -186,7 +190,7 @@ test('shadow: legacy profile → diff=0, writes .skills-resolved.json, audience 
   assert.match(lines[0], /^\[skills-shadow\] user=u1 mode=legacy diff=0 /);
   const saved = JSON.parse(fs.readFileSync(path.join(dir, '.skills-resolved.json'), 'utf8'));
   assert.strictEqual(saved.resolved.mode, 'legacy');
-  assert.deepStrictEqual(saved.preview.hides.siblings, ['engineering-skills', 'freelance-skills']);
+  assert.deepStrictEqual(saved.preview.hides.siblings, ['documents-skills', 'engineering-skills', 'freelance-skills']);
   assert.ok(saved.preview.hides.promptDomains.includes('engineering'));
   assert.ok(!saved.preview.hides.promptDomains.some(d => d.startsWith('hh')));
 });

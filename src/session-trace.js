@@ -1,12 +1,22 @@
 // Read the agent's full working trace (reasoning, tool calls, steps) for a
 // session. Source of truth: the engine's own durable store — opencode writes
 // every part (text/reasoning/tool/step-start/step-finish/compaction) into its
-// SQLite db (`~/.local/share/opencode/opencode.db`), and the runner already
-// records the native session id on every s-session via engineSessions.opencode.
-// So the "полный лог" the user wants in the web UI is already on disk — we
-// just read it and normalize it for display. No new persistence, no duplication
-// of the multi-GB logs: read-only access, grouped by the s-session's own
-// message timeline so each assistant reply can show its own slice.
+// SQLite db, and the runner already records the native session id on every
+// s-session via engineSessions.opencode. So the "полный лог" the user wants in
+// the web UI is already on disk — we just read it and normalize it for display.
+// No new persistence, no duplication of the multi-GB logs: read-only access,
+// grouped by the s-session's own message timeline so each assistant reply can
+// show its own slice.
+//
+// WHERE the db lives follows the engine's HOME:
+//   isolated runs (agent-isolation): HOME=<workDir>/.agent-home → the profile's
+//     own `.agent-home/.local/share/opencode/opencode.db`;
+//   pre-isolation / legacy runs: the SERVICE home's `.local/share/opencode/opencode.db`.
+// Both are read-only candidates, most specific first: a session written before
+// the isolation migration still resolves, and one written after it is not lost
+// just because the service home has its own (stale) db. Reading the service home
+// ONLY — the pre-migration default — is what silently broke «Полный лог» in the
+// web UI: the button kept rendering, the reader looked in an empty db.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -18,19 +28,40 @@ const MAX_REASONING = 6000;    // chars per reasoning block
 const MAX_EVENTS = 4000;       // hard cap on events returned per session
 const TRACE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // logs are ephemeral: 7 days
 
-let DB_PATH = process.env.OPENCODE_DB_PATH || path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
+// Relative to an engine HOME: where opencode keeps its SQLite file.
+const ENGINE_DB_REL = path.join('.local', 'share', 'opencode', 'opencode.db');
+// Relative to a profile workDir: the per-profile engine home (agent-isolation.js
+// engineHomeDir — the same resolver, so this file can never drift from it).
+const ENGINE_HOME_REL = '.agent-home';
+
+// Legacy default: the service home's db (pre-isolation) — also the last candidate.
+let DB_PATH = process.env.OPENCODE_DB_PATH || path.join(os.homedir(), ENGINE_DB_REL);
 
 function setDbPath(p) { DB_PATH = p; }
 function dbPath() { return DB_PATH; }
 
-function openDb() {
+/**
+ * Engine db files to search for this session, most specific first.
+ *   1. OPENCODE_DB_PATH — explicit pin (ops/tests), nothing else is consulted;
+ *   2. the profile's own engine home, when that db exists on disk;
+ *   3. the legacy service-home db.
+ */
+function candidateDbPaths(workDir) {
+  if (process.env.OPENCODE_DB_PATH) return [process.env.OPENCODE_DB_PATH];
+  const out = [];
+  if (workDir) out.push(path.join(workDir, ENGINE_HOME_REL, ENGINE_DB_REL));
+  if (!out.includes(DB_PATH)) out.push(DB_PATH);
+  return out;
+}
+
+function openDb(file) {
   let Database;
   try { Database = require('better-sqlite3'); }
   catch { return null; }
   try {
-    if (!fs.existsSync(DB_PATH)) return null;
+    if (!file || !fs.existsSync(file)) return null;
     // readonly: opencode may be actively writing (WAL) — we never lock it.
-    return new Database(DB_PATH, { readonly: true, fileMustExist: true });
+    return new Database(file, { readonly: true, fileMustExist: true });
   } catch (e) {
     console.warn('[session-trace] open db:', e.message);
     return null;
@@ -106,25 +137,33 @@ function readTrace(workDir, session) {
   if (!engineId) {
     return { ok: false, error: 'no-opencode-session', engine: session?.engineSessions?.claude ? 'claude' : null };
   }
-  const db = openDb();
-  if (!db) return { ok: false, error: 'db-unavailable' };
-  try {
-    const rows = db.prepare(
-      'SELECT data FROM part WHERE session_id = ? ORDER BY time_created ASC LIMIT ?'
-    ).all(engineId, MAX_EVENTS);
-    if (!rows.length) {
-      const exists = db.prepare('SELECT 1 FROM session WHERE id = ?').get(engineId);
-      if (!exists) return { ok: false, error: 'session-not-found' };
+  // The engine session may live in this profile's engine home (isolated runs) or
+  // in the legacy service-home db (pre-isolation runs) — try them in order and
+  // keep the first one that actually knows this session.
+  let lastError = null;
+  for (const file of candidateDbPaths(workDir)) {
+    const db = openDb(file);
+    if (!db) { lastError = lastError || 'db-unavailable'; continue; }
+    try {
+      const rows = db.prepare(
+        'SELECT data FROM part WHERE session_id = ? ORDER BY time_created ASC LIMIT ?'
+      ).all(engineId, MAX_EVENTS);
+      if (!rows.length) {
+        const exists = db.prepare('SELECT 1 FROM session WHERE id = ?').get(engineId);
+        // Not this db's session — a different HOME may hold it.
+        if (!exists) { lastError = 'session-not-found'; continue; }
+      }
+      const events = rows.map(r => normalizePart(JSON.parse(r.data))).filter(Boolean);
+      const byMessage = groupByMessages(events, session?.messages || []);
+      return { ok: true, engine: 'opencode', sessionId: engineId, events, byMessage, ttlMs: TRACE_TTL_MS };
+    } catch (e) {
+      console.warn('[session-trace] read:', e.message);
+      lastError = 'read-failed';
+    } finally {
+      try { db.close(); } catch {}
     }
-    const events = rows.map(r => normalizePart(JSON.parse(r.data))).filter(Boolean);
-    const byMessage = groupByMessages(events, session?.messages || []);
-    return { ok: true, engine: 'opencode', sessionId: engineId, events, byMessage, ttlMs: TRACE_TTL_MS };
-  } catch (e) {
-    console.warn('[session-trace] read:', e.message);
-    return { ok: false, error: 'read-failed' };
-  } finally {
-    try { db.close(); } catch {}
   }
+  return { ok: false, error: lastError || 'db-unavailable', engine: null };
 }
 
 /** Bucket events into the s-session message windows by timestamp. An event
@@ -147,4 +186,4 @@ function groupByMessages(events, messages) {
   return buckets;
 }
 
-module.exports = { readTrace, groupByMessages, dbPath, setDbPath, truncate };
+module.exports = { readTrace, groupByMessages, dbPath, setDbPath, truncate, candidateDbPaths };

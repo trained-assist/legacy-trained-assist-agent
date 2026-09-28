@@ -107,6 +107,12 @@ const SKILLS = [
     requires: 'Вызови gdrive_setup → получишь email → расшарь папки/файлы Drive с этим email. gdrive_write_sheet создаёт/перезаписывает вкладку в Google Spreadsheet.',
   },
   {
+    id: 'documents',
+    name: 'Документы и презентации',
+    description: 'Собрать слайды по готовому тексту (deck_markup_guide → deck_render, предупреждения по слайдам чинятся и рендерятся заново) и выгрузить документ из markdown в HTML/PDF/DOCX (doc_export). Для готовой структуры презентации с нуля — плейбук presentation-creation. Google Drive — отдельный скил google-drive.',
+    requires: 'Ничего — работает сразу. Google Drive подключается отдельно (gdrive_setup).',
+  },
+  {
     id: 'getcourse',
     name: 'GetCourse',
     description: 'Двухуровневая интеграция с GetCourse. L1 (API key): управление учениками, группами, заказами. L2 (сессия браузера): создание курсов, разделов, уроков, видео- и текстовых блоков.',
