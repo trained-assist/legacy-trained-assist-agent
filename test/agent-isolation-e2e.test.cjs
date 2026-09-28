@@ -16,7 +16,7 @@ const { spawnSync, execFileSync } = require('child_process');
 const enabled = process.env.AGENT_ISOLATION_E2E === '1' && process.platform === 'linux';
 const PREFIX = 'tae2e-';
 const GROUP = 'tae2e';
-const SLOTS = [`${PREFIX}1`, `${PREFIX}2`];
+const SLOTS = [`${PREFIX}1`, `${PREFIX}2`, `${PREFIX}3`];
 const SCRIPT = path.join(__dirname, '..', 'scripts', 'ops', 'agent-isolation-setup.sh');
 
 function sudo(args, opts = {}) {
@@ -54,7 +54,7 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
 
   const setup = sudo(['bash', SCRIPT, '--apply', '--service-user', me, '--service-home', home,
     '--users-dir', users, '--tokens-dir', tokensDir, '--data-dir', dataDir, '--secrets-file', secretsFile,
-    '--slots', '2', '--prefix', PREFIX, '--group', GROUP,
+    '--slots', '3', '--prefix', PREFIX, '--group', GROUP,
     '--skip-engines', '--skip-firewall', '--skip-systemd', '--skip-sa-review']);
   assert.equal(setup.status, 0, `setup failed:\n${setup.stdout}\n${setup.stderr}`);
 
@@ -111,8 +111,23 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
   assert.equal(fs.readFileSync(wrote, 'utf8'), 'from-agent\n');
   fs.appendFileSync(wrote, 'service-appended\n');
 
-  runA.release();
   runB.release();
+
+  // A file the agent created with a typical 0644 mode stays writable for the NEXT run,
+  // which is another slot (opencode's session DB broke on exactly this).
+  const shared = path.join(users, 'alice', 'agent-0644.txt');
+  const [sb, sa] = runA.spawnArgv('/bin/sh', ['-c', `umask 022; echo one > ${shared}`]);
+  spawnSync(sb, sa, { env: iso.buildAgentEnv(serviceEnv, { extra: runA.env }), cwd: path.join(users, 'alice') });
+  runA.release();
+  // occupy the slot alice just used, so her next run lands on a different one
+  const hold = await iso.prepareIsolatedRun(cfg, { workDir: path.join(users, 'bob'), engine: 'none', serviceHome: home });
+  const runA2 = await iso.prepareIsolatedRun(cfg, { workDir: path.join(users, 'alice'), engine: 'none', serviceHome: home });
+  assert.notEqual(runA2.slot, runA.slot, 'next run of alice is another slot');
+  const [wb, wa] = runA2.spawnArgv('/bin/sh', ['-c', `echo two >> ${shared} && echo APPEND_OK`]);
+  const w = spawnSync(wb, wa, { env: iso.buildAgentEnv(serviceEnv, { extra: runA2.env }), cwd: path.join(users, 'alice'), encoding: 'utf8' });
+  assert.match(w.stdout, /APPEND_OK/, `another slot can write the previous slot's file: ${w.stderr}`);
+  runA2.release();
+  hold.release();
 
   // After release, the slot that served alice is reused for bob — alice is closed again.
   const runB2 = await iso.prepareIsolatedRun(cfg, { workDir: path.join(users, 'bob'), engine: 'none', serviceHome: home });
@@ -164,7 +179,7 @@ echo '{"type":"result","result":"ok"}'
     sudo(['rm', '-rf', home, pub]);
   });
   const setup = sudo(['bash', SCRIPT, '--apply', '--service-user', me, '--service-home', home,
-    '--slots', '2', '--prefix', PREFIX, '--group', GROUP,
+    '--slots', '3', '--prefix', PREFIX, '--group', GROUP,
     '--skip-engines', '--skip-firewall', '--skip-systemd', '--skip-sa-review']);
   assert.equal(setup.status, 0, `setup failed:\n${setup.stdout}\n${setup.stderr}`);
 
