@@ -555,7 +555,9 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     // P3d-1b/1c: per-step > per-plan policy > env > default programmatic+llm.
     const validationMode = resolveValidationMode({ task, item });
     if (claimedThisPass.has(item.id)) {
-      store.updateTaskItem(item.id, { status: 'waiting', due_at: Date.now() + FRESH_CLAIM_GRACE_MS }, task.profile_id);
+      // Past this pass's own clock too (an injected/time-travelled `now` must not
+      // hand the same item straight back → endless pass).
+      store.updateTaskItem(item.id, { status: 'waiting', due_at: Math.max(now, Date.now()) + FRESH_CLAIM_GRACE_MS }, task.profile_id);
       continue;
     }
     claimedThisPass.add(item.id);
