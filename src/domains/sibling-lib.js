@@ -5,6 +5,7 @@
 // (src/skill-siblings.js) is the single copy of the code; core never vendors it.
 // A missing/broken checkout fails only those calls: every export becomes a function
 // that throws the load error (same contract as src/domains/hh/lib.js hhLib).
+const fs = require('fs');
 const path = require('path');
 const { SKILL_SIBLINGS, siblingPaths } = require('../skill-siblings');
 
@@ -31,4 +32,14 @@ function siblingLib(id, relPath) {
   }
 }
 
-module.exports = { siblingLib, siblingModulePath };
+// Extension point: every sibling that ships `relPath` contributes its module (#1717) —
+// e.g. src/quick-answers.js, src/project-types.js. Siblings without the file are skipped.
+function siblingModules(relPath) {
+  const out = [];
+  for (const { id } of SKILL_SIBLINGS) {
+    if (fs.existsSync(siblingModulePath(id, relPath))) out.push({ id, mod: siblingLib(id, relPath) });
+  }
+  return out;
+}
+
+module.exports = { siblingLib, siblingModulePath, siblingModules };

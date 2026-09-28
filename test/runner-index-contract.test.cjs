@@ -1,6 +1,6 @@
 // Contract test for issue #942 P1.5: src/runner/index.js is the orchestrator
 // re-exporting the runner's public API. This guards against a "clean extraction"
-// silently dropping an export that server.js/web-routes.js/misha-bot.js depend on.
+// silently dropping an export that server.js/web-routes.js depend on.
 const runner = require('../src/runner');
 
 let pass = 0, fail = 0;
@@ -14,7 +14,6 @@ const REQUIRED_EXPORTS = [
   'generateConnectLink',
   'getPendingTasks',
   'clearPendingTask',
-  'ensureSkillDir',
   'isTaskRunning',
   'isSessionRunning',
   'extendTaskTimeout',

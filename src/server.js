@@ -30,7 +30,6 @@ const { isValidProjectId } = require('./valid-project-id');
 const { trackChat, pollDriveChanges } = require('./drive-watcher');
 const { listSessions, getSession: getSessionData, getCurrentSessionId, getEngineSessionId } = require('./session-store');
 const { startGetcourseLogin } = require('./getcourse-login');
-const { processMishaUpdate } = require('./misha-bot');
 const { createHhNegotiations } = hhLib('hh-negotiations');
 
 const profiles = require('./profiles');
@@ -91,15 +90,6 @@ const noticeAlreadySent = (chatId, text) => tokenNoticeDeduper.alreadySent(chatI
 
 // ZeroCreds destination preflight detection — see src/zerocreds-preflight.js.
 const { isZeroCredsPreflight } = require('./zerocreds-preflight');
-
-// Narrow ("specialized") bots delegate into a real profile instead of owning their
-// own. @cmr_management_bot ("misha") IS Flexi Consulting — its data (6 expo projects,
-// interviews, contexts) lives under the `flexi-consult` profile, so the bot must
-// delegate there, not into an empty `misha` profile. Config-driven, not hardcoded,
-// so future narrow bots just add an entry (bot key → owning profile).
-const NARROW_BOTS = {
-  misha: { profile: process.env.MISHA_PROFILE || 'flexi-consult' },
-};
 
 const VM_NAME = process.env.VM_NAME || 'unknown';
 let RUNTIME_REVISION = 'unknown';
@@ -595,25 +585,6 @@ async function main() {
     // GET /p/:slug — serve a published page (no auth, public; password-gated
     // pages checked before ANY content incl. ?raw). See src/handlers/pages.js.
     if (req.method === 'GET' && require('./handlers/pages').servePublishedPage(req, url, res, publishPasswordForm)) return;
-
-
-    // POST /telegram/misha — @cmr_management_bot direct webhook (no AGENT_SECRET auth)
-    if (req.method === 'POST' && url.pathname === '/telegram/misha') {
-      const mishaBotTokenFile = path.join(os.homedir(), 'agent-tokens', 'misha', 'telegram-bot-token');
-      const mishaBotToken = fs.existsSync(mishaBotTokenFile)
-        ? fs.readFileSync(mishaBotTokenFile, 'utf8').trim() : null;
-      if (!mishaBotToken) {
-        console.warn('[misha/webhook] Bot token file missing');
-        return json(res, 503, { error: 'bot not configured' });
-      }
-      let update;
-      try { update = JSON.parse(await readBody(req)); } catch { return json(res, 400, {}); }
-      json(res, 200, { ok: true });
-      processMishaUpdate(update, mishaBotToken, secrets).catch(e =>
-        console.error('[misha/webhook] error:', e.message)
-      );
-      return;
-    }
 
 
     // ── /web/* routes — cookie-auth endpoints (sessions, files, run) ─────────
@@ -1624,10 +1595,3 @@ function publishPasswordForm(slug, error) {
   </form>
 </div></body></html>`;
 }
-
-
-
-// ── Misha bot ─────────────────────────────────────────────────────────────────
-// Direct Telegram webhook for @cmr_management_bot.
-// Handles text, voice (Deepgram transcription), photos, /new_deal command.
-

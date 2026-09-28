@@ -12,8 +12,6 @@ const SKILL_NAMES = {
   '10-nalog.js': 'nalog', '20-tilda.js': 'tilda', '21-browser-session.js': 'browser',
   '30-weeek.js': 'weeek', '40-company.js': 'company', '50-gdrive.js': 'gdrive',
   '60-github.js': 'github', '70-inn-enrichment.js': 'inn', '80-getcourse.js': 'getcourse',
-  '85-expo.js': 'expo', '86-expo-flexi.js': 'expo-flexi',
-  '92-flexi-sales.js': 'flexi-sales',
 };
 
 // toolFilenames: contents of mcp-skills/tools/ (local skills only — hh was extracted).

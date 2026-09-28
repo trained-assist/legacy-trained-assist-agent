@@ -18,6 +18,8 @@
 // The project id/folder is IMMUTABLE — only the display `name` changes. Renaming the
 // folder would break session cwd bindings + active-<chat> pointers, so we never touch it.
 
+const { selectableTypes, selectableTypesPrompt } = require('./projects');
+
 const DEFAULT_MODEL = process.env.PROJECT_SUMMARY_MODEL || process.env.SESSION_SUMMARY_MODEL || 'google/gemini-2.5-flash';
 
 // Build a compact digest from a project's session summaries (oldest → newest). We feed
@@ -65,7 +67,7 @@ const SYSTEM_PROMPT = [
   '    "start"  — с чего проект начинался (1 фраза),',
   '    "middle" — что делали в процессе, основные темы (1-2 фразы; проект мог перетекать с темы на тему — это нормально, перечисли главное),',
   '    "end"    — где сейчас / чем закончили последним (1 фраза).',
-  '- "type": один из "recruiting" (подбор/вакансии/интервью), "expo" (выставки/каталоги участников), "generic" (всё остальное).',
+  `- "type": один из ${selectableTypesPrompt()}.`,
   'ВАЖНО: пиши на языке диалогов (обычно русский). Не выдумывай — только из данных. Название должно отличать этот проект от других.',
 ].join('\n');
 
@@ -79,7 +81,7 @@ function coerceProjectSummary(obj) {
     middle: clip(s.middle, 320),
     end: clip(s.end, 200),
   };
-  const type = ['recruiting', 'expo', 'generic'].includes(obj.type) ? obj.type : 'generic';
+  const type = selectableTypes().includes(obj.type) ? obj.type : 'generic';
   if (!name && !summary.start && !summary.middle) return null;
   return { name: name || summary.start.slice(0, 60), summary, type };
 }
