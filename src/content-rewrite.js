@@ -197,9 +197,15 @@ function buildMessages(opts, outputSchema, priorViolations) {
   ];
 }
 
+// max_tokens должен покрывать НЕ ТОЛЬКО сам JSON, но и reasoning-бюджет
+// thinking-моделей: google/gemini-2.5-pro тратит на «размышление» 0.5–1.5k токенов
+// ДО контента, и при узком бюджете content возвращается пустым (parseLlmJson бросает
+// «LLM returned empty content» — выглядит как отказ модели, хотя модель ответила).
+// Живой смоук 28.09: floor 500/825 → обе попытки пустые; 4000 → ok с первой попытки.
+// Нерасходуемая часть бюджета не оплачивается, поэтому запас широкий.
 function maxTokensFor(fields) {
   const total = fields.reduce((s, f) => s + (f.max_chars || 120), 0);
-  return Math.min(4000, Math.max(500, total * 3 + 300));
+  return Math.min(8000, Math.max(4000, total * 4 + 2000));
 }
 
 // ─── Основной вход ────────────────────────────────────────────────────────────
