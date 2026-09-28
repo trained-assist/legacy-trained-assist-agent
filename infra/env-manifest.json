@@ -65,7 +65,8 @@
       { "name": "ZEROCREDS_ADMIN_TOKEN",  "required": false, "written_to": ["gcp"],  "gcp_sm": false, "description": "Shared admin token for zerocreds-server /api/session/create (read by user-tokens.js via process.env) — GCP only (issue #1288: all connect-link generation now happens on GCP)." },
       { "name": "GITHUB_ISSUES_TOKEN",   "required": false, "written_to": ["gcp"],  "gcp_sm": true,  "description": "GitHub fine-grained PAT (issues:write on trained-assist/trained-assist-agent) — used by POST /report to create user-report issues. GCP only (issue #1288: /report is not a ru-edge route)." },
       { "name": "CHECKLIST_API_KEY",     "required": false, "written_to": ["gcp"],        "gcp_sm": false, "description": "Bearer key for checklist.trainedassist.store's agent auth path — gtd-controller.js mirrors GTD auto-tracking checklists there. GCP only (that's the live instance); best-effort, silently skipped if unset." },
-      { "name": "CRED_ENCRYPTION_KEY",   "required": false, "written_to": ["gcp"],        "gcp_sm": false, "description": "AES-256-GCM master key for the encrypted credential store (epic #1789 P0 C4). 64 hex chars (openssl rand -hex 32), read from process.env by src/credential-store.js; unset = store stays plaintext with a warning (safe default). GCP only — that is where agent-tokens lives." }
+      { "name": "CRED_ENCRYPTION_KEY",   "required": false, "written_to": ["gcp"],        "gcp_sm": false, "description": "AES-256-GCM master key for the encrypted credential store (epic #1789 P0 C4). 64 hex chars (openssl rand -hex 32), read from process.env by src/credential-store.js; unset = store stays plaintext with a warning (safe default). GCP only — that is where agent-tokens lives." },
+      { "name": "SERPER_API_KEY",        "required": false, "written_to": ["gcp"],        "gcp_sm": false, "description": "Serper (Google SERP) key for the search_serper MCP tool — the backup web-search engine of epic #1792, shipped by the trained-assist-search-skill sibling. GCP only (issue #1288: ru-edge has no MCP); bypasses src/secrets.js like INN_* and reaches the MCP child via browser.js mcpToolEnv." }
     ]
   },
 
@@ -124,7 +125,8 @@
     "secrets": [
       { "name": "INN_DADATA_TOKEN",  "description": "DaData API token for INN/company lookup (injected into Claude env)" },
       { "name": "INN_DADATA_SECRET", "description": "DaData API secret (injected into Claude env)" },
-      { "name": "INN_CHECKO_KEY",    "description": "Checko API key for company enrichment (injected into Claude env)" }
+      { "name": "INN_CHECKO_KEY",    "description": "Checko API key for company enrichment (injected into Claude env)" },
+      { "name": "SERPER_API_KEY",    "description": "Serper Google SERP key — search_serper tool of the search-skills MCP sibling (injected into the MCP server env)" }
     ]
   },
 
