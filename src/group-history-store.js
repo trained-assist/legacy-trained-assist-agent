@@ -10,8 +10,8 @@
 // last RETAIN_MS, at most RETAIN_MAX entries. Never throws into /run.
 
 const fs = require('fs');
-const path = require('path');
 const { groupHistoryPath } = require('./data-paths');
+const { atomicJson } = require('./atomic-json');
 
 const RETAIN_MS = 7 * 24 * 3600_000;
 const RETAIN_MAX = 1000;
@@ -60,10 +60,7 @@ function appendGroupHistory(username, chatId, threadId, raw, now = Date.now()) {
       .filter(e => now - e.ts <= RETAIN_MS)
       .sort((a, b) => a.ts - b.ts)
       .slice(-RETAIN_MAX);
-    fs.mkdirSync(path.dirname(fp), { recursive: true });
-    const tmp = `${fp}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ chatId: String(chatId), threadId: threadId ?? null, entries: kept }));
-    fs.renameSync(tmp, fp);
+    atomicJson(fp, { chatId: String(chatId), threadId: threadId ?? null, entries: kept });
     return fresh.length;
   } catch (e) {
     console.warn(`[group-history] persist failed chat=${chatId}: ${e?.message || e}`);

@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const { listProfiles } = require('./data-paths');
+const { listProfiles, writeMode } = require('./data-paths');
+const { atomicJson } = require('./atomic-json');
 const TTL_MS = 48 * 60 * 60 * 1000;
 
 function releaseIntakeRefs(baseDir, username, ids, extra = {}, now = Date.now()) {
@@ -12,9 +13,7 @@ function releaseIntakeRefs(baseDir, username, ids, extra = {}, now = Date.now())
     try {
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
       const next = { ...meta, ...extra, buffered: false, releasedAt: now };
-      const tmp = `${metaPath}.${process.pid}.${now}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(next), { mode: 0o600 });
-      fs.renameSync(tmp, metaPath);
+      atomicJson(metaPath, next, writeMode(0o600));
       released++;
     } catch (e) {
       if (e.code === 'ENOENT') missing++;
