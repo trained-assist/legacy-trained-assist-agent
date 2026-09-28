@@ -5,6 +5,7 @@ const skillsEnforce = require('./skills/enforce');
 const { SKILL_SIBLINGS, siblingPaths: siblingPathsOf } = require('./skill-siblings');
 const { engineeringWorkspaceRoot, engineeringMirrorsRoot } = require('./data-paths');
 const { atomicJson } = require('./atomic-json');
+const { readCredentialFile, masterKeyHex } = require('./credential-store');
 
 // Services whose cookies we know how to inject into Playwright
 const COOKIE_DOMAINS = {
@@ -20,7 +21,7 @@ const COOKIE_DOMAINS = {
 // Playwright storageState supports sessionStorage via origins[].sessionStorage.
 function buildNalogOrigins(tokenFile) {
   try {
-    const raw = fs.readFileSync(tokenFile, 'utf8').trim();
+    const raw = readCredentialFile(tokenFile).trim();
     const parsed = JSON.parse(raw);
     if (!parsed.auth_token) return [];
     const items = [
@@ -52,7 +53,7 @@ function buildStorageState(tokensDir) {
     for (const [label, config] of Object.entries(COOKIE_DOMAINS)) {
       const tokenFile = path.join(tokensDir, label);
       if (!fs.existsSync(tokenFile)) continue;
-      const cookieStr = fs.readFileSync(tokenFile, 'utf8').trim();
+      const cookieStr = readCredentialFile(tokenFile).trim();
       const parsed = parseCookieString(cookieStr);
       for (const { name, value } of parsed) {
         if (!value) continue;
@@ -163,6 +164,9 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
     ...(process.env.GOOGLE_OAUTH_CLIENT_SECRET ? { GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET } : {}),
     ...(process.env.AGENT_PUBLIC_URL ? { AGENT_PUBLIC_URL: process.env.AGENT_PUBLIC_URL } : {}),
     ...(process.env.AGENT_SECRET    ? { AGENT_SECRET:    process.env.AGENT_SECRET }    : {}),
+    // Master key for the encrypted credential store (#1789 C4): MCP tools read and
+    // write credential files server-side, so they need to decrypt them too.
+    ...(masterKeyHex() ? { CRED_ENCRYPTION_KEY: masterKeyHex() } : {}),
     ...(process.env.GCP_PROJECT     ? { GCP_PROJECT:     process.env.GCP_PROJECT }     : {}),
     ...(process.env.GCP_REGION      ? { GCP_REGION:      process.env.GCP_REGION }      : {}),
     ...(userName       ? { AGENT_USER_NAME:    userName }       : {}),

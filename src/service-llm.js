@@ -26,7 +26,8 @@ function _ladderToken() {
   if (process.env.LLM_LADDER_TOKEN) return process.env.LLM_LADDER_TOKEN.trim();
   try {
     const { TOKENS_ROOT } = require('./data-paths');
-    return require('fs').readFileSync(require('path').join(TOKENS_ROOT, 'llm-ladder', 'token'), 'utf8').trim() || null;
+    const { readCredentialFile } = require('./credential-store');
+    return readCredentialFile(require('path').join(TOKENS_ROOT, 'llm-ladder', 'token')).trim() || null;
   } catch { return null; }
 }
 

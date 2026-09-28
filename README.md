@@ -266,6 +266,7 @@ GitHub issues token, CHECKLIST_API_KEY) is GCP-only now too.
 | `GOOGLE_OAUTH_CLIENT_ID` | — | ✅ only | — | — | GDrive OAuth — GCP only |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | — | ✅ only | — | — | GDrive OAuth — GCP only |
 | `OPERATOR_CHAT_ID` | — | ✅ only | — | — | Operator notifications — GCP only |
+| `CRED_ENCRYPTION_KEY` | — | — | ✅ | — | AES-256-GCM master key for the encrypted credential store (epic #1789 P0 C4), 64 hex chars (`openssl rand -hex 32`). Unset = store stays plaintext with a warning (safe default). GCP only — that is where `agent-tokens` lives. |
 
 > **Single source of truth:** `infra/env-manifest.json`. Validated by `node scripts/check-env-sync.js` (runs in CI).
 
@@ -559,6 +560,7 @@ Enforced in CI (`ci.yml` → "Recruiter/HH tools must call OpenRouter, not spawn
 
 | Module / path | Description |
 |---------------|-------------|
+| `src/credential-store.js` | Encrypted credential store (epic #1789 P0 C4, [docs/credential-store-migration.md](docs/credential-store-migration.md)): AES-256-GCM per file — `base64(version_byte=2 || iv[16] || auth_tag[16] || ciphertext)`. `readCredentialFile`/`writeCredentialFile` (path) and `readCredential`/`writeCredential`/`appendMeta`/`deleteCredential` (profile+service) are the ONLY sanctioned way to touch a file under `TOKENS_ROOT` — a raw `fs.readFileSync` there returns base64 garbage. Legacy plaintext files pass through untouched and are re-encrypted on the next write; a missing `CRED_ENCRYPTION_KEY` degrades to plaintext with a warning (never a hard failure). Each write also refreshes the `<service>.meta` sidecar (non-sensitive) and the cross-user `.index.json`. One-time migration: `node scripts/encrypt-tokens.mjs [--dry-run]`. |
 | `src/ru-edge.js` | The RU-IP edge service (issue #1288) — a separate entry point (`node src/ru-edge.js`, `systemd/ru-edge.service`), not part of `server.js`'s request handler. No Claude/runner/task-queue/MCP. Runs on the RU VM only. |
 | `docs/how-to-move-a-tool-to-a-domain-repo.md` | Recipe for extracting a tool/route/prompt into a domain repo: two independent PRs (sibling wins over a core duplicate, #1648). |
 | `src/domains/sibling-lib.js` | `siblingLib(id, relPath)` — in-process access to a sibling domain repo's module for the few synchronous core paths. Same unavailable-module contract as `hhLib`. `siblingModules(relPath)` — extension points every sibling may ship (#1717): `src/quick-answers.js` (`getQuickAnswer(task, {workDir, sessionExists})`, called from core's `getQuickAnswer()`; sales-skill's expo answers) and `src/project-types.js` (merged into `src/projects.js` `TYPES`; sales-skill's `expo`). |
@@ -574,7 +576,9 @@ Enforced in CI (`ci.yml` → "Recruiter/HH tools must call OpenRouter, not spawn
 
 ### Hermes research
 
-`hermes_research` runs through OpenCode with the `research` profile: a pinned `openrouter/google/gemini-2.5-flash` (no ladder, no fallback — #1687), with MCP/browser/repository tools available. Hermes is read-only and returns a sourced report (`file:line` or URL); it must not commit, open PRs, or check off tasks. Set `HERMES_RESEARCH_ENGINE=claude` for the temporary rollback path. Durable playbook steps with `executor_role: researcher` use this profile too; `PLAYBOOK_ROLE_MAP` can override the mapping, while an escalated model level uses the ordinary level map.
+`hermes_research` runs through OpenCode with the `research` profile: a pinned `opencode-go/mimo-v2.6-flash` (no ladder, no fallback — the `search` ladder is queued as the last item on `checklist.md`, #1792), with MCP/browser/repository tools available. Hermes is read-only and returns a sourced report (`file:line` or URL); it must not commit, open PRs, or check off tasks. Set `HERMES_RESEARCH_ENGINE=claude` for the temporary rollback path. Durable playbook steps with `executor_role: researcher` use this profile too; `PLAYBOOK_ROLE_MAP` can override the mapping, while an escalated model level uses the ordinary level map.
+
+**Why OpenCode Go.** Go is a flat $10/mo subscription with a per-model monthly allowance (MiMo-V2.6-Flash: $0.14/$0.28 per 1M, ~150k requests/month included), so research has no marginal per-call cost — `ladder-log` classifies `opencode-go/*` as tier `subscription`. The built-in `opencode-go` provider authenticates with `OPENCODE_API_KEY`, while the box stores the value as `OPENCODE_GO_API_KEY`; `runEngineProcess` maps one onto the other so no shipped secret had to be renamed. Because `opencode-go` is one of the two providers that get OpenCode's built-in `websearch` for free, the research profile also gets search without `OPENCODE_ENABLE_EXA`.
 
 **Web search (#1792).** OpenCode registers its built-in `websearch` tool only for the `opencode`/`opencode-go` providers *or* when `OPENCODE_ENABLE_EXA`/`OPENCODE_ENABLE_PARALLEL` is set — so with our `openrouter` model a run had **no search at all**, and research came back with invented sources instead of links. `runEngineProcess` now sets `OPENCODE_ENABLE_EXA=1` for every opencode run (free, no API key, public Exa endpoint; the parallel provider stays off — we hold no key). The same honesty applies at the tool level: `hermes_research` injects a `sources` array (`title`/`url`/`quote`) into the caller's schema, returns `grounded: true|false`, and the prompt tells the worker to probe the search first and never invent a URL.
 

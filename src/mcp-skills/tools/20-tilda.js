@@ -10,6 +10,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { readCredentialFile, writeCredentialFile } = require('../../credential-store');
 
 const USER_ID = process.env.USER_ID || '';
 const TILDA_BASE = 'https://tilda.ru';
@@ -23,13 +24,11 @@ function configPath(userId) {
 function readConfig(userId) {
   const file = configPath(userId);
   if (!fs.existsSync(file)) return null;
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+  try { return JSON.parse(readCredentialFile(file)); } catch { return null; }
 }
 
 function writeConfig(userId, data) {
-  const file = configPath(userId);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), { mode: 0o600 });
+  writeCredentialFile(configPath(userId), JSON.stringify(data, null, 2));
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -43,7 +42,7 @@ function sessionPath(userId) {
 function readSessionCookies(userId) {
   const file = sessionPath(userId);
   if (!fs.existsSync(file)) return null;
-  const val = fs.readFileSync(file, 'utf8').trim();
+  const val = readCredentialFile(file).trim();
   return val || null;
 }
 

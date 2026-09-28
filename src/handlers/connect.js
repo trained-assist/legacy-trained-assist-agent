@@ -10,6 +10,7 @@ const os = require('os');
 const fs = require('fs');
 
 const { receiveConnect, readConnectPending, consumeConnectPending } = require('../user-tokens');
+const { readCredentialFile, writeCredential, writeCredentialFile } = require('../credential-store');
 const { startGetcourseLogin, mergeConfig: mergeGetcourseConfig } = require('../getcourse-login');
 const { connectSite } = require('../site-connector');
 const { getcourseFormHtml } = require('../connect-forms/getcourse');
@@ -182,9 +183,7 @@ if (req.method === 'GET' && url.pathname === '/connect/gdrive/callback') {
     email = info.email || '';
   } catch { /* non-critical */ }
 
-  // Save to user token file
-  const tokensDir = path.join(os.homedir(), 'agent-tokens', userId);
-  fs.mkdirSync(tokensDir, { recursive: true });
+  // Save to user token file (encrypted at rest — epic #1789 P0 C4)
   const credData = {
     type: 'oauth2',
     access_token:  tokenData.access_token,
@@ -193,7 +192,7 @@ if (req.method === 'GET' && url.pathname === '/connect/gdrive/callback') {
     email,
     scope: tokenData.scope || '',
   };
-  fs.writeFileSync(path.join(tokensDir, 'gdrive'), JSON.stringify(credData), { mode: 0o600 });
+  writeCredential(userId, 'gdrive', JSON.stringify(credData));
   console.log(`[gdrive/callback] saved tokens for userId=${userId} email=${email}`);
 
   // Notify user in Telegram (userId is username; look up chatId from .chatid file)
@@ -364,18 +363,16 @@ if (req.method === 'GET' && url.pathname === HH_CALLBACK_PATH) {
     hhEmployerId = (me.employer && me.employer.id) || null;
   } catch { /* non-critical */ }
 
-  // Save token to ~/agent-tokens/{username}/hh
-  const hhTokensDir = path.join(os.homedir(), 'agent-tokens', hhUserId);
-  fs.mkdirSync(hhTokensDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(hhTokensDir, 'hh'),
+  // Save token to ~/agent-tokens/{username}/hh (encrypted at rest — #1789 P0 C4)
+  writeCredential(
+    hhUserId,
+    'hh',
     JSON.stringify({
       access_token:  hhTokenData.access_token,
       refresh_token: hhTokenData.refresh_token || null,
       employer_id:   hhEmployerId,
       saved_at:      new Date().toISOString(),
     }),
-    { mode: 0o600 },
   );
   console.log(`[hh/callback] saved token for userId=${hhUserId} name=${hhDisplayName} employer_id=${hhEmployerId}`);
 
@@ -439,7 +436,7 @@ if (connectMatch) {
         if (pending && pending.uid && pending.expires > Date.now()) {
           const cfgFile = path.join(os.homedir(), 'agent-tokens', pending.uid, 'getcourse', 'config.json');
           if (fs.existsSync(cfgFile)) {
-            const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+            const cfg = JSON.parse(readCredentialFile(cfgFile));
             gcSaved = {
               domain: cfg.accountDomain || null,
               apiKey: cfg.apiKey || null,
@@ -518,7 +515,7 @@ if (connectMatch) {
         if (pending && pending.uid && pending.expires > Date.now()) {
           const credsFile = path.join(os.homedir(), 'agent-tokens', pending.uid, service);
           if (fs.existsSync(credsFile)) {
-            const stored = JSON.parse(fs.readFileSync(credsFile, 'utf8'));
+            const stored = JSON.parse(readCredentialFile(credsFile));
             lcSaved = { email: stored.email || null, password: stored.password || null };
           }
         }
@@ -541,13 +538,7 @@ if (connectMatch) {
       if (pending.service !== service) { res.writeHead(403).end(JSON.stringify({ error: 'service mismatch' })); return; }
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(pending.uid)) { res.writeHead(403).end(JSON.stringify({ error: 'invalid uid' })); return; }
 
-      const tokensDir = path.join(os.homedir(), 'agent-tokens', pending.uid);
-      fs.mkdirSync(tokensDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(tokensDir, service),
-        JSON.stringify({ email: email.trim(), password }),
-        { mode: 0o600 }
-      );
+      writeCredential(pending.uid, service, JSON.stringify({ email: email.trim(), password }));
       console.log(`[connect] saved ${service} creds for uid=${pending.uid}`);
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true }));
 
@@ -579,10 +570,10 @@ if (connectMatch) {
         const pending = readConnectPending(t);
         if (pending && pending.uid && pending.expires > Date.now()) {
           const tokFile = path.join(os.homedir(), 'agent-tokens', pending.uid, 'weeek');
-          if (fs.existsSync(tokFile)) savedToken = fs.readFileSync(tokFile, 'utf8').trim() || null;
+          if (fs.existsSync(tokFile)) savedToken = readCredentialFile(tokFile).trim() || null;
           const loginFile = path.join(os.homedir(), 'agent-tokens', pending.uid, 'weeek-login');
           if (fs.existsSync(loginFile)) {
-            const stored = JSON.parse(fs.readFileSync(loginFile, 'utf8'));
+            const stored = JSON.parse(readCredentialFile(loginFile));
             savedLogin = { email: stored.email || null, password: stored.password || null };
           }
         }
@@ -605,17 +596,11 @@ if (connectMatch) {
       if (pending.service !== 'weeek') { res.writeHead(403).end(JSON.stringify({ error: 'service mismatch' })); return; }
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(pending.uid)) { res.writeHead(403).end(JSON.stringify({ error: 'invalid uid in token' })); return; }
 
-      const tokensDir = path.join(os.homedir(), 'agent-tokens', pending.uid);
-      fs.mkdirSync(tokensDir, { recursive: true });
-      fs.writeFileSync(path.join(tokensDir, 'weeek'), String(apiToken).trim(), { mode: 0o600 });
+      writeCredential(pending.uid, 'weeek', String(apiToken).trim());
 
       const level = ['L1'];
       if (email && password) {
-        fs.writeFileSync(
-          path.join(tokensDir, 'weeek-login'),
-          JSON.stringify({ email: email.trim(), password }),
-          { mode: 0o600 }
-        );
+        writeCredential(pending.uid, 'weeek-login', JSON.stringify({ email: email.trim(), password }));
         level.push('L2');
       }
 
@@ -697,7 +682,7 @@ if (connectMatch) {
       let saved = null;
       try {
         const credsFile = path.join(os.homedir(), 'agent-tokens', pending.uid, service);
-        if (fs.existsSync(credsFile)) saved = JSON.parse(fs.readFileSync(credsFile, 'utf8'));
+        if (fs.existsSync(credsFile)) saved = JSON.parse(readCredentialFile(credsFile));
       } catch { /* non-critical */ }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
         .end(genericMultiFormHtml(service, pending.schema, t, saved));
@@ -720,9 +705,7 @@ if (connectMatch) {
         if (f.required && !fieldsIn[f.name]) { res.writeHead(400).end(JSON.stringify({ error: `missing field: ${f.name}` })); return; }
       }
 
-      const tokensDir = path.join(os.homedir(), 'agent-tokens', pending.uid);
-      fs.mkdirSync(tokensDir, { recursive: true });
-      fs.writeFileSync(path.join(tokensDir, service), JSON.stringify(fieldsIn), { mode: 0o600 });
+      writeCredential(pending.uid, service, JSON.stringify(fieldsIn));
       console.log(`[connect] saved ${service} creds (generic form) for uid=${pending.uid}`);
       res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true }));
 
@@ -754,7 +737,7 @@ if (connectMatch) {
       if (pending && pending.uid && pending.expires > Date.now()) {
         const tokenFile = path.join(os.homedir(), 'agent-tokens', pending.uid, service);
         if (fs.existsSync(tokenFile)) {
-          savedValue = fs.readFileSync(tokenFile, 'utf8').trim() || null;
+          savedValue = readCredentialFile(tokenFile).trim() || null;
         }
       }
     } catch { /* non-critical */ }
@@ -776,9 +759,7 @@ if (connectMatch) {
     if (pending.service !== service) { res.writeHead(403).end(JSON.stringify({ error: 'service mismatch' })); return; }
 
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(pending.uid)) { res.writeHead(403).end(JSON.stringify({ error: 'invalid uid in token' })); return; }
-    const tokensDir = path.join(os.homedir(), 'agent-tokens', pending.uid);
-    fs.mkdirSync(tokensDir, { recursive: true });
-    fs.writeFileSync(path.join(tokensDir, service), String(value).trim(), { mode: 0o600 });
+    writeCredential(pending.uid, service, String(value).trim());
     console.log(`[connect] saved ${service} token for uid=${pending.uid}`);
     res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true }));
 
