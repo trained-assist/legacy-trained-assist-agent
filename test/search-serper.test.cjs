@@ -198,8 +198,16 @@ describe('failure handling', () => {
   });
 
   test('abort signal fires → таймаут error, never a hang', async () => {
+    // AbortSignal.timeout() uses an UNREF'd timer: with nothing else pending it does not
+    // keep the event loop alive, and node:test fails the run with "Promise resolution is
+    // still pending but the event loop has already resolved". The ref'd fallback below
+    // keeps the loop up AND fails the assertion if the abort never fires.
     const fetchImpl = (url, opts) => new Promise((_, reject) => {
-      opts.signal.addEventListener('abort', () => reject(opts.signal.reason), { once: true });
+      const fallback = setTimeout(() => reject(new Error('abort signal never fired')), 2000);
+      opts.signal.addEventListener('abort', () => {
+        clearTimeout(fallback);
+        reject(opts.signal.reason);
+      }, { once: true });
     });
     const r = await searchSerper({ query: 'q', apiKey: KEY, fetchImpl, timeoutMs: 30, attempts: 1 });
     assert.match(r.error, /таймаут 30 мс/);
