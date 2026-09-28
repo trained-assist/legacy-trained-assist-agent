@@ -305,6 +305,7 @@ function stageEngineHome(engine, workDir, { serviceHome = os.homedir() } = {}) {
     fs.writeFileSync(dest, content, { mode: 0o660 });
     staged.push({ ...item, dest, original: content });
   }
+  writeAgentGitConfig(home, serviceHome);
   const tmp = path.join(home, 'tmp'); // not the shared /tmp: other slots could read it
   fs.mkdirSync(tmp, { recursive: true, mode: 0o770 });
   const env = { HOME: home, TMPDIR: tmp };
@@ -313,6 +314,39 @@ function stageEngineHome(engine, workDir, { serviceHome = os.homedir() } = {}) {
     if (tok) env.CLAUDE_CODE_OAUTH_TOKEN = tok;
   }
   return { home, env, staged };
+}
+
+// git under a slot: the repos in a profile belong to the service user, so without
+// safe.directory git refuses them ("dubious ownership"). Commit identity comes from the
+// service's git config; pushes use THIS profile's GitHub token (GH_TOKEN in the engine
+// env), never the service's credential helper.
+function readGitIdentity(serviceHome) {
+  const out = {};
+  try {
+    const text = fs.readFileSync(path.join(serviceHome, '.gitconfig'), 'utf8');
+    let section = '';
+    for (const line of text.split('\n')) {
+      const sec = /^\s*\[([^\]]+)\]/.exec(line);
+      if (sec) { section = sec[1].trim().toLowerCase(); continue; }
+      const kv = /^\s*(name|email)\s*=\s*(.+?)\s*$/.exec(line);
+      if (section === 'user' && kv) out[kv[1]] = kv[2];
+    }
+  } catch { /* no service git config */ }
+  return out;
+}
+
+function writeAgentGitConfig(home, serviceHome) {
+  const id = readGitIdentity(serviceHome);
+  const lines = [
+    '# written per run by src/agent-isolation.js (issue #1649)',
+    '[safe]', '\tdirectory = *',
+    ...(id.name || id.email ? ['[user]', ...(id.name ? [`\tname = ${id.name}`] : []), ...(id.email ? [`\temail = ${id.email}`] : [])] : []),
+    '[credential "https://github.com"]',
+    '\thelper = "!f() { [ -n \\"$GH_TOKEN\\" ] || exit 0; echo username=x-access-token; echo password=$GH_TOKEN; }; f"',
+  ];
+  const file = path.join(home, '.gitconfig');
+  fs.rmSync(file, { force: true });
+  fs.writeFileSync(file, lines.join('\n') + '\n', { mode: 0o660 });
 }
 
 function syncBackEngineHome(staged) {
@@ -416,6 +450,7 @@ module.exports = {
   engineStagePlan,
   stageEngineHome,
   syncBackEngineHome,
+  writeAgentGitConfig,
   readClaudeAccessToken,
   resolveBin,
   sudoArgv,

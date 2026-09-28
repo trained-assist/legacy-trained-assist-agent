@@ -38,6 +38,12 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
     fs.writeFileSync(path.join(tokensDir, p, 'github'), `${p}-gh-token\n`, { mode: 0o600 });
   }
   fs.writeFileSync(secretsFile, 'AGENT_SECRET=srv-agent-secret\n', { mode: 0o600 });
+  // a repo in the profile, created by the service user (engineering workspaces look like this)
+  const repo = path.join(users, 'alice', 'repo');
+  fs.mkdirSync(repo);
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['-c', 'user.email=s@x', '-c', 'user.name=s', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: repo });
+  fs.writeFileSync(path.join(home, '.gitconfig'), '[user]\n\tname = Service Bot\n\temail = bot@example.com\n');
 
   t.after(() => {
     for (const s of SLOTS) sudo(['userdel', s]);
@@ -73,6 +79,7 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
     `cat ${tokensDir}/bob/github && echo LEAK_OTHER_TOKENS`,
     `cat ${tokensDir}/alice/github && echo LEAK_TOKEN_FILE`,
     `cat ${secretsFile} && echo LEAK_SECRETS_FILE`,
+    `cd ${repo} && git status --short && echo GIT_STATUS_OK && git commit -q --allow-empty -m agent && git log -1 --format=%an | sed 's/^/GIT_AUTHOR=/'`,
     `env`,
   ].map(c => `(${c}) 2>/dev/null`).join('; ');
 
@@ -88,6 +95,8 @@ test('profile A agent cannot read profile B, token files or server secrets', { s
   assert.match(out, new RegExp(`^${runA.slot}$`, 'm'), 'runs as the slot user');
   assert.match(out, /OWN_READ_OK/);
   assert.match(out, /OWN_WRITE_OK/);
+  assert.match(out, /^GIT_STATUS_OK$/m, 'git works on a service-owned repo (safe.directory)');
+  assert.match(out, /^GIT_AUTHOR=Service Bot$/m, 'commit identity from the service git config');
   for (const leak of ['LEAK_OTHER_PROFILE', 'LEAK_PROFILE_LIST', 'LEAK_OTHER_TOKENS', 'LEAK_TOKEN_FILE', 'LEAK_SECRETS_FILE']) {
     // whole-line markers: SUDO_COMMAND in the env dump echoes the probe text itself
     assert.doesNotMatch(out, new RegExp(`^${leak}$`, 'm'), `${leak}:\n${out}`);

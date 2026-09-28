@@ -228,6 +228,25 @@ if [ "$SKIP_PERMS" = 0 ]; then
   run install -d -m 0700 -o "$SERVICE_USER" "$SLOT_LOCK_DIR"
 fi
 
+# ── 3a. prepare profile gates ahead of time ───────────────────────────────────
+# The runner prepares a gate on its first isolated run (src/agent-isolation.js,
+# gatePrepareCommands) — synchronously, which for a big profile (browser caches)
+# would stall the service. Do it here once, with the SAME commands, for every
+# existing profile workspace and engineering workspace.
+if [ "$SKIP_PERMS" = 0 ] && [ "$MODE" = run-as ]; then
+  say "3a. prepare profile gates (group ACLs inside, none on the gate itself)"
+  for gate in "$USERS_DIR"/*/ "$DATA_DIR"/engineering-workspaces/*/*/; do
+    [ -d "$gate" ] || continue
+    gate="${gate%/}"
+    if [ -e "$gate/.agent-acl-v1" ]; then echo "prepared: $gate"; continue; fi
+    run chmod o-rwx "$gate"
+    run setfacl -R -P -m "g:${GROUP}:rwX,d:g:${GROUP}:rwX,d:u:${SERVICE_USER}:rwX,m::rwx,d:m::rwx" "$gate"
+    run setfacl -x "g:${GROUP}" "$gate"
+    if [ "$APPLY" = 1 ]; then date -u +%FT%TZ > "$gate/.agent-acl-v1"; chown "$SERVICE_USER" "$gate/.agent-acl-v1"
+    else echo "[dry-run] mark $gate/.agent-acl-v1"; fi
+  done
+fi
+
 # ── 3b. engine binaries under the service home ────────────────────────────────
 if [ "$SKIP_ENGINES" = 0 ] && [ "$MODE" = run-as ]; then
   say "3b. engine binaries reachable by $GROUP (read+exec only)"
