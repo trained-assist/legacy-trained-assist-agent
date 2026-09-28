@@ -22,7 +22,6 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 const IS_LINUX = process.platform === 'linux' && !process.env.CI;
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
-import { tmpdir, homedir } from 'os';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -31,12 +30,16 @@ const { connectFormHtml } = require('../src/connect-forms/generic.js');
 const { getcourseFormHtml } = require('../src/connect-forms/getcourse.js');
 const { loginCredsFormHtml } = require('../src/connect-forms/login-creds.js');
 const { revokeService, listConnectedServices } = require('../src/user-tokens.js');
+const { tokensRoot } = require('../src/data-paths.js');
 
 let MOCK_DOMAIN;
 
-// Test user isolated from production data
+// Test user isolated from production data. Path comes from the single token-root
+// resolver (data-paths) — hardcoding homedir()/agent-tokens here would point at a
+// different root than user-tokens uses whenever AGENT_TOKENS_DIR/ROOT is redirected
+// (the vitest isolation setup does exactly that).
 const TEST_USER_ID = `e2e-test-${process.pid}-${Date.now()}`;
-const TOKEN_DIR = join(homedir(), 'agent-tokens', TEST_USER_ID);
+const TOKEN_DIR = join(tokensRoot(), TEST_USER_ID);
 const GC_CONFIG_DIR = join(TOKEN_DIR, 'getcourse');
 const GC_CONFIG_FILE = join(GC_CONFIG_DIR, 'config.json');
 
