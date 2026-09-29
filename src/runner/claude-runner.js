@@ -224,6 +224,9 @@ function readOcAgentModels(ocProfileOverrides = null) {
   } catch { return {}; }
 }
 
+// OpenCode agents that `opencode run --agent` accepts as the run's primary agent.
+const OC_PRIMARY_AGENTS = new Set(['build']);
+
 // Build the argv for the selected engine (claude/codex/opencode).
 // Returns [bin, args].
 function buildEngineCommand({ engine, prompt, systemPromptText, ocSystemPrompt, opencodeModel, ocProfile = null, mcpConfig, systemPromptFile, user = {}, cwd, resumeSessionId = null, ocRole = null }) {
@@ -264,10 +267,14 @@ function buildEngineCommand({ engine, prompt, systemPromptText, ocSystemPrompt, 
       // branch is a no-op. On a stale/unknown id the run fails and the runner falls back to a
       // fresh context-rebuild (see resumeFallbackDone in runner/index.js).
       ...(resumeSessionId ? ['--session', resumeSessionId] : []),
-      // P3b: a durable contract step names the OpenCode agent role it resolved to
-      // (explore/review/build), so the run actually uses that role's ladder rung.
-      // Omitted for every non-contract caller → historical argv unchanged.
-      ...(ocRole ? ['--agent', ocRole] : []),
+      // P3b: a durable contract step names the OpenCode agent role it resolved to.
+      // Only PRIMARY agents go on the argv (#1725 root 3): `opencode run --agent
+      // explore|review|general` ignores a subagent («is a subagent, not a primary agent.
+      // Falling back to default agent», verified on 1.18.31), and if a future OpenCode
+      // honoured it, native `explore` denies `*` — every MCP tool, task_item_complete
+      // included — so a researcher step could never finish. A step without its tools
+      // must not be one engine upgrade away. Non-contract callers → historical argv.
+      ...(ocRole && OC_PRIMARY_AGENTS.has(ocRole) ? ['--agent', ocRole] : []),
       '--format', 'json',
       '--auto',
       ...(opencodeModelResolved ? ['-m', opencodeModelResolved] : []),
