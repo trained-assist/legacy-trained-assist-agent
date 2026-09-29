@@ -29,7 +29,9 @@ const {
   renderPlaybook,
   playbookError,
   PLAYBOOK_ID_RE,
+  siblingRepoRoots,
 } = require('./playbook-store');
+const { listValidatorCatalog } = require('./playbook-validators');
 const { userWorkDir } = require('./data-paths');
 const { atomicText } = require('./atomic-json');
 const { hermesRun } = require('./hermes-run');
@@ -96,7 +98,110 @@ const AUTHORING_PROMPT = [
   '9. Тексты title/instructions — короткие и конкретные, повелительные. Язык — русский.',
   '10. Не выдумывай фазы вне описанного процесса. Чего не хватает — сделай разумное допущение внутри шага,',
   '    но не добавляй целые этапы от себя.',
+  '11. Для scope "profile" обязателен непустой when_to_use — 1-2 фразы «когда предлагать этот плейбук»,',
+  '    на языке пользователя (по ним агент узнаёт плейбук из обычной просьбы без id).',
+  '12. В programmatic-шаге validation — ТОЛЬКО ключи из списка доступных проверок ниже (ровно эти имена),',
+  '    и без instructions к исполнению: объективную проверку исполняет рантайм по ключу, а не модель.',
 ].join('\n');
+
+// ── Authoring catalog: what the runtime can actually check and reuse ─────────
+// D1 (issue #1851): Hermes used to invent validators (shell_command_success)
+// and leave {var} literals unbacked, and the bad playbook still saved. The
+// prompt now carries the REAL registry keys and the shared step-type library,
+// and authoring enforces those keys on draft/edit/save. Both catalogs are read
+// dynamically from their single sources (C3), never hardcoded.
+
+// The shared step-type library lives in the domain-skill (sibling) repos as
+// library/step-types.json. A profile without a sibling (or a missing/broken
+// file) yields an empty catalog — not an error.
+function loadStepTypeCatalog({ siblingRoots } = {}) {
+  const roots = siblingRoots || siblingRepoRoots();
+  for (const root of roots) {
+    const file = path.join(root, 'library', 'step-types.json');
+    let raw;
+    try {
+      raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      continue; // missing / unreadable / malformed → try the next root
+    }
+    const arr = Array.isArray(raw) ? raw : (Array.isArray(raw && raw.step_types) ? raw.step_types : null);
+    if (!arr) continue;
+    return arr
+      .map(t => ({ id: t && (t.id || t.title), purpose: (t && t.purpose) || '', execution_kind: (t && t.execution_kind) || '' }))
+      .filter(t => t.id);
+  }
+  return [];
+}
+
+function buildValidatorCatalogBlock(catalog) {
+  const rows = Array.isArray(catalog) ? catalog : listValidatorCatalog();
+  return [
+    '[ДОСТУПНЫЕ ПРОВЕРКИ (validation) — только эти ключи для execution_kind "programmatic"]',
+    ...rows.map(r => `- ${r.key}${r.note ? ` — ${r.note}` : ''}`),
+    'Любой другой ключ в programmatic-шаге — ошибка: система не сможет его проверить. Для смысловых',
+    'проверок, которые оценивает модель, используй agent-шаг (там validation — свободный объект).',
+  ].join('\n');
+}
+
+function buildStepTypeCatalogBlock(stepTypes) {
+  const rows = Array.isArray(stepTypes) ? stepTypes : loadStepTypeCatalog();
+  if (!rows.length) return '';
+  return [
+    '[КАТАЛОГ ТИПОВЫХ ШАГОВ (step_type — назначение; поле информационное, можно указать на шаге)]',
+    ...rows.map(t => `- ${t.id}${t.purpose ? ` — ${t.purpose}` : ''}`),
+  ].join('\n');
+}
+
+// AUTHORING_PROMPT + the two dynamic catalogs. Kept separate from the constant
+// so the base prompt stays a stable export and tests can assert the catalogs.
+function buildAuthoringPrompt({ validatorCatalog, stepTypes } = {}) {
+  const blocks = [buildValidatorCatalogBlock(validatorCatalog), buildStepTypeCatalogBlock(stepTypes)].filter(Boolean);
+  return [AUTHORING_PROMPT, ...blocks].join('\n\n');
+}
+
+// Split a goal_template into {name} tokens. {input} is always allowed (C7): it is
+// the run's goal slot, not a declared input.
+function goalTemplateVars(goalTemplate) {
+  const text = typeof goalTemplate === 'string' ? goalTemplate : '';
+  const out = new Set();
+  const re = /\{(\w+)\}/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m[1] !== 'input') out.add(m[1]);
+  }
+  return [...out];
+}
+
+// Semantic rules that the JSON schema cannot express — enforced ONLY on the
+// authoring path (draft/edit/save), never in validatePlaybook/_load, so already
+// saved playbooks keep loading (C1). Agent steps are exempt (C4).
+function assertAuthoringSemantics(playbook, { validatorKeys = null, requireWhenToUse = false } = {}) {
+  const keys = new Set(validatorKeys || listValidatorCatalog().map(v => v.key));
+  const declaredInputs = new Set((Array.isArray(playbook.inputs) ? playbook.inputs : []).map(i => i && i.name));
+  for (const stage of playbook.stages || []) {
+    for (const step of stage.steps || []) {
+      if (step && step.execution_kind === 'programmatic') {
+        for (const key of Object.keys(step.validation || {})) {
+          if (!keys.has(key)) {
+            throw playbookError('PROGRAMMATIC_UNKNOWN_VALIDATOR',
+              `unknown programmatic validator "${key}" в шаге «${step.title}»; доступны: ${[...keys].join(', ')}`);
+          }
+        }
+      }
+    }
+  }
+  const undeclared = goalTemplateVars(playbook.goal_template).filter(v => !declaredInputs.has(v));
+  if (undeclared.length) {
+    const list = undeclared.map(v => `{${v}}`).join(', ');
+    throw playbookError('GOAL_TEMPLATE_UNDECLARED_VAR',
+      `${list} в goal_template без inputs[] — объяви ${undeclared.join(', ')} в inputs[] (кроме {input})`);
+  }
+  if (requireWhenToUse && !(typeof playbook.when_to_use === 'string' && playbook.when_to_use.trim())) {
+    throw playbookError('WHEN_TO_USE_REQUIRED',
+      'для profile-плейбука нужен непустой when_to_use — 1-2 фразы «когда предлагать» (иначе он недостижим из обычной просьбы)');
+  }
+  return true;
+}
 
 function assertId(id, field) {
   if (typeof id !== 'string' || !PLAYBOOK_ID_RE.test(id)) {
@@ -185,6 +290,7 @@ function summarizePlaybook(pb) {
     id: pb.id,
     title: pb.title,
     version: pb.version,
+    when_to_use: pb.when_to_use || null,
     stages: (pb.stages || []).length,
     steps: (pb.stages || []).reduce((n, s) => n + (s.steps || []).length, 0),
   };
@@ -218,7 +324,7 @@ function createPlaybookAuthoring({
     try {
       raw = await runHermes({
         username,
-        task: `${AUTHORING_PROMPT}\n\n---\n\n${task}`,
+        task: `${buildAuthoringPrompt()}\n\n---\n\n${task}`,
         context,
         outputSchema: AUTHORING_SCHEMA,
         model: model || undefined,
@@ -233,14 +339,15 @@ function createPlaybookAuthoring({
     return raw;
   }
 
-  // One authoring call + schema validation, with a single repair attempt that
-  // feeds the validator errors back to Hermes. On a second failure the caller
-  // gets a clear error and nothing is written to disk.
+  // One authoring call + schema validation + semantic rules, with a single
+  // repair attempt that feeds the errors back to Hermes. On a second failure the
+  // caller gets a clear error and nothing is written to disk.
   async function authorAndValidate({ username, task, context, model, fallbackId = null }) {
     const raw = await callHermes({ username, task, context, model });
     try {
       const playbook = normalizeDraft(raw, { fallbackId });
       validatePlaybook(playbook);
+      assertAuthoringSemantics(playbook, { requireWhenToUse: playbook.scope === 'profile' });
       return playbook;
     } catch (first) {
       const repaired = await callHermes({
@@ -252,6 +359,7 @@ function createPlaybookAuthoring({
       try {
         const playbook = normalizeDraft(repaired, { fallbackId });
         validatePlaybook(playbook);
+        assertAuthoringSemantics(playbook, { requireWhenToUse: playbook.scope === 'profile' });
         return playbook;
       } catch (second) {
         throw playbookError('AUTHORING_INVALID',
@@ -344,6 +452,9 @@ function createPlaybookAuthoring({
       const version = storeFor(username).maxVersion(playbook_id) + 1;
       const playbook = { ...draft, scope: 'profile', version };
       validatePlaybook(playbook);
+      // R6: repeat the authoring semantics on save (a hand-edited draft must not
+      // smuggle an invented validator or a stray {var} into a saved playbook).
+      assertAuthoringSemantics(playbook, { requireWhenToUse: true });
       const file = profilePlaybookPath(username, playbook_id);
       writeJsonAtomic(file, playbook);
       fs.rmSync(draftPath(username, playbook_id), { force: true });
@@ -361,7 +472,12 @@ module.exports = {
   AUTHORING_PROMPT,
   AUTHORING_MAX_TOKENS,
   AUTHORING_SCHEMA,
+  buildAuthoringPrompt,
+  loadStepTypeCatalog,
+  buildValidatorCatalogBlock,
+  buildStepTypeCatalogBlock,
+  assertAuthoringSemantics,
   summarizePlaybook,
   diffPlaybooks,
-  _internal: { inlineSchema, normalizeDraft, draftPath, profilePlaybookPath },
+  _internal: { inlineSchema, normalizeDraft, draftPath, profilePlaybookPath, goalTemplateVars },
 };
