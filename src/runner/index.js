@@ -2324,7 +2324,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // With isolation on (issue #1649) the file names only the MCP bridge client; the real
   // server specs (with server-side env) stay in memory as bridgedServers.
   const { mcpConfig, servers: bridgedServers } = writeRunMcpConfig(user.workDir, user.username, {
-    userName: user.name, userHandle: user.username,
+    userName: user.name, userHandle: user.username, botToken: secrets?.BOT_TOKEN,
   }, { bridged: isolationConfig().envAllowlist });
 
   // Strip ANTHROPIC_API_KEY so Claude uses OAuth from ~/.claude/.credentials.json.

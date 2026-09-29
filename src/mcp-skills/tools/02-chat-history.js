@@ -1,13 +1,51 @@
 'use strict';
 
 const fs = require('fs');
-const { sessionsDirPath } = require('../../data-paths');
+const path = require('path');
+const crypto = require('crypto');
+const { sessionsDirPath, workspacePath } = require('../../data-paths');
 const chatHistory = require('../../chat-history');
 const groupHistory = require('../../group-history-store');
 const { threadOf } = require('../../session-store');
 
 // get_group_history window when the caller passes no since_hours (the store keeps 7 days).
 const DEFAULT_GROUP_HISTORY_HOURS = 6;
+// Bot API getFile serves files up to 20 MB; bigger ones need a direct upload to the bot.
+const TG_FILE_MAX = 20 * 1024 * 1024;
+
+function safeFileName(name) {
+  return path.basename(name || 'file').replace(/[^a-zA-Z0-9._\-() ]/g, '_').slice(0, 200) || 'file';
+}
+
+function defaultName(file) {
+  if (file.name) return file.name;
+  const ext = { photo: '.jpg', voice: '.ogg', audio: '.mp3', video: '.mp4' }[file.kind] || '';
+  return `${file.kind || 'file'}${ext}`;
+}
+
+// Download an ambient group attachment by its Telegram file_id with THIS run's bot
+// token (AGENT_BOT_TOKEN is per-audience, browser.js writeRunMcpConfig) into the
+// profile's media/intake — the same place addressed attachments land.
+async function downloadTelegramFile({ username, file, token = process.env.AGENT_BOT_TOKEN, fetchImpl = fetch }) {
+  if (!token) return { ok: false, error: 'Bot token is not available to tools (AGENT_BOT_TOKEN).' };
+  if (Number.isFinite(file.size) && file.size > TG_FILE_MAX) {
+    return { ok: false, error: `Файл ${Math.round(file.size / 1048576)} МБ — Telegram отдаёт ботам только до 20 МБ. Попроси прислать файл ссылкой (Google Drive/Яндекс Диск).` };
+  }
+  const api = (process.env.TELEGRAM_API_URL || 'https://api.telegram.org').replace(/\/$/, '');
+  const meta = await fetchImpl(`${api}/bot${token}/getFile?file_id=${encodeURIComponent(file.fileId)}`, { signal: AbortSignal.timeout(15000) })
+    .then(r => r.json()).catch(e => ({ ok: false, description: e.message }));
+  if (!meta?.ok || !meta.result?.file_path) {
+    return { ok: false, error: `Telegram getFile failed: ${meta?.description || 'no file_path'}` };
+  }
+  const res = await fetchImpl(`${api}/file/bot${token}/${meta.result.file_path}`, { signal: AbortSignal.timeout(60000) });
+  if (!res.ok) return { ok: false, error: `Telegram file download failed: HTTP ${res.status}` };
+  const buf = Buffer.from(await res.arrayBuffer());
+  const dir = workspacePath(username, 'media', 'intake');
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `${crypto.randomUUID()}-${safeFileName(defaultName(file))}`);
+  fs.writeFileSync(filePath, buf, { mode: 0o660 });
+  return { ok: true, file_path: filePath, bytes: buf.length };
+}
 
 /**
  * get_chat_history — retrieve conversation history from previous sessions
@@ -64,6 +102,7 @@ function formatTime(ts) {
 }
 
 module.exports = {
+  _test: { downloadTelegramFile },
   tools: {
     get_chat_history: {
       description:
@@ -223,10 +262,46 @@ module.exports = {
         return {
           chat_id: String(chatId),
           since_hours: sinceHours,
-          messages: entries.map(e => ({ from: e.from, text: e.text, at: formatTime(e.ts) })),
+          messages: entries.map(e => ({
+            from: e.from, text: e.text, at: formatTime(e.ts),
+            ...(e.id != null ? { message_id: e.id } : {}),
+            ...(e.file ? { file: { kind: e.file.kind, name: e.file.name, size: e.file.size, download: `get_group_file(message_id=${e.id})` } } : {}),
+          })),
           total: entries.length,
           note: entries.length ? undefined : 'No group history kept for this chat (or /history_off).',
         };
+      },
+    },
+    get_group_file: {
+      description:
+        'Download a file/photo/voice a group participant posted while the bot stayed quiet ' +
+        '(an ambient «[файл …]» line in the group history block or get_group_history). ' +
+        'Pass its message_id; the file is saved to the profile media/intake and the local path ' +
+        'is returned — then read it as any attachment (xlsx/docx/pdf/image). Works for messages ' +
+        'recorded after the gateway started keeping file handles; older ones must be re-sent.',
+      inputSchema: {
+        type: 'object',
+        properties: { message_id: { type: 'number', description: 'Telegram message id from the group history.' } },
+        required: ['message_id'],
+      },
+      handler: async ({ message_id } = {}) => {
+        const username = process.env.AGENT_USER_ID;
+        if (!username) return { error: 'AGENT_USER_ID not set' };
+        const chatId = resolveCurrentChatId();
+        if (chatId == null || !(Number(chatId) < 0)) return { error: 'Current session is not a group chat.' };
+        const threadId = resolveCurrentThreadId();
+        const entry = groupHistory.findGroupEntry(username, chatId, threadId ?? null, message_id);
+        if (!entry) return { error: `Message ${message_id} is not in this group's kept history (7 days).` };
+        if (!entry.file) {
+          return {
+            error: 'This message has no downloadable file handle (recorded before file handles were kept, or it has no attachment).',
+            hint: 'Попроси участника переслать файл в группу ещё раз — новый будет доступен.',
+            text: entry.text,
+          };
+        }
+        const out = await downloadTelegramFile({ username, file: entry.file });
+        if (!out.ok) return { error: out.error };
+        return { ...out, name: entry.file.name || null, mime: entry.file.mime || null, from: entry.from, at: formatTime(entry.ts) };
       },
     },
   },
