@@ -81,6 +81,21 @@ const MCP_TOOL_TIMEOUT_MS = 30 * 60 * 1000;
 // error instead of burning the whole budget.
 const LOOP_GUARD_REPEAT_LIMIT = 6;
 const LOOP_GUARD_TEXT_MIN_LEN = 20; // ignore tiny echo fragments; count only meaningful repeats
+// No-op streak (2026-09-29): a model that "wants" to call an MCP tool but can't emits
+// bash placeholders that DIFFER from each other (`true`, `echo ok`, `echo done`,
+// `python3 -c "print('x')"`) — the identical-signature guard above needs 6 equal calls
+// in a row and let such a run spin ~5 min. Any NOOP_LIMIT consecutive no-op bash calls
+// (nothing else in between) is the same stuck loop.
+const LOOP_GUARD_NOOP_LIMIT = 5;
+// A bash command that can't do anything but print a short literal. Deliberately narrow:
+// no pipes, redirects to files, `;`/`&&` chains or variables — those may be real work.
+const NOOP_BASH_RE = /^(?:true|:|echo(?:\s+(?:"[^"$`]{0,40}"|'[^']{0,40}'|[\w.,!?-]{0,40}))?|python3?\s+-c\s+(?:"print\((?:'[^']{0,40}'|\d+)\)"|'print\((?:"[^"]{0,40}"|\d+)\)')|node\s+-e\s+'console\.log\((?:"[^"]{0,40}"|\d+)\)')(?:\s+2>&1)?$/;
+function isNoopBash(tool, input) {
+  if (tool !== 'bash') return false;
+  const cmd = input && typeof input.command === 'string' ? input.command.trim() : null;
+  if (cmd === null) return false;
+  return cmd === '' || NOOP_BASH_RE.test(cmd);
+}
 
 // Per-run hard timeout (P3a durable step budget, `execution_timeout_seconds`).
 // Clamped to the global cap so a step can only ever shorten, never extend, the
@@ -531,6 +546,7 @@ async function runEngineProcess(opts) {
   let ocTextRepeatCount = 0;
   let lastOcToolSig = null;
   let ocToolRepeatCount = 0;
+  let ocNoopStreak = 0;
 
   // Drain in-flight progress edits before posting a terminal message.
   const progressEdits = new Set();
@@ -771,6 +787,14 @@ async function runEngineProcess(opts) {
             } else {
               lastOcToolSig = ocSig;
               ocToolRepeatCount = 1;
+            }
+            ocNoopStreak = isNoopBash(ocTool, ocInput) ? ocNoopStreak + 1 : 0;
+            if (ocNoopStreak >= LOOP_GUARD_NOOP_LIMIT && !loopKilled && !timedOut) {
+              loopKilled = true;
+              timedOut = true;
+              console.warn(`[${taskId}] LOOP GUARD: opencode ${ocNoopStreak} no-op bash calls in a row — SIGTERM`);
+              codexErrorMsg = `Loop guard: opencode сделал ${ocNoopStreak} пустых bash-вызовов подряд вместо реального действия (модель зациклилась — вероятно, не смогла вызвать нужный инструмент). Действие не выполнено.`;
+              try { proc.kill('SIGTERM'); } catch {}
             }
             countToolCall(ocTool);
             const ocLabel = formatToolActivity(ocTool === 'bash' ? 'Bash' : ocTool === 'read' ? 'Read' : ocTool === 'write' ? 'Write' : ocTool === 'edit' ? 'Edit' : ocTool === 'glob' || ocTool === 'grep' ? 'WebSearch' : ocTool, ocInput);
@@ -1076,6 +1100,7 @@ async function runEngineProcess(opts) {
 
 module.exports = {
   runEngineProcess,
+  isNoopBash,
   buildEngineCommand,
   resolveEngineCwd,
   formatToolActivity,
@@ -1093,5 +1118,5 @@ module.exports = {
   inputInspectionRows,
   controlKey,
   // constants exposed for tests
-  _const: { STREAM_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, STOP_BUTTON_AFTER_SECS, MAX_MSG_LEN, CLAUDE_TIMEOUT_MS, WARN_TIMEOUT_MS, INACTIVITY_TIMEOUT_MS, MCP_TOOL_TIMEOUT_MS, LOOP_GUARD_REPEAT_LIMIT, LOOP_GUARD_TEXT_MIN_LEN },
+  _const: { STREAM_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, STOP_BUTTON_AFTER_SECS, MAX_MSG_LEN, CLAUDE_TIMEOUT_MS, WARN_TIMEOUT_MS, INACTIVITY_TIMEOUT_MS, MCP_TOOL_TIMEOUT_MS, LOOP_GUARD_REPEAT_LIMIT, LOOP_GUARD_TEXT_MIN_LEN, LOOP_GUARD_NOOP_LIMIT },
 };

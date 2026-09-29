@@ -46,3 +46,37 @@ test('opencode: capabilities block is appended after the prompt', () => {
   assert.ok(r.ocCapBlock.startsWith('## Возможности системы (runtime)'));
   assert.equal(r.ocSystemPrompt, `${r.systemPromptText}\n\n${r.ocCapBlock}`);
 });
+
+// 2026-09-29: the OpenCode block hardcoded «доступны только compress-on-input и Neon …
+// кастомные скилы для OpenCode НЕ подключены» while the run's MCP config DID wire them —
+// a DeepSeek run torn between prompt and tool list faked the call with no-op bash for
+// minutes. Contract: the prompt's MCP claim is derived from the same config the engine gets.
+function runWithServers(servers, overrides = {}) {
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sysprompt-mcp-'));
+  const mcpConfig = path.join(workDir, '.mcp.json');
+  fs.writeFileSync(mcpConfig, JSON.stringify({ mcpServers: Object.fromEntries(servers.map(s => [s, { command: 'node' }])) }));
+  return assembleSystemPrompt({
+    user: { workDir, username: 'u1', audience: 'default' },
+    boundProjectId: null, mcpConfig, activeSessionId: null,
+    explicitMode: null, internalGtd: false, engine: 'opencode', secrets: {}, ...overrides,
+  });
+}
+
+test('opencode: MCP line lists the servers actually wired and never denies them', () => {
+  const r = runWithServers(['trained-skills', 'engineering-skills', 'hh-skills']);
+  for (const s of ['trained-skills', 'engineering-skills', 'hh-skills']) assert.ok(r.ocCapBlock.includes(s), s);
+  assert.ok(r.ocCapBlock.includes('trained-skills_playbook_get'), 'shows the call-by-name form');
+  assert.ok(!/НЕ подключены|доступны только compress-on-input/.test(r.ocSystemPrompt), 'no stale denial of wired tools');
+  assert.ok(/не имитируй вызов тула командами bash/i.test(r.ocCapBlock));
+});
+
+test('opencode: no servers → says so instead of inventing tools', () => {
+  const r = runWithServers([]);
+  assert.ok(r.ocCapBlock.includes('MCP-серверы не подключены'));
+});
+
+test('runner/index.js has no private copy of the capabilities block (single source)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'runner', 'index.js'), 'utf8');
+  assert.ok(!/function buildOcCapabilitiesBlock/.test(src), 'index.js must import it from ./system-prompt');
+  assert.ok(!/для OpenCode НЕ подключены/.test(src));
+});

@@ -14,9 +14,22 @@ const promptDomains = require('../prompt-domains');
 const skillsShadow = require('../skills/shadow');
 const { atomicText } = require('../atomic-json');
 
+// MCP server names actually wired into this run (the same .mcp.json the engine gets —
+// opencode's OPENCODE_CONFIG is built from it). Accepts a path or a parsed config.
+function mcpServerNames(mcpConfig) {
+  try {
+    const cfg = typeof mcpConfig === 'string' ? JSON.parse(fs.readFileSync(mcpConfig, 'utf8')) : mcpConfig;
+    return Object.keys((cfg && cfg.mcpServers) || {});
+  } catch { return []; }
+}
+
 // Builds a runtime capabilities addendum for OpenCode system prompt.
 // OpenCode uses non-Claude models that don't auto-read CLAUDE.md, so we inject what's available.
-function buildOcCapabilitiesBlock(secrets) {
+// The MCP line is derived from the run's real MCP config, never hardcoded: a stale
+// «кастомные скилы для OpenCode НЕ подключены» next to a tool list that DOES contain them
+// made a DeepSeek run fake the tool call with no-op bash (`true`, `echo ok`) for minutes
+// instead of calling trained-skills_playbook_get (2026-09-29).
+function buildOcCapabilitiesBlock(secrets, mcpConfig) {
   const lines = ['## Возможности системы (runtime)'];
 
   if (secrets && secrets.DEEPGRAM_API_KEY) {
@@ -41,11 +54,20 @@ function buildOcCapabilitiesBlock(secrets) {
     );
   }
 
+  const servers = mcpServerNames(mcpConfig);
+  lines.push('');
+  if (servers.length) {
+    lines.push(
+      `**Инструменты (MCP):** подключены серверы ${servers.join(', ')}.`,
+      'Их тулы вызываются напрямую как обычный инструмент по имени `<сервер>_<тул>`',
+      '(например `trained-skills_playbook_get`), а не через bash.',
+    );
+  } else {
+    lines.push('**Инструменты (MCP):** в этом запуске MCP-серверы не подключены.');
+  }
   lines.push(
-    '',
-    '**Инструменты (MCP):** доступны только compress-on-input и Neon (Postgres).',
-    'Кастомные скилы (HH, Weeek, nalog, gdrive и др.) для OpenCode НЕ подключены.',
-    'Для задач с кастомными скилами пользователь должен переключиться на Claude (/switch2klod).',
+    'Если нужного тула нет в твоём списке инструментов — прямо скажи об этом пользователю.',
+    'Никогда не имитируй вызов тула командами bash (`true`, `echo …`) — это не выполняет действие.',
   );
 
   return lines.join('\n');
@@ -118,7 +140,7 @@ function assembleSystemPrompt({ user, boundProjectId, mcpConfig, activeSessionId
 
   // OpenCode uses non-Claude models (DeepSeek, GigaChat, etc.) that don't auto-read CLAUDE.md.
   // Inject a runtime capabilities block so they know what's actually available.
-  const ocCapBlock = engine === 'opencode' ? buildOcCapabilitiesBlock(secrets) : '';
+  const ocCapBlock = engine === 'opencode' ? buildOcCapabilitiesBlock(secrets, mcpConfig) : '';
   const ocSystemPrompt = ocCapBlock
     ? (systemPromptText ? `${systemPromptText}\n\n${ocCapBlock}` : ocCapBlock)
     : systemPromptText;
@@ -126,4 +148,4 @@ function assembleSystemPrompt({ user, boundProjectId, mcpConfig, activeSessionId
   return { systemPromptFile, systemPromptText, ocCapBlock, ocSystemPrompt };
 }
 
-module.exports = { assembleSystemPrompt, buildOcCapabilitiesBlock };
+module.exports = { assembleSystemPrompt, buildOcCapabilitiesBlock, mcpServerNames };
