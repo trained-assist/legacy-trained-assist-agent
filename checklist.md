@@ -110,3 +110,8 @@ Goal: profile-lock waitedMs flake fix — immediate unlock reports 0, main CI re
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1829
 - [ ] Merged to main
 - [ ] Deployed to prod — verified live
+Goal: profile maintenance lock + POST /internal/flush-profile — safety precondition for running the migration LIVE (#1784 G1+G2)
+
+- [x] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1812
+- [x] Merged to main
+- [x] Deployed to prod — verified live: обе VM отвечают commit 38045b4 (gcp-main `/health`, ru-edge `/health`); `POST /internal/flush-profile` на GCP → 401 без Bearer, 400 на неверный username, `{ok:true,flushed:0,failed:0}` на валидный (body и `?username=`); live-smoke `src/profile-lock.js` → acquire `smoke-probe` → `isProfileLocked=true` → `waitForProfileUnlocked` ждёт → release → wait 154ms → unlocked; гейт в runner деплоя на месте (`isProfileLocked` в `_runTaskInner`)
