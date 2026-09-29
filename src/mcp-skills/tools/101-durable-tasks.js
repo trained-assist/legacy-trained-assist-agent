@@ -284,7 +284,8 @@ module.exports = {
       description:
         'Park the CURRENT durable step until something external happens, instead of waiting inside the run ' +
         'or failing the step. Then end your reply with the line `DURABLE: waiting`. The server polls the ' +
-        'condition cheaply (deterministic validators, no model) every poll_every_sec and re-runs this same ' +
+        'condition cheaply (deterministic validators, no model) every poll_every_sec (floored at min 30, ' +
+        'default 300) and re-runs this same ' +
         'step with a note on what happened when: the condition passes, the item is woken (task_item_wake — ' +
         'e.g. the user answered), or timeout_sec expires. Give at least one of: ' +
         '`until` — validator keys, e.g. {"ci_green": "<PR url>"}, {"merged": "<PR url>"}, ' +
@@ -292,6 +293,8 @@ module.exports = {
         '{"command_exit_zero": "journalctl -u svc --since -30min | grep -q \'ERR_X\'"}, {"task_done": "<task id>"}, ' +
         '{"file_exists": "path"}; `awaiting_user: true` — you asked the user something (send the question ' +
         'yourself first); `sleep_sec` — a plain timer (observe for a day, then re-check). ' +
+        'For CI or a merge pass `until:{ci_green}` / `{merged}` instead of `sleep_sec` — the wait tick ' +
+        're-checks conditions every ~30s, so a sleep would overshoot the event. ' +
         'Waiting does not spend the step\'s attempts.',
       inputSchema: {
         type: 'object',
