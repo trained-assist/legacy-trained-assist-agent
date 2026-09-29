@@ -52,10 +52,12 @@ function pendingRunFinished() {
  *   matches this against busyRequestId so a foreign run can't release the hold
  * @param {string|null} [p.taskId]   Agent-side task id (diagnostics)
  * @param {string} [p.outcome]       'done' | 'error' | 'stopped' | 'quick'
+ * @param {number[]} [p.consumed]   Telegram message ids the model took in mid-run
+ *   via get_new_messages (src/live-inbox.js) — the gateway drops them from its collector
  * @param {string} [p.secret]        Bearer token (AGENT_SECRET)
  * @returns {Promise<boolean>} true if the gateway acknowledged
  */
-async function notifyRunFinished({ chatId, threadId = null, requestId = null, taskId = null, outcome = 'done', secret = process.env.AGENT_SECRET }) {
+async function notifyRunFinished({ chatId, threadId = null, requestId = null, taskId = null, outcome = 'done', consumed = [], secret = process.env.AGENT_SECRET }) {
   if (!MEDIA_GATEWAY_URL) return false;
   const numericChatId = Number(chatId);
   // 0 is the web/internal sentinel; any other safe integer is a real chat,
@@ -76,6 +78,7 @@ async function notifyRunFinished({ chatId, threadId = null, requestId = null, ta
           requestId: requestId || null,
           taskId: taskId || null,
           outcome,
+          ...(Array.isArray(consumed) && consumed.length ? { consumed } : {}),
         }),
         signal: AbortSignal.timeout(5000),
       });
