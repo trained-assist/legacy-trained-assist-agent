@@ -6,7 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { tokenPath: profileTokenPath } = require('../../data-paths');
 const { readCredentialFile, writeCredentialFile } = require('../../credential-store');
 
 const USER_ID = process.env.USER_ID || '';
@@ -17,7 +17,7 @@ const USER_ID = process.env.USER_ID || '';
 const RU_EDGE_URL = (process.env.RU_EDGE_URL || 'https://platform.recruiter-assistant.ru').replace(/\/$/, '');
 
 function tokenPath(userId) {
-  return path.join(os.homedir(), 'agent-tokens', String(userId || USER_ID), 'nalog');
+  return profileTokenPath(String(userId || USER_ID), 'nalog');
 }
 
 function readToken(userId) {

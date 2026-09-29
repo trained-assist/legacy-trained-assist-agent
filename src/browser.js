@@ -3,7 +3,7 @@ const path = require('path');
 const os = require('os');
 const skillsEnforce = require('./skills/enforce');
 const { SKILL_SIBLINGS, siblingPaths: siblingPathsOf } = require('./skill-siblings');
-const { engineeringWorkspaceRoot, engineeringMirrorsRoot } = require('./data-paths');
+const { engineeringWorkspaceRoot, engineeringMirrorsRoot, tokensRoot } = require('./data-paths');
 const { atomicJson } = require('./atomic-json');
 const { readCredentialFile, masterKeyHex } = require('./credential-store');
 
@@ -108,6 +108,13 @@ function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, ex
     // makes the tool answer "serper не сконфигрирован: нужен SERPER_API_KEY" instead of
     // taking the server down.
     ...(process.env.SERPER_API_KEY ? { SERPER_API_KEY: process.env.SERPER_API_KEY } : {}),
+    // HH OAuth app (hh-skills 91c-hh-sync) — declared in config/credentials.json, was
+    // never passed before the credential contract (#1891) caught it.
+    ...(process.env.HH_CLIENT_ID     ? { HH_CLIENT_ID:     process.env.HH_CLIENT_ID }     : {}),
+    ...(process.env.HH_CLIENT_SECRET ? { HH_CLIENT_SECRET: process.env.HH_CLIENT_SECRET } : {}),
+    // Token root (a path, not a secret): siblings resolve profile token files through
+    // their data-paths copy; without it they fall back to $HOME/agent-tokens.
+    AGENT_TOKENS_DIR: tokensRoot(),
     ...(process.env.GOOGLE_OAUTH_CLIENT_ID     ? { GOOGLE_OAUTH_CLIENT_ID:     process.env.GOOGLE_OAUTH_CLIENT_ID }     : {}),
     ...(process.env.GOOGLE_OAUTH_CLIENT_SECRET ? { GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET } : {}),
     ...(process.env.AGENT_PUBLIC_URL ? { AGENT_PUBLIC_URL: process.env.AGENT_PUBLIC_URL } : {}),
