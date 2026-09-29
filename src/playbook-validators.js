@@ -193,6 +193,44 @@ function makeMergedValidator({ ghToken, ghFetch, deployed = false }) {
   };
 }
 
+// ci_run_green — a manually dispatched workflow run on a BRANCH has finished
+// green. This is the durable-wait key of the «прогон тестов в облаке» flow (the
+// `ci-run` playbook): `{ci_run_green: {repo: "owner/name", run_id: 123456}}`.
+// Unlike ci_green this is one explicit run the agent itself started, so the
+// verdict is per-run, not per-check-run:
+//   completed + success  → pass (wake: the suite is green)
+//   completed + anything else → fail with evidence.final:true — a finished run
+//        never changes its mind, so waiting longer is pointless and the step
+//        must wake to show the failed jobs / log tail («никогда не зелёный
+//        молча»: skipped/neutral for a manual run means nothing actually ran);
+//   queued / in_progress → inconclusive, keep polling;
+//   missing repo/run_id, no token, run not found, API down → inconclusive —
+//        «no evidence» is never «green», and a flaky API must not abort the wait.
+function makeCiRunGreenValidator({ ghToken, ghFetch }) {
+  return async function ciRunGreen(ctx) {
+    const v = ctx.validation;
+    const spec = v && typeof v === 'object' ? v : null;
+    const repo = spec && typeof spec.repo === 'string' ? spec.repo : (typeof v === 'string' ? v : null);
+    const runId = spec ? (spec.run_id ?? spec.runId) : null;
+    if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return inconclusive('no-repo', { validation: v });
+    if (!runId || !/^\d+$/.test(String(runId))) return inconclusive('no-run-id', { repo });
+    const token = ghToken(ctx.profileId);
+    if (!token) return inconclusive('no-github-token', { repo, run_id: runId });
+    let run;
+    try {
+      run = await ghFetch(`https://api.github.com/repos/${repo}/actions/runs/${runId}`, token);
+    } catch (e) {
+      return inconclusive('github-unreachable', { error: e.message, repo, run_id: runId });
+    }
+    if (!run) return inconclusive('run-not-found', { repo, run_id: runId });
+    const subject = { repo, run_id: runId, url: run.html_url || null };
+    const evidence = { status: run.status || null, conclusion: run.conclusion || null };
+    if (run.status !== 'completed') return inconclusive('run-not-finished', { ...subject, ...evidence });
+    if (run.conclusion === 'success') return { status: 'pass', subject, evidence };
+    return { status: 'fail', subject, evidence: { ...evidence, final: true } };
+  };
+}
+
 // ── pr_opened (P3d follow-up, #1449) ────────────────────────────────────────
 // Deterministic "a PR exists" check, so the engineering playbook's "Open PR"
 // step no longer needs an LLM. Resolution, in order:
@@ -651,6 +689,9 @@ function createDefaultRegistry({ ghToken = defaultGhToken, ghFetch = defaultGhFe
   return {
     ci_green: makeCiValidator({ ghToken, ghFetch, staging: false }),
     ci_and_staging_green: makeCiValidator({ ghToken, ghFetch, staging: true }),
+    // A dispatched branch run (ci-run playbook): {repo, run_id}. Registered so
+    // task_item_wait's `until` accepts it — an unknown key is rejected there.
+    ci_run_green: makeCiRunGreenValidator({ ghToken, ghFetch }),
     merged: makeMergedValidator({ ghToken, ghFetch, deployed: false }),
     pr_merged: makeMergedValidator({ ghToken, ghFetch, deployed: false }),
     merged_and_deployed: makeMergedValidator({ ghToken, ghFetch, deployed: true }),

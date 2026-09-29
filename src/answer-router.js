@@ -20,7 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const { atomicJson } = require('./atomic-json');
 
-const MODES = new Set(['deep', 'clarify', 'oneshot']);
+const MODES = new Set(['deep', 'clarify', 'oneshot', 'wrap_up']);
 const MODES_DIR = 'answer-modes';
 
 function _dir(workDir) { return path.join(workDir, MODES_DIR); }
@@ -71,6 +71,9 @@ const DEEP_BLOCK = [
   '  Секция без владельца к сессии не прицепится и доводиться не будет.',
   '- В конце — связный синтез с обоснованием. Длинный результат публикуй через publish_page.',
   '- Уточняющий вопрос уместен ТОЛЬКО если без него нельзя двигаться; иначе действуй по разумным допущениям.',
+  '- Если последняя реплика пользователя — закрывающая («хватит», «ты уже всё нашёл», «достаточно,',
+  '  давай итог», «собери что есть») — поиск окончен: НЕ запускай новых поисков/research, коротко',
+  '  ответь из уже собранного в этой сессии (найденное + чего не хватило).',
   '',
   'Это НАДЁЖНАЯ сессия: она durable, переживает 40-мин таймаут (автопродолжение до 10 раз).',
   'GTD-контроллер здесь — страховка, а не надзор: он не торопит, а лишь доводит задачу,',
@@ -116,6 +119,49 @@ const CLARIFY_BLOCK = [
   '  «▶️ Запустить проработку».',
 ].join('\n');
 
+// ── Финализация (wrap_up, #1856) ─────────────────────────────────────────────
+// «Ты уже всё нашёл / достаточно, давай итог / хватит искать» — поиск закончен,
+// нужен ответ из уже собранного за пару минут. Не «ничего не делать» и не новый
+// deep-ран: промпт запрещает новые поиски, runner режет web/поисковые тулы,
+// ставит потолок времени и тул-бюджет, GTD после ответа снимается.
+const WRAP_UP_TIMEOUT_MS = 3 * 60_000;   // жёсткий потолок рана
+const WRAP_UP_WARN_MS = 2 * 60_000;      // мягкий сигнал «заверши и выведи итог»
+const WRAP_UP_MAX_TOOL_CALLS = 3;        // чтение своих заметок/файлов — да, новый поиск — нет
+
+// Тулы, которые в финализации запрещены: веб, поисковые MCP, research, браузер,
+// субагенты. Для claude — имена для --disallowedTools; для opencode — ключи
+// `tools` в per-invocation OPENCODE_CONFIG (glob по `<server>_<tool>`).
+const WRAP_UP_DENY_CLAUDE = [
+  'WebSearch', 'WebFetch', 'Task',
+  'mcp__search-skills', 'mcp__playwright',
+  'mcp__trained-skills__search_exa', 'mcp__trained-skills__search_serp_free', 'mcp__trained-skills__fetch_exa',
+  'mcp__trained-skills__hermes_research', 'mcp__trained-skills__hermes_run',
+  'mcp__trained-skills__ru_browser_fetch', 'mcp__trained-skills__ru_browser_screenshot',
+  'mcp__trained-skills__browser_session_navigate', 'mcp__trained-skills__session_search',
+];
+const WRAP_UP_DENY_OPENCODE = {
+  webfetch: false, websearch: false, task: false,
+  'search-skills_*': false, 'playwright_*': false,
+  'trained-skills_search_*': false, 'trained-skills_fetch_exa': false,
+  'trained-skills_hermes_*': false, 'trained-skills_ru_browser_*': false,
+  'trained-skills_browser_session_*': false, 'trained-skills_session_search': false,
+};
+
+const WRAP_UP_BLOCK = [
+  '',
+  '# РЕЖИМ ОТВЕТА: ФИНАЛИЗАЦИЯ — пользователь сказал, что поиск окончен',
+  'Последняя реплика пользователя — «хватит / ты уже всё нашёл / давай итог». Это НЕ просьба',
+  'остановиться молча и НЕ новая задача: нужен итоговый ответ из того, что УЖЕ найдено.',
+  '- НЕ запускай новых поисков: никакого веба, поисковых тулов, research, браузера, субагентов.',
+  '- Собери ответ из истории этой сессии, своих заметок и уже сохранённых файлов проекта.',
+  `- Максимум ${WRAP_UP_MAX_TOOL_CALLS} вызова инструментов (только чтение уже собранного); лимит времени ~2 минуты.`,
+  '- Формат: коротко — что найдено (с ссылками/источниками, если они уже есть), и одной строкой —',
+  '  чего не хватило. Не предлагай «продолжить поиск» развёрнуто — одна строка максимум.',
+  '- Не создавай и не обновляй чек-лист/Goal: доводка этой задачи закрывается после ответа.',
+].join('\n');
+
+function buildWrapUpBlock() { return WRAP_UP_BLOCK; }
+
 // ── Заплатка для internalGtd-ходов внутри deep-сессии ─────────────────────────
 // GTD-контроллер дожимает задачу автономными ре-запусками (buildReopenMessage,
 // см. gtd-controller.js) поверх той же deep-сессии — значит deepSticky=true и
@@ -149,5 +195,6 @@ function oneshotActionMarkup(_sid, _opts = {}) {
 
 module.exports = {
   MODES, normalizeMode, readMode, writeMode, buildDeepBlock, buildClarifyBlock, buildOneshotBlock,
-  buildGtdNoButtonNote, oneshotActionMarkup,
+  buildGtdNoButtonNote, oneshotActionMarkup, buildWrapUpBlock,
+  WRAP_UP_TIMEOUT_MS, WRAP_UP_WARN_MS, WRAP_UP_MAX_TOOL_CALLS, WRAP_UP_DENY_CLAUDE, WRAP_UP_DENY_OPENCODE,
 };

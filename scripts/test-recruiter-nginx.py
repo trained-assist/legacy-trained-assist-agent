@@ -71,6 +71,9 @@ with tempfile.TemporaryDirectory(prefix='recruiter-nginx-') as d:
         for path in ['/hh/response-updates?username=alice&token=signed&vacancy_id=v1','/hh/review?username=alice&token=signed&vacancy_id=v1','/hh/candidate?neg_id=x','/p/cold-candidates-report-designer-137230181', '/p/private-report?password=a%2Bb&format=source', '/hh/proactive?username=alice&token=signed&vacancy_id=v1&list=starred','/api/hh/proactive/candidates?username=alice&token=signed&vacancy_id=v1']:
             s,h,b=request(path);assert s==200 and b.decode()=='/agent'+path+'|https', (s,b)
             assert h['Cache-Control']=='no-store' and h['Referrer-Policy']=='no-referrer'
+        # Branded site copies (site_deploy mirror): proxied to GCP, headers left to the agent.
+        for path in ['/s/hr-stalker-reglaments/','/s/demo/assets/app.css?v=1']:
+            s,h,b=request(path);assert s==200 and b.decode()=='/agent'+path+'|https', (s,b)
         for action in ['sync-negotiations','response-state','send','reject','send-and-reject','generate-message']:
             path='/hh/'+action
             s,h,b=request(path,body=b'{"username":"alice","token":"signed"}')

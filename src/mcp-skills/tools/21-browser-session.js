@@ -46,6 +46,14 @@ function generateLoginLink(userId, domain) {
 }
 
 // CDP endpoint for the persistent Chrome
+// login.js runs from the release this module ships in, so a merged fix is live on the
+// next deploy. It used to run a hand-copied ~/browser-session/login.js that nothing
+// deployed (setup.sh never copied it) and that silently drifted from the repo (#1866).
+function loginScriptPath() {
+  const shipped = path.join(__dirname, '..', '..', '..', 'infra', 'browser-session', 'login.js');
+  return fs.existsSync(shipped) ? shipped : path.join(os.homedir(), 'browser-session', 'login.js');
+}
+
 const CDP_PORT = 9224;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -267,7 +275,7 @@ const tools = [
       }
 
       if (!isChromeRunning()) return { error: 'browser_not_running' };
-      const scriptPath = path.join(os.homedir(), 'browser-session', 'login.js');
+      const scriptPath = loginScriptPath();
       if (!fs.existsSync(scriptPath)) return { error: 'login.js not found on VM' };
 
       const env = { ...process.env, LOGIN_EMAIL: creds.email, LOGIN_PASSWORD: creds.password };
@@ -275,7 +283,7 @@ const tools = [
 
       try {
         const result = execSync(`node "${scriptPath}"`, {
-          timeout: 30000,
+          timeout: 60000,
           encoding: 'utf8',
           env,
         });
@@ -290,8 +298,11 @@ const tools = [
           data.message = `Неверный логин или пароль — попроси пользователя обновить данные через credentials_form_create с service="${service}".`;
         } else if (data.already_logged_in) {
           data.message = 'Уже залогинен. Вызови browser_session_capture_cookies чтобы сохранить сессию.';
-        } else if (data.navigated) {
+        } else if (data.ok) {
           data.message = 'Успешно залогинился. Теперь вызови browser_session_capture_cookies.';
+        } else if (!data.error) {
+          // Never report success without evidence (#1866): the form is still on screen.
+          data.message = `Вход не подтверждён — форма входа всё ещё на экране. Проверь в браузере: ${BROWSER_SESSION_URL}`;
         }
         return data;
       } catch (e) {
@@ -313,11 +324,11 @@ const tools = [
     },
     handler: async ({ email, password }) => {
       if (!isChromeRunning()) return { error: 'browser_not_running' };
-      const scriptPath = path.join(os.homedir(), 'browser-session', 'login.js');
+      const scriptPath = loginScriptPath();
       if (!fs.existsSync(scriptPath)) return { error: 'login.js not found on VM' };
       try {
         const result = execSync(`node "${scriptPath}"`, {
-          timeout: 20000,
+          timeout: 60000,
           encoding: 'utf8',
           env: { ...process.env, LOGIN_EMAIL: email, LOGIN_PASSWORD: password },
         });
@@ -328,8 +339,11 @@ const tools = [
           data.message = `Нужен код 2FA — введи его в браузере: ${BROWSER_SESSION_URL}`;
         } else if (data.error_on_page) {
           data.message = 'Неверный логин или пароль — проверь данные.';
-        } else if (data.navigated) {
+        } else if (data.ok) {
           data.message = 'Успешно залогинился. Теперь вызови browser_session_capture_cookies.';
+        } else if (!data.error) {
+          // Never report success without evidence (#1866): the form is still on screen.
+          data.message = `Вход не подтверждён — форма входа всё ещё на экране. Проверь в браузере: ${BROWSER_SESSION_URL}`;
         }
         return data;
       } catch (e) {

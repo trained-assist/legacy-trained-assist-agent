@@ -1234,3 +1234,63 @@ describe('/all_forgotten_checklists', () => {
     expect(listSessionIndex()).toEqual([]);
   });
 });
+
+// #1856: закрывающие реплики. «хватит, не надо» — стоп без рана; «ты уже всё нашёл»
+// — финализация: тот же движок, но без web/поиска, с блоком ФИНАЛИЗАЦИЯ и потолком.
+describe('Closure replies (#1856): stop vs wrap_up', () => {
+  function writeRecordingClaude(logBase, { tools = 0 } = {}) {
+    const toolLines = Array.from({ length: tools }, (_, i) =>
+      `echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/f${i}"}}]}}'`).join('\n');
+    const script = `#!/bin/bash
+COUNT=$(cat "${logBase}.count" 2>/dev/null || echo 0); echo $((COUNT+1)) > "${logBase}.count"
+printf '%s\\0' "$@" > "${logBase}.argv"
+prev=""; for a in "$@"; do if [ "$prev" = "--append-system-prompt-file" ]; then cp "$a" "${logBase}.sys"; fi; prev="$a"; done
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Итог: нашёл 3 вакансии"}]}}'
+${tools ? `${toolLines}\nexec sleep 30` : `echo '{"type":"result","result":"Итог: нашёл 3 вакансии","usage":{"input_tokens":10,"output_tokens":5}}'`}
+`;
+    writeFileSync(join(fakeBinDir, 'claude'), script);
+    chmodSync(join(fakeBinDir, 'claude'), 0o755);
+  }
+  afterEach(() => restoreNormalClaude());
+
+  it('«хватит, не надо» → одна строка «Ок, остановился.», движок не запускается', { timeout: 15000 }, async () => {
+    const logBase = join(fakeBinDir, `stop-${Date.now()}`);
+    writeRecordingClaude(logBase);
+    const gtd = require('../src/gtd-controller');
+    await chat('хватит, не надо');
+    expect(tgTexts()).toEqual(['Ок, остановился.']);
+    expect(existsSync(`${logBase}.count`), 'stop must not spawn the engine').toBe(false);
+    expect(listSessionIndex()).toEqual([]);
+    expect(gtd.listGtd(workDir).filter(r => r.status === 'open')).toEqual([]);
+  });
+
+  it('«ты уже всё нашёл» → финализация: без web/поиска, блок ФИНАЛИЗАЦИЯ, GTD снят', { timeout: 20000 }, async () => {
+    await chat('прочитай файл vacancies.csv и составь список', { claudeReply: 'Нашёл 3 вакансии' });
+    const sid = readCurrentSession().id;
+    const gtd = require('../src/gtd-controller');
+    gtd.writeGtd(workDir, { sessionId: sid, status: 'open', chatId: '111222333', dueAt: Date.now() + 3600_000 });
+    const logBase = join(fakeBinDir, `wrap-${Date.now()}`);
+    writeRecordingClaude(logBase);
+    await chat('ты нашел уже всё', { sessionId: sid });
+    const argv = readFileSync(`${logBase}.argv`, 'utf8').split('\0').slice(0, -1);
+    const i = argv.indexOf('--disallowedTools');
+    expect(i, 'wrap_up must restrict tools').toBeGreaterThan(0);
+    expect(argv[i + 1].split(',')).toEqual(expect.arrayContaining(['WebSearch', 'WebFetch', 'mcp__search-skills']));
+    expect(readFileSync(`${logBase}.sys`, 'utf8')).toMatch(/РЕЖИМ ОТВЕТА: ФИНАЛИЗАЦИЯ/);
+    expect(argv[argv.length - 1]).toMatch(/\[ФИНАЛИЗАЦИЯ/);
+    expect(argv[argv.length - 1]).toMatch(/Нашёл 3 вакансии/); // история найденного в контексте
+    expect(tgTexts().at(-1)).toContain('Итог: нашёл 3 вакансии');
+    expect(gtd.readGtd(workDir, sid).status, 'GTD cleared after the wrap-up answer').not.toBe('open');
+  });
+
+  it('потолок финализации (тул-бюджет) — терминал с тем, что успел, без автопродолжения', { timeout: 20000 }, async () => {
+    const logBase = join(fakeBinDir, `ceil-${Date.now()}`);
+    writeRecordingClaude(logBase, { tools: 5 });
+    await chat('достаточно, давай итог');
+    await new Promise(r => setTimeout(r, 300));
+    expect(readFileSync(`${logBase}.count`, 'utf8').trim(), 'no auto-continuation').toBe('1');
+    const last = tgTexts().at(-1);
+    expect(last).toMatch(/лимит инструментов финализации/);
+    expect(last).toContain('Итог: нашёл 3 вакансии');
+  });
+});

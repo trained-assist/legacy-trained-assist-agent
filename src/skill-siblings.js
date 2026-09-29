@@ -25,6 +25,9 @@ const SKILL_SIBLINGS = [
   // Until the core copy is deleted (#1470 follow-up) both serve the same tool name —
   // the sibling wins by rule #1648, core's copy is the transition leftover.
   { id: 'search', repo: 'trained-assist-search-skill', mcpServerId: 'search-skills' },
+  // Marketing / Customer Development (#1858): cd_ingest + cd_stage_rubric and the
+  // customer-development-collect playbook.
+  { id: 'marketing', repo: 'trained-assist-marketing-skill', mcpServerId: 'marketing-skills' },
 ];
 
 const DEFAULT_ROOT = path.join(__dirname, '..', '..');

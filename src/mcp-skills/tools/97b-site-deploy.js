@@ -14,7 +14,9 @@ module.exports = {
   tools: {
     site_deploy: {
       description:
-        'Publish a static site folder (must contain index.html, must be inside the profile workspace) to Cloudflare Pages → https://<project>.pages.dev. ' +
+        'Publish a static site folder (must contain index.html, must be inside the profile workspace) to Cloudflare Pages and to the branded domain. ' +
+        'Result `url` = the link to give the user: https://recruiter-assistant.ru/s/<project>/ (branded copy, main branch); `pages_dev_url` is the raw Cloudflare fallback — do not hand it out when `url` is branded. ' +
+        'Use relative links inside the site (the branded copy lives under /s/<project>/). ' +
         'Use instead of running `npx wrangler pages deploy` yourself — the agent process has no Cloudflare credentials. ' +
         'Token: the profile\'s own (connect({service:"cloudflare"})) if connected, otherwise the shared default account. ' +
         'On the shared account a project name belongs to the profile that created it; a name taken by another profile is refused — pick another. ' +

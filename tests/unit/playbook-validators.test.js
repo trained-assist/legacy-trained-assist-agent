@@ -300,4 +300,67 @@ describe('playbook-validators', () => {
       expect(noRef.evidence.reason).toBe('no-pr-reference');
     });
   });
+
+  // ci_run_green — the durable-wait key of the «прогон тестов в облаке» flow
+  // (ci-run playbook): wait on one workflow_dispatch run the agent dispatched
+  // itself. Registered → task_item_wait's `until` accepts it (an unknown key is
+  // rejected there by normalizeAgentWait).
+  describe('ci_run_green (ci-run playbook)', () => {
+    const spec = { repo: 'acme/widgets', run_id: 123456 };
+    const ctx = (validation = spec, profileId = 'u1') => ({ item: item({ instructions: 'no link here' }), profileId, validation });
+    const withRun = run => createDefaultRegistry({ ghToken: () => 'token', ghFetch: async () => run });
+    const green = { status: 'completed', conclusion: 'success', html_url: 'https://github.com/acme/widgets/actions/runs/123456' };
+
+    it('is a registered key (a plan may wait on it)', () => {
+      expect(Object.keys(createDefaultRegistry())).toContain('ci_run_green');
+    });
+
+    it('passes when the dispatched run completed green', async () => {
+      const r = await evaluateValidation('ci_run_green', ctx(), withRun(green));
+      expect(r.status).toBe('pass');
+      expect(r.subject).toMatchObject({ repo: 'acme/widgets', run_id: 123456 });
+      expect(r.subject.url).toContain('/actions/runs/123456');
+      expect(r.evidence.conclusion).toBe('success');
+    });
+
+    it('fails FINALLY on a red or cancelled run so the wait wakes immediately', async () => {
+      for (const conclusion of ['failure', 'cancelled', 'timed_out', 'skipped']) {
+        const r = await evaluateValidation('ci_run_green', ctx(), withRun({ ...green, conclusion }));
+        expect(r.status, conclusion).toBe('fail');
+        expect(r.evidence.final, conclusion).toBe(true); // waiting longer is pointless
+        expect(r.evidence.conclusion).toBe(conclusion);
+      }
+    });
+
+    it('stays inconclusive while the run is still going', async () => {
+      const r = await evaluateValidation('ci_run_green', ctx(),
+        withRun({ status: 'in_progress', conclusion: null }));
+      expect(r.status).toBe('inconclusive');
+      expect(r.evidence.reason).toBe('run-not-finished');
+    });
+
+    it('never guesses: missing inputs, no token, unknown run or a dead API are inconclusive', async () => {
+      const noRun = await evaluateValidation('ci_run_green', ctx({ repo: 'acme/widgets' }),
+        withRun(green));
+      expect(noRun.evidence.reason).toBe('no-run-id');
+
+      const noRepo = await evaluateValidation('ci_run_green', ctx(true), withRun(green));
+      expect(noRepo.evidence.reason).toBe('no-repo');
+
+      const noToken = await evaluateValidation('ci_run_green', ctx(spec, null),
+        createDefaultRegistry({ ghToken: () => null, ghFetch: async () => { throw new Error('must not be called'); } }));
+      expect(noToken.evidence.reason).toBe('no-github-token');
+
+      const missing = await evaluateValidation('ci_run_green', ctx(), withRun(null));
+      expect(missing.evidence.reason).toBe('run-not-found');
+
+      let called = 0;
+      const down = await evaluateValidation('ci_run_green', ctx(), createDefaultRegistry({
+        ghToken: () => 'token', ghFetch: async () => { called++; throw new Error('ECONNRESET'); },
+      }));
+      expect(down.status).toBe('inconclusive');
+      expect(down.evidence.reason).toBe('github-unreachable');
+      expect(called).toBe(1);
+    });
+  });
 });

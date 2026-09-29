@@ -26,7 +26,9 @@
 // resolve_evidence.
 
 const DEFAULT_POLL_SEC = 300;
-const MIN_POLL_SEC = 60;
+// Floor of the wait tick (durable-wait-latency design §2.1): a waiting step may
+// ask to be polled every 30s — matching the dedicated 30s wait tick in server.js.
+const MIN_POLL_SEC = 30;
 const DEFAULT_TIMEOUT_SEC = 24 * 3600;
 const MAX_TIMEOUT_SEC = 30 * 24 * 3600;
 
