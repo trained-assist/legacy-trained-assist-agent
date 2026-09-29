@@ -11,6 +11,11 @@
     "version": { "type": "integer", "minimum": 1 },
     "scope": { "enum": ["system", "profile"] },
     "title": { "type": "string", "minLength": 1 },
+    "when_to_use": {
+      "description": "One-to-two sentences «когда предлагать этот плейбук», in the user's language. Optional in the schema so already-saved playbooks stay valid; required for a profile-scope save (issue #1851). The runner injects it into the profile's system prompt so the playbook is reachable from a plain request without the id; playbook_health treats a non-empty value as route P.",
+      "type": "string",
+      "minLength": 1
+    },
     "goal_template": { "type": "string", "minLength": 1 },
     "user_value_template": { "type": "string" },
     "defaults": { "$ref": "#/$defs/defaults" },

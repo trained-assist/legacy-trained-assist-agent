@@ -19,13 +19,14 @@ function loadTool() {
   return require(TOOL).tools.playbook_health;
 }
 
-function profilePlaybook(profile, id) {
+function profilePlaybook(profile, id, extra = {}) {
   const dir = join(root, 'users', profile, 'playbooks');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${id}.json`), JSON.stringify({
     id, version: 1, scope: 'profile', title: 'T', goal_template: '{goal}',
     stages: [{ id: 's', title: 'S', steps: [{ title: 'x', execution_kind: 'agent', executor_role: 'researcher',
       minimum_model_level: 'bachelor', context_budget: 'small', validation: { done: true } }] }],
+    ...extra,
   }));
 }
 
@@ -69,5 +70,22 @@ describe('playbook_health', () => {
     profilePlaybook('alice', 'my-private-flow');
     const res = await loadTool().handler({}, { userId: 'alice' });
     expect(res.reports.map(r => r.id)).toContain('my-private-flow');
+  });
+
+  it('route P: a profile playbook with when_to_use is reachable from a plain request (#1851)', async () => {
+    profilePlaybook('alice', 'my-private-flow', { when_to_use: 'когда нужно проверить фичу на проде' });
+    const res = await loadTool().handler({ id: 'my-private-flow' }, { userId: 'alice' });
+    const dispatch = res.reports[0].rows.find(r => r.gate === 'dispatch');
+    expect(dispatch.status).toBe('pass');
+    expect(dispatch.detail).toMatch(/when_to_use/);
+    expect(res.ok).toBe(true);
+  });
+
+  it('a profile playbook without when_to_use names the field in the dispatch hint', async () => {
+    profilePlaybook('alice', 'my-private-flow');
+    const res = await loadTool().handler({ id: 'my-private-flow' }, { userId: 'alice' });
+    const dispatch = res.reports[0].rows.find(r => r.gate === 'dispatch');
+    expect(dispatch.status).toBe('fail');
+    expect(dispatch.detail).toMatch(/when_to_use/);
   });
 });

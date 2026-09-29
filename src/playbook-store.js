@@ -48,17 +48,23 @@ function playbookError(code, message) {
   return Object.assign(new Error(`[${code}] ${message}`), { code });
 }
 
-function defaultSiblingRoots() {
-  // Explicit override (test/build environments that don't have the domain
-  // checkouts on disk next to this repo). Delimiter-separated, e.g.
-  // PLAYBOOK_SIBLING_ROOTS=/fixtures/trained-assist-engineering:/fixtures/other.
+// Candidate roots of the domain-skill sibling checkouts, in precedence order and
+// WITHOUT the playbooks/ existence filter: consumers that need the sibling for
+// something other than playbooks (e.g. the shared library/step-types.json catalog
+// in src/playbook-authoring) must see a checkout that carries library/ but not
+// playbooks/. Explicit PLAYBOOK_SIBLING_ROOTS override wins (test/build envs).
+function siblingRepoRoots() {
   const override = process.env.PLAYBOOK_SIBLING_ROOTS;
   if (override) {
     return override.split(path.delimiter).filter(Boolean);
   }
-  return DEFAULT_SIBLING_REPOS
-    .map(repo => path.join(REPO_PARENT, repo))
-    .filter(dir => fs.existsSync(path.join(dir, 'playbooks')));
+  return DEFAULT_SIBLING_REPOS.map(repo => path.join(REPO_PARENT, repo));
+}
+
+function defaultSiblingRoots() {
+  // Only roots that actually carry a playbooks/ dir are consulted for resolution,
+  // so an absent sibling is simply skipped.
+  return siblingRepoRoots().filter(dir => fs.existsSync(path.join(dir, 'playbooks')));
 }
 
 function formatAjvErrors(errors) {
@@ -238,6 +244,7 @@ class PlaybookStore {
         scope: pb.scope,
         source: pb.source,
         title: pb.title,
+        when_to_use: pb.when_to_use || null,
         goal_template: pb.goal_template,
         path: pb.path,
       }))
@@ -254,5 +261,6 @@ module.exports = {
   SYSTEM_PLAYBOOKS_DIR,
   DEFAULT_SIBLING_REPOS,
   PLAYBOOK_ID_RE,
+  siblingRepoRoots,
   _internal: { substitute },
 };
