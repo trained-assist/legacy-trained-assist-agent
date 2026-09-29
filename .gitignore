@@ -7,3 +7,6 @@ staging-results/
 __pycache__/
 .DS_Store
 node_modules
+
+# plans/checklists are WIP, not durable docs -> issues (README: "This repo is for durable documents")
+checklist.md
