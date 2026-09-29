@@ -60,16 +60,22 @@ test('opencode: `run --session <id>` on the resume path, none on a fresh run', (
   assert.equal(freshArgs.includes('--session'), false, 'no --session on a fresh run');
 });
 
-test('opencode: a pinned ocRole becomes `--agent <role>`; absent without one (P3b #1449)', () => {
-  const [, withRole] = buildEngineCommand({ ...base, engine: 'opencode', ocRole: 'explore' });
+test('opencode: only a primary ocRole reaches `--agent`; subagent roles never do (#1725 root 3)', () => {
+  // explore/review/general are OpenCode subagents: `run --agent` ignores them today and
+  // native explore denies every MCP tool — passing them is a latent «step without tools».
+  for (const role of ['explore', 'review', 'general']) {
+    const [, args] = buildEngineCommand({ ...base, engine: 'opencode', ocRole: role });
+    assert.equal(args.includes('--agent'), false, `subagent role ${role} must not be pinned`);
+  }
+  const [, withRole] = buildEngineCommand({ ...base, engine: 'opencode', ocRole: 'build' });
   const i = withRole.indexOf('--agent');
-  assert.notEqual(i, -1, '--agent present when a role is pinned');
-  assert.equal(withRole[i + 1], 'explore');
+  assert.notEqual(i, -1, '--agent present for a primary role');
+  assert.equal(withRole[i + 1], 'build');
 
   const [, noRole] = buildEngineCommand({ ...base, engine: 'opencode' });
   assert.equal(noRole.includes('--agent'), false, 'non-contract callers keep the historical argv');
 
   // The oc role must never leak into a claude/codex argv.
-  const [, claudeArgs] = buildEngineCommand({ ...base, engine: 'claude', ocRole: 'explore' });
+  const [, claudeArgs] = buildEngineCommand({ ...base, engine: 'claude', ocRole: 'build' });
   assert.equal(claudeArgs.includes('--agent'), false, 'claude argv never gets --agent');
 });
