@@ -54,7 +54,8 @@ test('stopUserTask(chat B) does not kill chat-less plan step; stopUserTask(chat 
   runner._activeTimers.set(`durable-${P}-x`, { username: P, audience: 'default', chatId: null, sessionId: 's-plan-x', proc: planStep });
 
   // Stop in chat B (-200) must not kill the plan step (chatId=null matches any chat today — that's the bug).
-  assert.equal(runner.stopUserTask(P, -200, 'default'), true, 'stop in chat B returned true');
+  // Chat B has no runs of its own → nothing stopped (the red repro expected true — a test bug).
+  assert.equal(runner.stopUserTask(P, -200, 'default'), false, 'stop in chat B stops nothing');
   assert.equal(planStep.killed, null, 'a plan step must not be killed by a stop in another chat');
   assert.equal(chatRun.killed, null, 'chat run in chat A must not be killed by stop in chat B');
 

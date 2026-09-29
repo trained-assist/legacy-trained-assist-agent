@@ -416,6 +416,18 @@ function resolvePlanOwner(store, task, depth = 0) {
   return null;
 }
 
+// Owner chat of the plan whose step runs in session `s-plan-<id8>` (#1886) — the
+// scope a chat «Стоп» uses for a durable step, whose run carries no chat itself.
+function planSessionOwnerChat(profileId, sessionId) {
+  const m = /^s-plan-([0-9a-f]{8})$/.exec(String(sessionId || ''));
+  if (!m || !profileId) return null;
+  const store = durableStore();
+  const task = store.db.prepare('SELECT * FROM durable_tasks WHERE profile_id = ? AND id LIKE ? LIMIT 1')
+    .get(String(profileId), `${m[1]}%`);
+  const owner = task ? resolvePlanOwner(store, task) : null;
+  return owner ? owner.chatId : null;
+}
+
 // The last chat the profile talked from — a fallback for plans with no owner chat.
 function profileLastChat(task) {
   try {
@@ -2253,6 +2265,7 @@ module.exports = {
   tickHeartbeat, countOpenLegacy, durableItemCounts, firstFailureNotice, planLabel, bgStepText,
   _bgNotice: bgNotice,
   _resolvePlanOwner: resolvePlanOwner,
+  planSessionOwnerChat,
   DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP,
   CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,
 };
