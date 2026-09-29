@@ -2517,9 +2517,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       sessions.appendReply(user.workDir, activeSessionId, `[прервано: модель зациклилась]\n${partialText}`);
       setCurrentSessionId(user.workDir, activeSessionId, chatId, audience, threadId);
     }
-    // One automatic re-run on Claude instead of asking the user to /switch2klod.
-    const recoveryEngine = loopRecoveryEngine(engine, engineFallbackDone);
-    if (recoveryEngine) {
+    // One automatic re-run on the free OpenCode ladder — never Claude (#1899).
+    const recovery = loopRecoveryEngine(engine, engineFallbackDone);
+    if (recovery) {
       const fallbackMsg = loopFallbackNotice();
       if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, fallbackMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId));
       else await tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId);
@@ -2527,7 +2527,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       _recordFailureAttempt(executionId, {
         taskId, projectId, sessionId: activeSessionId, webExactSession, engine,
         errorText: codexErrorMsg || 'loop guard: repeated identical output',
-        action: 'engine_fallback_to_claude_loop',
+        action: 'engine_fallback_to_free_ladder_loop',
       });
       const queuedRetry = runTask({
         initiatedAt, threadId,
@@ -2537,7 +2537,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         forceClaude,
         initialMsgId: msgId, pinnedMsgId, secrets,
         retryCount, continuationCount, mode, projectId, internalGtd,
-        engine: recoveryEngine,
+        engine: recovery.engine,
+        ocProfile: recovery.ocProfile,
         engineFallbackDone: true,
         stepTimeoutMs,
         executionId,

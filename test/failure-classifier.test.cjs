@@ -137,3 +137,29 @@ test('#1899: OpenCode levels/roles never fall back to Claude/Codex by default', 
     }
   }
 });
+
+// #1899: automatic quality/model escalation never lands a step on Claude/Codex.
+test('#1899: nextDistinctLevel never escalates onto Claude/Codex', () => {
+  const { nextDistinctLevel, DEFAULT_LEVEL_MAP } = require('../src/playbook-executor');
+  for (const lvl of ['bachelor', 'master']) {
+    const item = { executor_role: 'developer', minimum_model_level: lvl, current_model_level: lvl };
+    assert.equal(nextDistinctLevel(item, DEFAULT_LEVEL_MAP), null, `${lvl} must not escalate to doctor/claude`);
+  }
+  const map = { ...DEFAULT_LEVEL_MAP, master: { engine: 'opencode', ocProfile: 'max' } };
+  const item = { executor_role: 'developer', minimum_model_level: 'bachelor', current_model_level: 'bachelor' };
+  assert.equal(nextDistinctLevel(item, map), 'master', 'escalation between OpenCode rungs still works');
+});
+
+test('#1899: QUOTA/model recovery never bumps a step onto the Claude level', async () => {
+  const { recoverDurableItem } = require('../src/durable-recovery');
+  const item = { id: 'i1', task_id: 't1', executor_role: 'developer', minimum_model_level: 'master', current_model_level: 'master', attempt_count: 1, max_attempts: 3 };
+  let bumped = false;
+  const store = {
+    getTaskItem: () => item, bumpModelLevel: () => { bumped = true; },
+    updateTaskItem: (id, patch) => Object.assign(item, patch), escalateItem: () => {},
+  };
+  const task = { profile_id: 'p', acceptance_criteria_json: '{}' };
+  await recoverDurableItem({ store, task, itemId: 'i1', errorText: 'x', classifier: () => ({ class: 'QUOTA' }) });
+  assert.equal(bumped, false, 'master → doctor (Claude) must not happen automatically');
+  assert.equal(item.current_model_level, 'master');
+});
