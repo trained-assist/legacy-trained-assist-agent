@@ -1868,6 +1868,25 @@ function kickDurable() {
 }
 function _setKickDeps(d) { _kickDeps = d; }
 
+// ── Wait tick (durable-wait-latency design §2.1) ────────────────────────────
+// One cheap waitsOnly pass on its own ~30s interval (server.js
+// scheduleGtdController, env DURABLE_WAIT_TICK_MS): it polls ONLY steps parked
+// on an unresolved wait with deterministic validators — no model, no checklists,
+// no crons (legacy gtd/*.json lives in _runDueInner and never runs here, so the
+// checklist heartbeat `tickCount` does not grow on these passes). Goes through
+// the same _durableChain as the 5-min tick and kicks → exactly one claim per
+// step when passes overlap (DW-08). A quiet profile stops after one COUNT.
+async function runWaitTick({ secrets, runTask, isTaskRunning, now = Date.now(), registry = null, freeSlots = null, ...rest } = {}) {
+  let active = 0;
+  try { active = durableStore().countActiveWaits(); }
+  catch (e) { console.error('[gtd-durable] wait tick count error:', e.message); return 0; }
+  if (active === 0) return 0;
+  return runDurableSerialized({
+    ...rest, secrets, runTask, isTaskRunning, now, registry,
+    waitsOnly: true, maxFires: durableBudget(freeSlots),
+  });
+}
+
 // Серверный tick. Аргументы инжектятся из server.js, чтобы модуль не тянул
 // зависимости и был тестируем: { secrets, baseUsersDir, isTaskRunning, runTask, getSession }.
 // Обёртка сериализует проходы (см. _tickInFlight): перекрывающийся тик — no-op.
@@ -2132,6 +2151,7 @@ module.exports = {
   _ghToken, _ghFetch,
   durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
   resumeDurableReply, resumeDurableCrash, planWorkspaceLabel, kickDurable, durableBudget, _setKickDeps,
+  runWaitTick,
   tickHeartbeat, countOpenLegacy, durableItemCounts, firstFailureNotice, planLabel, bgStepText,
   DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP,
   CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,

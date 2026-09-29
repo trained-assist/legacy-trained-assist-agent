@@ -85,6 +85,41 @@ const PASS_ALL = { command_exit_zero: async () => ({ status: 'pass', subject: {}
     ok(store.countActiveWaits() === 0, `a draft plan's wait is not counted (got ${store.countActiveWaits()})`);
   }
 
+  // ── S3: runWaitTick — one serialized waitsOnly pass ─────────────────────────
+  {
+    const { G, store } = fresh('s3-1');
+    ok(typeof G.runWaitTick === 'function', 'gtd-controller exports runWaitTick');
+    const waitTask = activePlan(store, [progItem('Жду CI', {
+      validation: { ci_green: true }, wait: { poll_every_sec: 30, timeout_sec: 3600 } })]);
+    const plainTask = activePlan(store, [progItem('Обычный шаг')]);
+    store.db.prepare('UPDATE task_items SET due_at=? WHERE task_id=?').run(Date.now() - 1000, plainTask);
+    const registry = { ...PASS_ALL, ci_green: async () => ({ status: 'pass', subject: {}, evidence: {} }) };
+    const before = G.tickHeartbeat().tickCount;
+    const fired = await G.runWaitTick({ secrets: {}, runTask: async () => 'x', isTaskRunning: () => false, registry, freeSlots: () => 4 });
+    ok(fired === 1, `the wait tick fires the resolved wait step once (got ${fired})`);
+    ok(store.listTaskItems(waitTask, 'u1')[0].status === 'done', 'a satisfied wait runs and completes the step');
+    ok(store.listTaskItems(plainTask, 'u1')[0].status === 'pending', 'the wait tick does not touch a plain due step');
+    ok(G.tickHeartbeat().tickCount === before, 'the wait tick does not bump the checklist heartbeat (DW-03)');
+  }
+  {
+    const { G, store } = fresh('s3-2');
+    const plainTask = activePlan(store, [progItem('Обычный шаг')]);
+    store.db.prepare('UPDATE task_items SET due_at=? WHERE task_id=?').run(Date.now() - 1000, plainTask);
+    const fired = await G.runWaitTick({ secrets: {}, runTask: async () => 'x', isTaskRunning: () => false, registry: PASS_ALL, freeSlots: () => 4 });
+    ok(fired === 0, `no active waits → the wait tick is a no-op (got ${fired})`);
+    ok(store.listTaskItems(plainTask, 'u1')[0].status === 'pending', 'the quiet wait tick claims nothing');
+  }
+  {
+    const { G, store } = fresh('s3-3');
+    const waitTask = activePlan(store, [progItem('Жду CI', {
+      validation: { ci_green: true }, wait: { poll_every_sec: 30, timeout_sec: 3600 } })]);
+    const registry = { ...PASS_ALL, ci_green: async () => ({ status: 'pass', subject: {}, evidence: {} }) };
+    const deps = { secrets: {}, runTask: async () => 'x', isTaskRunning: () => false, registry, freeSlots: () => 4 };
+    const [a, b] = await Promise.all([G.runWaitTick(deps), G.runWaitTick(deps)]);
+    ok(a + b === 1, `overlapping wait ticks yield one fire (got ${a}+${b})`);
+    ok(store.listTaskItems(waitTask, 'u1')[0].status === 'done', 'the overlapped step completes exactly once');
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 })().catch(e => { console.error(e); process.exit(1); });
