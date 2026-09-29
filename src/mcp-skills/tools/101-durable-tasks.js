@@ -356,6 +356,33 @@ module.exports = {
       },
     },
 
+    task_item_retry: {
+      description:
+        'Restart a durable step that FAILED terminally (e.g. its deterministic check failed and the attempt ' +
+        'budget is spent) once the cause is fixed — the workspace artifact was moved to the plan folder, the ' +
+        'missing file restored. Re-pends the step with a fresh attempt budget; if the whole plan was parked by ' +
+        'the failure it becomes active again. Only a step in status "failed" can be retried.',
+      inputSchema: {
+        type: 'object',
+        required: ['item_id'],
+        properties: {
+          item_id: { type: 'string', description: 'The Step id from the durable prompt' },
+          reason: { type: 'string', description: 'What changed — why the retry is safe' },
+        },
+      },
+      handler: async ({ item_id, reason }, ctx) => {
+        const profileId = requireProfile(ctx);
+        const s = store();
+        const item = s.getTaskItem(item_id);
+        const task = item && s.getTask(item.task_id, profileId);
+        if (!item || !task) return { error: 'item not found (or not owned by this profile)' };
+        if (item.status !== 'failed') return { error: `task_item_retry only restarts a failed step (status=${item.status})` };
+        const retried = s.retryItem(item_id, profileId, { reason: reason ?? null, by: 'agent' });
+        if (!retried) return { error: 'item not found (or not owned by this profile)' };
+        return { item: retried };
+      },
+    },
+
     task_item_exception: {
       description:
         'Close the step you are running NOW as an exception — done differently than the checklist expects, or ' +
