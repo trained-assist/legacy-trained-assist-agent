@@ -60,3 +60,49 @@
 
 - R1. Как именно инструмент из MCP-процесса сессии попадает в сервер, если слот не видит :8080: in-process регистрация тула в core MCP, запущенном сервером, или HTTP на публичный URL с коротким per-session токеном. Решается на шаге дизайна (архитектурная развилка), дефолт — per-session токен, выданный сервером при старте сессии.
 - R2. Где взять sha шлюза: `/health.buildSha` tg-bot должен существовать; если нет — добавить в шлюз (отдельный PR в trained-assist-tg-bot).
+
+## Карта контекста (explore, 2026-09-29)
+
+Проверено по коду на базе `0e4be3b` и на живом проде (agent `d8123d3`, шлюз `e725f65`).
+
+### Точки входа
+| Что | Где | Контракт |
+|---|---|---|
+| Версия агента | `src/server.js:592-594` `GET /health` | `{status, uptime, vm, commit: GIT_COMMIT}` (короткий sha, 7 символов) |
+| Готовность | `src/server.js:599` `GET /readiness` | `{ready, checks, commit}` — можно добавить в prod_status |
+| Версия шлюза | trained-assist-tg-bot `src/index.js:82` `GET /health` | `{status, buildSha}` (полный sha). Живой URL = `MEDIA_GATEWAY_URL` агента (`https://trained-assist-tg-bot.skillset-apply.workers.dev`) — **R2 закрыт, PR в шлюз не нужен** |
+| Новый ран | `src/handlers/web.js:360` `POST /web/run-bearer` | Bearer `WEB_VERIFY_SECRET‖AGENT_SECRET`, body `{username, task, sessionId?, projectId?, requestId?}` → SSE |
+| Продолжение | `src/handlers/web.js:410` `POST /web/reply-bearer` | `{username, id, message, requestId?}`; неизвестная сессия → 404 |
+| Стоп | `src/handlers/web.js:459` `POST /web/stop-bearer` | для таймаута qa_user_send |
+| След сессии | `src/handlers/web.js:278` `POST /web/session-trace` → `getTraceFor` (`src/web-routes.js`, `src/session-trace.js:136 readTrace`) | `{events, byMessage}` |
+| Сжатый лог | `src/handlers/web.js:303` `POST /web/session-digest` → `src/session-digest.js buildDigest` | один дешёвый LLM-вызов, кэш на диске |
+| SSE рана | `src/web-routes.js:394 streamWebTask` | события `session{sessionId}`, `chunk{text}`, `progress`, `done{sessionId}`, `error` |
+| Кнопки ответа | `src/runner/index.js:2994-3032` (answer-actions `extractAnswerActions`/`actionsMarkup`) | в журнал пишется `[buttons] session=… reason=… attached=[labels]` (без callback) |
+| История исполнений | `src/execution-history.js` (`$AGENT_DATA_DIR/execution-history/<executionId>`) | append-only попытки |
+
+### Как инструмент достаёт до сервера (R1 — закрыт)
+MCP-серверы (trained-skills и др.) уже работают **под сервисным пользователем**, не в слоте: `src/agent-mcp-bridge.js` (#1649) — слот видит только unix-сокет и `AGENT_RUN_TOKEN`. У MCP-процесса есть `AGENT_SECRET`, `AGENT_PUBLIC_URL` (`src/browser.js:147 mcpToolEnv`), localhost:8080 и журнал (vova в группе `adm`, `journalctl -u assist-agent` без sudo). Прецедент вызова сервера из тула: `05-session.js:143-152` (extend-timeout с `AGENT_RUN_TOKEN`), маршруты с проверкой scope — `src/server.js:655`, `:666`, `src/agent-run-tokens.js` (`{taskId, username}`).
+Вывод: новый механизм токенов не нужен. Лучший вариант — серверный маршрут `/qa/*` принимает `AGENT_RUN_TOKEN`, сам выводит `qa-<scope.username>` и вызывает внутренние функции (`streamWebTask`/`getTraceFor`) напрямую. Тогда имя реального клиента нельзя подставить даже багом в туле.
+
+### Переиспользуем
+- `streamWebTask` + `claimWebMutation` (идемпотентность по `requestId`) — вместо своего запуска рана.
+- `getTraceFor` / `buildDigest` — основа qa_trace.
+- `agent-run-tokens` — авторизация и определение caller.
+- `src/mainstream-tester/fake-telegram.js` — только как референс; на проде не используем.
+- Классификатор кнопок answer-actions — единый источник, тот же, что для Telegram.
+
+### Реальные ограничения (не «так написано»)
+1. `/web/*-bearer` — контракт с воркером session-manager (app.trainedassist.store): менять сигнатуры нельзя, только добавлять.
+2. Слоты `ta-agent-N` не видят :8080 и секреты (#1818) — логика живёт на сервере/MCP.
+3. Журнал сервера в UTC, пользователь в МСК.
+4. `GIT_COMMIT` агента короткий, `buildSha` шлюза полный — сравнивать через `git merge-base --is-ancestor` по полному sha из GitHub API.
+5. Тестовые профили не должны плодиться в `~/users` (урок #1853: 64 профиля `mt*`) — один `qa-<caller>` на вызывающего.
+
+### Найденные пробелы (в дизайн)
+- **Кнопки в веб-ране**: в SSE нет события с кнопками; `[buttons]` в журнале без callback. Нужно аддитивное SSE-событие `buttons{label, callback}` из точки `runner/index.js:~3016`, иначе LB-02 не выполнить. Надо проверить, доходит ли chatless веб-ран до этого блока (`#1384`: веб-раны не зовут Telegram).
+- **Маркера тест-профиля нет** (в `profiles.js`, `data-paths.js` нет понятия test profile). Нужен явный признак (префикс `qa-` + флаг в профиле), по которому доставка в Telegram/рассылки/cron для профиля выключены.
+- **Нет общего rate-limit хелпера** — лимит 20/час делаем простым счётчиком на диске по caller.
+- `WEB_CONVREF_CANARY` (`src/core/web-conversation.js:34`) влияет на то, когда известен sessionId: для `qa-*` его нужно включить, чтобы sessionId приходил сразу.
+
+### История
+- #1851 (эпик, open) — источник среза. #1365/#1378/#1384/#1387/#1525 — веб-раны: точная сессия, chatless, 404 на неизвестную сессию, дубль requestId. #1853 (open) — изоляция тест-профилей mainstream-tester. #1649 — изоляция слотов + MCP-мост. Отклонённых попыток сделать qa-тулы не найдено.
