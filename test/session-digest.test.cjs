@@ -239,8 +239,10 @@ test('getDigestFor: a cache written by an older digest format is not trusted', a
   const wd = userWorkDir('carol');
   fs.mkdirSync(path.join(wd, 'sessions'), { recursive: true });
   const messages = [
-    { role: 'user', content: 'привет', at: T0 },
-    { role: 'assistant', content: 'привет', at: T0 + MIN },
+    // Two substantive messages: since #1893 a «привет»-only session is empty
+    // («Лог недоступен», no LLM) and would never reach the cache path under test.
+    { role: 'user', content: 'Подготовь сводку по клиенту Ромашка', at: T0 },
+    { role: 'assistant', content: 'Сводка по клиенту Ромашка готова.', at: T0 + MIN },
   ];
   fs.writeFileSync(path.join(wd, 'sessions', 's_old.json'), JSON.stringify({ id: 's_old', messages }));
 
@@ -273,4 +275,54 @@ test('endpoint twins are wired: cookie GET, bearer POST, server whitelist', () =
   assert.match(read('src/web-routes.js'), /\\\/digest\$/, 'GET /web/session/:id/digest route');
   assert.match(read('src/handlers/web.js'), /\/web\/session-digest/, 'POST /web/session-digest bearer twin');
   assert.match(read('src/server.js'), /'\/web\/session-digest'/, 'bearer path whitelisted in server.js');
+  // #1893: trace twins pass the new source/reasoning fields through (additive).
+  assert.match(read('src/web-routes.js'), /source: trace\.source, reasoning: trace\.reasoning/, 'cookie trace passes source/reasoning');
+  assert.match(read('src/handlers/web.js'), /source: trace\.source, reasoning: trace\.reasoning/, 'bearer trace passes source/reasoning');
+});
+
+// ── #1893: honest digest — empty marker + deterministic facts ──────────────
+test('isEmptySession: no events + «привет» is empty; events, two real messages or a contact are not', () => {
+  const { isEmptySession } = digestMod();
+  assert.equal(isEmptySession([], [{ role: 'user', content: 'привет' }]), true);
+  assert.equal(isEmptySession([], []), true);
+  assert.equal(isEmptySession([{ kind: 'text', text: 'x' }], []), false);
+  assert.equal(isEmptySession([], [{ content: 'Подготовь сводку по клиенту Ромашка' }, { content: 'Сводка по клиенту Ромашка готова.' }]), false);
+  assert.equal(isEmptySession([], [{ content: 'позвони +7 916 123-45-67' }]), false);
+});
+
+test('buildFacts: files, sites, repos, commands, publications, reasoning as short context', () => {
+  const { buildFacts } = digestMod();
+  const tool = (t, input, output = '') => ({ kind: 'tool', tool: t, input: JSON.stringify(input), output });
+  const facts = buildFacts([
+    { kind: 'reasoning', text: 'Сначала прочитаю бриф, потом проверю компанию на checko. '.repeat(10) },
+    tool('read', { filePath: '/p/brief.md' }),
+    tool('edit', { filePath: '/p/brief.md' }),
+    tool('webfetch', { url: 'https://checko.ru/x' }),
+    tool('bash', { command: 'gh pr view 12 --repo trained-assist/trained-assist-web' }),
+    tool('engineering-skills_github_pr_checks', { repo: 'trained-assist/trained-assist-agent' }),
+    tool('trained-skills_publish_page', { slug: 's' }, '{"url":"https://pages.x/s"}'),
+    tool('trained-skills_tg_send_file', { path: '/p/r.pdf' }),
+  ]);
+  const by = Object.fromEntries(facts.map(f => [f.family, f.items]));
+  assert.deepEqual(by.files, ['/p/brief.md'], 'deduped path');
+  assert.deepEqual(by.web, ['https://checko.ru/x']);
+  assert.deepEqual(by.github.sort(), ['trained-assist/trained-assist-agent', 'trained-assist/trained-assist-web']);
+  assert.deepEqual(by.bash, ['gh pr view 12 --repo trained-assist/trained-assist-web']);
+  assert.deepEqual(by.send, ['https://pages.x/s', 'tg_send_file: /p/r.pdf']);
+  assert.equal(by.context.length, 1);
+  assert.ok(by.context[0].length <= 201, 'long reasoning is cut to a short context line');
+});
+
+test('pass B prompt forbids verdicts and carries the facts', () => {
+  const { buildDigest } = digestMod();
+  let prompt = '';
+  return digestMod().summarizeDigest(
+    buildDigest({ events: [{ kind: 'tool', tool: 'read', input: '{"filePath":"/p/a.md"}', at: 1 }], messages: [] }),
+    { llm: async p => { prompt = p; return null; } },
+  ).then(r => {
+    assert.match(prompt, /Не давай оценок/);
+    assert.match(prompt, /\/p\/a\.md/);
+    assert.equal(r.degraded, true);
+    assert.ok(r.facts.length, 'facts survive a failed pass B');
+  });
 });
