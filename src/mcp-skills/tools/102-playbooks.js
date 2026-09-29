@@ -410,15 +410,12 @@ module.exports = {
         if (args.project_id && !projects.getProject(userWorkDir(profileId), args.project_id)) {
           throw playbookError('PROJECT_NOT_FOUND', `проект «${args.project_id}» не найден`);
         }
-        let owner = null;
-        const sid = args.session_id || process.env.AGENT_SESSION_ID || null;
-        if (sid) {
-          const sess = require('../../session-store').getSession(userWorkDir(profileId), sid);
-          const chatId = sess ? (sess.liveChatId ?? sess.ownerChatId) : null;
-          if (chatId != null) owner = { chatId, audience: sess.audience || 'default', threadId: sess.threadId || null };
-        }
+        // #1886: the batch (and every child) belongs to the launching session's chat.
+        const origin = require('./101-durable-tasks')._planOrigin(profileId, args.session_id);
+        const owner = origin.origin_chat;
         const res = fanout.createBatch(batchStore(), {
           profileId, playbook, elements, title: args.title || null, projectId: args.project_id || null, owner,
+          originSessionId: origin.session_id,
           skipStages: args.skip_stages || [], exclusiveStages: args.exclusive_stages || [],
           projectType: args.project_type || 'generic', projectMode: args.project_mode || 'per_item',
           concurrency: args.concurrency ?? null,

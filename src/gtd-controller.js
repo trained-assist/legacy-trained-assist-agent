@@ -367,21 +367,72 @@ function settleTaskCompletion(store, task) {
 // recorded skipped and the task is unaffected (a notification is not part of the
 // work's acceptance criteria).
 
-// Owner chat for a notify hook: the profile's session attached to the task, or
-// the last chat the profile talked from. Audience-aware delivery picks the bot.
-function resolveOwnerTarget(store, task) {
+// Owner chat of a plan (#1886): the chat the plan was started from.
+//   1. origin_session_id → that session's current chat (the dialog may have moved);
+//      a plan started from inside another plan's step (s-plan-<id8>) → that plan's owner;
+//   2. origin_chat_json — the snapshot taken at creation (session file deleted);
+//   3. the parent plan (fanout child) — same resolution, up to OWNER_DEPTH levels;
+//   4. legacy task_sessions attachment (plans created before #1886).
+// null = the plan has no owner chat; callers pick their own fallback.
+const OWNER_DEPTH = 5;
+function sessionChat(profileId, sessionId) {
+  const sess = require('./session-store').getSession(userWorkDir(profileId), sessionId);
+  const chatId = sess ? (sess.liveChatId ?? sess.ownerChatId) : null;
+  return chatId != null ? { chatId, audience: sess.audience || 'default', threadId: sess.threadId || null } : null;
+}
+
+function resolvePlanOwner(store, task, depth = 0) {
+  if (!task || depth > OWNER_DEPTH) return null;
+  try {
+    if (task.origin_session_id) {
+      const live = sessionChat(task.profile_id, task.origin_session_id);
+      if (live) return live;
+      const m = /^s-plan-([0-9a-f]{8})$/.exec(task.origin_session_id);
+      if (m) {
+        const host = store.db.prepare('SELECT * FROM durable_tasks WHERE profile_id = ? AND id LIKE ? LIMIT 1')
+          .get(task.profile_id, `${m[1]}%`);
+        const viaHost = host && host.id !== task.id ? resolvePlanOwner(store, host, depth + 1) : null;
+        if (viaHost) return viaHost;
+      }
+    }
+  } catch { /* session store unreadable → snapshot */ }
+  try {
+    const snap = task.origin_chat_json ? JSON.parse(task.origin_chat_json) : null;
+    if (snap && snap.chatId != null) return { chatId: snap.chatId, audience: snap.audience || 'default', threadId: snap.threadId || null };
+  } catch { /* corrupt snapshot */ }
+  if (task.parent_task_id) {
+    try {
+      const parent = store.getTask(task.parent_task_id, task.profile_id);
+      const viaParent = resolvePlanOwner(store, parent, depth + 1);
+      if (viaParent) return viaParent;
+    } catch { /* parent gone */ }
+  }
   try {
     for (const s of store.listSessions(task.id, task.profile_id)) {
-      const sess = require('./session-store').getSession(userWorkDir(task.profile_id), s.session_id);
-      const chatId = sess ? (sess.liveChatId ?? sess.ownerChatId) : null;
-      if (chatId != null) return { chatId, audience: sess.audience || 'default', threadId: sess.threadId || null };
+      const chat = sessionChat(task.profile_id, s.session_id);
+      if (chat) return chat;
     }
-  } catch { /* fall through to .chatid */ }
+  } catch { /* legacy table unreadable */ }
+  return null;
+}
+
+// The last chat the profile talked from — a fallback for plans with no owner chat.
+function profileLastChat(task) {
   try {
     const c = fs.readFileSync(path.join(TOKENS_ROOT, String(task.profile_id), '.chatid'), 'utf8').trim();
     if (c) return { chatId: c, audience: 'default', threadId: null };
   } catch { /* no chat on record */ }
   return null;
+}
+
+// Owner chat for a notify hook: the plan's owner chat, else the last chat the
+// profile talked from. Audience-aware delivery picks the bot.
+function resolveOwnerTarget(store, task) {
+  const owner = resolvePlanOwner(store, task);
+  if (owner) return owner;
+  const last = profileLastChat(task);
+  if (last && task?.id) console.log(`[gtd] owner-fallback .chatid task=${String(task.id).slice(0, 8)}`);
+  return last;
 }
 
 // ── Background step notifications (owner 29.09) ─────────────────────────────
@@ -393,10 +444,12 @@ async function bgNotice(secrets, task, text) {
   try {
     if (!task?.profile_id || !isBgNotifyEnabled(task.profile_id)) return { sent: false, reason: 'disabled' };
     const flag = readBgNotify(task.profile_id) || {};
-    const owner = resolveOwnerTarget(durableStore(), task);
-    const target = flag.chatId != null
-      ? { chatId: flag.chatId, audience: flag.audience || owner?.audience || 'default', threadId: flag.threadId ?? owner?.threadId ?? null }
-      : owner;
+    // #1886: the plan's own chat wins; the flag's chat (where notifications were
+    // switched on) only catches plans with no owner chat.
+    const owner = resolvePlanOwner(durableStore(), task);
+    const target = owner
+      || (flag.chatId != null ? { chatId: flag.chatId, audience: flag.audience || 'default', threadId: flag.threadId ?? null } : null)
+      || resolveOwnerTarget(durableStore(), task);
     if (!target) return { sent: false, reason: 'no_chat_id' };
     const routeSecrets = require('./bot-delivery').deliverySecrets(secrets || {}, target.audience || 'default');
     const token = routeSecrets?.TELEGRAM_BOT_TOKEN || routeSecrets?.BOT_TOKEN;
@@ -2199,6 +2252,7 @@ module.exports = {
   runWaitTick,
   tickHeartbeat, countOpenLegacy, durableItemCounts, firstFailureNotice, planLabel, bgStepText,
   _bgNotice: bgNotice,
+  _resolvePlanOwner: resolvePlanOwner,
   DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP,
   CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,
 };

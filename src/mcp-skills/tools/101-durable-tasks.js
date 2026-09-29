@@ -30,12 +30,15 @@ function requireProfile(ctx) {
 
 // Resolve references only beneath the authenticated profile. Never trust an
 // incoming profile_id or a caller-supplied filesystem path.
+const safeId = value => typeof value === 'string' && value.length > 0 && value !== '.' && value !== '..' && !/[\\/\0]/.test(value);
+
+function ownedBy(profileId, file) {
+  try { return fs.realpathSync(file).startsWith(fs.realpathSync(userWorkDir(profileId)) + path.sep); } catch { return false; }
+}
+
 function checkReferences(profileId, projectId, sessionId) {
-  const safeId = value => typeof value === 'string' && value.length > 0 && value !== '.' && value !== '..' && !/[\\/\0]/.test(value);
   const root = userWorkDir(profileId);
-  const ownedPath = file => {
-    try { return fs.realpathSync(file).startsWith(fs.realpathSync(root) + path.sep); } catch { return false; }
-  };
+  const ownedPath = file => ownedBy(profileId, file);
   if (projectId && (!safeId(projectId) || !ownedPath(path.join(root, 'projects', projectId)) || !getProject(root, projectId))) {
     throw new Error('project not found in this profile');
   }
@@ -59,6 +62,22 @@ function sessionProjectId(profileId, sessionId) {
   } catch { return null; }
 }
 
+// #1886: a plan belongs to the chat it was started from. The owner session is the
+// explicit session_id, else the caller's own session (AGENT_SESSION_ID — the model
+// rarely passes session_id). A missing/foreign env session is ignored, never an error.
+// The chat snapshot survives the session file being deleted.
+function planOrigin(profileId, sessionId) {
+  const sid = sessionId || process.env.AGENT_SESSION_ID || null;
+  if (!sid || !safeId(sid) || !ownedBy(profileId, sessionFilePath(profileId, sid))) return { session_id: null, origin_chat: null };
+  try {
+    const sess = JSON.parse(fs.readFileSync(sessionFilePath(profileId, sid), 'utf8'));
+    const chatId = sess ? (sess.liveChatId ?? sess.ownerChatId ?? null) : null;
+    const origin_chat = chatId == null ? null
+      : { chatId, audience: sess.audience || 'default', threadId: sess.threadId || null };
+    return { session_id: sid, origin_chat };
+  } catch { return { session_id: sid, origin_chat: null }; }
+}
+
 function withProjection(result, profileId) {
   if (!result.task.project_id || !result.task.acceptance_criteria_json) return result;
   try {
@@ -75,6 +94,7 @@ function withProjection(result, profileId) {
 
 module.exports = {
   _sessionProjectId: sessionProjectId,
+  _planOrigin: planOrigin,
   tools: {
 
     task_create: {
@@ -108,7 +128,8 @@ module.exports = {
         checkReferences(profileId, project_id, plan.session_id);
         const id = crypto.randomUUID();
         if (Object.keys(plan).length) {
-          const result = store().createPlan({ ...plan, id, profile_id: profileId, project_id, goal });
+          const origin = planOrigin(profileId, plan.session_id);
+          const result = store().createPlan({ ...plan, ...origin, id, profile_id: profileId, project_id, goal });
           return withProjection(result, profileId);
         }
         const task = store().createTask({ id, profile_id: profileId, project_id, goal });
