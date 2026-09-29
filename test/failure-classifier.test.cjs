@@ -110,3 +110,21 @@ test('classify(): falls through to Stage B when Stage A finds nothing', async ()
   assert.equal(r.class, 'MODEL_ERROR');
   assert.equal(r.source, 'llm');
 });
+
+// 2026-09-29: Go weekly limit + OpenRouter credits at zero → llm-ladder answered "every rung
+// failed". Unclassified, it went down the quality path (UNKNOWN) and retried the dead ladder;
+// as CONFIG the durable executor skips OpenCode and runs the level's Claude fallback at once.
+test('deterministic: exhausted llm-ladder is CONFIG (engine switch, not a retry)', () => {
+  assert.equal(classifyDeterministic('no DURABLE terminal marker in reply: ⚠️ OpenCode завершился с ошибкой: every rung failed').class, 'CONFIG');
+  assert.equal(classifyDeterministic('ladder_exhausted: 502 ladder_error').class, 'CONFIG');
+  assert.equal(classifyDeterministic('⛔ Вся лестница моделей «deepseek» временно недоступна (все ступени отказали в llm-ladder)').class, 'CONFIG');
+});
+
+test('playbook levels on OpenCode fall back to Claude', () => {
+  const { resolveStepExecution } = require('../src/playbook-executor');
+  for (const [role, level] of [['developer', 'bachelor'], ['reviewer', 'master'], ['researcher', 'bachelor']]) {
+    const r = resolveStepExecution({ executor_role: role, minimum_model_level: level }, { roleMap: {} });
+    assert.equal(r.engine, 'opencode', `${role}/${level} primary`);
+    assert.deepEqual(r.fallbacks.map(f => f.engine), ['claude'], `${role}/${level} fallback`);
+  }
+});

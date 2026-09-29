@@ -433,7 +433,7 @@ async function runEngineProcess(opts) {
       // Fresh per spawn: tells apart the runs of one task (resume/retry) in the ladder's
       // call log (x-ladder-run, see src/opencode-ladder-provider.js).
       AGENT_RUN_ID: require('crypto').randomUUID(),
-      AGENT_TRACE_CHAT: String(chatId),
+      AGENT_TRACE_CHAT: require('../opencode-ladder-provider').traceChat(chatId),
       // Session identity for checklist ownership (#1729 BV-08): a new `Goal:` section in the
       // project's checklist.md is signed `Owner-session: $AGENT_SESSION_ID`.
       ...(sessionId ? { AGENT_SESSION_ID: String(sessionId) } : {}),

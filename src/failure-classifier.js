@@ -24,6 +24,11 @@ const RULES = [
   { class: 'CONFIG', pattern: /subscription required/i },
   { class: 'CONFIG', pattern: /requires global regions/i },
   { class: 'CONFIG', pattern: /insufficient account funds/i },
+  // The llm-ladder worker already tried every rung (all Go keys, paid OpenRouter tail) and all
+  // refused — in practice Go weekly limit + OpenRouter credits at zero (2026-09-29). Retrying the
+  // same engine cannot help until an operator tops up / the quota resets, so it is CONFIG: the
+  // durable executor then skips OpenCode for this step and runs the level's fallback engine.
+  { class: 'CONFIG', pattern: /every rung failed|ladder_exhausted|все ступени отказали/i },
 
   // AUTH — credentials/session invalid.
   { class: 'AUTH', pattern: /not logged in/i },
