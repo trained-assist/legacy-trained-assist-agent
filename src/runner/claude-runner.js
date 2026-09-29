@@ -15,6 +15,7 @@ const os = require('os');
 const { keepaliveFilePath, lastKeepaliveAt } = require('../mcp-keepalive');
 const { prepareEngineSpawn } = require('./engine-isolation');
 const { stopEngineProcess } = require('./engine-stop');
+const traceStore = require('../session-trace-store');
 
 const STREAM_INTERVAL_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 3000;
@@ -381,6 +382,18 @@ function formatToolActivity(name, input = {}) {
  *     lastActivity, exitCode, processSignal, processError, timedOut,
  *     inactivityKill, outputPersistenceError, codexErrorMsg, sessionState }
  */
+// Durable «Полный лог» (#1893): every opencode part the stream parser sees is
+// appended to the profile's session-trace-store, so the log survives the engine
+// db being rotated/recreated. Best-effort: appendEvent never throws, and the
+// try/catch keeps even a broken store out of the run's way.
+const PERSISTED_OC_EVENTS = new Set(['text', 'tool_use', 'step_start', 'step_finish']);
+function persistOpencodePart(workDir, engineSessionId, event, taskId) {
+  try {
+    if (!workDir || !engineSessionId || !event || !PERSISTED_OC_EVENTS.has(event.type) || !event.part) return false;
+    return traceStore.appendEvent(workDir, 'opencode', engineSessionId, event.part, { taskId });
+  } catch { return false; }
+}
+
 async function runEngineProcess(opts) {
   const {
     engine, taskId, chatId, thinkingStart, msgId, BOT_TOKEN, secrets, user, threadId,
@@ -747,6 +760,7 @@ async function runEngineProcess(opts) {
           }
         }
         if (engine === 'opencode') {
+          persistOpencodePart(user?.workDir, event.sessionID || engineSessionId, event, taskId);
           if (event.type === 'text' && typeof event.part?.text === 'string') {
             fullOutput.text += event.part.text;
             lastAssistantMsg = fullOutput.text;
@@ -1105,6 +1119,7 @@ async function runEngineProcess(opts) {
 }
 
 module.exports = {
+  persistOpencodePart,
   runEngineProcess,
   isNoopBash,
   buildEngineCommand,
