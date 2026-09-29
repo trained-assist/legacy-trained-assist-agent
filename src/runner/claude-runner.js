@@ -87,12 +87,16 @@ const LOOP_GUARD_TEXT_MIN_LEN = 20; // ignore tiny echo fragments; count only me
 // engine's wall-clock budget. The graceful warning fires 2 min before the kill,
 // floored at 30s so a very short budget still gets a warning beat. No option /
 // a non-positive value keeps the historical fixed 40-min / 38-min pair.
-function computeEngineTimeoutMs(timeoutMs) {
+// warnMs (optional, #1856 wrap_up): explicit graceful-signal moment for a short
+// budget where «2 min before the kill» would fire almost immediately.
+function computeEngineTimeoutMs(timeoutMs, warnMs = null) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     return { hardTimeoutMs: CLAUDE_TIMEOUT_MS, warnTimeoutMs: WARN_TIMEOUT_MS };
   }
   const hardTimeoutMs = Math.min(timeoutMs, CLAUDE_TIMEOUT_MS);
-  const warnTimeoutMs = Math.max(30_000, hardTimeoutMs - 2 * 60 * 1000);
+  const warnTimeoutMs = Number.isFinite(warnMs) && warnMs > 0 && warnMs < hardTimeoutMs
+    ? warnMs
+    : Math.max(30_000, hardTimeoutMs - 2 * 60 * 1000);
   return { hardTimeoutMs, warnTimeoutMs };
 }
 
@@ -229,7 +233,10 @@ const OC_PRIMARY_AGENTS = new Set(['build']);
 
 // Build the argv for the selected engine (claude/codex/opencode).
 // Returns [bin, args].
-function buildEngineCommand({ engine, prompt, systemPromptText, ocSystemPrompt, opencodeModel, ocProfile = null, mcpConfig, systemPromptFile, user = {}, cwd, resumeSessionId = null, ocRole = null }) {
+// disallowedTools (optional, #1856 wrap_up): claude-only deny list (--disallowedTools).
+// opencode gets the same restriction via `tools` in its per-invocation config
+// (ocProfileOverrides); codex has no per-run tool switch — prompt-only there.
+function buildEngineCommand({ engine, prompt, systemPromptText, ocSystemPrompt, opencodeModel, ocProfile = null, mcpConfig, systemPromptFile, user = {}, cwd, resumeSessionId = null, ocRole = null, disallowedTools = null }) {
   const opencodeModelResolved = opencodeModel || process.env.OPENCODE_MODEL || null;
   // `cwd` is the runner-resolved code dir (see resolveEngineCwd); falling back to
   // user.cwd/user.workDir keeps callers that don't pass it (hermes, tests) working.
@@ -291,6 +298,7 @@ function buildEngineCommand({ engine, prompt, systemPromptText, ocSystemPrompt, 
     '--verbose',
     '--mcp-config', mcpConfig,
     ...(systemPromptFile && fs.existsSync(systemPromptFile) ? ['--append-system-prompt-file', systemPromptFile] : []),
+    ...(Array.isArray(disallowedTools) && disallowedTools.length ? ['--disallowedTools', disallowedTools.join(',')] : []),
     '--print', prompt,
   ]];
 }
@@ -362,9 +370,10 @@ async function runEngineProcess(opts) {
     cleanEnv, userTokens, sessionFilePath, sessionId, restartShutdown, activeTimers, consumePendingStop = null,
     tgEdit, tgSend, outputCallback, engineBin, engineArgs, cwd, env, mcpConfig,
     ocProfileOverrides, onHeartbeat, onEngineSessionId, onProgress, timeoutMs = null,
-    bridgedServers = null,
+    bridgedServers = null, warnTimeoutMs: warnOverrideMs = null, maxToolCalls = null,
   } = opts;
-  const { hardTimeoutMs, warnTimeoutMs } = computeEngineTimeoutMs(timeoutMs);
+  const { hardTimeoutMs, warnTimeoutMs } = computeEngineTimeoutMs(timeoutMs, warnOverrideMs);
+  const warnLeftMin = Math.max(1, Math.round((hardTimeoutMs - warnTimeoutMs) / 60000));
   // Forum topics (#255): fresh progress/warning sends stay in the originating topic.
   // Only new messages need it; edits target an existing message already in the topic.
   const runThreadId = Number.isInteger(threadId) && threadId > 0 ? threadId : null;
@@ -503,6 +512,21 @@ async function runEngineProcess(opts) {
   // inactivityKill/timedOut pattern so the caller can distinguish a genuine loop from a
   // timeout and reply accordingly (no auto-continuation for a loop — it would just loop).
   let loopKilled = false;
+  // Tool budget (#1856 wrap_up): the run may call at most `maxToolCalls` tools; the
+  // next one ends it (SIGTERM, reported as a timeout so the caller's ceiling branch
+  // delivers whatever was written). null = unlimited (every other run).
+  let toolCalls = 0;
+  let toolBudgetKilled = false;
+  const countToolCall = (label) => {
+    if (!Number.isFinite(maxToolCalls) || maxToolCalls < 0) return;
+    toolCalls++;
+    if (toolCalls > maxToolCalls && !toolBudgetKilled && !timedOut) {
+      toolBudgetKilled = true;
+      timedOut = true;
+      console.warn(`[${taskId}] tool budget exhausted (${toolCalls - 1}/${maxToolCalls}, next: ${label}) — SIGTERM`);
+      try { proc.kill('SIGTERM'); } catch {}
+    }
+  };
   let lastOcTextPart = null;
   let ocTextRepeatCount = 0;
   let lastOcToolSig = null;
@@ -748,6 +772,7 @@ async function runEngineProcess(opts) {
               lastOcToolSig = ocSig;
               ocToolRepeatCount = 1;
             }
+            countToolCall(ocTool);
             const ocLabel = formatToolActivity(ocTool === 'bash' ? 'Bash' : ocTool === 'read' ? 'Read' : ocTool === 'write' ? 'Write' : ocTool === 'edit' ? 'Edit' : ocTool === 'glob' || ocTool === 'grep' ? 'WebSearch' : ocTool, ocInput);
             lastActivity = ocLabel;
             reportProgress(ocLabel);
@@ -868,6 +893,7 @@ async function runEngineProcess(opts) {
               turnText += block.text;
               if (outputCallback) try { outputCallback(block.text); } catch {}
             } else if (block.type === 'tool_use') {
+              countToolCall(block.name);
               lastActivity = formatToolActivity(block.name, block.input);
               reportProgress(lastActivity);
               if (!outputStarted && msgId) {
@@ -930,12 +956,12 @@ async function runEngineProcess(opts) {
       // auto-continuation (not just when SIGKILL fires at the hard cap).
       const warnTimer = setTimeout(() => {
         timedOut = true;
-        console.log(`[${taskId}] timeout warning — sending SIGTERM, 2 min left`);
+        console.log(`[${taskId}] timeout warning — sending SIGTERM, ${warnLeftMin} min left`);
         try { proc.kill('SIGTERM'); } catch {}
         const warnMin = Math.round(warnTimeoutMs / 60000);
         const engineLabel = engine === 'codex' ? 'Кодекс' : engine === 'opencode' ? 'OpenCode' : 'Клод';
         sendT(BOT_TOKEN, chatId,
-          `⚠️ ${engineLabel} работает уже ${warnMin} минут — через 2 мин задача принудительно завершится.\n` +
+          `⚠️ ${engineLabel} работает уже ${warnMin} минут — через ${warnLeftMin} мин задача принудительно завершится.\n` +
           `Получил сигнал завершить текущий шаг и вывести итоги.`
         ).catch(() => {});
       }, warnTimeoutMs);
@@ -1044,7 +1070,7 @@ async function runEngineProcess(opts) {
     fullOutput, lastAssistantMsg, claudeResult, claudeErrorText, engineSessionId, terminalSuccess,
     claudeUsage, opencodeUsage, opencodeBreakdown, claudeModel,
     lastActivity, exitCode, processSignal, processError, timedOut,
-    inactivityKill, loopKilled, outputPersistenceError, codexErrorMsg, sessionState,
+    inactivityKill, loopKilled, toolBudgetKilled, outputPersistenceError, codexErrorMsg, sessionState,
   };
 }
 

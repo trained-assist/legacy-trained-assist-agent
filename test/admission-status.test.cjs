@@ -52,6 +52,10 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
     stopUserTask: () => false,
     // module-level runner helpers the /stop block calls (#1800 stop-trace gate)
     stopTracesFor: () => 0,
+    // #1856 closure verdicts: the slice classifies «хватит / ты уже всё нашёл»
+    // before admission — real pure modules, no I/O.
+    answerRouter: require('../src/answer-router'),
+    closureIntent: require('../src/closure-intent'),
     legacyAdmissionScopes: args => { scopeCalls.push(args); return ['lane:test']; },
     getCurrentSessionId: () => null,
     sessions: {

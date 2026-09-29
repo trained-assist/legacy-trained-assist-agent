@@ -1003,6 +1003,11 @@ async function main() {
       // stopTracesFor ставит всегда, в т.ч. в пустом чате) — НЕ остановка:
       // иначе шлюз не отличит «⛔ Остановлено» от «🤷 Нет активной задачи» (SS-03).
       const stopped = killed > 0 || idleRuns > 0 || gtdCancelled > 0;
+      // #1856: Стоп при пустом агенте (ран уже кончился, сообщение ждало в буфере
+      // шлюза) раньше не оставлял следа в журнале — такие стопы были невидимы.
+      if (killed === 0) {
+        console.log(`[stop] nothing running user=${username} chat=${chatId ?? '-'} audience=${audience || 'default'}${threadId ? ` thread=${threadId}` : ''} idle=${idleRuns} gtd=${gtdCancelled}`);
+      }
       return json(res, 200, {
         ok: true,
         // killed — прежняя семантика (сколько процессов получили сигнал), её
@@ -1423,6 +1428,12 @@ async function main() {
         const lastAssistant = loadLastAssistant({ username, chatId, threadId });
         const result = await checkCompleteness(text, secrets.OPENROUTER_API_KEY, { lastAssistant });
         routerShadow.record({ completeness: result?.level || null, complete: !!result?.complete });
+        // #1856: wrap_up судьи (в т.ч. LLM-вердикт по неоднозначной фразе) доводим до
+        // рана — шлюз передаёт в /run только текст, runner заберёт подсказку по нему.
+        if (result?.closure === 'wrap_up') {
+          try { require('./closure-intent').rememberClosure({ username, chatId, threadId, text, closure: 'wrap_up' }); }
+          catch (e) { console.warn('[intake-gate] closure hint:', e.message); }
+        }
         return json(res, 200, result);
       } catch (e) {
         console.error('[intake-gate] error:', e.message);

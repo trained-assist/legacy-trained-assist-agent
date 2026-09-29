@@ -41,6 +41,7 @@ const { TOKENS_ROOT } = require('../data-paths');
 // a run is journaled — see the block comment in _runTaskInner.
 const { isProfileLocked, waitForProfileUnlocked } = require('../profile-lock');
 const answerRouter = require('../answer-router');
+const closureIntent = require('../closure-intent');
 const promptDomains = require('../prompt-domains');
 // Slice C of #1573: offer the audience-default playbook at the start of a
 // development-like task. Returns '' unless a playbook is actually available, so
@@ -771,8 +772,30 @@ async function _runTaskInner(opts) {
   // checklist-autologin link back instead of an engine run (3 attempts in 2 s, and the
   // autologin token leaked into the step evidence). Found by the playbooks e2e.
   const humanInput = !opts.internalGtd;
+  // Закрывающие реплики (#1856): «хватит, не надо» — это стоп (как /stop), а
+  // «ты уже всё нашёл / давай итог» — финализация (mode=wrap_up). Проверяется и
+  // для mode=deep (запуск из накопителя шлюза / sticky-проработка — ровно путь
+  // инцидента); clarify и прочие явные режимы не перебиваем. Внутренние хопы
+  // (продолжения/ретраи) несут свой префикс или уже mode=wrap_up и сюда не
+  // матчатся. Подсказка судьи intake (LLM wrap_up) забирается одноразово.
+  const closureEligibleMode = !opts.mode || answerRouter.normalizeMode(opts.mode) === 'deep';
+  const closure = (humanInput && closureEligibleMode)
+    ? (closureIntent.classifyClosure(opts.task)
+      || closureIntent.recallClosure({ username: opts.user.username, chatId: opts.user.id, threadId: runThreadId, text: opts.task }))
+    : null;
+  const closureStop = closure === 'stop' && !STOP_TASK_INTENT.test((opts.task || '').trim());
+  if (closure === 'wrap_up') {
+    opts.mode = 'wrap_up';
+    // Идущий в этом диалоге поиск гасим: иначе финализация встанет в очередь за ним
+    // (до 40 мин) — ровно тот «он всё ищет», что чиним. Тумбстоун закрывает его
+    // ретраи/продолжения/резюм; сам wrap_up — запрос человека (fromUser) и проходит
+    // гейт (re-anchor ниже). GTD снимаем после ответа (см. _runTask).
+    const killed = stopUserTask(opts.user.username, opts.user.id, opts.user.audience, runThreadId);
+    if (killed) stopTracesFor({ username: opts.user.username, chatId: opts.user.id, audience: opts.user.audience, threadId: runThreadId });
+    console.log(`[${opts.taskId}] closure=wrap_up → finalize mode (stopped running=${killed})`);
+  }
   // Stop commands bypass the queue — kill the running task immediately.
-  if (humanInput && STOP_TASK_INTENT.test((opts.task || '').trim())) {
+  if (humanInput && (closureStop || STOP_TASK_INTENT.test((opts.task || '').trim()))) {
     const username = opts.user.username;
     const workDir = opts.user.workDir;
     const chatId = opts.user.id;
@@ -790,18 +813,25 @@ async function _runTaskInner(opts) {
       catch (e) { console.warn('[runner] stop gtd clear:', e.message); }
     }
     const parts = [];
-    if (stopped) parts.push('⛔ Задача остановлена.');
-    if (gtdCancelled > 0) parts.push(`GTD-трекинг отменён (${gtdCancelled} проверок).`);
-    if (!parts.length) parts.push('Нет активной задачи для остановки.');
+    if (closureStop) {
+      // Реплика «хватит, не надо / всё, не надо больше» — одна короткая строка.
+      console.log(`[${opts.taskId}] closure=stop user=${username} chat=${chatId} stopped=${stopped} gtd=${gtdCancelled}`);
+      parts.push('Ок, остановился.');
+    } else {
+      if (stopped) parts.push('⛔ Задача остановлена.');
+      if (gtdCancelled > 0) parts.push(`GTD-трекинг отменён (${gtdCancelled} проверок).`);
+      if (!parts.length) parts.push('Нет активной задачи для остановки.');
+    }
     const msg = parts.join(' ');
-    const botToken = opts.secrets?.TELEGRAM_BOT_TOKEN;
+    const botToken = opts.secrets?.TELEGRAM_BOT_TOKEN || opts.secrets?.BOT_TOKEN;
+    let sent = Promise.resolve();
     if (botToken) {
       const markup = { reply_markup: { inline_keyboard: [] } };
       const im = opts.initialMsgId;
-      if (im) tgEdit(botToken, chatId, im, msg, markup).catch(() => sendTo(botToken, chatId, msg).catch(() => {}));
-      else     sendTo(botToken, chatId, msg).catch(() => {});
+      if (im) sent = tgEdit(botToken, chatId, im, msg, markup).catch(() => sendTo(botToken, chatId, msg).catch(() => {}));
+      else    sent = sendTo(botToken, chatId, msg).catch(() => {});
     }
-    return Promise.resolve(msg);
+    return sent.then(() => msg, () => msg);
   }
 
   // GTD hard-stop: cancel this chat's open GTD tracking + kill its running task.
@@ -1905,8 +1935,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // forceClaude (тап по inline-кнопке проработки/уточнения) gets a wider context window so
   // long data like requisites or HH descriptions aren't truncated in the session history.
   // 8 messages = 4 user turns + 4 replies — enough to cover typical deep/clarify scenarios.
-  const ctxLimit = forceClaude ? 1500 : 500;
-  const ctxMsgCount = forceClaude ? 8 : 6;
+  // wrap_up (#1856) отвечает ИЗ истории — ему нужно больше найденного, а не меньше.
+  const wrapUp = explicitMode === 'wrap_up';
+  const ctxLimit = wrapUp ? 3000 : forceClaude ? 1500 : 500;
+  const ctxMsgCount = wrapUp ? 12 : forceClaude ? 8 : 6;
 
   const picked = resolveRunSession(sessions, getCurrentSessionId, { workDir: user.workDir, sessionId, chatId, audience, threadId, forceNew, webExactSession });
   activeSessionId = picked.activeSessionId;
@@ -2049,7 +2081,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   });
   // Machine prompts (durable steps, GTD re-opens) never take a quick answer: an OpenCode
   // step has forceClaude=false, so its prose prompt reached the quick-answer matcher.
-  const quickAttempted = !internalGtd && shouldAttemptQuickAnswer(forceClaude, task);
+  const quickAttempted = !internalGtd && !wrapUp && shouldAttemptQuickAnswer(forceClaude, task);
   const quickReply = quickAttempted ? await dispatchQuick() : null;
   routerShadow.record({ quick: !!quickReply, attempted: quickAttempted, slash: /^\//.test(String(task || '').trim()), forceClaude: !!forceClaude });
   if (quickReply) {
@@ -2246,7 +2278,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     ? buildAwaitingUserNotice(user.username)
     : '';
 
-  let baseContext = [currentTimeSection(), timeoutSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, playbookSuggestionSection, awaitingUserSection, artifactsSection].filter(Boolean).join('\n\n');
+  const wrapUpSection = wrapUp
+    ? '[ФИНАЛИЗАЦИЯ: пользователь сказал, что поиск окончен. Ответь из уже найденного (история ниже, заметки, файлы проекта) — без новых поисков, коротко, за ~2 минуты.]'
+    : null;
+  let baseContext = [currentTimeSection(), wrapUp ? wrapUpSection : timeoutSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, playbookSuggestionSection, awaitingUserSection, artifactsSection].filter(Boolean).join('\n\n');
   if (sessionContext) baseContext = baseContext ? `${baseContext}\n\n${sessionContext}` : sessionContext;
   const currentTask = sessionContext ? `Пользователь: ${task}` : task;
   let prompt = baseContext ? `${baseContext}\n\n${currentTask}` : currentTask;
@@ -2327,7 +2362,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // Но если это internalGtd ВНУТРИ deep-сессии, кнопка «Действуй дальше» всё равно
     // программно подавлена (см. §C ниже) — предупреждаем Claude отдельной заметкой,
     // иначе он пишет про кнопку, которой не будет (баг от 2026-09-15).
-    const block = explicitMode === 'clarify' ? answerRouter.buildClarifyBlock()
+    const block = wrapUp ? answerRouter.buildWrapUpBlock()
+                : explicitMode === 'clarify' ? answerRouter.buildClarifyBlock()
                 : deepSticky && internalGtd   ? answerRouter.buildDeepBlock() + '\n' + answerRouter.buildGtdNoButtonNote()
                 : deepSticky                  ? answerRouter.buildDeepBlock()
                 : internalGtd                 ? null
@@ -2376,6 +2412,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // P3b: only a durable contract step names an agent role; pass it through only
     // when explicitly set so every other caller's argv stays bit-identical.
     ocRole: forcedOcRole || null,
+    disallowedTools: wrapUp ? answerRouter.WRAP_UP_DENY_CLAUDE : null,
   });
 
   // Per-profile OpenCode model routing: the profile maps to an llm-ladder worker ladder
@@ -2410,6 +2447,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         sessions.setLastOcModel(user.workDir, activeSessionId, ocRole, ocActiveModel);
       }
     } catch (e) { console.warn('[runner] ocProfileOverrides:', e.message); }
+    // wrap_up (#1856): без веба/поиска/research — те же тулы, что режет claude.
+    if (wrapUp) {
+      ocProfileOverrides = { ...(ocProfileOverrides || {}), tools: { ...(ocProfileOverrides?.tools || {}), ...answerRouter.WRAP_UP_DENY_OPENCODE } };
+    }
   }
 
   // Engine execution (spawn + stream-json + timeout/close) lives in
@@ -2440,14 +2481,16 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       savePendingTask(taskId, { engineSessionId: sid, engine });
     },
     // P3a: a durable step's declared wall-clock budget. undefined/null keeps the
-    // historical fixed 40-min cap.
-    timeoutMs: stepTimeoutMs,
+    // historical fixed 40-min cap. wrap_up (#1856): жёсткий потолок финализации
+    // (мягкий сигнал «заверши и выведи итог» раньше) + тул-бюджет.
+    timeoutMs: stepTimeoutMs || (wrapUp ? answerRouter.WRAP_UP_TIMEOUT_MS : null),
+    ...(wrapUp ? { warnTimeoutMs: answerRouter.WRAP_UP_WARN_MS, maxToolCalls: answerRouter.WRAP_UP_MAX_TOOL_CALLS } : {}),
   });
   const {
     fullOutput, lastAssistantMsg, claudeResult, claudeErrorText, engineSessionId, terminalSuccess,
     claudeUsage, opencodeUsage, opencodeBreakdown, claudeModel,
     lastActivity, exitCode, processSignal, processError, timedOut,
-    inactivityKill, loopKilled, outputPersistenceError, codexErrorMsg, sessionState,
+    inactivityKill, loopKilled, toolBudgetKilled, outputPersistenceError, codexErrorMsg, sessionState,
   } = engineResult;
 
   // Loop guard (#1583): the engine kept repeating identical output/tool calls — the
@@ -2488,6 +2531,26 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     if (activeSessionId && partialText) {
       sessions.appendReply(user.workDir, activeSessionId, `[${inactivityKill ? 'прервано: молчал 5 мин' : 'прервано таймаутом'}]\n${partialText}`);
       setCurrentSessionId(user.workDir, activeSessionId, chatId, audience, threadId);
+    }
+
+    // wrap_up (#1856): потолок финализации — терминал, НИКАКОГО автопродолжения
+    // (продолжение = снова долгий поиск). Отдаём то, что успело написаться.
+    if (wrapUp && !stepTimeoutMs) {
+      const why = toolBudgetKilled ? 'лимит инструментов финализации' : 'лимит времени финализации';
+      const body = partialDisplay.length > 20
+        ? `${partialDisplay.slice(-MAX_MSG_LEN + 200)}\n\n⏱ Итог по уже найденному (${why}).`
+        : `⏱ Не успел собрать итог (${why}). Всё найденное сохранено в истории — напиши «продолжай поиск», если нужно искать дальше.`;
+      if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, body, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, body, threadId));
+      else await tgSend(BOT_TOKEN, chatId, body, threadId);
+      try { require('../gtd-controller').clearGtdForChat(user.workDir, chatId, threadId); }
+      catch (e) { console.warn('[runner] wrap_up gtd clear:', e.message); }
+      console.log(`[${taskId}] wrap_up ceiling hit (${toolBudgetKilled ? 'tools' : 'time'}) — terminal, no auto-continue`);
+      _recordFailureAttempt(executionId, {
+        taskId, projectId, sessionId: activeSessionId, webExactSession, engine,
+        errorText: `wrap_up ceiling: ${why}`, action: null,
+      });
+      executionHistory.finalizeExecution(executionId, 'FAILED');
+      return body;
     }
 
     // P3a durable step: a run carrying its own `stepTimeoutMs` is a single step
@@ -3069,7 +3132,15 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
 
   // Schedule durable GTD checks after terminal delivery (extracted to
   // scheduleGtdAfterRun for testability). Fire-and-forget: never blocks the reply.
-  try {
+  // wrap_up (#1856): итог дан — доводка этой задачи закрыта. Не планируем новую
+  // GTD-проверку и снимаем открытые записи этого чата, чтобы контроллер не
+  // «дожимал» поиск, который пользователь сам объявил законченным.
+  if (wrapUp) {
+    try {
+      const n = require('../gtd-controller').clearGtdForChat(user.workDir, chatId, threadId);
+      console.log(`[${taskId}] wrap_up done — gtd cleared=${n}`);
+    } catch (e) { console.warn('[gtd] wrap_up clear:', e.message); }
+  } else try {
     scheduleGtdAfterRun({
       internalGtd, activeSessionId, explicitMode, task, secrets,
       workDir: user.workDir, username: user.username, projectDir: user.cwd || null,
