@@ -625,6 +625,33 @@ class DurableTaskStore {
     })();
   }
 
+  /**
+   * #1861 Fix C: restart a terminally `failed` step once its cause is fixed.
+   * Re-pends the item with a FRESH attempt budget (attempt_count=0) and clears
+   * the wait state; if the whole plan was parked on that failure (`blocked`, or
+   * legacy `failed`), the task returns to `active` so the scheduler claims the
+   * step again. `last_error` keeps the retry reason for the next run's context.
+   * Profile-scoped: returns the updated item, or null when not owned.
+   */
+  retryItem(id, profileId, { reason = null, by = 'agent' } = {}) {
+    return this.db.transaction(() => {
+      const item = this._itemOwnedBy(id, profileId);
+      if (!item) return null;
+      const now = nowMs();
+      this._prep(`UPDATE task_items SET status = 'pending', due_at = NULL, wait_json = NULL,
+          wait_deadline_at = NULL, attempt_count = 0, last_error = ?,
+          last_recovery_action = 'manual_retry', updated_at = ? WHERE id = ?`)
+        .run(reason, now, id);
+      const task = this._prep('SELECT status FROM durable_tasks WHERE id = ?').get(item.task_id);
+      if (task && (task.status === 'blocked' || task.status === 'failed')) {
+        this._prep(`UPDATE durable_tasks SET status = 'active', updated_at = ?,
+            revision = revision + 1 WHERE id = ?`).run(now, item.task_id);
+      }
+      this._bump(item.task_id);
+      return this.getTaskItem(id);
+    })();
+  }
+
   // ── Validation results + item evidence (P3d) ───────────────────────────
   /**
    * Append one machine-checked validation verdict (task_validation_results).
