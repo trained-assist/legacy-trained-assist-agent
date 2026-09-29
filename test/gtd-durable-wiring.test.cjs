@@ -704,8 +704,8 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     const r = store.createPlan({
       profile_id: 'u1', goal: 'terminal recovery', user_value: 'uv',
       acceptance_criteria: [{ description: 'c' }],
-      // Pinned level without a fallback engine: default bachelor now falls back to Claude
-      // (2026-09-29), which would turn this AUTH into fallback_rung — covered by 22b.
+      // Pinned level without a fallback engine: default bachelor falls back to the free ladder
+      // (#1899), which would turn this AUTH into fallback_rung — covered by 22b.
       execution_policy: { validation_mode: 'programmatic', level_map: { bachelor: { engine: 'opencode', ocProfile: 'deepseek' } } },
       items: [{ title: 'auth step', execution_kind: 'agent', executor_role: 'developer',
         minimum_model_level: 'bachelor', context_budget: 'small', validation: { command: 'true' }, max_attempts: 5 }],
@@ -728,7 +728,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
 
   // 22b. Exhausted llm-ladder (2026-09-29: Go weekly limit + OpenRouter credits at zero) on a
   // default bachelor step: "every rung failed" is CONFIG → fallback_rung, and the next run of the
-  // step goes to Claude instead of retrying the dead ladder.
+  // step goes to the FREE ladder (opencode/free) — never Claude (owner requirement #1899).
   {
     const G22b = freshStore('22b');
     const store = G22b.durableStore();
@@ -744,8 +744,8 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     const run = (now) => G22b.runDueDurable({
       secrets: {}, now, isTaskRunning: () => false,
       runTask: async (opts) => {
-        engines.push(opts.engine);
-        return opts.engine === 'opencode' ? '⚠️ OpenCode завершился с ошибкой: every rung failed' : 'ok. DURABLE: done';
+        engines.push(`${opts.engine}/${opts.ocProfile}`);
+        return opts.ocProfile === 'deepseek' ? '⚠️ OpenCode завершился с ошибкой: every rung failed' : 'ok. DURABLE: done';
       },
     });
     await run(Date.now()); await drain();
@@ -755,8 +755,8 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     store.db.prepare('UPDATE task_items SET due_at=NULL WHERE id=?').run(item.id);
     await run(Date.now() + 24 * 3600 * 1000); await drain();
     item = store.listTaskItems(r.task.id, 'u1')[0];
-    ok(engines.join(',') === 'opencode,claude' && item.status === 'done',
-      `ladder exhausted: next run goes to claude and completes (got ${engines.join(',')}/${item.status})`);
+    ok(engines.join(',') === 'opencode/deepseek,opencode/free' && item.status === 'done',
+      `ladder exhausted: next run goes to the free ladder (not claude) and completes (got ${engines.join(',')}/${item.status})`);
   }
 
   // 23. P3c recovery is bounded by DEFAULT_RECOVERY_BUDGET: even with attempt
