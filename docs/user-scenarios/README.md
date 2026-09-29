@@ -13,7 +13,9 @@ docs/user-scenarios/
   core/              ← платформа: конкурентность, фоновые запуски
     01-channel-concurrency.md       ← очередь чата, параллельные сессии (#1365)
     02-background-run-visibility.md ← ярлык/ack/сбой фоновых запусков, GTD-владелец чек-листа (#1729)
+    03-web-session-log-views.md    ← «Полный/Сжатый лог» сессии (#1777)
     04-durable-wait-latency.md     ← ожидания шагов плана без 5-минутного пола (план a61bb2c5, [202])
+    05-web-session-durability.md   ← id web-сессии живой в момент выдачи, нет фантомов 404 (#1867)
   recruiter/         ← домен: рекрутер с HeadHunter
     01-full-end-to-end.md       ← сквозной flow: от коннекта до отправки оффера
     02-ats-setup-and-scoring.md ← настройка критериев подбора
@@ -24,6 +26,7 @@ docs/user-scenarios/
   core/              ← сквозные механики бота (все домены)
     01-channel-concurrency.md   ← одна задача на диалог, очередь, изоляция
     02-stop-and-supplement.md   ← «⛔ Стоп» / «➕ Дополнить» на идущей задаче
+    05-web-session-durability.md ← id web-сессии живой в момент выдачи (#1867)
   engineering/       ← домен: инженерная разработка через Playbooks (#1372)
     01-development-playbook.md  ← playbook `development`: от запроса до проверенной поставки
   exhibition/        ← домен: участники выставок → сайт продаж
