@@ -9,6 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { tokenPath } = require('../../data-paths');
 const os = require('os');
 const { readCredentialFile, writeCredentialFile } = require('../../credential-store');
 
@@ -18,7 +19,7 @@ const TILDA_BASE = 'https://tilda.ru';
 // ── Config ────────────────────────────────────────────────────────────────────
 
 function configPath(userId) {
-  return path.join(os.homedir(), 'agent-tokens', String(userId || USER_ID), 'tilda');
+  return tokenPath(String(userId || USER_ID), 'tilda');
 }
 
 function readConfig(userId) {
@@ -36,7 +37,7 @@ function writeConfig(userId, data) {
 // tilda-session file: raw cookie string saved by Chrome extension from tilda.ru
 // Format: "userid=12345; hash=abcdef; ..."
 function sessionPath(userId) {
-  return path.join(os.homedir(), 'agent-tokens', String(userId || USER_ID), 'tilda-session');
+  return tokenPath(String(userId || USER_ID), 'tilda-session');
 }
 
 function readSessionCookies(userId) {

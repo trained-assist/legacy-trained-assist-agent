@@ -304,6 +304,11 @@ async function runPhase(o) {
 
   const ctx = { profile, profileRoot, quarantineRoot: result.quarantineRoot, rules: o.rules, mode, log };
 
+  if (phaseObj.inventory && (mode === 'dry-run' || mode === 'verify')) {
+    doInventory(ctx, result, o);
+    result.ok = result.errorCount === 0;
+    return result;
+  }
   if (mode === 'dry-run') {
     doDryRun(ctx, result, o);
     result.ok = result.errorCount === 0;
@@ -350,7 +355,8 @@ async function runPhase(o) {
       return result;
     }
 
-    if (mode === 'apply') await doApply(ctx, result, o, renewFn);
+    if (phaseObj.inventory) doInventory(ctx, result, o);
+    else if (mode === 'apply') await doApply(ctx, result, o, renewFn);
     else await doRevert(ctx, result, o, renewFn);
   } finally {
     releaseProfileLock(profile);
@@ -534,6 +540,40 @@ function doVerify(ctx, result, o) {
 
   if (v.failures.length) pushError(result, `${v.failures.length} verification failure(s) for phase "${phaseObj.name}"`);
   log(`verify ${ctx.profile}: ok=${v.ok} recreated=${v.recreated} pending=${v.pendingCount} failures=${v.failures.length}${skipped ? ` torn-lines=${skipped}` : ''}`);
+}
+
+// Inventory phases (phases/index.cjs): scan → report; apply = ledger the scan
+// as the baseline; verify = scan again and let the phase judge it against the
+// folded baseline; revert = nothing to restore.
+function doInventory(ctx, result, o) {
+  const phaseObj = o.phaseObj;
+  const { log = defaultLog } = o;
+  if (ctx.mode === 'revert') {
+    result.revert = { records: 0, skippedLines: 0, restored: 0, already: 0, skipped: 0, failures: [] };
+    log(`revert ${ctx.profile}: phase "${phaseObj.name}" is read-only — nothing to revert`);
+    return;
+  }
+  const items = phaseObj.scan(ctx);
+  result.items = items;
+  result.planned = items.length;
+  if (phaseObj.resultKey) result[phaseObj.resultKey] = items;
+  if (ctx.mode === 'apply') {
+    phaseObj.record(ctx, items);
+    result.applied = items.length;
+    log(`apply ${ctx.profile}: ${items.length} ${phaseObj.name} record(s) ledgered`);
+    return;
+  }
+  if (ctx.mode !== 'verify') return;
+  const { records, skipped, missing } = ledger.readLedger(ctx.profile);
+  const folded = foldPhaseRecords(records, phaseObj.name);
+  const failures = folded.length ? phaseObj.check(ctx, items, folded) : [];
+  result.verify = {
+    records: folded.length, ledgerMissing: missing, skippedLines: skipped,
+    ok: folded.length - failures.length, recreated: 0, failures, pendingCount: 0, pending: [],
+  };
+  if (!folded.length) pushError(result, `no "${phaseObj.name}" baseline in the ledger — run --apply before the migration`);
+  if (failures.length) pushError(result, `${failures.length} verification failure(s) for phase "${phaseObj.name}": ${failures.map(f => f.path).join(', ')}`);
+  log(`verify ${ctx.profile}: ${phaseObj.name} baseline=${folded.length} failures=${failures.length}`);
 }
 
 // ── batch entry ──────────────────────────────────────────────────────────────

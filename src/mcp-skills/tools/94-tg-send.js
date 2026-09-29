@@ -5,6 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { tokensRoot } = require('../../data-paths');
 const os = require('os');
 const https = require('https');
 const http = require('http');
@@ -31,7 +32,7 @@ function allowedSendRoots() {
     process.env.TMPDIR,         // per-run tmp (inside .agent-home for slots)
     os.tmpdir(),                // engine default tmp
     userId && path.join(
-      process.env.AGENT_TOKENS_DIR || path.join(os.homedir(), 'agent-tokens'),
+      tokensRoot(),
       String(userId), 'hermes-research'), // own profile's research output only
   ].filter(Boolean);
   return [...new Set(roots.map(r => path.resolve(r)))];

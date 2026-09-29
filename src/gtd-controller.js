@@ -25,7 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { tokensRoot } = require('./data-paths');
 const crypto = require('crypto');
 const { readTokenValue } = require('./token-value');
 const { readCredentialFile } = require('./credential-store');
@@ -167,7 +167,7 @@ function durableItemCounts(store = durableStore()) {
 
 const GTD_DIR = 'gtd';
 const CHECKLIST_FILE = 'checklist.md';
-const TOKENS_ROOT = process.env.AGENT_TOKENS_ROOT || path.join(os.homedir(), 'agent-tokens');
+const TOKENS_ROOT = tokensRoot();
 
 // ── Durable-task scheduler wiring (Slice A, issue #1201) ────────────────────
 // The SQLite DurableTaskStore is the source of truth for durable tasks; this

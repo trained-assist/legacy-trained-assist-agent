@@ -15,13 +15,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { tokensRoot } = require('../../data-paths');
 const { readCredentialFile, writeCredentialFile } = require('../../credential-store');
 
 const USER_ID = process.env.USER_ID || '';
 
 function sitesDir(userId) {
-  const base = process.env.AGENT_TOKENS_DIR || path.join(os.homedir(), 'agent-tokens');
+  const base = tokensRoot();
   return path.join(base, String(userId || USER_ID), 'sites');
 }
 

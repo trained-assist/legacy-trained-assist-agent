@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { tokenPath, userTokensDir } = require('../../data-paths');
 const os = require('os');
 const { execSync, execFileSync } = require('child_process');
 const { readCredentialFile } = require('../../credential-store');
@@ -60,7 +61,7 @@ const CDP_PORT = 9224;
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function tokenDir(userId) {
-  return path.join(os.homedir(), 'agent-tokens', String(userId || USER_ID));
+  return userTokensDir(String(userId || USER_ID));
 }
 
 function isChromeRunning() {
@@ -259,7 +260,7 @@ const tools = [
       const uid = user_id || USER_ID;
       if (!uid) return { error: 'No user_id' };
 
-      const credsFile = path.join(os.homedir(), 'agent-tokens', String(uid), service);
+      const credsFile = tokenPath(String(uid), service);
       if (!fs.existsSync(credsFile)) {
         return {
           error: 'no_credentials',

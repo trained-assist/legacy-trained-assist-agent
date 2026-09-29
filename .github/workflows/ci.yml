@@ -90,6 +90,8 @@ jobs:
           AGENT_ISOLATION_E2E=1 node --test test/agent-isolation-e2e.test.cjs
       - name: Env-sync check
         run: node scripts/check-env-sync.js
+      - name: Credential contract (declared ⊆ provided, no os.homedir() token paths)
+        run: node scripts/check-credential-reachability.js
       - name: No direct connect-pending outside user-tokens.js
         run: |
           if grep -rn "connect-pending" src/ --include="*.js" | grep -v "src/user-tokens.js" | grep -v "src/server.js"; then
