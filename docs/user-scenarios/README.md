@@ -13,6 +13,7 @@ docs/user-scenarios/
   core/              ← платформа: конкурентность, фоновые запуски
     01-channel-concurrency.md       ← очередь чата, параллельные сессии (#1365)
     02-background-run-visibility.md ← ярлык/ack/сбой фоновых запусков, GTD-владелец чек-листа (#1729)
+    04-durable-wait-latency.md     ← ожидания шагов плана без 5-минутного пола (план a61bb2c5, [202])
   recruiter/         ← домен: рекрутер с HeadHunter
     01-full-end-to-end.md       ← сквозной flow: от коннекта до отправки оффера
     02-ats-setup-and-scoring.md ← настройка критериев подбора
