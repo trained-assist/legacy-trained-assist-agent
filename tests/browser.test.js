@@ -149,3 +149,16 @@ describe('writeMcpConfig domain sibling mount', () => {
     expect(config.mcpServers).toHaveProperty('trained-skills');
   });
 });
+
+// The run's claude reads .mcp.json as the profile's slot user. Written 0600 it got
+// ACL mask --- and a parallel run of the same profile, rewriting it between another
+// run's share-pass and its start, killed that run with «EACCES … .mcp.json» (code 1).
+describe('writeMcpConfig file mode', () => {
+  it('writes .mcp.json group-readable (0660), never owner-only', () => {
+    const old = process.umask(0o007);
+    try {
+      const configPath = writeMcpConfig(tmpDir, null, {});
+      expect(fs.statSync(configPath).mode & 0o777).toBe(0o660);
+    } finally { process.umask(old); }
+  });
+});

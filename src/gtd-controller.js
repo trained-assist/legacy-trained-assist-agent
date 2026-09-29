@@ -409,14 +409,26 @@ async function bgNotice(secrets, task, text) {
   }
 }
 
-// Short name of a plan for step notices. Several plans stream into one chat, and
-// every playbook plan has the same step titles — without the plan's name «Шаг 1/15»
-// of plan A right after «Шаг 2/15» of plan B reads as one plan looping. The name is
-// the head of the goal: up to the first « — », «. » or newline, capped at 60 chars.
+// What a plan is about, for step notices. Several plans stream into one chat, and
+// every playbook plan has the same step titles — without the plan's goal «Шаг 1/15»
+// of plan A right after «Шаг 2/15» of plan B reads as one plan looping. The owner
+// reads these to know what is going on, so the label is the goal itself (up to
+// PLAN_LABEL_CHARS), not its first words: a goal usually opens with «Починить
+// <ссылка на issue> — …», and cutting at a word boundary used to drop the URL
+// «word» whole, leaving «Починить…». GitHub links are shortened to «#N»/«PR #N»
+// so they cost a few chars and still identify the issue.
+const PLAN_LABEL_CHARS = 350;
+
+function shortenGithubLinks(s) {
+  return s.replace(/https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(issues|pull)\/(\d+)(?:[/#?][^\s,;)»]*)?/g, (_m, _owner, repo, kind, n) => {
+    const where = repo === 'trained-assist-agent' ? '' : `${repo.replace(/^trained-assist-/, '')} `;
+    return `${where}${kind === 'pull' ? 'PR ' : ''}#${n}`;
+  });
+}
+
 function planLabel(goal) {
-  let s = String(goal || '').split('\n')[0].replace(/\s+/g, ' ').trim();
-  s = s.split(/ — | - |\. /)[0].trim();
-  if (s.length > 60) s = `${s.slice(0, 59).replace(/\s+\S*$/, '')}…`;
+  let s = shortenGithubLinks(String(goal || '')).replace(/\s+/g, ' ').trim();
+  if (s.length > PLAN_LABEL_CHARS) s = `${s.slice(0, PLAN_LABEL_CHARS - 1).replace(/\s+\S*$/, '')}…`;
   return s;
 }
 
