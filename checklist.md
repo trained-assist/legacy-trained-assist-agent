@@ -1,3 +1,9 @@
+Goal: Path guard в tg_send_file — чтение только из scope рана (§3-1 эпика #1805)
+
+- [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1834
+- [ ] Merged to main
+- [ ] Deployed to prod — verified live
+
 Goal: encrypted credential store — AES-256-GCM at rest для agent-tokens (epic #1789 P0 C4): единый модуль credential-store, все чтения/записи через него, .meta + .index.json, scripts/encrypt-tokens.mjs, CRED_ENCRYPTION_KEY в env-manifest/CI
 
 - [ ] CI green on https://github.com/trained-assist/trained-assist-agent/pull/1819
