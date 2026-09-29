@@ -49,13 +49,15 @@ trained-assist-tg-bot  (Cloudflare Worker — stateless)
     POST /nalog/token-store   — hand the token back (GCP is where it's read from)
 ```
 
-> **Bot routing — one endpoint, by design:** the bot posts every task to the
-> ONE agent endpoint (`recruiter-assistant.ru`). The RU VM hosts RU-zone
-> services only (nalog/ESIA login, RU-geo-blocked fetches, vacancy pages) —
-> running Claude there was a mistake, corrected in #1288. The bot's leftover
-> `/capabilities` probing for GCP-vs-RU is a bug from that period, not routing
-> worth keeping: cleanup in `trained-assist-tg-bot`. One endpoint is the
-> correct shape, not a limitation.
+> **Bot routing:** the bot posts tasks to the ONE main agent endpoint; an
+> explicit `/ru <task>` routes a RU-zone task to `AGENT_RU_URL` (nalog.ru,
+> Госуслуги и т.п.) — that path is a working feature and stays. The RU VM
+> itself hosts RU-zone services only (nalog/ESIA login, RU-geo-blocked fetches,
+> vacancy pages) — running Claude there was a mistake, corrected in #1288; the
+> leftover per-task `/capabilities` probing that guesses GCP-vs-RU by keywords
+> is unfinished cleanup from that era (tracked in `trained-assist-tg-bot`).
+> Separately, the GCP agent calls the RU edge as a tool (`/playwright-fetch`,
+> `/nalog-api-relay`) whenever it needs a Russian IP — by design, untouched.
 
 **trained-assist-agent** (GCP) manages:
 - Per-user working directories (`~/users/<username>/`)
