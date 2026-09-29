@@ -90,3 +90,13 @@ test('not busy / foreign run on the gateway → nothing new', async () => {
   mockGateway({ body: { busy: false, items: [] } });
   assert.deepEqual((await li.fetchNewMessages('t5', { secret: 's' })).messages, []);
 });
+
+test('held messages are read from the gateway of the run\'s own bot (audience)', async () => {
+  const li = inbox();
+  const { BOTS } = require('../src/bot-registry');
+  li.registerInboxRun({ taskId: 'tf', chatId: 1714048, requestId: 'intake-f', audience: 'freelance' });
+  mockGateway({ body: { busy: true, items: [item(5)] } });
+  await li.fetchNewMessages('tf', { secret: 's' });
+  const base = BOTS.find(b => b.audience === 'freelance').gateway_url;
+  assert.ok(calls[0].url.startsWith(`${base}/internal/held-messages?`), calls[0].url);
+});
