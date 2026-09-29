@@ -44,6 +44,21 @@ function checkReferences(profileId, projectId, sessionId) {
   }
 }
 
+// #1725: a plan created from a project-bound session belongs to that project. Without
+// this, project_id stayed null and the plan's own session (s-plan-*) was bound by the
+// runner's "active / most recent project" fallback — i.e. to whatever project the
+// profile touched last, not the one the plan was started from. Explicit project_id
+// still wins; no session / unbound session / vanished project → null as before.
+function sessionProjectId(profileId, sessionId) {
+  const sid = sessionId || process.env.AGENT_SESSION_ID || null;
+  if (!sid || typeof sid !== 'string' || /[\\/\0]/.test(sid) || sid === '.' || sid === '..') return null;
+  try {
+    const sess = JSON.parse(fs.readFileSync(sessionFilePath(profileId, sid), 'utf8'));
+    const pid = sess && typeof sess.projectId === 'string' ? sess.projectId : null;
+    return pid && getProject(userWorkDir(profileId), pid) ? pid : null;
+  } catch { return null; }
+}
+
 function withProjection(result, profileId) {
   if (!result.task.project_id || !result.task.acceptance_criteria_json) return result;
   try {
@@ -59,6 +74,7 @@ function withProjection(result, profileId) {
 }
 
 module.exports = {
+  _sessionProjectId: sessionProjectId,
   tools: {
 
     task_create: {
@@ -88,6 +104,7 @@ module.exports = {
       },
       handler: async ({ goal, project_id = null, ...plan }, ctx) => {
         const profileId = requireProfile(ctx);
+        if (!project_id) project_id = sessionProjectId(profileId, plan.session_id);
         checkReferences(profileId, project_id, plan.session_id);
         const id = crypto.randomUUID();
         if (Object.keys(plan).length) {
