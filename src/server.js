@@ -621,6 +621,7 @@ async function main() {
         url.pathname !== '/web/session-digest' &&
         url.pathname !== '/web/intake-file-bearer' &&
         url.pathname !== '/web/run-bearer' && url.pathname !== '/web/reply-bearer' &&
+        url.pathname !== '/web/qa-bearer' &&
         url.pathname !== '/web/reproject-preview' && url.pathname !== '/web/reproject-adjust' &&
         url.pathname !== '/web/reproject-apply' && url.pathname !== '/web/reproject-revert') {
       if (await handleWebRoute(req, url, res, secrets)) return;

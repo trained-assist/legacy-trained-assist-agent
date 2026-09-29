@@ -41,6 +41,16 @@ function readBodyBuffer(req, maxBytes = 1_048_576) {
 async function handleWeb(req, url, res, ctx) {
   const { secrets } = ctx;
 
+  // ── POST /web/qa-bearer — live-bot QA blocks (epic #1851 S1) ──────────────
+  // Server-side twin of /web/run-bearer for the live-QA tools (prod_status /
+  // qa_user_send / qa_trace). Same bearer boundary, but the profile is DERIVED
+  // (`qa-<caller>`) — the body's username is never read, so a real client is
+  // unreachable by construction. Privileged reads (journal, git, execution
+  // history) stay server-side; the isolated agent slot never sees them.
+  if (req.method === 'POST' && url.pathname === '/web/qa-bearer') {
+    return require('./qa-live').handleQaLive(req, url, res, { secrets });
+  }
+
   // ── POST /web/verify — stateless password check for external frontends ────
   // An external web front-end (e.g. the Cloudflare session-manager worker at
   // app.trainedassist.store) POSTs {username, password} here to validate a
