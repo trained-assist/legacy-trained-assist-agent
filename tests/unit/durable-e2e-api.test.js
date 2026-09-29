@@ -58,7 +58,7 @@ const suite = ROOTS ? describe : describe.skip;
 
 suite('playbook e2e API', () => {
   it('starts a plan over HTTP with the e2e level map and reports it', async () => {
-    const started = await call('POST', '/internal/e2e/plans', { profile: 'p1', playbook_id: 'feature', goal: 'api e2e' });
+    const started = await call('POST', '/internal/e2e/plans', { profile: 'p1', playbook_id: 'feature', goal: 'api e2e', vars: { repo: 'trained-assist/trained-assist-agent' } });
     expect(started.status).toBe(200);
     // a plan with its own level map runs EVERY step on it — researcher steps included
     // (no Gemini research profile on the test): free for master/bachelor, deepseek for doctor
@@ -79,7 +79,7 @@ suite('playbook e2e API', () => {
   it('answers a step that waits for the user and accelerates the plan waits on tick', async () => {
     const e2e = require('../../src/durable-e2e.js');
     const { durableStore } = require('../../src/gtd-controller.js');
-    const { plan } = e2e.startPlan({ profile: 'p1', playbookId: 'feature', goal: 'wake me' });
+    const { plan } = e2e.startPlan({ profile: 'p1', playbookId: 'feature', goal: 'wake me', vars: { repo: 'trained-assist/trained-assist-agent' } });
     const store = durableStore();
     const [first] = store.listTaskItems(plan.id, 'p1');
     store.db.prepare(`UPDATE task_items SET status='waiting', due_at=?, wait_json=? WHERE id=?`)
