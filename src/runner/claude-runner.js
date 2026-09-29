@@ -86,7 +86,9 @@ const LOOP_GUARD_TEXT_MIN_LEN = 20; // ignore tiny echo fragments; count only me
 // `python3 -c "print('x')"`) — the identical-signature guard above needs 6 equal calls
 // in a row and let such a run spin ~5 min. Any NOOP_LIMIT consecutive no-op bash calls
 // (nothing else in between) is the same stuck loop.
-const LOOP_GUARD_NOOP_LIMIT = 5;
+// 5→3 (2026-09-29): probes on the paid deepseek-v4-flash rung show that once 2 no-op calls
+// are in the history the model repeats them 3/3 — waiting for the 5th only burns minutes.
+const LOOP_GUARD_NOOP_LIMIT = 3;
 // A bash command that can't do anything but print a short literal. Deliberately narrow:
 // no pipes, redirects to files, `;`/`&&` chains or variables — those may be real work.
 const NOOP_BASH_RE = /^(?:true|:|echo(?:\s+(?:"[^"$`]{0,40}"|'[^']{0,40}'|[\w.,!?-]{0,40}))?|python3?\s+-c\s+(?:"print\((?:'[^']{0,40}'|\d+)\)"|'print\((?:"[^"]{0,40}"|\d+)\)')|node\s+-e\s+'console\.log\((?:"[^"]{0,40}"|\d+)\)')(?:\s+2>&1)?$/;

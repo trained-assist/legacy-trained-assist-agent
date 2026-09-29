@@ -118,7 +118,7 @@ test('loop guard: streak of DIFFERENT no-op bash placeholders kills the run (rea
 test('loop guard: no-op calls interleaved with real work are NOT a loop', async () => {
   const dir = mkdir('loop-noop-ok-');
   const cmds = [];
-  for (let i = 0; i < 4; i++) cmds.push('true', 'echo ok', 'echo done', 'echo "---"', `ls /tmp/x${i}`);
+  for (let i = 0; i < 4; i++) cmds.push('true', 'echo "---"', `ls /tmp/x${i}`);
   const bin = fakeFromCommands(dir, cmds);
   const r = await runEngineProcess(baseOpts(dir, bin));
   assert.equal(r.loopKilled, false, 'streak resets on every real command');
@@ -135,4 +135,32 @@ test('isNoopBash: placeholders yes, real commands no', () => {
     assert.equal(isNoopBash('bash', { command: c }), false, c);
   }
   assert.equal(isNoopBash('read', { command: 'true' }), false, 'only bash counts');
+});
+
+test('loop guard: 3 no-op calls in a row is already a loop (limit tuned 2026-09-29)', async () => {
+  assert.equal(_const.LOOP_GUARD_NOOP_LIMIT, 3);
+  const dir = mkdir('loop-noop3-');
+  const bin = fakeFromCommands(dir, ['ls', 'echo "trigger site_deploy via MCP"', 'true', 'echo DEPLOY', 'ls']);
+  const r = await runEngineProcess(baseOpts(dir, bin));
+  assert.equal(r.loopKilled, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('loop recovery: stuck OpenCode is re-run ONCE on Claude, never ping-pong', () => {
+  const { loopRecoveryEngine, loopFallbackNotice } = require('../src/engine-crash-policy');
+  assert.equal(loopRecoveryEngine('opencode', false), 'claude');
+  assert.equal(loopRecoveryEngine('opencode', true), null, 'already a fallback run → dead-end message');
+  assert.equal(loopRecoveryEngine('claude', false), null);
+  assert.equal(loopRecoveryEngine('codex', false), null);
+  assert.ok(!/switch2klod/.test(loopFallbackNotice()), 'user is not told to switch engines by hand');
+});
+
+test('runner wires the loop branch to the automatic Claude re-run', () => {
+  const src = fs.readFileSync(path.join(__dirname, '../src/runner/index.js'), 'utf8');
+  const i = src.indexOf('if (loopKilled) {');
+  assert.ok(i > 0);
+  const branch = src.slice(i, src.indexOf('const loopMsg', i));
+  assert.match(branch, /loopRecoveryEngine\(engine, engineFallbackDone\)/);
+  assert.match(branch, /engine: recoveryEngine/);
+  assert.match(branch, /engineFallbackDone: true/);
 });

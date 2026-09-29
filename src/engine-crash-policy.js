@@ -62,7 +62,24 @@ function engineAuthNotice(engineLabel, failureClass) {
     : `⚠️ Авторизация ${engineLabel} истекла — оператор уже уведомлён, скоро починим.`;
 }
 
+// Loop recovery (2026-09-29): a cheap OpenCode model that got stuck (loop guard fired —
+// typically bash placeholders instead of the MCP call it wanted) used to dead-end with
+// «Переключись на Claude: /switch2klod» — the user had to switch engines by hand and repeat
+// the request. Evidence: when the OpenCode Go keys run out the ladder serves the paid
+// deepseek-v4-flash rung, which after 2 no-op bash calls in its history repeats them 3/3
+// times (probe 29.09). The fix belongs to the runner, not the user: ONE automatic re-run of
+// the same task on Claude. engineFallbackDone guards against ping-pong with the
+// claude→opencode auth fallback.
+function loopRecoveryEngine(engine, engineFallbackDone) {
+  return engine === 'opencode' && !engineFallbackDone ? 'claude' : null;
+}
+
+function loopFallbackNotice() {
+  return '⚠️ Модель OpenCode застряла и не смогла выполнить действие — автоматически передаю задачу Claude и повторяю.';
+}
+
 module.exports = {
+  loopRecoveryEngine, loopFallbackNotice,
   isTerminalQuickCrash, engineCanFallBack, QUICK_CRASH_MAX_OUTPUT,
   isQuotaLikeClass, engineFallbackNotice, engineAuthNotice,
 };
