@@ -409,14 +409,31 @@ async function bgNotice(secrets, task, text) {
   }
 }
 
+// Short name of a plan for step notices. Several plans stream into one chat, and
+// every playbook plan has the same step titles — without the plan's name «Шаг 1/15»
+// of plan A right after «Шаг 2/15» of plan B reads as one plan looping. The name is
+// the head of the goal: up to the first « — », «. » or newline, capped at 60 chars.
+function planLabel(goal) {
+  let s = String(goal || '').split('\n')[0].replace(/\s+/g, ' ').trim();
+  s = s.split(/ — | - |\. /)[0].trim();
+  if (s.length > 60) s = `${s.slice(0, 59).replace(/\s+\S*$/, '')}…`;
+  return s;
+}
+
+function bgStepText(task, item, kind, total, detail = '') {
+  const title = String(item?.title || '').replace(/\s+/g, ' ').slice(0, 80);
+  const label = planLabel(task?.goal);
+  const head = `${kind} (шаг ${Number(item?.position ?? 0) + 1}/${total}): ${title}`
+    + (label ? `\nПлан: ${label}` : '');
+  return detail ? `${head}\n${String(detail).slice(0, 240)}` : head;
+}
+
 async function bgStep(secrets, task, item, kind, detail = '') {
   try {
     if (!task?.profile_id || !isBgNotifyEnabled(task.profile_id)) return;
     let total = '?';
     try { total = durableStore().progressSummary(task.id, task.profile_id).total; } catch { /* legacy row */ }
-    const title = String(item?.title || '').replace(/\s+/g, ' ').slice(0, 80);
-    const head = `${kind} (шаг ${Number(item?.position ?? 0) + 1}/${total}): ${title}`;
-    await bgNotice(secrets, task, detail ? `${head}\n${String(detail).slice(0, 240)}` : head);
+    await bgNotice(secrets, task, bgStepText(task, item, kind, total, detail));
   } catch (e) { console.warn('[gtd] bg-notify:', e.message); }
 }
 
@@ -2110,7 +2127,7 @@ module.exports = {
   _ghToken, _ghFetch,
   durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
   resumeDurableReply, resumeDurableCrash, planWorkspaceLabel, kickDurable, durableBudget, _setKickDeps,
-  tickHeartbeat, countOpenLegacy, durableItemCounts, firstFailureNotice,
+  tickHeartbeat, countOpenLegacy, durableItemCounts, firstFailureNotice, planLabel, bgStepText,
   DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP,
   CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,
 };
