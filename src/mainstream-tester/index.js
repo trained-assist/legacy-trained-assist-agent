@@ -28,7 +28,9 @@ const SPAWNED_AGENT_PORT = 3099;
 // Each tester invocation gets its own timestamped data dir → no GTD spillover
 // from previous runs. Bugs are written to a per-invocation file.
 const SESSION_TAG = Date.now();
-const TEST_DATA_DIR = path.join(os.homedir(), 'agent-data', `mainstream-test-${SESSION_TAG}`);
+const TEST_DATA_ROOT = path.join(os.homedir(), 'agent-data');
+const TEST_DATA_DIR = path.join(TEST_DATA_ROOT, `mainstream-test-${SESSION_TAG}`);
+const KEEP_RUN_DIRS = 12; // ~2 days at one run per 4h
 
 function requiredEnv(name) {
   const v = process.env[name];
@@ -36,25 +38,45 @@ function requiredEnv(name) {
   return v;
 }
 
-async function spawnTestAgent(fakeTgPort) {
-  fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
-
-  const agentPath = path.join(__dirname, '..', 'server.js');
-  const env = {
+// Env of the spawned test agent. Everything that the agent persists per profile
+// must point inside the per-run testDataDir: before USERS_DIR was set here, every
+// run created two real profiles mt<tag>h / mt<tag>a in ~/users (64 by 2026-09-29).
+function buildTestAgentEnv(testDataDir, fakeTgPort) {
+  return {
     ...process.env,
     PORT: String(SPAWNED_AGENT_PORT),
     TELEGRAM_API_URL: `http://127.0.0.1:${fakeTgPort}`,
     TELEGRAM_BOT_TOKEN: 'fake-mainstream-token',
-    AGENT_DATA_DIR: TEST_DATA_DIR,
+    AGENT_DATA_DIR: testDataDir,
+    USERS_DIR: path.join(testDataDir, 'users'),
     // Isolate agent tokens to the test dir so test users don't pollute ~/agent-tokens.
     // Set BOTH names: data-paths/hh-* read AGENT_TOKENS_DIR, user-tokens.js reads AGENT_TOKENS_ROOT.
-    AGENT_TOKENS_DIR: path.join(TEST_DATA_DIR, 'tokens'),
-    AGENT_TOKENS_ROOT: path.join(TEST_DATA_DIR, 'tokens'),
+    AGENT_TOKENS_DIR: path.join(testDataDir, 'tokens'),
+    AGENT_TOKENS_ROOT: path.join(testDataDir, 'tokens'),
     NODE_ENV: 'test',
     TEST_MODE: '1',
     // Force env-var secrets loading (skip GCP Secret Manager)
     SECRETS_SOURCE: 'env',
   };
+}
+
+// Per-run data dirs (mainstream-test-<ts>) accumulate every 4h via cron. Keep the
+// newest `keep`; the durable cross-run logs live in mainstream-test/ and are untouched.
+function pruneOldRunDirs(root, keep = KEEP_RUN_DIRS) {
+  let names;
+  try { names = fs.readdirSync(root); } catch { return []; }
+  const runs = names.filter(n => /^mainstream-test-\d+$/.test(n))
+    .sort((a, b) => Number(b.split('-').pop()) - Number(a.split('-').pop()));
+  const removed = runs.slice(keep);
+  for (const n of removed) fs.rmSync(path.join(root, n), { recursive: true, force: true });
+  return removed;
+}
+
+async function spawnTestAgent(fakeTgPort) {
+  fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+
+  const agentPath = path.join(__dirname, '..', 'server.js');
+  const env = buildTestAgentEnv(TEST_DATA_DIR, fakeTgPort);
 
   const proc = spawn(process.execPath, [agentPath], {
     env,
@@ -144,12 +166,19 @@ async function main() {
     }
   } catch {}
 
+  const pruned = pruneOldRunDirs(TEST_DATA_ROOT);
+  if (pruned.length) console.log(`[mainstream] Pruned ${pruned.length} old run dirs`);
+
   console.log(`\n[mainstream] All done. Total bugs: ${totalBugs} (product) + ${totalDriverErrors} driver errors`);
   console.log(`[mainstream] Bug log: ${orchestrator.bugsFile}`);
   console.log(`[mainstream] State: ${orchestrator.stateFile}`);
 }
 
-main().catch(err => {
-  console.error('[mainstream] Fatal:', err.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(err => {
+    console.error('[mainstream] Fatal:', err.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { buildTestAgentEnv, pruneOldRunDirs };
