@@ -1,7 +1,6 @@
-// Contract tests for Hermes Phase 1 (docs/HERMES-INTEGRATION-CHECKLIST.md).
+// Contract tests for Hermes Phase 1.
 // No network in CI: only the guard-clause contract is tested here. The live
-// GigaChat/OpenRouter path is smoke-tested manually (see checklist "Смок на
-// живом ключе").
+// GigaChat/OpenRouter path is smoke-tested manually on a live key.
 const os = require('os');
 const fs = require('fs');
 const path = require('path');

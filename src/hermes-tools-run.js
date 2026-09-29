@@ -1,6 +1,6 @@
 'use strict';
 
-// Hermes Phase 1.5 (docs/HERMES-INTEGRATION-CHECKLIST.md) — tool-augmented worker.
+// Hermes Phase 1.5 — tool-augmented worker.
 // hermesRun() (hermes-run.js) is a single raw LLM call with ZERO tools: it can't
 // browse, fetch, or search. hermesRunWithTools() instead spawns a scoped, headless
 // CLI-engine invocation (claude/codex/opencode) reusing the SAME per-user

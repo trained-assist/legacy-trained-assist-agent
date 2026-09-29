@@ -1,4 +1,4 @@
-// Domain Store (docs/specs/domain-module-actions-cron-web-surface-v2.md §3):
+// Domain Store (issue #1220):
 // scoped JSON records, profile/project isolation, revision concurrency, TTL.
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'module';

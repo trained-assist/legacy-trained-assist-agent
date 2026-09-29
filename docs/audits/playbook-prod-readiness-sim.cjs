@@ -1,5 +1,5 @@
-// Local, network-free end-to-end simulation for the Playbooks audit
-// (docs/audits/playbook-prod-readiness-2026-09-26.md).
+// Local, network-free end-to-end simulation of the Playbooks pipeline
+// (layer 3 of docs/TESTING-PLAYBOOKS.md).
 //
 // It drives the REAL production modules — the MCP tool registry (autodiscovery),
 // playbook_store/compiler, DurableTaskStore, and gtd-controller.runDueDurable —

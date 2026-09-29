@@ -1,11 +1,11 @@
 'use strict';
 
-// Hermes Phase 1 MCP tools (docs/HERMES-INTEGRATION-CHECKLIST.md).
+// Hermes Phase 1 MCP tools.
 // hermes_run — общий stateless-примитив: task + context + output_schema → JSON.
-// hermes_candidate_report — пилот №3 из roadmap (самый показательный): сводит
+// hermes_candidate_report — пилот №3 (самый показательный): сводит
 // резюме + вакансию + (опц.) разбор интервью в один CandidateReport JSON,
 // который дальше можно скормить существующему HTML-генератору отчётов.
-// Никакой памяти/инструментов/cron на этом этапе — см. Phase 1 в чеклисте.
+// Никакой памяти/инструментов/cron на этом этапе (Phase 1).
 
 const { hermesRun } = require('../../hermes-run');
 const { hermesRunWithTools } = require('../../hermes-tools-run');

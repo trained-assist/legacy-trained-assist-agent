@@ -465,12 +465,12 @@ Branch protection requires the `ci` job to pass. PRs auto-merge (squash) when CI
 
 ### Requirements & status live in GitHub issues — not in a log file
 
-**This repo does not keep a requirements log** (overrides the global "docs/requirements-log.md" habit). `docs/requirements-log.md` is a frozen archive (2026-09-28): it duplicated issues, drifted from them (5 of 38 "planned" items were long closed) and every PR editing the same table was a merge-conflict magnet. Instead:
+**This repo does not keep a requirements log** (overrides the global "keep a `requirements-log.md`" habit). The old repo-level requirements log was a frozen archive (2026-09-28): it duplicated issues, drifted from them (5 of 38 "planned" items were long closed) and every PR editing the same table was a merge-conflict magnet — purged from the repo (git history holds it) once its leftovers moved into issues. Instead:
 - a requirement / feature / decision = a GitHub issue (epics like #1470 hold the plan); status = open/closed + a closing comment with the reason (incl. "rejected because …");
 - context worth keeping after `/clear` goes into the issue (comment) or the PR body — not a repo file;
 - open leftovers from the old log: #1652.
 
-**Plans, specs, and reviews also live in issues — never merged to main.** Analysis documents, architecture reviews, red-team reports, migration plans (e.g. `docs/vm-exit-red-team-review.md`-style files) are written into the issue body/comments directly. Do not open PRs that add planning/spec documents to `docs/`; `docs/` in main is for durable reference only (how-tos, runbooks that the code itself needs). A PR whose only content is a plan/spec/review must be declined — the issue is the artifact.
+**Plans, specs, and reviews also live in issues — never merged to main.** Analysis documents, architecture reviews, red-team reports, migration plans — any such write-up goes into the issue body/comments directly. Do not open PRs that add planning/spec documents to `docs/`; `docs/` in main is for durable reference only (how-tos, runbooks that the code itself needs). A PR whose only content is a plan/spec/review must be declined — the issue is the artifact.
 
 ### This repo is for durable documents — plans and checklists are not
 
@@ -582,7 +582,7 @@ Enforced in CI (`ci.yml` → "Recruiter/HH tools must call OpenRouter, not spawn
 
 **Read-only is enforced, not promised.** A nested run (`HERMES_DEPTH ≥ 1`) mounts only `playwright` + `trained-skills` (`buildMcpConfig({siblings:false})`), `registry.js` hides the whole `100-hermes.js` module so it cannot even see `hermes_research`, and the per-call refusal stays as a second line of defence. Before that, a nested Hermes had the full agent toolset and did open 2 PRs (measured 2026-09-28).
 | `src/engine-health.js` | Per-engine operational health (`healthy`/`degraded`/`unavailable`) in SQLite, separate from credentials (`auth-flag.js`) and failure history (`execution-history.js`). `markEngineSuccess` self-heals on success; `markEngineFailure` escalates at `ENGINE_UNAVAILABLE_AFTER_FAILURES`. Only class `AUTH` is credential-invalid. |
-| `src/durable-wait.js` | Durable wait for plan steps ([spec](docs/specs/durable-wait-until.md)): a programmatic step with `wait` polls its own validation; an agent step parks itself via MCP `task_item_wait` + `DURABLE: waiting` until a validator passes / the user answers (`task_item_wake`) / a timer fires, then the same step re-runs with a resume note. Polls are deterministic, spend no attempts, survive restarts. `buildAwaitingUserNotice` tells chat runs which steps await the user. |
+| `src/durable-wait.js` | Durable wait for plan steps: a programmatic step with `wait` polls its own validation; an agent step parks itself via MCP `task_item_wait` + `DURABLE: waiting` until a validator passes / the user answers (`task_item_wake`) / a timer fires, then the same step re-runs with a resume note. Polls are deterministic, spend no attempts, survive restarts. `buildAwaitingUserNotice` tells chat runs which steps await the user. |
 | `src/readiness.js` | `computeReadiness()` for `GET /readiness` — data dir writable, execution-owner lock present, ≥1 engine usable. A single unavailable engine does not make the server unready. |
 | `src/failure-classifier.js` | Deterministic + cheap-LLM classifier mapping error text onto the fixed `FAILURE_CLASSES` enum (`failure-taxonomy.js`). Feeds `engine-health.js` and `execution-history.js`. |
 | `scripts/refresh-weeek-session.js` | Refreshes `WEEEK_APP_COOKIE` in the Cloudflare Worker secret. Flow: capture cookies from Chrome via CDP → headless Playwright fallback → CF REST API update → Telegram alert on failure. Run manually or via `weeek-session-refresh.service`. |
