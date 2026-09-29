@@ -176,7 +176,7 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
     thinkingStart: Date.now(),
     msgId: null, // no Telegram message to edit — keeps this fully headless
     BOT_TOKEN: '',
-    secrets: {},
+    secrets: hermesEngineSecrets(),
     // The profile workspace is the isolation gate; hermes-tmp is only the cwd inside it.
     user: { username, id: username, name: username, cwd: workDir, workDir: userWorkDir(username) },
     cleanEnv,
@@ -206,4 +206,10 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
   return parseLlmJson(text);
 }
 
-module.exports = { hermesRunWithTools, buildPrompt, prefetchLevel1, searchQueryFromTask };
+// Same loaded secrets as a normal run (#1892): runEngineProcess puts bot/Deepgram/CF
+// into engineEnv; buildAgentEnv strips them for the engine, the bridge hands them to MCP.
+function hermesEngineSecrets() {
+  return require('./secrets').getLoadedSecrets() || {};
+}
+
+module.exports = { hermesRunWithTools, buildPrompt, prefetchLevel1, searchQueryFromTask, hermesEngineSecrets };
