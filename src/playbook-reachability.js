@@ -136,7 +136,9 @@ function checkPlaybookReachability(id, opts = {}) {
   // ── compile ────────────────────────────────────────────────────────────────
   if (pb) {
     try {
-      const plan = compilePlaybook(pb, { goal: 'reachability-probe' });
+      // Declared inputs get probe values: reachability checks the route, not a run's vars.
+      const vars = Object.fromEntries((pb.inputs || []).map(i => [i.name, `<${i.name}>`]));
+      const plan = compilePlaybook(pb, { goal: 'reachability-probe', vars });
       add('compile', true, `${(pb.stages || []).length} стадий, ${(plan.items || plan.steps || []).length} шагов`);
     } catch (e) {
       add('compile', false, String(e.message).slice(0, 220));

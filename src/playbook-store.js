@@ -94,6 +94,9 @@ function renderPlaybook(playbook, vars = {}) {
   lines.push(`# ${playbook.title} (${playbook.id} v${playbook.version}, ${playbook.source || playbook.scope})`);
   if (playbook.goal_template) lines.push(`Goal: ${substitute(playbook.goal_template, vars)}`);
   if (playbook.user_value_template) lines.push(`User value: ${substitute(playbook.user_value_template, vars)}`);
+  if (Array.isArray(playbook.inputs) && playbook.inputs.length) {
+    lines.push(`Inputs: ${playbook.inputs.map(i => `${i.name}${i.required === false ? '' : ' (обязательно)'}${i.description ? ` — ${i.description}` : ''}`).join('; ')}`);
+  }
 
   (playbook.stages || []).forEach((stage, i) => {
     lines.push('');

@@ -140,6 +140,45 @@ describe('compilePlaybook', () => {
     const { compilePlaybook } = require(COMPILER);
     expect(() => compilePlaybook(base(), { goal: '  ' })).toThrow(/GOAL_REQUIRED/);
   });
+
+  // #1725: an engineering plan whose steps kept a literal «Репозиторий: {repo}» stalled in the background.
+  const withRepoInput = () => {
+    const pb = base();
+    pb.inputs = [{ name: 'repo', description: 'целевой репозиторий owner/name', derive: 'github_repo' }];
+    pb.stages[0].steps[0].instructions = 'Репозиторий: {repo}';
+    return pb;
+  };
+
+  it('rejects a run without a required input instead of leaving {repo} in the steps', () => {
+    fresh(COMPILER, STORE, PATHS);
+    const { compilePlaybook } = require(COMPILER);
+    expect(() => compilePlaybook(withRepoInput(), { goal: 'починить кнопку' })).toThrow(/INPUT_REQUIRED[\s\S]*vars\.repo/);
+  });
+
+  it('renders a required input from vars', () => {
+    fresh(COMPILER, STORE, PATHS);
+    const { compilePlaybook } = require(COMPILER);
+    const out = compilePlaybook(withRepoInput(), { goal: 'починить кнопку', vars: { repo: 'acme/app' } });
+    expect(out.items[0].instructions).toBe('Репозиторий: acme/app');
+  });
+
+  it('derives the repo from a single GitHub link in the goal, never from two different ones', () => {
+    fresh(COMPILER, STORE, PATHS);
+    const { compilePlaybook } = require(COMPILER);
+    const out = compilePlaybook(withRepoInput(), { goal: 'баг https://github.com/acme/app/issues/7' });
+    expect(out.items[0].instructions).toBe('Репозиторий: acme/app');
+    expect(() => compilePlaybook(withRepoInput(), { goal: 'https://github.com/a/x и https://github.com/b/y' }))
+      .toThrow(/INPUT_REQUIRED/);
+  });
+
+  it('an optional input may stay unset; playbooks without inputs are unchanged', () => {
+    fresh(COMPILER, STORE, PATHS);
+    const { compilePlaybook } = require(COMPILER);
+    const pb = withRepoInput();
+    pb.inputs[0].required = false;
+    expect(compilePlaybook(pb, { goal: 'x' }).items[0].instructions).toBe('Репозиторий: {repo}');
+    expect(compilePlaybook(base(), { goal: 'x' }).items).toHaveLength(2);
+  });
 });
 
 describe('MCP surface: playbook_run', () => {
@@ -263,6 +302,20 @@ describe('MCP surface: playbook_run', () => {
     const list = await tools.task_list.handler({}, ALICE);
     expect(list.tasks).toEqual([]);
     expect((await tools.playbook_run.handler({ playbook_id: 'development' }, ALICE)).code).toBe('GOAL_REQUIRED');
+  });
+
+  it('a missing required input is a coded error and writes no plan (#1725)', async () => {
+    const tools = loadTools();
+    writeProfilePlaybook('alice', {
+      id: 'eng', version: 1, scope: 'profile', title: 'Eng', goal_template: '{input}',
+      inputs: [{ name: 'repo', derive: 'github_repo' }],
+      stages: [{ id: 's', title: 'S', steps: [{ title: 'Код в {repo}', execution_kind: 'agent', executor_role: 'developer', minimum_model_level: 'master', context_budget: 'medium', validation: { ok: true } }] }],
+    });
+    const bad = await tools.playbook_run.handler({ playbook_id: 'eng', goal: 'сделать фичу' }, ALICE);
+    expect(bad.code).toBe('INPUT_REQUIRED');
+    expect((await tools.task_list.handler({}, ALICE)).tasks).toEqual([]);
+    const ok = await tools.playbook_run.handler({ playbook_id: 'eng', goal: 'сделать фичу', vars: { repo: 'acme/app' } }, ALICE);
+    expect(ok.items[0].title).toBe('Код в acme/app');
   });
 
   it('scopes the plan to the caller profile', async () => {

@@ -88,7 +88,7 @@ semantics — it is what caught the delay-gating and injected-`now` ordering bug
 
 ```bash
 # on the VM that hosts the server (local backend; AGENT_SECRET from env or ~/secrets.env)
-node scripts/e2e/playbooks-e2e.js start --playbook feature --goal "…"
+node scripts/e2e/playbooks-e2e.js start --playbook feature --goal "…" --repo owner/name
 node scripts/e2e/playbooks-e2e.js run <plan> --every 20 --stall-min 15
 node scripts/e2e/playbooks-e2e.js report <plan> --json --verbose
 

@@ -127,7 +127,7 @@ function startPlan(G, playbookId) {
   const { compilePlaybook } = require('../../src/playbook-compiler.js');
   const pb = new PlaybookStore({ profileId: PROFILE }).get(playbookId);
   expect(pb, `playbook ${playbookId} must resolve from the sibling repo`).toBeTruthy();
-  const c = compilePlaybook(pb, { goal: 'offline e2e: todo-cli' });
+  const c = compilePlaybook(pb, { goal: 'offline e2e: todo-cli', vars: { repo: 'acme/todo-cli' } });
   const store = G.durableStore();
   const { task } = store.createPlan({
     profile_id: PROFILE, goal: c.goal, user_value: c.user_value, acceptance_criteria: c.acceptance_criteria,
@@ -293,7 +293,7 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     const { PlaybookStore } = require('../../src/playbook-store.js');
     const { compilePlaybook } = require('../../src/playbook-compiler.js');
     const pb = new PlaybookStore({ profileId: PROFILE }).get('new-software');
-    const c = compilePlaybook(pb, { goal: 'offline e2e: doctor fallback' });
+    const c = compilePlaybook(pb, { goal: 'offline e2e: doctor fallback', vars: { repo: 'acme/todo-cli' } });
     const store = G.durableStore();
     // default doctor rung (claude + fallback ladder); cheap levels on free
     const { task } = store.createPlan({
@@ -326,7 +326,7 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     const { PlaybookStore } = require('../../src/playbook-store.js');
     const { compilePlaybook } = require('../../src/playbook-compiler.js');
     const pb = new PlaybookStore({ profileId: PROFILE }).get('new-software');
-    const c = compilePlaybook(pb, { goal: 'offline e2e: health' });
+    const c = compilePlaybook(pb, { goal: 'offline e2e: health', vars: { repo: 'acme/todo-cli' } });
     const store = G.durableStore();
     const { task } = store.createPlan({
       profile_id: PROFILE, goal: c.goal, user_value: c.user_value, acceptance_criteria: c.acceptance_criteria,
@@ -370,7 +370,7 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     const { PlaybookStore } = require('../../src/playbook-store.js');
     const { compilePlaybook } = require('../../src/playbook-compiler.js');
     const pb = new PlaybookStore({ profileId: PROFILE }).get('feature');
-    const c = compilePlaybook(pb, { goal: 'strict' });
+    const c = compilePlaybook(pb, { goal: 'strict', vars: { repo: 'acme/todo-cli' } });
     const store = G.durableStore();
     const { task } = store.createPlan({ profile_id: PROFILE, goal: c.goal, user_value: c.user_value,
       acceptance_criteria: c.acceptance_criteria, items: c.items, hooks: c.hooks, playbook_id: pb.id, playbook_version: pb.version,

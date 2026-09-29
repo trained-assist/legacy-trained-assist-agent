@@ -223,7 +223,12 @@ module.exports = {
           version: { type: 'integer', minimum: 1, description: 'Pin an exact version; omit for the resolved one' },
           user_value: { type: 'string', description: 'Override the rendered user_value_template' },
           acceptance_criteria: { type: 'array', minItems: 1, items: { type: 'object' }, description: 'Goal-specific criteria; derived from step validations when omitted' },
-          vars: { type: 'object', description: 'Extra template values for {placeholder} rendering' },
+          vars: {
+            type: 'object',
+            description: 'Template values for {placeholder} rendering. Inputs the playbook declares as required must be here ' +
+              '(engineering feature/debugging/new-software: repo = "owner/name", or a single GitHub link in goal) — otherwise ' +
+              'the run fails with INPUT_REQUIRED instead of a plan that silently stalls.',
+          },
           approve_hooks: {
             type: 'boolean',
             description: 'Explicit consent to run external-effect hooks (notify/create_issue/publish) for this run. ' +

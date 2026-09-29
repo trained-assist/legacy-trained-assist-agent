@@ -42,13 +42,13 @@ function findTask(store, taskId, profile) {
   return task;
 }
 
-function startPlan({ profile, playbookId, goal, levelMap = null, preamble = true, store = durableStore() }) {
+function startPlan({ profile, playbookId, goal, vars = null, levelMap = null, preamble = true, store = durableStore() }) {
   checkProfile(profile);
   if (!playbookId || !goal) throw e2eError(400, 'playbook_id and goal are required');
   const map = levelMap && typeof levelMap === 'object' ? levelMap : DEFAULT_LEVEL_MAP;
   const playbook = new PlaybookStore({ profileId: profile }).get(playbookId);
   if (!playbook) throw e2eError(404, `playbook ${playbookId} not found`);
-  const compiled = compilePlaybook(playbook, { goal: (preamble ? E2E_PREAMBLE : '') + goal });
+  const compiled = compilePlaybook(playbook, { goal: (preamble ? E2E_PREAMBLE : '') + goal, vars: vars || {} });
   const { task, items } = store.createPlan({
     profile_id: profile, goal: compiled.goal, user_value: compiled.user_value,
     acceptance_criteria: compiled.acceptance_criteria, items: compiled.items, hooks: compiled.hooks,
