@@ -25,7 +25,7 @@
 **Влияние.**
 - Модули: `src/durable-wait.js`, `src/durable-task-store.js`, `src/gtd-controller.js`,
   `src/server.js`, `src/handlers/internal.js`, `src/mcp-skills/tools/101-durable-tasks.js`,
-  `src/mcp-skills/tools/durable-task-plan.js` (поиск: `src/durable-task-plan.js`),
+  `src/durable-task-plan.js`,
   `src/credential-store.js`, новый `src/durable-kick.js`; доки + тесты.
 - Контракты данных: без миграций — `wait_json` не меняется; `poll_every_sec: 30`
   старый код клампит обратно в 60 (деградация, не поломка).
