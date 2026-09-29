@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Sandbox — исполнимая форма сценария
 // docs/user-scenarios/core/04-durable-wait-latency.md (DW-01…DW-09),
-// дизайн docs/specs/durable-wait-latency-design.md (срезы S1–S6), план a61bb2c5.
+// дизайн — issue #1850 (срезы S1–S6), план a61bb2c5.
 //
 // Зачем: замкнуть цикл «изменил → увидел результат» без человека. Одна команда:
 //
@@ -272,14 +272,12 @@ async function dw05(waitLib) {
 
 async function dw07(tools) {
   const toolDesc = tools.task_item_wait.description || '';
-  const specSrc = fs.readFileSync(path.join(CORE_ROOT, 'docs', 'specs', 'durable-wait-until.md'), 'utf8');
-  await check('DW-07', 'тексты: тул «min 30» + правило ci_green-vs-sleep; секция в спеке', () => {
+  await check('DW-07', 'тексты: тул «min 30» + правило ci_green-vs-sleep + что настраивает исполнитель', () => {
     const problems = [];
     if (!/min\s*30/.test(toolDesc)) problems.push('описание task_item_wait не говорит «min 30»');
     if (!/ci_green/.test(toolDesc)) problems.push('описание тула не упоминает ci_green');
     if (!/(а\s+не|вместо|not|instead\s+of)\s+`?\s*sleep/i.test(toolDesc)) problems.push('описание тула не говорит «для CI — until:{ci_green}, а не sleep_sec»');
-    const specHasSection = /настраива[а-я]*\s+исполнител|исполнитель\s+настраива/i.test(specSrc);
-    if (!specHasSection) problems.push('в docs/specs/durable-wait-until.md нет секции «что настраивает исполнитель»');
+    if (!/you set poll_every_sec, timeout_sec and sleep_sec/i.test(toolDesc)) problems.push('описание тула не говорит, что poll_every_sec/timeout_sec/sleep_sec задаёт исполнитель');
     if (problems.length) return { ok: false, reason: problems.join('; ') };
     return { ok: true, note: 'тексты исполнителю на месте' };
   });

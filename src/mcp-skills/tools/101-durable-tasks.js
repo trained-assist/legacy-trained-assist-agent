@@ -295,6 +295,7 @@ module.exports = {
         'yourself first); `sleep_sec` — a plain timer (observe for a day, then re-check). ' +
         'For CI or a merge pass `until:{ci_green}` / `{merged}` instead of `sleep_sec` — the wait tick ' +
         're-checks conditions every ~30s, so a sleep would overshoot the event. ' +
+        'You set poll_every_sec, timeout_sec and sleep_sec yourself — pick them for what you are waiting on. ' +
         'Waiting does not spend the step\'s attempts.',
       inputSchema: {
         type: 'object',

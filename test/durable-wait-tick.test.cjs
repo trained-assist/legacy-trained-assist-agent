@@ -1,5 +1,5 @@
 // Durable wait tick — the dedicated ~30s wait pass and the immediate kick.
-// Plan a61bb2c5 / docs/specs/durable-wait-latency-design.md.
+// Plan a61bb2c5 / issue #1850.
 //
 // Why this file exists: the 5-min GTD tick used to be the ONLY thing that polled
 // a waiting step, so `poll_every_sec` was decorative and a user answer waited up
