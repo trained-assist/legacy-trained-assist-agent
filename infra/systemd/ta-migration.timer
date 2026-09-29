@@ -1,0 +1,19 @@
+[Unit]
+Description=Run the profile migration phase runner (schedule lives in a drop-in)
+Documentation=https://github.com/trained-assist/trained-assist-agent/issues/1784
+
+[Timer]
+# ON-DROPIN: this file carries only a conservative default — the actual cadence
+# is host configuration and belongs in a drop-in, never in the repo (an empty
+# OnCalendar= resets the value below before the new one is applied):
+#   /etc/systemd/system/ta-migration.timer.d/schedule.conf
+#     [Timer]
+#     OnCalendar=
+#     OnCalendar=Sun *-*-* 04:30
+#     Persistent=true
+OnCalendar=weekly
+# A missed run (machine was off) fires once after boot instead of stacking up.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
