@@ -24,6 +24,13 @@
 //                                     (status: restored | already | skip |
 //                                     conflict | lost | corrupt)
 //
+// Inventory phases (`inventory: true`, e.g. credentials-reachability) touch no
+// file of the profile: they skip the clean-list plan and implement instead
+//   scan(ctx)  -> items[]             READ-ONLY report (dry-run)
+//   record(ctx, items)                apply: append the baseline to the ledger
+//   check(ctx, items, folded) -> failures[]   verify: current state vs baseline
+// --revert for them is a no-op (there is nothing to put back).
+//
 // ctx = { profile, profileRoot, quarantineRoot, rules, mode, log }.
 // st  = { path, sha256, size, dest, state, action, index } — the last record for
 // that (phase, path) after folding (see ledger.recordState).
@@ -32,12 +39,20 @@ const path = require('path');
 
 const NAME_RE = /^[a-z][a-z0-9-]{0,31}$/;
 const FUNCTIONS = ['prepare', 'apply', 'verify', 'revert'];
+const INVENTORY_FUNCTIONS = ['scan', 'record', 'check'];
 
 function validatePhase(mod, file) {
   const where = (msg) => new Error(`phase module ${path.basename(file)}: ${msg}`);
   if (!mod || typeof mod !== 'object') throw where('module.exports must be the phase object');
   if (typeof mod.name !== 'string' || !NAME_RE.test(mod.name)) {
     throw where(`"name" must match ${NAME_RE} (got ${JSON.stringify(mod.name)})`);
+  }
+  if (mod.inventory === true) {
+    // Inventory phase: moves nothing, reports and ledgers a per-profile fact.
+    for (const fn of INVENTORY_FUNCTIONS) {
+      if (typeof mod[fn] !== 'function') throw where(`inventory phase is missing required function ${fn}()`);
+    }
+    return mod;
   }
   if (!Array.isArray(mod.actions) || !mod.actions.length || mod.actions.some(a => typeof a !== 'string' || !a)) {
     throw where('"actions" must be a non-empty array of class names');
@@ -63,4 +78,4 @@ function loadPhases(dir = __dirname) {
   return phases;
 }
 
-module.exports = { loadPhases, validatePhase, FUNCTIONS };
+module.exports = { loadPhases, validatePhase, FUNCTIONS, INVENTORY_FUNCTIONS };

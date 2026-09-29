@@ -187,7 +187,13 @@ function printProfile(r, opts) {
   process.stdout.write(`${head.join('  ')}\n`);
 
   const limit = 10;
-  if (r.mode === 'dry-run') {
+  if (r.credentials) {
+    // Inventory phase (credentials-reachability): names and sources, never values.
+    for (const c of r.credentials) {
+      process.stdout.write(`  ${c.reachable ? 'reachable  ' : 'UNREACHABLE'} ${c.name} (${c.consumer}, ${c.scope})${c.source ? ` ← ${c.source}` : ''}\n`);
+    }
+    for (const f of (r.verify ? r.verify.failures : [])) process.stdout.write(`  FAIL ${f.path} [${f.state}/${f.status}]: ${f.message}\n`);
+  } else if (r.mode === 'dry-run') {
     for (const it of r.items.slice(0, limit)) {
       process.stdout.write(`  ${it.action} ${it.path}  ${fmtBytes(it.size)}${it.reason ? `  (${it.reason})` : ''}\n`);
     }

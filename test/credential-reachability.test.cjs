@@ -100,3 +100,46 @@ test('contract never prints values', () => {
   assert.equal(r.status, 0);
   assert.doesNotMatch(`${r.stdout}${r.stderr}`, /sekret-VALUE-9911/);
 });
+
+// ── S6/S7: profile-migrate phase + regression cases ──────────────────────────
+test('phase scan: aliases count, dadata .inn-config.json without env, values never leak', () => {
+  const phase = require('../scripts/profile-migrate/phases/credentials-reachability.cjs');
+  const { validate } = require('../src/credential-registry.js');
+  const profileRoot = fs.mkdtempSync(path.join(TMP, 'profile-'));
+  fs.writeFileSync(path.join(profileRoot, '.inn-config.json'), JSON.stringify({ dadata_token: 'v-dadata' }));
+  const reg = validate({ version: 1, credentials: [
+    { consumer: 'core:cloudflare', scope: 'platform', host: 'bridge', env: ['CLOUDFLARE_API_TOKEN'], aliases: ['CF_API_TOKEN'] },
+    { consumer: 'sales-skill:dadata', scope: 'profile', host: 'mcp', env: ['INN_DADATA_TOKEN'], aliases: ['DADATA_TOKEN'], files: ['.inn-config.json'], filesRoot: 'profile' },
+    { consumer: 'x:missing', scope: 'profile', files: ['nope.json'], filesRoot: 'profile' },
+  ] });
+  const ctx = { profile: 'p1', profileRoot };
+  const byName = items => Object.fromEntries(items.map(i => [i.name, i]));
+
+  let r = byName(phase.scanWith(ctx, reg, { CF_API_TOKEN: 'v-cf' }));
+  assert.deepEqual([r.CLOUDFLARE_API_TOKEN.reachable, r.CLOUDFLARE_API_TOKEN.source, r.CLOUDFLARE_API_TOKEN.invariant], [true, 'CF_API_TOKEN', false]);
+  assert.equal(r.INN_DADATA_TOKEN.reachable, true);
+  assert.equal(r.INN_DADATA_TOKEN.source, 'file:profile/.inn-config.json');
+  assert.match(r.INN_DADATA_TOKEN.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(r['x:missing'].reachable, false);
+  assert.doesNotMatch(JSON.stringify(r), /v-cf|v-dadata/);
+
+  r = byName(phase.scanWith(ctx, reg, { DADATA_TOKEN: 'v' }));
+  assert.equal(r.INN_DADATA_TOKEN.source, 'DADATA_TOKEN');
+
+});
+
+test('phase check: reachable → unreachable fails only for profile credentials', () => {
+  const phase = require('../scripts/profile-migrate/phases/credentials-reachability.cjs');
+  const folded = [
+    { path: 'credentials/a:file/A', action: 'CRED_REACHABLE' },
+    { path: 'credentials/b:env/B', action: 'CRED_REACHABLE' },
+    { path: 'credentials/c:file/C', action: 'CRED_UNREACHABLE' },
+  ];
+  const items = [
+    { consumer: 'a:file', name: 'A', reachable: false, invariant: true },
+    { consumer: 'b:env', name: 'B', reachable: false, invariant: false },
+    { consumer: 'c:file', name: 'C', reachable: false, invariant: true },
+  ];
+  const f = phase.check({}, items, folded);
+  assert.deepEqual(f.map(x => x.path), ['credentials/a:file/A']);
+});
