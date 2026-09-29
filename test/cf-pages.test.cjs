@@ -56,7 +56,10 @@ test('shared default: creates the project, records the owner, token only in the 
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.token_source, 'shared');
   assert.equal(r.created, true);
-  assert.equal(r.url, 'https://demo-site.pages.dev');
+  // The link to hand out is the branded copy; pages.dev stays as a fallback.
+  assert.equal(r.url, 'https://recruiter-assistant.ru/s/demo-site/');
+  assert.equal(r.pages_dev_url, 'https://demo-site.pages.dev');
+  assert.equal(fs.readFileSync(path.join(s.dataRoot, 'sites', 'demo-site', 'index.html'), 'utf8'), '<h1>x</h1>');
   assert.equal(seen[0].env.CLOUDFLARE_API_TOKEN, 'shared-tok');
   assert.equal(seen[0].env.CLOUDFLARE_ACCOUNT_ID, 'acc1');
   assert.ok(!JSON.stringify(r).includes('shared-tok'), 'token never in the tool result');
