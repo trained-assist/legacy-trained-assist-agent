@@ -1,0 +1,40 @@
+[Unit]
+Description=Profile migration phase runner — one phase, one profile (#1784)
+Documentation=https://github.com/trained-assist/trained-assist-agent/issues/1784
+# After the agent so POST /internal/flush-profile is reachable. Nothing breaks
+# when the agent is stopped: the runner treats "nothing listening" as "no
+# process holds buffered JSONL records" and continues.
+After=network-online.target assist-agent.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=vova
+WorkingDirectory=/home/vova/agent-master
+# TEMPLATE ONLY — nothing in this repo installs, enables or runs this unit.
+# What differs per host lives outside the repo, so a repo update never clobbers
+# it and a new box boots from code, not from hand-edited /etc state:
+#   /etc/default/ta-migration                 MIGRATION_ARGS (phase, profile, mode)
+#   /home/vova/secrets.env                    AGENT_SECRET for the flush endpoint
+#   /etc/systemd/system/ta-migration.timer.d/ schedule — see ta-migration.timer
+EnvironmentFile=-/home/vova/secrets.env
+EnvironmentFile=-/etc/default/ta-migration
+# The agent's local port (8080 on GCP behind nginx). The runner's flush default
+# derives from PORT, this pins it explicitly so a PORT change elsewhere cannot
+# silently point the migrator at the wrong endpoint.
+Environment=AGENT_FLUSH_URL=http://127.0.0.1:8080
+Environment=PORT=8080
+Environment=AGENT_DATA_DIR=/home/vova/agent-data
+Environment=USERS_DIR=/home/vova/users
+Environment=AGENT_TOKENS_DIR=/home/vova/agent-tokens
+# Without MIGRATION_ARGS the CLI prints usage and exits 1 — an unconfigured
+# unit does nothing destructive. The CLI's default mode is --dry-run; --apply
+# must be written explicitly into /etc/default/ta-migration, e.g.:
+#   MIGRATION_ARGS="delete --profile product-owner --apply"
+ExecStart=/usr/bin/node scripts/profile-migrate/cli.mjs $MIGRATION_ARGS
+# Run below the engines in both CPU and I/O scheduling. Outside systemd the CLI
+# renices itself (ionice -c3 -n7 + nice, degrading on macOS); here systemd does
+# it and the re-exec guard PROFILE_MIGRATE_NICED keeps the two from stacking.
+Nice=10
+IOSchedulingClass=idle
+IOSchedulingPriority=7
