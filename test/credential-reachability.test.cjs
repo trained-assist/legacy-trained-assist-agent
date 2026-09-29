@@ -143,3 +143,20 @@ test('phase check: reachable → unreachable fails only for profile credentials'
   const f = phase.check({}, items, folded);
   assert.deepEqual(f.map(x => x.path), ['credentials/a:file/A']);
 });
+
+// ── S5: testkit conformance reads the skill's registry ───────────────────────
+test('testkit checkCredentials: absent is ok, invalid fails, schema copy matches core', () => {
+  const { checkCredentials } = require('../packages/mcp-skill-testkit/lib/conformance.js');
+  assert.equal(
+    fs.readFileSync(path.join(ROOT, 'packages', 'mcp-skill-testkit', 'schema', 'credentials.schema.json'), 'utf8'),
+    fs.readFileSync(path.join(ROOT, 'contracts', 'credentials.schema.json'), 'utf8'),
+    'testkit ships a stale copy of contracts/credentials.schema.json');
+  const repo = fs.mkdtempSync(path.join(TMP, 'skill-'));
+  assert.equal(checkCredentials(repo).ok, true);
+  fs.mkdirSync(path.join(repo, 'config'));
+  const write = obj => fs.writeFileSync(path.join(repo, 'config', 'credentials.json'), JSON.stringify(obj));
+  write({ version: 1, credentials: [{ consumer: 'speech-skill:deepgram', scope: 'profile', host: 'bridge', env: ['DEEPGRAM_API_KEY'], files: ['deepgram/key.txt'] }] });
+  assert.equal(checkCredentials(repo).ok, true);
+  write({ version: 1, credentials: [{ consumer: 'x', scope: 'profile', files: ['../../etc/passwd'] }] });
+  assert.equal(checkCredentials(repo).ok, false);
+});
