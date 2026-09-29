@@ -21,6 +21,9 @@ async function buildFileNote({ filePath, mimeType, engine, openrouterKey, vision
   if (engine === 'opencode' && mimeType?.startsWith('image/') && openrouterKey) {
     const result = await vision.extractImageText({ filePath, mimeType, openrouterKey });
     if (result.ok) note += `\n[Распознано на изображении:\n${result.text}]`;
+    // A silent failure left the 29.09 04:02 screenshot with no block and no way to
+    // tell why (credits? network? refusal?) — the reason now reaches journalctl.
+    else console.warn(`[vision] no recognition (${result.reason || 'unknown'}) for ${filePath}`);
   }
   return note;
 }
