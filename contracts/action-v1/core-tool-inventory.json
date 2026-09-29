@@ -11,6 +11,7 @@
     "101-durable-tasks.js",
     "102-playbooks.js",
     "103-content-rewrite.js",
+    "103-qa-live.js",
     "21-browser-session.js",
     "22-connect.js",
     "22-ru-browser.js",
