@@ -103,3 +103,15 @@ describe('platform keys reach the MCP env (issue #1885 / #1892)', () => {
     expect(secrets.toolPlatformEnv()).toEqual({});
   });
 });
+
+describe('hermes_run passes the loaded secrets to its engine run (#1892 п.4)', () => {
+  afterEach(() => secrets.setLoadedSecrets(null));
+  it('hermesEngineSecrets() is the loaded secrets object, not {}', () => {
+    const { hermesEngineSecrets } = require('../../src/hermes-tools-run.js');
+    const loaded = { BOT_TOKEN: 'b', CF_API_TOKEN: 'c', DEEPGRAM_API_KEY: 'd' };
+    secrets.setLoadedSecrets(loaded);
+    expect(hermesEngineSecrets()).toBe(loaded);
+    secrets.setLoadedSecrets(null);
+    expect(hermesEngineSecrets()).toEqual({});
+  });
+});
