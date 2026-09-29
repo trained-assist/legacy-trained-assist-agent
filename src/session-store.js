@@ -82,13 +82,20 @@ function belongsToConversation(session, chatId, threadId) {
 // qa_more escalation (src/quick-reply.js) but must not show up in the picker/journal or
 // evict real dialogs from the MAX_SESSIONS index. promoteSideSession() indexes it once
 // the user actually escalates it into a dialog.
-function createSession(workDir, { task, id: providedId, chatId, projectId = null, audience, threadId, sideSession = false }) {
+function createSession(workDir, { task, id: providedId, chatId, projectId = null, audience, threadId, sideSession = false, pending = false }) {
   const id = providedId || `s-${Date.now()}`;
   const topic = task.slice(0, 80).replace(/\s+/g, ' ').trim();
   const now = Date.now();
   const aud = audience || 'default';
 
-  const meta = { id, topic, projectId: projectId || null, audience: aud, createdAt: now, lastAt: now, messageCount: 1, lastUserMessage: topic, lastMessageRole: 'user' };
+  // `pending: true` (#1867) mints the file for an id the caller is about to hand out,
+  // with NO messages yet: the runner records the user turn at its usual point, so a
+  // pre-recorded task would show up twice in the prompt and frame the first message
+  // as "[Продолжение сессии]". The id is durable either way — a restart in the window
+  // between mint and first append leaves an empty-but-openable session, not a 404.
+  const meta = pending
+    ? { id, topic, projectId: projectId || null, audience: aud, createdAt: now, lastAt: now, messageCount: 0 }
+    : { id, topic, projectId: projectId || null, audience: aud, createdAt: now, lastAt: now, messageCount: 1, lastUserMessage: topic, lastMessageRole: 'user' };
 
   if (!sideSession) {
     const sessions = loadIndex(workDir);
@@ -108,7 +115,7 @@ function createSession(workDir, { task, id: providedId, chatId, projectId = null
     ...(threadId !== undefined && chatId ? { messageThreadId: normThreadId(threadId) } : {}),
     projectId: projectId || null,
     ...(sideSession ? { sideSession: true } : {}),
-    messages: [{ role: 'user', content: task, at: now }],
+    messages: pending ? [] : [{ role: 'user', content: task, at: now }],
   };
   atomicJson(sessionFilePath(workDir, id), full, { space: 2 });
 
@@ -239,6 +246,10 @@ function getSession(workDir, id) {
 function buildContext(workDir, sessionId, limit = 500, msgCount = 6) {
   const session = getSession(workDir, sessionId);
   if (!session) return null;
+  // No exchanges yet (a `pending` shell minted for a web id, #1867): there is no
+  // history to continue. Emitting only the "[Продолжение сессии …]" header would
+  // both mislabel a first message and drop the current task into the context twice.
+  if (!(session.messages || []).length) return null;
 
   const date = new Date(session.createdAt).toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
   const lines = [`[Продолжение сессии от ${date}]\nТема: "${session.topic}"\n`];

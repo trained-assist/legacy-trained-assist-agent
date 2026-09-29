@@ -1060,10 +1060,15 @@ async function _runTaskInner(opts) {
       const botToken = opts.secrets?.TELEGRAM_BOT_TOKEN || opts.secrets?.BOT_TOKEN;
       const chatId = opts.user.id;
       // Every ⚡ reply is one tap from the agent (src/quick-reply.js).
-      const qaSessionId = recordQuickExchange(opts.user.workDir, {
+      // Web exact-session (#1867): the browser already holds THIS id — write the
+      // exchange there instead of a side qa-<hash> session it would never find.
+      const exchange = {
         username: opts.user.username, chatId, threadId: runThreadId, audience: opts.user.audience,
         projectId: opts.projectId || null, task: opts.task, reply: quick,
-      });
+      };
+      const qaSessionId = (opts.webExactSession && opts.sessionId
+          && recordWebQuickExchange(opts.user.workDir, opts.sessionId, exchange))
+        || recordQuickExchange(opts.user.workDir, exchange);
       const extra = { reply_markup: { inline_keyboard: escalateRows(qaSessionId) } };
       return (async () => {
         // Disarm the maintenance status from the lock gate above: this answer goes
@@ -1780,6 +1785,23 @@ function _recordFailureAttempt(executionId, { taskId, projectId, sessionId, engi
 // Returns { activeSessionId, contextSessionId } — contextSessionId set only
 // when an existing session is continued. Side effect: claims an unattached
 // legacy session for the Telegram chat (#489).
+// #1867: a quick answer for a web run belongs in the EXACT session whose id the browser
+// already holds. recordQuickExchange writes a side qa-<hash> session instead, so the id
+// handed to the client had no file and /web/session-get, /web/reply-bearer answered 404.
+// Same exchange, same escalate button — only the target session differs. Fails over to
+// the side session if the exact one can't be written (never lose the answer).
+function recordWebQuickExchange(workDir, sessionId, { task, reply, projectId = null }) {
+  try {
+    if (sessions.getSession(workDir, sessionId)) sessions.appendUserMessage(workDir, sessionId, task);
+    else sessions.createSession(workDir, { task, id: sessionId, projectId });
+    sessions.appendReply(workDir, sessionId, reply);
+    return sessionId;
+  } catch (e) {
+    console.warn('[runner] web quick exchange in %s: %s', sessionId, e.message);
+    return null;
+  }
+}
+
 function resolveRunSession(sessions, getCurrent, { workDir, sessionId, chatId, audience, threadId, forceNew = false, webExactSession = false }) {
   let activeSessionId = null;
   let contextSessionId = null;
@@ -2097,7 +2119,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       PERSONA_INTENT.test(task) || PROJECT_INTENT.test(task) || SETTINGS_INTENT.test(task) || AGENT_INFO_INTENT.test(task) ||
       MODEL_INFO_INTENT.test(task) || BUG_OR_FEATURE_INTENT.test(task);
 
-    if (!isUtility) {
+    // Web exact-session (#1867): the id the browser holds IS this conversation, so even
+    // a utility reply is recorded there — a side qa-<hash> session leaves the client's
+    // id with no file → /web/session-get 404. Telegram keeps the utility/side split.
+    if (!isUtility || webExactSession) {
       if (sessionExists) {
         if (!userMessageRecorded) sessions.appendUserMessage(user.workDir, activeSessionId, task);
         sessions.appendReply(user.workDir, activeSessionId, quickReply);
@@ -2122,7 +2147,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // needed there.
     // Utility replies are not in the chat's session, so they escalate from a side session
     // (recordQuickExchange) — every ⚡ reply gets the button, none is a dead end.
-    const escalateSessionId = isUtility
+    // Web exact-session (#1867) is the exception: the exchange landed in activeSessionId,
+    // so the button must open that same id, not a side one the browser never heard of.
+    const escalateSessionId = (isUtility && !webExactSession)
       ? recordQuickExchange(user.workDir, { username: user.username, chatId, threadId, audience, projectId: boundProjectId, task, reply: quickReply })
       : activeSessionId;
     const quickExtra = { reply_markup: { inline_keyboard: [
