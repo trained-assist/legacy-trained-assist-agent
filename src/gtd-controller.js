@@ -957,6 +957,8 @@ async function _settleDurableReply(ctx, reply) {
     // callback, not on the tick's critical path.
     // P3d-1c: re-read the item so a per-step validation_mode the agent set
     // during the run is honoured, and allow the fast-pass escape under that mode.
+    // #1861 Fix B: `gate` holds a failed registered check; it suppresses `done`.
+    let gate = null;
     try {
       const freshItem = store.getTaskItem(itemSnap.id) || itemSnap;
       const mode = resolveValidationMode({ task, item: freshItem });
@@ -977,16 +979,45 @@ async function _settleDurableReply(ctx, reply) {
       } else {
         // The reply joins the plan text: a step that just opened a PR is
         // validated (pr_opened / ci_green) against the URL it printed.
-        await recordItemValidations(store, {
+        const results = await recordItemValidations(store, {
           task, item: itemSnap, executionId, registry: validators, projectDir: itemProjectDir,
           validationMode: mode, llmValidate, planText: `${planText}\n${said}`, reply: said,
         });
+        // #1861 Fix B: a FAILED registered (deterministic) check must not be
+        // swallowed by `DURABLE: done`. registered → isBlockingCheck; semantic /
+        // inconclusive verdicts still fall through (soft finalization). Keep the
+        // verdict so the step is failed with the check's own key/path.
+        const bad = results.find(r => r.status === 'fail' && isBlockingCheck(r.key));
+        if (bad) gate = bad;
       }
       store.setItemEvidence(itemSnap.id, task.profile_id, {
-        evidence_json: JSON.stringify({ reply: said.slice(0, 4000) }), completed_at: Date.now(),
+        evidence_json: JSON.stringify(gate
+          ? { reply: said.slice(0, 4000), failed_validation: gate.key, subject: gate.subject ?? null }
+          : { reply: said.slice(0, 4000) }),
+        completed_at: gate ? null : Date.now(),
       });
     } catch (e) {
       console.error(`[gtd-durable] recordValidations ${itemSnap.id.slice(0, 8)}:`, e.message);
+    }
+    if (gate) {
+      const detail = gate.subject != null ? JSON.stringify(gate.subject) : '';
+      const errText = `deterministic validation failed: ${gate.key}${detail ? ` (${detail})` : ''}`;
+      store.failItem(itemSnap.id, task.profile_id, { executionId, error: errText.slice(0, 500) });
+      const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier, quality: true });
+      store.finishExecution(executionId, {
+        status: 'failed', error_class: rec.failureClass,
+        error_text: `${rec.action || 'terminal'}: ${errText}`.slice(0, 500),
+      });
+      if (rec.recovered) {
+        console.log(`[gtd-durable] gated check ${itemSnap.id.slice(0, 8)} failed (${gate.key}) → ${rec.failureClass}/${rec.action} (${rec.attempts}/${rec.maxAttempts})`);
+        void bgStep(secrets, task, itemSnap, '⚠️ Шаг не удался — повтор', `проверка не пройдена: ${gate.key}`);
+      } else {
+        console.log(`[gtd-durable] item blocked by failed check, ${rec.reason} (${rec.attempts}/${rec.maxAttempts}) class=${rec.failureClass}: ${itemSnap.id.slice(0, 8)}`);
+        void bgStep(secrets, task, itemSnap, '🛑 Шаг не удался — проверка не пройдена', errText);
+        await fireItemHooks(store, task, itemSnap, 'on_fail', hookVars({ error: errText }), sinks, hooksApproved);
+        await fireTaskHooks(store, task, 'task_failed', hookVars({ error: errText }), sinks, hooksApproved);
+      }
+      return;
     }
     store.completeItem(itemSnap.id, task.profile_id, { executionId });
     store.finishExecution(executionId, { status: 'success' });
