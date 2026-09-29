@@ -26,6 +26,7 @@ const { execFile } = require('child_process');
 const { TOKENS_ROOT, SYSTEM_ROOT, userWorkDir } = require('./data-paths');
 const { readTokenValue } = require('./token-value');
 const { readCredentialFile } = require('./credential-store');
+const { mirrorSite } = require('./site-mirror');
 
 const CF_API = 'https://api.cloudflare.com/client/v4';
 const PROJECT_RE = /^[a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?$/;
@@ -190,10 +191,20 @@ async function deploySite({ username, dir, project, branch = 'main' }, deps = {}
     return { ok: false, error: 'wrangler pages deploy упал', token_source: cred.source, output: text.split(cred.token).join('***').slice(-1500) };
   }
   const m = text.match(/https:\/\/[a-z0-9.-]+\.pages\.dev\S*/i);
+  const pagesDevUrl = `https://${name}.pages.dev`;
+  // Branded copy on the product domain (src/site-mirror.js). Production branch only:
+  // preview branches stay on their pages.dev URL. A mirror failure never fails the
+  // deploy — the pages.dev link still works and the reason is reported.
+  let mirror = null;
+  if (branch === 'main') {
+    try { mirror = mirrorSite({ src, name, username, dataRoot, env }); } catch (e) { mirror = { ok: false, error: e.message }; }
+  }
   return {
     ok: true,
-    url: `https://${name}.pages.dev`,
+    url: mirror?.ok ? mirror.url : pagesDevUrl,
+    pages_dev_url: pagesDevUrl,
     deployment_url: m ? m[0] : null,
+    ...(mirror && !mirror.ok ? { branded_url_error: mirror.error } : {}),
     project: name,
     created: !exists,
     token_source: cred.source,

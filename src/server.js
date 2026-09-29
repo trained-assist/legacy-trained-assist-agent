@@ -606,6 +606,10 @@ async function main() {
     // pages checked before ANY content incl. ?raw). See src/handlers/pages.js.
     if (req.method === 'GET' && require('./handlers/pages').servePublishedPage(req, url, res, publishPasswordForm)) return;
 
+    // GET|HEAD /s/:project/* — branded copy of a site_deploy folder (no auth, public,
+    // CSP-sandboxed). See src/site-mirror.js.
+    if (url.pathname.startsWith('/s/') && require('./site-mirror').serveSite(req, url, res)) return;
+
 
     // ── /web/* routes — cookie-auth endpoints (sessions, files, run) ─────────
     // Note: /web/magic, /web/auth, /web/logout, /web/me, /web/profiles,
