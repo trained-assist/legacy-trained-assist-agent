@@ -32,9 +32,9 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci --include=dev
-      - name: Check out domain skill siblings next to core (hh, sales, engineering, documents, speech, search)
+      - name: Check out domain skill siblings next to core (hh, sales, engineering, documents, speech, search, marketing)
         run: |
-          for repo in trained-assist-hh-skill trained-assist-sales-skill trained-assist-documents-skill trained-assist-speech-skill trained-assist-search-skill; do
+          for repo in trained-assist-hh-skill trained-assist-sales-skill trained-assist-documents-skill trained-assist-speech-skill trained-assist-search-skill trained-assist-marketing-skill; do
             git clone --quiet --depth 1 "https://github.com/trained-assist/$repo.git" "$GITHUB_WORKSPACE/../$repo"
           done
           # Repo renamed to software-engineering-playbooks; the sibling dir keeps the old name.
@@ -67,9 +67,9 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
-      - name: Check out domain skill siblings next to core (hh, sales, engineering, documents, speech, search)
+      - name: Check out domain skill siblings next to core (hh, sales, engineering, documents, speech, search, marketing)
         run: |
-          for repo in trained-assist-hh-skill trained-assist-sales-skill trained-assist-documents-skill trained-assist-speech-skill trained-assist-search-skill; do
+          for repo in trained-assist-hh-skill trained-assist-sales-skill trained-assist-documents-skill trained-assist-speech-skill trained-assist-search-skill trained-assist-marketing-skill; do
             git clone --quiet --depth 1 "https://github.com/trained-assist/$repo.git" "$GITHUB_WORKSPACE/../$repo"
           done
           # Repo renamed to software-engineering-playbooks; the sibling dir keeps the old name.
