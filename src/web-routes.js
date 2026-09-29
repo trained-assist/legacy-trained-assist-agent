@@ -1,7 +1,7 @@
 const path = require('path');
 const { EventEmitter } = require('events');
 const { webAuth } = require('./web-auth');
-const { listSessions, getSession, getCurrentSessionId } = require('./session-store');
+const { listSessions, getSession, getCurrentSessionId, createSession } = require('./session-store');
 const { isTaskRunning, isSessionRunning, isSessionQueuedFor, runTask, stopSessionTask } = require('./runner');
 const { userWorkDir, SYSTEM_ROOT } = require('./data-paths');
 const { readTrace } = require('./session-trace');
@@ -432,7 +432,23 @@ async function streamWebTask({ req, res, secrets, username, task, sessionId, new
 
   // Exact session known up front → the client can Stop / navigate a brand-new
   // run before it finishes (legacy path only learns the id on 'done').
-  if (webExactSession) send({ type: 'session', sessionId });
+  //
+  // #1867 — durable at mint: the id the client sees MUST be readable from disk right
+  // now and after a restart. The session file used to be created deep inside _runTask
+  // (after the maintenance lock, admission and the queue), so a restart in that window
+  // left a phantom link that answered 404 «session not found» (prod, 29.09.2026 10:14
+  // МСК). Mint the file HERE, before the 'session' event goes out — as a `pending`
+  // shell with no messages, so the runner still records the user turn itself.
+  if (webExactSession) {
+    if (sessionId && !getSession(workDir, sessionId)) {
+      try {
+        createSession(workDir, { task, id: sessionId, projectId: projectId || null, pending: true });
+      } catch (e) {
+        console.warn('[web-routes] mint session %s: %s', sessionId, e.message);
+      }
+    }
+    send({ type: 'session', sessionId });
+  }
 
   const finish = (eventName, payload) => {
     emitter.emit(eventName, payload);
@@ -489,6 +505,15 @@ async function streamWebTask({ req, res, secrets, username, task, sessionId, new
     let realId = sessionId || null;
     if (!realId && !webExactSession) {
       try { realId = getCurrentSessionId(workDir) || null; } catch {}
+    }
+    // #1867 — 'done' must never carry an id that isn't on disk: the browser keeps the
+    // link and its next read answers 404 «session not found». Minting the shell above
+    // closes the real path; this is the belt-and-braces that turns a silent phantom
+    // into a visible, retryable error.
+    if (realId && !getSession(workDir, realId)) {
+      const error = 'Ответ не был сохранён в сессию — отправь запрос ещё раз.';
+      completeWebMutation(username, requestId, { state: 'error', error, sessionId: null, taskId });
+      return finish('error', error);
     }
     if (!streamed && !answerPersisted(realId)) {
       const error = 'Задача завершилась без ответа — попробуй отправить ещё раз.';
