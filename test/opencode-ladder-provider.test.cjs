@@ -56,7 +56,7 @@ test('every ladder call carries trace headers from run-identity env the engine a
   }
   const src = fs.readFileSync(path.join(ROOT, 'src/runner/claude-runner.js'), 'utf8');
   assert.match(src, /AGENT_RUN_ID: require\('crypto'\)\.randomUUID\(\)/, 'a fresh run id per spawn');
-  assert.match(src, /AGENT_TRACE_CHAT: String\(chatId\)/, 'the chat reaches the header');
+  assert.match(src, /AGENT_TRACE_CHAT: require\('\.\.\/opencode-ladder-provider'\)\.traceChat\(chatId\)/, 'the chat reaches the header (null → "", see traceChat)');
 });
 
 test('russian keeps its strict reviewer prompt; research is a pinned OpenCode Go model, not a ladder', () => {
@@ -88,4 +88,11 @@ test('no in-process ladder left: removed modules and ladder config stay gone', (
   for (const f of ['src/opencode-ladder.js', 'src/model-health.js', 'src/opencode-go-keys.js', 'config/model-routing.json', '.opencode/profiles']) {
     assert.ok(!fs.existsSync(path.join(ROOT, f)), `${f} must not come back`);
   }
+});
+
+test('trace chat: no chat → empty (logged as null), never the string "null"', () => {
+  assert.strictEqual(p.traceChat(null), '');
+  assert.strictEqual(p.traceChat(undefined), '');
+  assert.strictEqual(p.traceChat(361255098), '361255098');
+  assert.strictEqual(p.traceChat(0), '0');
 });
