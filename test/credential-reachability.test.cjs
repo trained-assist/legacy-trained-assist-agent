@@ -56,3 +56,47 @@ test('validate rejects bad entries', () => {
     { consumer: 'x', scope: 'platform', env: ['Y'], host: 'mcp' },
   ] }), /duplicate/);
 });
+
+// ── S3/S4: CI contract ───────────────────────────────────────────────────────
+const { spawnSync } = require('node:child_process');
+const CONTRACT = path.join(ROOT, 'scripts', 'check-credential-reachability.js');
+const contract = (...args) => {
+  const r = spawnSync(process.execPath, [CONTRACT, ...args], { cwd: ROOT, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: TMP } });
+  return { code: r.status, out: `${r.stdout}${r.stderr}` };
+};
+
+test('contract is green on the tree (HH_CLIENT_*, AGENT_TOKENS_DIR reach MCP; no homedir token paths)', () => {
+  const r = contract();
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /HH_CLIENT_SECRET ← mcp/);
+  assert.match(r.out, /CLOUDFLARE_API_TOKEN ← bridge/);
+});
+
+test('contract fails on a declared name no host provides, naming it', () => {
+  const reg = path.join(TMP, 'bad-reg.json');
+  fs.writeFileSync(reg, JSON.stringify({ version: 1, credentials: [
+    { consumer: 't:mcp', scope: 'platform', host: 'mcp', env: ['T_NEVER_MCP'] },
+    { consumer: 't:bridge', scope: 'platform', host: 'bridge', env: ['T_NEVER_BRIDGE'] },
+  ] }));
+  const r = contract('--registry', reg);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /T_NEVER_MCP/);
+  assert.match(r.out, /T_NEVER_BRIDGE/);
+});
+
+test('contract fails on a tool building a token path from os.homedir()', () => {
+  const dir = fs.mkdtempSync(path.join(TMP, 'tools-'));
+  fs.writeFileSync(path.join(dir, '50-bad.js'), "const os=require('os'),path=require('path');\nconst p=path.join(os.homedir(), 'agent-tokens', 'u');\n");
+  fs.writeFileSync(path.join(dir, '51-ok.js'), "const { tokenPath } = require('../../data-paths');\n");
+  const r = contract('--tools-dir', dir);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /50-bad\.js:2/);
+  assert.doesNotMatch(r.out, /51-ok\.js/);
+});
+
+test('contract never prints values', () => {
+  const r = spawnSync(process.execPath, [CONTRACT], { cwd: ROOT, encoding: 'utf8',
+    env: { PATH: process.env.PATH, HOME: TMP, HH_CLIENT_SECRET: 'sekret-VALUE-9911' } });
+  assert.equal(r.status, 0);
+  assert.doesNotMatch(`${r.stdout}${r.stderr}`, /sekret-VALUE-9911/);
+});
