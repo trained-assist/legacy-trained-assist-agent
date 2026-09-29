@@ -123,17 +123,19 @@ class DurableTaskStore {
   /** Persist the complete planner contract in one transaction. No execution. */
   createPlan({ id = crypto.randomUUID(), profile_id, project_id = null, goal,
     playbook_id = null, playbook_version = null, user_value, acceptance_criteria,
-    items, session_id = null, execution_policy = null, request_id = null, hooks = null }) {
+    items, session_id = null, origin_chat = null, execution_policy = null, request_id = null, hooks = null }) {
     if (typeof user_value !== 'string' || !user_value.trim()) throw new Error('user_value required');
     if (!Array.isArray(acceptance_criteria) || !acceptance_criteria.length || acceptance_criteria.some(c => !c || typeof c !== 'object' || Array.isArray(c) || !Object.keys(c).length)) throw new Error('acceptance_criteria required');
     if (!Array.isArray(items) || !items.length) throw new Error('items required');
     return this.db.transaction(() => {
       this.createTask({ id, profile_id, project_id, goal });
       this._prep(`UPDATE durable_tasks SET status='draft', playbook_id=?, playbook_version=?,
-        user_value=?, acceptance_criteria_json=?, execution_policy_json=?, request_id=?, hooks_json=? WHERE id=?`)
+        user_value=?, acceptance_criteria_json=?, execution_policy_json=?, request_id=?, hooks_json=?,
+        origin_session_id=?, origin_chat_json=? WHERE id=?`)
         .run(playbook_id, playbook_version, user_value, JSON.stringify(acceptance_criteria),
           execution_policy == null ? null : JSON.stringify(execution_policy), request_id,
-          hooks == null ? null : JSON.stringify(hooks), id);
+          hooks == null ? null : JSON.stringify(hooks), session_id || null,
+          origin_chat == null ? null : JSON.stringify(origin_chat), id);
       items.forEach((item, position) => {
         validateItem(item);
         const itemId = crypto.randomUUID();
@@ -149,7 +151,9 @@ class DurableTaskStore {
             item.hooks == null ? null : JSON.stringify(item.hooks),
             item.wait == null ? null : JSON.stringify({ then: 'complete', ...item.wait }), itemId);
       });
-      if (session_id) this.attachSession(id, session_id, profile_id);
+      // #1886: session_id is the plan's owner chat (origin_session_id), not an
+      // attachment — task_sessions allows one active task per session, so a second
+      // plan from the same chat used to throw «already has an active task».
       return { task: this.getTask(id, profile_id), items: this.listTaskItems(id, profile_id) };
     })();
   }
@@ -820,12 +824,16 @@ class DurableTaskStore {
     return res.changes > 0;
   }
 
-  /** Active (status=active) task this session is attached to, or null. */
+  /** Active (status=active) task this session is attached to or started (#1886), or null. */
   activeTaskForSession(profileId, sessionId) {
     return this._prep(`SELECT t.* FROM task_sessions s
       JOIN durable_tasks t ON t.id = s.task_id
       WHERE s.profile_id = ? AND s.session_id = ? AND s.active = 1 AND t.status = 'active'
-      LIMIT 1`).get(profileId, sessionId) || null;
+      LIMIT 1`).get(profileId, sessionId)
+      || this._prep(`SELECT * FROM durable_tasks
+      WHERE profile_id = ? AND origin_session_id = ? AND status = 'active'
+      ORDER BY created_at DESC LIMIT 1`).get(profileId, sessionId)
+      || null;
   }
 
   listSessions(taskId, profileId) {

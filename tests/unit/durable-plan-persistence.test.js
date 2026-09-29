@@ -52,14 +52,18 @@ describe('engineering plan persistence', () => {
     expect(JSON.parse(after.items[0].validation_json).criterion_id).toBe('persist');
   }));
 
-  it('rolls back task, preceding items and session attachment on any invalid item', () => {
+  // #1886: session_id is the plan's owner chat (origin_session_id), not a task_sessions
+  // attachment — a second plan from the same session is legal (it used to throw
+  // «already has an active task»; the owner starts several plans from one chat).
+  it('rolls back task and preceding items on any invalid item; several plans share one origin session', () => {
     const store = new DurableTaskStore(':memory:');
     try {
       expect(() => store.createPlan({ ...plan(), session_id: 's1', items: [valid(), { ...valid(), context_budget: 'unbounded' }] })).toThrow(/context_budget/);
       for (const table of ['durable_tasks', 'task_items', 'task_sessions']) expect(store.db.prepare(`SELECT count(*) n FROM ${table}`).get().n).toBe(0);
       store.createPlan({ ...plan(), session_id: 's1' });
-      expect(() => store.createPlan({ ...plan(), id: 'second', session_id: 's1' })).toThrow(/active task/);
-      expect(store.getTask('second', 'alice')).toBeNull();
+      store.createPlan({ ...plan(), id: 'second', session_id: 's1' });
+      expect(store.getTask('second', 'alice').origin_session_id).toBe('s1');
+      expect(store.db.prepare('SELECT count(*) n FROM task_sessions').get().n).toBe(0);
     } finally { store.close(); }
   });
 
@@ -138,7 +142,7 @@ it('MCP rejects foreign project/session references and path traversal before ins
     const result = await tools.task_create.handler({ ...plan(), profile_id: 'bob', project_id: 'project', session_id: 's1' }, {userId:'alice'});
     expect(result.task.profile_id).toBe('alice');
     const got = await tools.task_get.handler({task_id:result.task.id}, {userId:'alice'});
-    expect(got.sessions[0].session_id).toBe('s1');
+    expect(got.task.origin_session_id).toBe('s1'); // #1886: owner chat, not a task_sessions row
     expect(readFileSync(got.projection, 'utf8')).toContain('developer/master/medium');
     rmSync(got.projection);
     const rebuilt = await tools.task_get.handler({task_id:result.task.id}, {userId:'alice'});

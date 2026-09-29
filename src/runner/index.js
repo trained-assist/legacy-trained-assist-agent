@@ -326,11 +326,25 @@ const activeTimers = new Map();
 // the Telegram user's own id, identical no matter which bot is messaged, so it
 // cannot disambiguate audiences by itself. Kept in one place so the taskId stop
 // path can never drift from the username-scoped path.
+// #1886: the chat a run belongs to for a chat-scoped stop. A durable plan step runs
+// chat-less (user.id = null — it must not reply into a chat), so its chat is the
+// plan's owner chat, resolved from its plan session (s-plan-<id8>). No owner → null.
+function runChatId(state) {
+  if (state.chatId != null) return state.chatId;
+  if (!/^s-plan-/.test(String(state.sessionId || ''))) return null;
+  try { return require('../gtd-controller').planSessionOwnerChat(state.username, state.sessionId); } catch { return null; }
+}
+
 function taskOwnedBy(state, owner) {
   if (!state || !owner || typeof owner.username !== 'string' || !owner.username) return false;
   if (state.username !== owner.username) return false;
   if ((state.audience || 'default') !== (owner.audience || 'default')) return false;
-  if (owner.chatId != null && state.chatId != null && String(state.chatId) !== String(owner.chatId)) return false;
+  // #1886: a chat-scoped stop only reaches runs of that chat — a chat-less run (a
+  // plan step of another chat, a web/cron run) is not «this chat's task».
+  if (owner.chatId != null) {
+    const chatId = runChatId(state);
+    if (chatId == null || String(chatId) !== String(owner.chatId)) return false;
+  }
   // Forum topics (#255): when the caller scopes to a topic, only a task started in
   // that same topic matches — stop in topic A must never kill a task in topic B.
   // A threadId-less caller (owner.threadId == null) keeps the legacy chat-wide scope.
@@ -529,7 +543,10 @@ function registerLiveRun(opts) {
 function _liveRunMatches(m, owner) {
   if (!owner?.username || m.username !== owner.username) return false;
   if ((m.audience || 'default') !== (owner.audience || 'default')) return false;
-  if (owner.chatId != null && m.chatId != null && String(m.chatId) !== String(owner.chatId)) return false;
+  if (owner.chatId != null) {
+    const chatId = runChatId(m);
+    if (chatId == null || String(chatId) !== String(owner.chatId)) return false;
+  }
   if (owner.threadId != null && m.threadId != null && Number(m.threadId) !== Number(owner.threadId)) return false;
   if (owner.sessionId != null && m.sessionId != null && m.sessionId !== owner.sessionId) return false;
   return true;
@@ -2272,8 +2289,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
 
   // Durable steps parked on a user answer (task_item_wait awaiting_user): tell
   // the chat run so the answer wakes the plan (task_item_wake). '' when none.
+  // #1886: only plans owned by this session/chat (plus plans with no owner chat).
   const awaitingUserSection = (!internalGtd && user?.username)
-    ? buildAwaitingUserNotice(user.username)
+    ? buildAwaitingUserNotice(user.username, { sessionId: activeSessionId, chatId })
     : '';
 
   const wrapUpSection = wrapUp
