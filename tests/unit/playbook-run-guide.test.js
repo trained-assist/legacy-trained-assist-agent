@@ -201,4 +201,20 @@ describe('playbook_run mode selection (#1887 п.1)', () => {
     expect(res.mode).toBe('background');
     expect(res.task.status).toBe('draft');
   });
+  it('cwd outside a project folder (code worktree) → background no_project_dir; explicit guide → GUIDE_NO_PROJECT', async () => {
+    telegram();
+    const wt = join(root, 'users', PROFILE, 'engineering-workspaces', 'ws-1', 'code');
+    mkdirSync(wt, { recursive: true });
+    process.chdir(wt);
+    const tools = loadTools();
+    const res = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'Из воркспейса' }, CTX);
+    expect(res.mode).toBe('background');
+    expect(res.mode_reason).toBe('no_project_dir');
+    expect(existsSync(join(wt, 'checklist.md'))).toBe(false);
+    const explicit = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'x', mode: 'guide' }, CTX);
+    expect(explicit.code).toBe('GUIDE_NO_PROJECT');
+    const byId = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'По project_id', project_id: 'proj-a' }, CTX);
+    expect(byId.mode).toBe('guide');
+    expect(checklist(projectDir('proj-a'))).toMatch(/^Goal: По project_id$/m);
+  });
 });
