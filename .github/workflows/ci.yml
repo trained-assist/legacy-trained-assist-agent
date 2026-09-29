@@ -344,10 +344,9 @@ jobs:
             # ru-edge (src/ru-edge.js, issue #1288) has no Claude Code, no runner,
             # no MCP — only TELEGRAM_BOT_TOKEN (Telegram notifications) and
             # AGENT_SECRET (auth gate + calling GCP back) are required.
-            printf 'TELEGRAM_BOT_TOKEN=%s\nAGENT_SECRET=%s\nAGENT_PUBLIC_URL=%s\n' \
+            printf 'TELEGRAM_BOT_TOKEN=%s\nAGENT_SECRET=%s\n' \
               '${{ secrets.TELEGRAM_BOT_TOKEN }}' \
               '${{ secrets.AGENT_SECRET }}' \
-              'https://platform.recruiter-assistant.ru' \
               > /home/vova/secrets.env
             chmod 600 /home/vova/secrets.env
             AGENT_SECRET="${{ secrets.AGENT_SECRET }}" DEPLOY_ENV=ru REPO_DIR=/home/vova/trained-assist-agent bash "$DEPLOY_TMP/scripts/deploy-ru-edge.sh"

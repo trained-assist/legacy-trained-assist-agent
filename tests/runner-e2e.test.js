@@ -513,6 +513,42 @@ echo '{"type":"result","result":"'"$REPLY"'","usage":{"input_tokens":100,"output
     }
   });
 
+
+  // Class fix 2026-09-29 (/bg_notify_on sat behind «Ожидаю завершения предыдущей работы»):
+  // ANY standalone slash command with a quick answer bypasses the queue — no per-command
+  // whitelist entry needed. /bg_notify_status is deliberately NOT in the old whitelist.
+  it('any quick slash command (/bg_notify_status) answers immediately while a task runs', { timeout: 20000 }, async () => {
+    const SLOW_MS = 4000;
+    writeSlowClaudeScript(SLOW_MS);
+    const userId = 555444335;
+    try {
+      const slowTask = runTask({
+        taskId: `slow-${Date.now()}`, user: makeUser(userId), task: 'сделай что-нибудь долгое',
+        context: null, sessionId: null, contextFromSession: null,
+        secrets: { BOT_TOKEN: 'fake:token', TELEGRAM_BOT_TOKEN: 'fake:token' },
+      });
+      await new Promise(r => setTimeout(r, 300));
+      const t0 = Date.now();
+      await runTask({
+        taskId: `bgn-${Date.now()}`, user: makeUser(userId), task: '[Сообщение 1]\n/bg_notify_status',
+        context: null, sessionId: null, contextFromSession: null,
+        secrets: { BOT_TOKEN: 'fake:token', TELEGRAM_BOT_TOKEN: 'fake:token' },
+      });
+      const elapsedMs = Date.now() - t0;
+      expect(elapsedMs, `/bg_notify_status took ${elapsedMs}ms — waited behind the slow task`).toBeLessThan(SLOW_MS / 2);
+      let texts = [];
+      for (let i = 0; i < 20; i++) {
+        texts = tgTexts();
+        if (texts.some(t => /фоновых шагах/i.test(t))) break;
+        await new Promise(r => setTimeout(r, 25));
+      }
+      expect(texts.some(t => /фоновых шагах/i.test(t)), 'expected a bg-notify status reply').toBe(true);
+      await slowTask;
+    } finally {
+      restoreNormalClaude();
+    }
+  });
+
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
