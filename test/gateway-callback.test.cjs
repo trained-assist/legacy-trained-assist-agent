@@ -156,3 +156,38 @@ test('live inbox: consumed ids ride on run-finished only when non-empty', async 
   assert.deepEqual(JSON.parse(fetched[0].init.body).consumed, [501, 502]);
   assert.equal('consumed' in JSON.parse(fetched[1].init.body), false);
 });
+
+// Live 29.09: @freelance_spec_bot answered «Идёт текущая задача» for ~45 min after
+// its run had finished — run-finished went to the classic gateway, so the freelance
+// gateway's IntakeBuffer (outbox path: no /tasks/running poll) held until BUSY_MAX.
+test('run-finished goes to the gateway of the bot the run came through (audience)', async () => {
+  process.env.MEDIA_GATEWAY_URL = 'https://gw.example';
+  delete require.cache[require.resolve('../src/gateway-callback')];
+  const { notifyRunFinished } = cb();
+  const { BOTS } = require('../src/bot-registry');
+  mockFetchOk();
+  assert.equal(await notifyRunFinished({ chatId: 1714048, requestId: 'r', audience: 'freelance', secret: 's' }), true);
+  assert.equal(await notifyRunFinished({ chatId: 1714048, requestId: 'r', audience: 'recruiter', secret: 's' }), true);
+  assert.equal(await notifyRunFinished({ chatId: 1714048, requestId: 'r', secret: 's' }), true);
+  const gw = a => BOTS.find(b => b.audience === a).gateway_url;
+  assert.equal(fetched[0].url, `${gw('freelance')}/internal/run-finished`);
+  assert.equal(fetched[1].url, `${gw('recruiter')}/internal/run-finished`);
+  assert.equal(fetched[2].url, 'https://gw.example/internal/run-finished');
+  assert.notEqual(gw('freelance'), 'https://gw.example');
+});
+
+test('unknown audience is never pushed to another bot\'s gateway', async () => {
+  process.env.MEDIA_GATEWAY_URL = 'https://gw.example';
+  delete require.cache[require.resolve('../src/gateway-callback')];
+  const { notifyRunFinished } = cb();
+  mockFetchOk();
+  assert.equal(await notifyRunFinished({ chatId: 42, audience: 'nosuchbot', secret: 's' }), false);
+  assert.equal(fetched.length, 0);
+});
+
+test('every non-default registry bot declares an https gateway_url', () => {
+  const { BOTS } = require('../src/bot-registry');
+  for (const b of BOTS.filter(x => x.audience !== 'default' && x.enabled !== false)) {
+    assert.match(String(b.gateway_url || ''), /^https:\/\/[^/]+$/, `${b.audience} has no gateway_url`);
+  }
+});

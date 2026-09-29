@@ -7,7 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { tokenPath } = require('../../data-paths');
 
 const { generateConnectLink: generateConnectLinkZC } = require('../../user-tokens');
 const { readCredentialFile } = require('../../credential-store');
@@ -36,7 +36,7 @@ async function openBrowserPage(cfg) {
 // ── Config ────────────────────────────────────────────────────────────────
 
 function configPath(userId) {
-  return path.join(os.homedir(), 'agent-tokens', String(userId || USER_ID), 'getcourse', 'config.json');
+  return path.join(tokenPath(String(userId || USER_ID), 'getcourse'), 'config.json');
 }
 
 function readConfig(userId) {

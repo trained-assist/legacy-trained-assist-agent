@@ -110,3 +110,56 @@ test('classify(): falls through to Stage B when Stage A finds nothing', async ()
   assert.equal(r.class, 'MODEL_ERROR');
   assert.equal(r.source, 'llm');
 });
+
+// 2026-09-29: Go weekly limit + OpenRouter credits at zero → llm-ladder answered "every rung
+// failed". Unclassified, it went down the quality path (UNKNOWN) and retried the dead ladder;
+// as CONFIG the durable executor moves the step to the level's fallback (the free ladder).
+test('deterministic: exhausted llm-ladder is CONFIG (engine switch, not a retry)', () => {
+  assert.equal(classifyDeterministic('no DURABLE terminal marker in reply: ⚠️ OpenCode завершился с ошибкой: every rung failed').class, 'CONFIG');
+  assert.equal(classifyDeterministic('ladder_exhausted: 502 ladder_error').class, 'CONFIG');
+  assert.equal(classifyDeterministic('⛔ Вся лестница моделей «deepseek» временно недоступна (все ступени отказали в llm-ladder)').class, 'CONFIG');
+});
+
+// Owner requirement #1899: cheap models exhausted → free ladder, NEVER Claude/Codex as insurance
+// (Claude credit is reserved for critical work). Do not relax this test to make a fallback pass.
+test('#1899: OpenCode levels/roles never fall back to Claude/Codex by default', () => {
+  const { resolveStepExecution, DEFAULT_LEVEL_MAP, DEFAULT_ROLE_MAP } = require('../src/playbook-executor');
+  for (const [role, level] of [['developer', 'bachelor'], ['reviewer', 'master'], ['researcher', 'bachelor'], ['verifier', 'master']]) {
+    const r = resolveStepExecution({ executor_role: role, minimum_model_level: level }, { roleMap: {} });
+    assert.equal(r.engine, 'opencode', `${role}/${level} primary`);
+    assert.deepEqual(r.fallbacks.map(f => `${f.engine}/${f.ocProfile}`), ['opencode/free'], `${role}/${level} fallback`);
+  }
+  for (const m of [DEFAULT_LEVEL_MAP, DEFAULT_ROLE_MAP]) {
+    for (const [k, v] of Object.entries(m)) {
+      if (v.engine !== 'opencode') continue;
+      const fbs = [].concat(v.fallback || []);
+      assert.ok(fbs.every(f => f.engine === 'opencode'), `${k}: OpenCode entry must not fall back to ${fbs.map(f => f.engine)}`);
+    }
+  }
+});
+
+// #1899: automatic quality/model escalation never lands a step on Claude/Codex.
+test('#1899: nextDistinctLevel never escalates onto Claude/Codex', () => {
+  const { nextDistinctLevel, DEFAULT_LEVEL_MAP } = require('../src/playbook-executor');
+  for (const lvl of ['bachelor', 'master']) {
+    const item = { executor_role: 'developer', minimum_model_level: lvl, current_model_level: lvl };
+    assert.equal(nextDistinctLevel(item, DEFAULT_LEVEL_MAP), null, `${lvl} must not escalate to doctor/claude`);
+  }
+  const map = { ...DEFAULT_LEVEL_MAP, master: { engine: 'opencode', ocProfile: 'max' } };
+  const item = { executor_role: 'developer', minimum_model_level: 'bachelor', current_model_level: 'bachelor' };
+  assert.equal(nextDistinctLevel(item, map), 'master', 'escalation between OpenCode rungs still works');
+});
+
+test('#1899: QUOTA/model recovery never bumps a step onto the Claude level', async () => {
+  const { recoverDurableItem } = require('../src/durable-recovery');
+  const item = { id: 'i1', task_id: 't1', executor_role: 'developer', minimum_model_level: 'master', current_model_level: 'master', attempt_count: 1, max_attempts: 3 };
+  let bumped = false;
+  const store = {
+    getTaskItem: () => item, bumpModelLevel: () => { bumped = true; },
+    updateTaskItem: (id, patch) => Object.assign(item, patch), escalateItem: () => {},
+  };
+  const task = { profile_id: 'p', acceptance_criteria_json: '{}' };
+  await recoverDurableItem({ store, task, itemId: 'i1', errorText: 'x', classifier: () => ({ class: 'QUOTA' }) });
+  assert.equal(bumped, false, 'master → doctor (Claude) must not happen automatically');
+  assert.equal(item.current_model_level, 'master');
+});

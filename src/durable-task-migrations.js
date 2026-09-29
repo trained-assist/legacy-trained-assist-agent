@@ -20,6 +20,10 @@ module.exports = function migratePlan(db) {
           hooks_json: 'TEXT',
           // Fanout (#1752): a child plan spawned by a parent's fanout step.
           parent_task_id: 'TEXT', parent_item_id: 'TEXT', batch_item_key: 'TEXT',
+          // #1886: the plan's owner chat — the session it was started from plus a
+          // snapshot {chatId,audience,threadId} of that session's chat at creation.
+          // Separate from task_sessions («the session's active task», one per session).
+          origin_session_id: 'TEXT', origin_chat_json: 'TEXT',
         },
         task_items: {
           // P4 (#1459): resolved per-item hooks — step on_complete/on_fail and the

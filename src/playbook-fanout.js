@@ -251,6 +251,8 @@ function spawnChild(store, { parent, parentItem, state, element }) {
     user_value: compiled.user_value, acceptance_criteria: compiled.acceptance_criteria,
     items: compiled.items.map(i => ({ ...i, hooks: undefined })),
     execution_policy: policy, hooks: null,
+    // #1886: a child belongs to the batch's owner chat.
+    session_id: parent.origin_session_id || null, origin_chat: parseOriginChat(parent),
   });
   const childId = created.task.id;
   store.db.prepare('UPDATE durable_tasks SET parent_task_id = ?, parent_item_id = ?, batch_item_key = ? WHERE id = ?')
@@ -419,6 +421,10 @@ async function advanceFanout(store, { task, item, now = Date.now(), notify = nul
   return { joined: isJoined, spawned, events, messages };
 }
 
+function parseOriginChat(task) {
+  try { return task && task.origin_chat_json ? JSON.parse(task.origin_chat_json) : null; } catch { return null; }
+}
+
 // ── Batch creation / control (used by the MCP tools) ────────────────────────
 function normalizeElements(items) {
   if (!Array.isArray(items) || !items.length) throw new Error('items: нужен непустой список элементов');
@@ -434,7 +440,7 @@ function normalizeElements(items) {
   });
 }
 
-function createBatch(store, { profileId, playbook, elements, title = null, projectId = null, owner = null,
+function createBatch(store, { profileId, playbook, elements, title = null, projectId = null, owner = null, originSessionId = null,
   skipStages = [], exclusiveStages = [], projectType = 'generic', projectMode = 'per_item', concurrency = null,
   maxChildRetries = DEFAULT_MAX_CHILD_RETRIES, maxSupervisorCalls = DEFAULT_MAX_SUPERVISOR_CALLS, stallAfterSec = DEFAULT_STALL_SEC,
   childPolicy = null }) {
@@ -446,7 +452,7 @@ function createBatch(store, { profileId, playbook, elements, title = null, proje
   const created = store.createPlan({
     id: crypto.randomUUID(), profile_id: profileId, project_id: projectId,
     goal: `Пачка: ${batchTitle}`,
-    playbook_id: 'batch', playbook_version: 1,
+    playbook_id: 'batch', playbook_version: 1, session_id: originSessionId, origin_chat: owner,
     user_value: `Плейбук «${playbook.title}» прогнан по ${els.length} элементам; каждый элемент доведён до конца или пропущен с причиной.`,
     acceptance_criteria: [{ id: 'batch-joined', description: 'все элементы пачки завершены или пропущены', validations: [{ validation: { fanout_joined: true } }] }],
     execution_policy: { validation_mode: 'programmatic' },

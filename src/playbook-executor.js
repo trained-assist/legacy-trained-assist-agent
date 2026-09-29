@@ -25,8 +25,11 @@ const ROLES = ['researcher', 'developer', 'reviewer', 'verifier'];
 const DEFAULT_LEVEL_MAP = Object.freeze({
   // Both OpenCode levels run on the standard Go deepseek profile (owner 2026-09-27) — `value`
   // led with paid OpenRouter and `max` ended on it, which is how durable/web steps leaked there.
-  bachelor: { engine: 'opencode', ocProfile: 'deepseek' },
-  master: { engine: 'opencode', ocProfile: 'deepseek' },
+  // Whole ladder dead (every rung failed → CONFIG) → the free ladder, NEVER Claude/Codex (owner
+  // 2026-09-29, #1899): Claude credit is kept for critical work; auto-spending it when cheap
+  // quotas run out drains it exactly when it's needed. Guarded by test/failure-classifier.
+  bachelor: { engine: 'opencode', ocProfile: 'deepseek', fallback: [{ engine: 'opencode', ocProfile: 'free' }] },
+  master: { engine: 'opencode', ocProfile: 'deepseek', fallback: [{ engine: 'opencode', ocProfile: 'free' }] },
   // Claude has no model ladder of its own. When an engine is unavailable (engine
   // health) or this step already failed on it with AUTH/CONFIG, the step runs on the
   // next rung of `fallback` instead of failing: claude → codex → opencode `doctor`
@@ -47,7 +50,7 @@ const ROLE_TO_OC = Object.freeze({
   verifier: 'review',
 });
 const DEFAULT_ROLE_MAP = Object.freeze({
-  researcher: { engine: 'opencode', ocProfile: 'research' },
+  researcher: { engine: 'opencode', ocProfile: 'research', fallback: [{ engine: 'opencode', ocProfile: 'free' }] },
 });
 
 function loadLevelMap() {
@@ -108,13 +111,16 @@ function planLevelMap(policy) {
 
 // Quality escalation: the next level whose resolved engine/profile actually differs
 // from the current one (with bachelor and master on the same profile, a one-rung
-// bump would change nothing). null at the ceiling.
+// bump would change nothing). null at the ceiling. Automatic escalation never lands on
+// Claude/Codex (owner requirement #1899: no paid insurance when cheap models fail) —
+// a step runs there only when its plan declares that level as its minimum.
 function nextDistinctLevel(item, levelMap) {
   const cur = resolveStepExecution(item, { levelMap, useRoleMap: false });
   const from = LEVELS.indexOf(cur.modelLevel);
   if (from < 0) return null;
   for (let i = from + 1; i < LEVELS.length; i++) {
     const r = resolveStepExecution({ ...item, current_model_level: LEVELS[i] }, { levelMap, useRoleMap: false });
+    if (r.engine !== 'opencode') return null;
     if (r.engine !== cur.engine || r.ocProfile !== cur.ocProfile) return LEVELS[i];
   }
   return null;

@@ -146,21 +146,24 @@ test('loop guard: 3 no-op calls in a row is already a loop (limit tuned 2026-09-
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('loop recovery: stuck OpenCode is re-run ONCE on Claude, never ping-pong', () => {
+// Owner requirement #1899: the loop re-run goes to the free ladder, NEVER to Claude/Codex.
+test('loop recovery: stuck OpenCode is re-run ONCE on the free ladder, never Claude', () => {
   const { loopRecoveryEngine, loopFallbackNotice } = require('../src/engine-crash-policy');
-  assert.equal(loopRecoveryEngine('opencode', false), 'claude');
+  assert.deepEqual(loopRecoveryEngine('opencode', false), { engine: 'opencode', ocProfile: 'free' });
+  assert.ok(!/Claude/.test(loopFallbackNotice()), 'notice does not promise Claude');
   assert.equal(loopRecoveryEngine('opencode', true), null, 'already a fallback run → dead-end message');
   assert.equal(loopRecoveryEngine('claude', false), null);
   assert.equal(loopRecoveryEngine('codex', false), null);
   assert.ok(!/switch2klod/.test(loopFallbackNotice()), 'user is not told to switch engines by hand');
 });
 
-test('runner wires the loop branch to the automatic Claude re-run', () => {
+test('runner wires the loop branch to the automatic free-ladder re-run', () => {
   const src = fs.readFileSync(path.join(__dirname, '../src/runner/index.js'), 'utf8');
   const i = src.indexOf('if (loopKilled) {');
   assert.ok(i > 0);
   const branch = src.slice(i, src.indexOf('const loopMsg', i));
   assert.match(branch, /loopRecoveryEngine\(engine, engineFallbackDone\)/);
-  assert.match(branch, /engine: recoveryEngine/);
+  assert.match(branch, /engine: recovery\.engine/);
+  assert.match(branch, /ocProfile: recovery\.ocProfile/);
   assert.match(branch, /engineFallbackDone: true/);
 });

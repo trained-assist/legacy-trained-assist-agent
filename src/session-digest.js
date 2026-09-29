@@ -13,6 +13,13 @@
 //     minutes stay deterministic («деньги только за названия»). One retry, then
 //     degrade to the deterministic part without a summary — never an error.
 //
+// Honesty (#1893): an empty session (no trace events and at most one
+// substantive message) answers {empty:true, message:'Лог недоступен'} BEFORE
+// the cache and without any LLM call — the model used to invent verdicts like
+// «Сессия фактически не состоялась…» out of nothing. A non-empty one carries
+// facts[] — deterministic per-family objects (file paths, URLs, repositories,
+// commands, publications) pulled from the events; pass B only retells them.
+//
 // Result is cached at <workDir>/sessions/<id>.digest.json, keyed by a freshness
 // hash (event count + last event time + message count), TTL 7 days — same TTL
 // as the trace itself. A session without an opencode trace (claude engine) still
@@ -33,7 +40,7 @@ const DIGEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // cache keeps serving the OLD numbers for up to TTL — a fixed bug that still
 // shows the wrong value on screen for days. Version is part of the key → one
 // bump invalidates every cached digest at once.
-const DIGEST_FORMAT_VERSION = 2;
+const DIGEST_FORMAT_VERSION = 3;
 const MIN = 60 * 1000;
 const MAX_IDLE_GAP_MS = 120 * MIN;   // one event never claims more than 2h of "work"
 const MAX_VALUE = 500;               // chars per artifact value
@@ -252,10 +259,105 @@ function buildDigest({ events, messages } = {}) {
   const users = messages.filter(m => m.role === 'user' && typeof m.content === 'string' && m.content.trim());
   return {
     activities,
+    facts: buildFacts(events),
     artifacts: classifyArtifacts(deduped),
     firstUserMessage: users.length ? truncateValue(users[0].content).slice(0, MAX_MSG) : null,
     lastUserMessage: users.length > 1 ? truncateValue(users[users.length - 1].content).slice(0, MAX_MSG) : null,
   };
+}
+
+// ── Pass A: facts (what was touched, not how it went) ───────────────────────
+
+const MAX_FACT_ITEMS = 10;     // per family
+const MAX_COMMAND = 160;       // chars per bash command shown
+const MAX_CONTEXT = 200;       // chars of reasoning carried as context
+const MIN_SUBSTANTIVE = 20;    // chars: shorter messages («привет») carry no work
+const EMPTY_MESSAGE = 'Лог недоступен';
+const REPO_URL_RE = /github\.com[/:]([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?(?=[/\s"'#?]|$)/g;
+const REPO_FLAG_RE = /(?:--repo|-R)[\s=]+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)/g;
+
+const FACT_FAMILIES = [
+  ['files', 'Файлы'],
+  ['web', 'Сайты'],
+  ['github', 'GitHub'],
+  ['bash', 'Команды'],
+  ['send', 'Публикации и отправка'],
+  ['context', 'Контекст (рассуждение агента)'],
+];
+
+function toolInputObject(ev) {
+  if (typeof ev.input !== 'string' || !ev.input) return {};
+  try { const o = JSON.parse(ev.input); return o && typeof o === 'object' ? o : {}; }
+  catch { return {}; }
+}
+
+function reposIn(text) {
+  const out = [];
+  if (typeof text !== 'string') return out;
+  for (const m of text.matchAll(REPO_URL_RE)) out.push(m[1]);
+  for (const m of text.matchAll(REPO_FLAG_RE)) out.push(m[1]);
+  return out;
+}
+
+function oneLine(s, n) {
+  const v = String(s || '').replace(/\s+/g, ' ').trim();
+  return v.length > n ? v.slice(0, n) + '…' : v;
+}
+
+/**
+ * Deterministic facts per family from trace events: the concrete objects the
+ * agent touched. No verdicts, no counts of "success" — only what the events
+ * name. → [{family, label, items:[string]}] (families without items omitted).
+ */
+function buildFacts(events) {
+  const bags = Object.fromEntries(FACT_FAMILIES.map(([f]) => [f, new Set()]));
+  const add = (family, v) => { const x = oneLine(v, MAX_VALUE); if (x && bags[family].size < MAX_FACT_ITEMS) bags[family].add(x); };
+  for (const ev of Array.isArray(events) ? events : []) {
+    if (!ev) continue;
+    if (ev.kind === 'reasoning' && ev.text && ev.text.trim().length >= MIN_SUBSTANTIVE) {
+      add('context', oneLine(ev.text, MAX_CONTEXT));
+      continue;
+    }
+    if (ev.kind !== 'tool') continue;
+    const tool = String(ev.tool || '').toLowerCase().replace(MCP_PREFIX, '');
+    const input = toolInputObject(ev);
+    const blob = `${ev.input || ''} ${ev.output || ''}`;
+    for (const r of reposIn(blob)) add('github', r);
+    if (typeof input.repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(input.repo)) add('github', input.repo);
+    const family = familyOf(ev);
+    if (tool === 'bash' || tool === 'shell') {
+      if (input.command) add('bash', oneLine(input.command, MAX_COMMAND));
+      continue;
+    }
+    if (family === 'send') {
+      const urls = extractUrls(String(ev.output || ''));
+      if (urls.length) urls.forEach(u => add('send', u));
+      else add('send', [tool, input.slug || input.title || input.path || input.file_path || ''].filter(Boolean).join(': '));
+      continue;
+    }
+    if (family === 'web') {
+      if (input.url) add('web', input.url);
+      else if (input.query) add('web', `поиск: ${input.query}`);
+      else extractUrls(String(ev.input || '')).forEach(u => add('web', u));
+      continue;
+    }
+    for (const p of inputFilePaths(ev)) add('files', p);
+    if (!inputFilePaths(ev).length && family === 'files' && input.pattern) add('files', `${tool}: ${input.pattern}`);
+  }
+  return FACT_FAMILIES
+    .filter(([f]) => bags[f].size)
+    .map(([family, label]) => ({ family, label, items: [...bags[family]] }));
+}
+
+/** Nothing to tell: no trace events, at most one substantive message, and no
+ *  concrete object (link, contact, ticket…) in the messages either — a lone
+ *  «позвони +7 916 …» still carries a fact worth showing. */
+function isEmptySession(events, messages) {
+  if (Array.isArray(events) && events.length) return false;
+  const texts = (Array.isArray(messages) ? messages : [])
+    .filter(m => typeof m.content === 'string').map(m => m.content.trim());
+  if (texts.some(t => detectAll(t).length)) return false;
+  return texts.filter(t => t.length >= MIN_SUBSTANTIVE).length <= 1;
 }
 
 // ── Pass B: one cheap LLM call, strict JSON contract ────────────────────────
@@ -320,6 +422,7 @@ function parseDigestJson(raw) {
 function projectionOf(base) {
   const proj = {
     activities: (base.activities || []).map(a => ({ label: a.label, minutes: a.minutes })),
+    facts: (base.facts || []).map(f => ({ [f.label]: f.items })),
     artifacts: {
       pi: (base.artifacts.pi || []).slice(0, 10).map(a => a.value),
       attributes: (base.artifacts.attributes || []).slice(0, 15).map(a => a.value),
@@ -334,8 +437,11 @@ function projectionOf(base) {
 function buildPrompt(base) {
   return 'Собери сжатый лог рабочей сессии. Ответь СТРОГО одним JSON-объектом без markdown: '
     + '{"activities":[{"label":"занятие","minutes":N}],"summary":"2-4 фразы по-русски"}. '
-    + 'minutes бери из данных сессии без изменений, label — короткое название занятия, '
-    + 'summary — что реально сделали и что осталось. Данные сессии:\n'
+    + 'minutes бери из данных сессии без изменений, label — короткое название занятия. '
+    + 'summary — перескажи только факты из данных (какие файлы, сайты, репозитории, команды, '
+    + 'публикации), называя конкретные объекты. Не давай оценок и выводов о сессии '
+    + '(«не состоялась», «успешно», «ничего не сделано»), не додумывай то, чего нет в данных. '
+    + 'Данные сессии:\n'
     + JSON.stringify(projectionOf(base));
 }
 
@@ -410,8 +516,9 @@ function writeCache(fp, payload) {
 
 /**
  * The whole digest for one session: cache → pass A → pass B.
- * Returns { ok:true, engine, activities, artifacts, summary, degraded, cached,
- * ttlMs } or { ok:false, error }. Never fails because of the LLM — pass B
+ * Returns { ok:true, engine, empty, activities, facts, artifacts, summary,
+ * degraded, cached, ttlMs } ({empty:true, message:'Лог недоступен'} when there
+ * is nothing to tell) or { ok:false, error }. Never fails because of the LLM — pass B
  * degrades instead. engine is 'opencode' when the timeline came from a real
  * trace and null when the digest was built from messages alone.
  */
@@ -425,9 +532,19 @@ async function getDigestFor(username, sessionId, { llm } = {}) {
   const trace = readTrace(workDir, session);
   const events = trace.ok ? trace.events : [];
   const engine = trace.ok ? 'opencode' : null;
-  const key = freshnessKey(events, messages);
-
   const cacheFile = path.join(workDir, 'sessions', `${sessionId}.digest.json`);
+
+  // Nothing to digest: say so honestly — no LLM, no cache (the next run may
+  // bring events, and an empty answer must never outlive them).
+  if (isEmptySession(events, messages)) {
+    return {
+      ok: true, engine, sessionId, empty: true, message: EMPTY_MESSAGE,
+      activities: [], facts: [], artifacts: { pi: [], attributes: [], other: [] },
+      summary: null, degraded: false, cached: false, ttlMs: DIGEST_TTL_MS,
+    };
+  }
+
+  const key = freshnessKey(events, messages);
   const hit = readCache(cacheFile);
   if (hit && hit.key === key) return { ...hit.digest, cached: true };
 
@@ -437,7 +554,9 @@ async function getDigestFor(username, sessionId, { llm } = {}) {
     ok: true,
     engine,
     sessionId,
+    empty: false,
     activities: summarized.activities,
+    facts: summarized.facts,
     artifacts: summarized.artifacts,
     summary: summarized.summary,
     degraded: !!summarized.degraded,
@@ -454,6 +573,8 @@ module.exports = {
   detectPhones,
   classifyArtifacts,
   buildDigest,
+  buildFacts,
+  isEmptySession,
   parseDigestJson,
   summarizeDigest,
   freshnessKey,

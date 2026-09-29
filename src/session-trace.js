@@ -4,9 +4,15 @@
 // SQLite db, and the runner already records the native session id on every
 // s-session via engineSessions.opencode. So the "полный лог" the user wants in
 // the web UI is already on disk — we just read it and normalize it for display.
-// No new persistence, no duplication of the multi-GB logs: read-only access,
-// grouped by the s-session's own message timeline so each assistant reply can
-// show its own slice.
+// Read-only access, grouped by the s-session's own message timeline so each
+// assistant reply can show its own slice.
+//
+// Fallback (#1893): the engine db is ephemeral — rotated or recreated, it takes
+// the log with it. The runner therefore also appends every streamed part to a
+// durable per-profile store (session-trace-store.js); when no engine db knows
+// the session, readTrace answers from that store with source:'store' and
+// reasoning:false (reasoning never reaches the stream). The two sources are
+// never merged: the engine db, when present, is the richer one.
 //
 // WHERE the db lives follows the engine's HOME:
 //   isolated runs (agent-isolation): HOME=<workDir>/.agent-home → the profile's
@@ -127,7 +133,8 @@ function stringifyOutput(output) {
 
 /**
  * Read the full trace for an s-session. Returns:
- *   { ok:true, engine:'opencode', sessionId, events: [...], byMessage: [[...]], ttlMs }
+ *   { ok:true, engine:'opencode', source:'engine-db'|'store', reasoning:bool,
+ *     sessionId, events: [...], byMessage: [[...]], ttlMs }
  *   { ok:false, error } — engine not opencode / db missing / session not found.
  * Events are chronological. byMessage groups events into the s-session's own
  * message windows (event.at between message[i-1].at and message[i].at) so the
@@ -156,13 +163,22 @@ function readTrace(workDir, session) {
       }
       const events = rows.map(r => normalizePart(JSON.parse(r.data))).filter(Boolean);
       const byMessage = groupByMessages(events, session?.messages || []);
-      return { ok: true, engine: 'opencode', sessionId: engineId, events, byMessage, ttlMs: TRACE_TTL_MS };
+      if (!events.length) { lastError = lastError || 'session-empty'; continue; }
+      return { ok: true, engine: 'opencode', source: 'engine-db', reasoning: true, sessionId: engineId, events, byMessage, ttlMs: TRACE_TTL_MS };
     } catch (e) {
       console.warn('[session-trace] read:', e.message);
       lastError = 'read-failed';
     } finally {
       try { db.close(); } catch {}
     }
+  }
+  const stored = require('./session-trace-store').readEvents(workDir, 'opencode', engineId);
+  if (stored.found) {
+    const byMessage = groupByMessages(stored.events, session?.messages || []);
+    return { ok: true, engine: 'opencode', source: 'store', reasoning: false, sessionId: engineId, events: stored.events, byMessage, ttlMs: TRACE_TTL_MS };
+  }
+  if (lastError === 'session-empty') {
+    return { ok: true, engine: 'opencode', source: 'engine-db', reasoning: true, sessionId: engineId, events: [], byMessage: groupByMessages([], session?.messages || []), ttlMs: TRACE_TTL_MS };
   }
   return { ok: false, error: lastError || 'db-unavailable', engine: null };
 }
@@ -187,4 +203,4 @@ function groupByMessages(events, messages) {
   return buckets;
 }
 
-module.exports = { readTrace, groupByMessages, dbPath, setDbPath, truncate, candidateDbPaths };
+module.exports = { readTrace, normalizePart, groupByMessages, dbPath, setDbPath, truncate, candidateDbPaths };

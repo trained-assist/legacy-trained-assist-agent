@@ -5,7 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { tokensRoot } = require('./data-paths');
 const {
   slugFor,
   saveSiteConfig,
@@ -302,7 +302,7 @@ async function runBackgroundCrawl(browser, context, page, username, slug, config
   // Notify user via Telegram if we have their chat ID + bot token
   try {
     const chatIdFile = path.join(
-      process.env.AGENT_TOKENS_ROOT || path.join(os.homedir(), 'agent-tokens'),
+      tokensRoot(),
       username, '.chatid'
     );
     const chatId = fs.readFileSync(chatIdFile, 'utf8').trim();

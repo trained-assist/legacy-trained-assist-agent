@@ -21,7 +21,7 @@
 const { classifyDeterministic } = require('./failure-classifier');
 const { nextAction, DEFAULT_RECOVERY_BUDGET } = require('./recovery-policy');
 const { getRetryDelayMs } = require('./retry-policy');
-const { resolveStepExecution, planLevelMap, nextDistinctLevel } = require('./playbook-executor');
+const { resolveStepExecution, planLevelMap, nextDistinctLevel, LEVELS } = require('./playbook-executor');
 
 // Failure classes that mean "the model did not manage the task" (as opposed to the
 // provider/credentials/infra failing): only these drive quality escalation.
@@ -161,7 +161,13 @@ async function recoverDurableItem({
   let delayMs = retryDelayMs;
 
   if (MODEL_ACTIONS.has(action)) {
-    store.bumpModelLevel(itemId, profileId);
+    // One rung up, but never an automatic jump onto Claude/Codex (#1899): a level that
+    // resolves to a paid engine stays out of reach unless the plan declared it as minimum.
+    const i = LEVELS.indexOf(item.current_model_level);
+    const up = i >= 0 && i < LEVELS.length - 1
+      ? resolveStepExecution({ ...item, current_model_level: LEVELS[i + 1] }, { levelMap: _planMap(task), useRoleMap: false })
+      : null;
+    if (up && up.engine === 'opencode') store.bumpModelLevel(itemId, profileId);
   } else if (action === 'backoff_retry_same') {
     const d = getRetryDelayMs(spent + 1);
     if (d == null) return terminal('backoff-exhausted');

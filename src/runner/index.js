@@ -326,11 +326,25 @@ const activeTimers = new Map();
 // the Telegram user's own id, identical no matter which bot is messaged, so it
 // cannot disambiguate audiences by itself. Kept in one place so the taskId stop
 // path can never drift from the username-scoped path.
+// #1886: the chat a run belongs to for a chat-scoped stop. A durable plan step runs
+// chat-less (user.id = null — it must not reply into a chat), so its chat is the
+// plan's owner chat, resolved from its plan session (s-plan-<id8>). No owner → null.
+function runChatId(state) {
+  if (state.chatId != null) return state.chatId;
+  if (!/^s-plan-/.test(String(state.sessionId || ''))) return null;
+  try { return require('../gtd-controller').planSessionOwnerChat(state.username, state.sessionId); } catch { return null; }
+}
+
 function taskOwnedBy(state, owner) {
   if (!state || !owner || typeof owner.username !== 'string' || !owner.username) return false;
   if (state.username !== owner.username) return false;
   if ((state.audience || 'default') !== (owner.audience || 'default')) return false;
-  if (owner.chatId != null && state.chatId != null && String(state.chatId) !== String(owner.chatId)) return false;
+  // #1886: a chat-scoped stop only reaches runs of that chat — a chat-less run (a
+  // plan step of another chat, a web/cron run) is not «this chat's task».
+  if (owner.chatId != null) {
+    const chatId = runChatId(state);
+    if (chatId == null || String(chatId) !== String(owner.chatId)) return false;
+  }
   // Forum topics (#255): when the caller scopes to a topic, only a task started in
   // that same topic matches — stop in topic A must never kill a task in topic B.
   // A threadId-less caller (owner.threadId == null) keeps the legacy chat-wide scope.
@@ -529,7 +543,10 @@ function registerLiveRun(opts) {
 function _liveRunMatches(m, owner) {
   if (!owner?.username || m.username !== owner.username) return false;
   if ((m.audience || 'default') !== (owner.audience || 'default')) return false;
-  if (owner.chatId != null && m.chatId != null && String(m.chatId) !== String(owner.chatId)) return false;
+  if (owner.chatId != null) {
+    const chatId = runChatId(m);
+    if (chatId == null || String(chatId) !== String(owner.chatId)) return false;
+  }
   if (owner.threadId != null && m.threadId != null && Number(m.threadId) !== Number(owner.threadId)) return false;
   if (owner.sessionId != null && m.sessionId != null && m.sessionId !== owner.sessionId) return false;
   return true;
@@ -586,6 +603,7 @@ function _finishAcceptedChatRun(chatId, opts, outcome) {
     taskId: opts.taskId || null,
     outcome,
     consumed,
+    audience: opts.user?.audience || 'default',
     secret: opts.secrets?.AGENT_SECRET || process.env.AGENT_SECRET,
   }).catch(e => console.warn('[runner] notifyRunFinished:', e.message));
 }
@@ -740,7 +758,7 @@ function runTask(opts) {
   _bumpAcceptedByChat(acceptedChatId);
   // Live inbox registry (get_new_messages): the server — not the engine — knows
   // which chat/topic/gateway dispatch this task belongs to.
-  if (acceptedChatId != null) liveInbox.registerInboxRun({ taskId: delivery.taskId, chatId: acceptedChatId, threadId: delivery.threadId, requestId: delivery.requestId });
+  if (acceptedChatId != null) liveInbox.registerInboxRun({ taskId: delivery.taskId, chatId: acceptedChatId, threadId: delivery.threadId, requestId: delivery.requestId, audience: delivery.user?.audience });
   // Реестр живых ранов — синхронно, до первого await: Стоп, пришедший сразу
   // после 202, обязан найти координаты рана. Ключ пробрасывается в _runTaskInner
   // через opts (taskDelivery копирует поля), там он добирается sessionId.
@@ -2272,8 +2290,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
 
   // Durable steps parked on a user answer (task_item_wait awaiting_user): tell
   // the chat run so the answer wakes the plan (task_item_wake). '' when none.
+  // #1886: only plans owned by this session/chat (plus plans with no owner chat).
   const awaitingUserSection = (!internalGtd && user?.username)
-    ? buildAwaitingUserNotice(user.username)
+    ? buildAwaitingUserNotice(user.username, { sessionId: activeSessionId, chatId })
     : '';
 
   const wrapUpSection = wrapUp
@@ -2517,9 +2536,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       sessions.appendReply(user.workDir, activeSessionId, `[прервано: модель зациклилась]\n${partialText}`);
       setCurrentSessionId(user.workDir, activeSessionId, chatId, audience, threadId);
     }
-    // One automatic re-run on Claude instead of asking the user to /switch2klod.
-    const recoveryEngine = loopRecoveryEngine(engine, engineFallbackDone);
-    if (recoveryEngine) {
+    // One automatic re-run on the free OpenCode ladder — never Claude (#1899).
+    const recovery = loopRecoveryEngine(engine, engineFallbackDone);
+    if (recovery) {
       const fallbackMsg = loopFallbackNotice();
       if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, fallbackMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId));
       else await tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId);
@@ -2527,7 +2546,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       _recordFailureAttempt(executionId, {
         taskId, projectId, sessionId: activeSessionId, webExactSession, engine,
         errorText: codexErrorMsg || 'loop guard: repeated identical output',
-        action: 'engine_fallback_to_claude_loop',
+        action: 'engine_fallback_to_free_ladder_loop',
       });
       const queuedRetry = runTask({
         initiatedAt, threadId,
@@ -2537,7 +2556,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         forceClaude,
         initialMsgId: msgId, pinnedMsgId, secrets,
         retryCount, continuationCount, mode, projectId, internalGtd,
-        engine: recoveryEngine,
+        engine: recovery.engine,
+        ocProfile: recovery.ocProfile,
         engineFallbackDone: true,
         stepTimeoutMs,
         executionId,

@@ -27,4 +27,19 @@ function missingBotTokens(values, bots = BOTS) {
   return bots.filter(b => b.enabled !== false && !values?.[b.token_secret_name]);
 }
 
-module.exports = { BOTS, loadRegistry, tokenSecretName, missingBotTokens };
+// audience → base URL of the gateway Worker that serves that bot. Agent → gateway
+// callbacks (run-finished, held-messages) must reach the gateway that DISPATCHED
+// the run: its IntakeBuffer holds the chat `busy` until that push arrives, and the
+// outbox path disables its /tasks/running poll. Sending every audience to the
+// classic gateway left recruiter/freelance chats «Идёт текущая задача» for the
+// full 45-min BUSY_MAX after each run. `default` keeps env MEDIA_GATEWAY_URL; an
+// unknown audience gets null — never another bot's gateway.
+function gatewayUrl(audience = 'default', { bots = BOTS, env = process.env } = {}) {
+  const aud = audience || 'default';
+  const bot = bots.find(b => b.audience === aud);
+  if (!bot) return null;
+  const raw = bot.gateway_url || (aud === 'default' ? env.MEDIA_GATEWAY_URL : '');
+  return raw ? String(raw).replace(/\/+$/, '') : null;
+}
+
+module.exports = { BOTS, loadRegistry, tokenSecretName, missingBotTokens, gatewayUrl };

@@ -168,8 +168,11 @@ function tokenPath(username, service) {
   return path.join(tokensRoot(), String(username), service);
 }
 
+// Resolved at call time, not load time: callers that used to read
+// process.env.AGENT_TOKENS_DIR inline (tg_send guard, tools) must keep seeing
+// env set after require — TOKENS_ROOT stays the load-time snapshot.
 function tokensRoot() {
-  return TOKENS_ROOT;
+  return process.env.AGENT_TOKENS_DIR || process.env.AGENT_TOKENS_ROOT || path.join(HOME, 'agent-tokens');
 }
 
 function userTokensDir(username) {

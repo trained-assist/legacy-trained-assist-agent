@@ -52,6 +52,8 @@ test('isolated run: reads the profile engine home, not the service home', () => 
 
   const r = readTrace(workDir, { engineSessions: { opencode: 'ses_profile' }, messages: [] });
   assert.equal(r.ok, true, `expected a trace from the profile engine home, got ${r.error}`);
+  assert.equal(r.source, 'engine-db');
+  assert.equal(r.reasoning, true);
   assert.equal(r.engine, 'opencode');
   assert.equal(r.events.length, 2);
   assert.equal(r.events[0].kind, 'text');
@@ -154,5 +156,35 @@ test('setDbPath keeps its meaning: dbPath() reports the legacy default it replac
   const legacy = path.join(root, 'service', ENGINE_DB_REL);
   setDbPath(legacy);
   assert.equal(dbPath(), legacy);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+// #1893: the engine db was rotated/recreated — the durable store answers instead.
+test('engine db lost the session → falls back to the durable store (source:store)', () => {
+  const root = tmp();
+  const workDir = path.join(root, 'profile');
+  makeDb(profileDb(workDir), 'ses_other', []); // recreated db: knows nothing of ses_s
+  setDbPath(path.join(root, 'service', ENGINE_DB_REL));
+  const store = require('../src/session-trace-store');
+  store.appendEvent(workDir, 'opencode', 'ses_s', { id: 'p1', type: 'text', text: 'hi', time: { created: 5 } });
+
+  const r = readTrace(workDir, { engineSessions: { opencode: 'ses_s' }, messages: [] });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.source, 'store');
+  assert.equal(r.reasoning, false);
+  assert.deepEqual(r.events.map(e => e.text), ['hi']);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('engine db has rows → engine db wins, store is not merged in', () => {
+  const root = tmp();
+  const workDir = path.join(root, 'profile');
+  makeDb(profileDb(workDir), 'ses_both', PARTS);
+  setDbPath(path.join(root, 'service', ENGINE_DB_REL));
+  require('../src/session-trace-store').appendEvent(workDir, 'opencode', 'ses_both', { id: 'extra', type: 'text', text: 'store-only', time: { created: 1 } });
+
+  const r = readTrace(workDir, { engineSessions: { opencode: 'ses_both' }, messages: [] });
+  assert.equal(r.source, 'engine-db');
+  assert.ok(!r.events.some(e => e.text === 'store-only'));
   fs.rmSync(root, { recursive: true, force: true });
 });

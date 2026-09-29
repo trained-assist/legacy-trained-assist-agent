@@ -124,12 +124,34 @@ function checkGuards(repo) {
   return { name: 'l3-guards', ok: violations.length === 0, detail: violations.length ? violations.join('; ') : 'no guard violations' };
 }
 
+// Credential consumers registry (#1891): config/credentials.json — which env
+// names and token files the skill reads (names only). Optional for now: a skill
+// that reads no credential has nothing to declare; a present file must conform
+// to the core-owned schema (a copy ships in schema/, like the manifest schema).
+const CREDENTIALS_SCHEMA = join(__dirname, '..', 'schema', 'credentials.schema.json');
+function checkCredentials(repo, schemaPath = CREDENTIALS_SCHEMA) {
+  const file = join(repo, 'config', 'credentials.json');
+  const name = 'credentials-registry';
+  if (!fs.existsSync(file)) return { name, ok: true, detail: 'no config/credentials.json — add one if the skill reads any env credential or token file' };
+  try {
+    const mod = require('ajv');
+    const Ajv = mod && mod.default ? mod.default : mod;
+    const validate = new Ajv({ strict: false, allErrors: true }).compile(JSON.parse(fs.readFileSync(schemaPath, 'utf8')));
+    const reg = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!validate(reg)) return { name, ok: false, detail: validate.errors.map(e => `${e.instancePath || '/'} ${e.message}`).join('; ') };
+    return { name, ok: true, detail: `${reg.credentials.length} credential consumer(s) declared` };
+  } catch (e) {
+    return { name, ok: false, detail: `config/credentials.json: ${e.message}` };
+  }
+}
+
 function checkDomainSkillRepo(repo, { schemaPath } = {}) {
   const checks = [
     checkArtifacts(repo),
     checkManifest(repo, schemaPath),
     checkSuites(repo),
     checkGuards(repo),
+    checkCredentials(repo),
   ];
   return { ok: checks.every((c) => c.ok), checks };
 }
@@ -140,4 +162,4 @@ function reportDomainSkillRepo(repo, opts) {
   return { ok, checks };
 }
 
-module.exports = { checkDomainSkillRepo, reportDomainSkillRepo, REQUIRED_ARTIFACTS };
+module.exports = { checkDomainSkillRepo, reportDomainSkillRepo, checkCredentials, REQUIRED_ARTIFACTS };
