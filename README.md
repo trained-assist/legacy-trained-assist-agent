@@ -49,11 +49,13 @@ trained-assist-tg-bot  (Cloudflare Worker — stateless)
     POST /nalog/token-store   — hand the token back (GCP is where it's read from)
 ```
 
-> **Bot routing note (follow-up, separate repo):** `trained-assist-tg-bot`'s
-> smart routing still probes `/capabilities` to decide GCP vs RU VM per task.
-> Since ALL Claude tasks now run on GCP regardless, that RU branch is dead —
-> removing it from the bot's routing is tracked as a follow-up there, not in
-> this repo.
+> **Bot routing — one endpoint, by design:** the bot posts every task to the
+> ONE agent endpoint (`recruiter-assistant.ru`). The RU VM hosts RU-zone
+> services only (nalog/ESIA login, RU-geo-blocked fetches, vacancy pages) —
+> running Claude there was a mistake, corrected in #1288. The bot's leftover
+> `/capabilities` probing for GCP-vs-RU is a bug from that period, not routing
+> worth keeping: cleanup in `trained-assist-tg-bot`. One endpoint is the
+> correct shape, not a limitation.
 
 **trained-assist-agent** (GCP) manages:
 - Per-user working directories (`~/users/<username>/`)
