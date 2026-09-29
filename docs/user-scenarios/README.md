@@ -25,6 +25,7 @@ docs/user-scenarios/
     02-stop-and-supplement.md   ← «⛔ Стоп» / «➕ Дополнить» на идущей задаче
   engineering/       ← домен: инженерная разработка через Playbooks (#1372)
     01-development-playbook.md  ← playbook `development`: от запроса до проверенной поставки
+    02-live-bot-check.md        ← prod_status / qa_user_send / qa_trace: проверка живого бота из сессии (#1851 S1)
   exhibition/        ← домен: участники выставок → сайт продаж
     01-exhibition-catalog-to-sales-site.md ← каталог → обогащение → классификация → деплой
                                              (+ 🔵 новое: проверка реестров перед классификацией)
