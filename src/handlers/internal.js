@@ -124,7 +124,7 @@ async function handleInternal(req, url, res, ctx) {
       try {
         if (req.method === 'POST' && url.pathname === '/internal/e2e/plans') {
           const b = await readJson();
-          return json(res, 200, e2e.startPlan({ profile: b.profile, playbookId: b.playbook_id, goal: b.goal, levelMap: b.level_map || null }));
+          return json(res, 200, e2e.startPlan({ profile: b.profile, playbookId: b.playbook_id, goal: b.goal, vars: b.vars || null, levelMap: b.level_map || null }));
         }
         if (req.method === 'GET' && url.pathname === '/internal/e2e/defects') {
           const { readDefects } = require('../playbook-defects-log');

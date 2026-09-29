@@ -9,7 +9,7 @@
 //   • remote (--remote https://host/agent): from anywhere (a Mac, CI) over the
 //                       /internal/e2e/* API with AGENT_SECRET — no SSH needed
 //
-//   start  --playbook new-software --goal "…" [--profile playbooks-e2e] [--level-map '{…}']
+//   start  --playbook new-software --goal "…" [--repo owner/name] [--profile playbooks-e2e] [--level-map '{…}']
 //   status <plan> | report <plan> [--json] [--verbose] | list | cancel <plan> | kick
 //   wake   <step-id> --message "…"                      — answer a step waiting for the user
 //   run    <plan> [--every 20] [--stall-min 15] [--auto-answer "…"] [--auto-merge] [--record out.json]
@@ -71,7 +71,7 @@ function httpBackend(base) {
   };
   const q = profile => `profile=${encodeURIComponent(profile)}`;
   return {
-    start: (o) => call('POST', '/internal/e2e/plans', { profile: o.profile, playbook_id: o.playbookId, goal: o.goal, level_map: o.levelMap }),
+    start: (o) => call('POST', '/internal/e2e/plans', { profile: o.profile, playbook_id: o.playbookId, goal: o.goal, vars: o.vars, level_map: o.levelMap }),
     report: (id, profile) => call('GET', `/internal/e2e/plans/${encodeURIComponent(id)}?${q(profile)}`),
     list: async (profile) => (await call('GET', `/internal/e2e/plans?${q(profile)}`)).plans,
     cancel: (id, profile) => call('POST', `/internal/e2e/plans/${encodeURIComponent(id)}/cancel`, { profile }),
@@ -173,6 +173,7 @@ function tryAutoMerge(report) {
 async function start(b, a) {
   const out = await b.start({
     profile: a.profile || DEFAULT_PROFILE, playbookId: a.playbook, goal: a.goal,
+    vars: a.repo ? { repo: a.repo } : null,
     levelMap: a['level-map'] ? JSON.parse(a['level-map']) : null,
   });
   console.log(`plan ${out.plan.id} (${out.plan.playbook}) active for profile ${out.plan.profile}`);

@@ -9,7 +9,8 @@
 // without mutating the artifact, and a plan already pinned to a version is
 // immune to later edits of that playbook.
 //
-// Rendering substitutes {goal}/{input}/{...vars} in goal/title/instructions.
+// Rendering substitutes {goal}/{input}/{...vars} in goal/title/instructions;
+// declared `inputs` must be present (or derivable from the goal) before that.
 // Agent steps must declare executor_role + minimum_model_level + context_budget:
 // the JSON schema allows null, but the plan contract does not, so a missing one
 // is a clear COMPILE_INVALID error — never a silently invented default. The only
@@ -80,6 +81,39 @@ function deriveAcceptanceCriteria(playbook, userValue) {
   }];
 }
 
+// A GitHub repository the goal links to, as owner/name. Only an unambiguous link
+// counts: two different repositories in one goal derive nothing.
+function deriveGithubRepo(goal) {
+  const found = new Set();
+  for (const m of String(goal).matchAll(/github\.com[/:]([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?(?=[/#?\s)"'»,]|$)/g)) {
+    found.add(`${m[1]}/${m[2]}`);
+  }
+  return found.size === 1 ? [...found][0] : null;
+}
+
+const DERIVERS = { github_repo: deriveGithubRepo };
+
+// Declared inputs (#1725): a required one that vars do not carry is derived from
+// the goal when the playbook says how, otherwise the run is rejected — a plan whose
+// steps say «Репозиторий: {repo}» silently fails in the background.
+function resolveInputs(playbook, vars, goalText) {
+  const resolved = { ...vars };
+  const missing = [];
+  for (const input of playbook.inputs || []) {
+    const value = resolved[input.name];
+    if (value != null && String(value).trim()) continue;
+    const derived = input.derive && DERIVERS[input.derive] ? DERIVERS[input.derive](goalText) : null;
+    if (derived) resolved[input.name] = derived;
+    else if (input.required !== false) missing.push(input);
+  }
+  if (missing.length) {
+    const list = missing.map(i => `vars.${i.name}${i.description ? ` (${i.description})` : ''}`).join('; ');
+    throw playbookError('INPUT_REQUIRED',
+      `плейбук «${playbook.id}» требует ${list} — передай их в playbook_run(vars: {…})`);
+  }
+  return resolved;
+}
+
 function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null, user_value = null } = {}) {
   if (!playbook || typeof playbook !== 'object') {
     throw playbookError('COMPILE_INVALID', 'плейбук не передан');
@@ -89,7 +123,7 @@ function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null
   }
   const goalText = goal.trim();
   // The run goal always wins over stray vars: a caller cannot shadow {goal}/{input}.
-  const renderVars = { ...vars, input: goalText, goal: goalText };
+  const renderVars = { ...resolveInputs(playbook, vars || {}, goalText), input: goalText, goal: goalText };
   const defaults = playbook.defaults || {};
 
   const items = [];
@@ -165,6 +199,7 @@ module.exports = {
   deriveAcceptanceCriteria,
   compileItemHooks,
   compileTaskHooks,
+  deriveGithubRepo,
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_TIMEOUT_SECONDS,
 };
