@@ -221,13 +221,13 @@ function reconcileOrphanedRunning(store = durableStore(), { now = Date.now(), gr
 // Profile ids that own runnable items right now, mapped to their claimable
 // items. Legacy GTD scans per-profile directories; the store is profile-keyed,
 // so we invert: claim globally, then resolve the profile per item.
-function claimNextDurableItem(store = durableStore(), { now = Date.now() } = {}) {
+function claimNextDurableItem(store = durableStore(), { now = Date.now(), waitsOnly = false } = {}) {
   // Expired waiters must fail BEFORE reconcile/claim can hand them out again —
   // otherwise a 'waiting' step whose deadline passed defers forever.
   store.expireWaitingDeadlines(now);
   reconcileOrphanedRunning(store, { now });
   // Thread the injected tick time through so due_at selection is deterministic.
-  return store.claimNextRunnable(now);
+  return store.claimNextRunnable(now, { waitsOnly });
 }
 
 
@@ -651,7 +651,12 @@ function lastDurableMarker(said) {
   return all.length ? all[all.length - 1][1].toLowerCase() : null;
 }
 
-async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now(), maxFires = MAX_FIRES_PER_TICK, registry = null, llmValidate = null, classifier = null, hookSinks = null, approveHooks = null, engineHealth = null }) {
+// `waitsOnly` (design §2.1): claim ONLY steps carrying an unresolved wait — the
+// 30s wait tick runs this mode so a plain due step still waits for the 5-min
+// GTD tick. A wait that resolves inside this pass falls through to a normal
+// fire right away (that is the latency win); legacy gtd/*.json records are
+// untouched — they live only in _runDueInner, never here.
+async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now(), maxFires = MAX_FIRES_PER_TICK, registry = null, llmValidate = null, classifier = null, hookSinks = null, approveHooks = null, engineHealth = null, waitsOnly = false }) {
   const healthOf = engineHealth || (engine => require('./engine-health').getEngineHealth(engine));
   const store = durableStore();
   _bgSecrets = secrets; // background step notices need the route inside reconcile()
@@ -666,7 +671,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
   let fired = 0;
   let slotsUsed = 0;
   for (;;) {
-    const item = claimNextDurableItem(store, { now });
+    const item = claimNextDurableItem(store, { now, waitsOnly });
     if (!item) return fired;
     const task = store.db.prepare('SELECT * FROM durable_tasks WHERE id = ?').get(item.task_id);
     if (!task) { store.failItem(item.id, '__system__', { error: 'task vanished' }); continue; }
