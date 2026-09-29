@@ -468,26 +468,19 @@ Branch protection requires the `ci` job to pass. PRs auto-merge (squash) when CI
 
 **Plans, specs, and reviews also live in issues — never merged to main.** Analysis documents, architecture reviews, red-team reports, migration plans (e.g. `docs/vm-exit-red-team-review.md`-style files) are written into the issue body/comments directly. Do not open PRs that add planning/spec documents to `docs/`; `docs/` in main is for durable reference only (how-tos, runbooks that the code itself needs). A PR whose only content is a plan/spec/review must be declined — the issue is the artifact.
 
-### After opening a PR — always write a checklist.md (default, unless told otherwise)
+### This repo is for durable documents — plans and checklists are not
 
-**Rule: right after `gh pr create`, write/append `checklist.md` in the project root with 3 items, unless the user explicitly said not to track it:**
+**What belongs here:** documents that stay true and get reused — how-tos, runbooks, architecture
+notes, specs the code itself points at. **What does not:** plans, trackers, checklists (e.g. a root
+`checklist.md` of PR statuses) — they are transient work-in-progress, not durable reference. They
+live where WIP belongs: **GitHub issues** («Requirements & status live in GitHub issues» above) and
+PR bodies. A shared root tracker was also a guaranteed merge conflict (hit twice in one day: #1790,
+#1829) and bought nothing GitHub itself doesn't show.
 
-```markdown
-Goal: <one line — what this PR does>
-
-- [ ] CI green on <PR URL>
-- [ ] Merged to main
-- [ ] Deployed to prod — verified live
-```
-
-Why: the GTD controller (`src/gtd-controller.js`) reads `checklist.md` and auto-schedules a durable
-check-back — no need to explicitly ask to "see it through". The first two items are checked off for
-free via a GitHub API poll (no LLM, no Claude spawn — see `checklistCheapPrecheck`); a real
-Claude/Codex session only wakes up once there's actual work left (CI failed, or "deployed live" needs
-a genuine check) — never just to poll a status that's plain data. This is why you don't need to ask
-the user for a reminder or worry the VM restarting will lose track — it's durable on disk and survives
-restarts. Include the actual PR URL in the checklist text (`github.com/<owner>/<repo>/pull/<n>`) — the
-precheck greps it out of the file to know which PR to poll.
+Enforced: `checklist.md` is gitignored and `test/checklist-md-absent.test.cjs` fails if it ever
+comes back. Exception: a repo in **draft status** (no PR flow yet, one branch, nobody else merging)
+may keep a local checklist — the conflict only exists once PRs start merging into one branch. The GTD controller's `checklist.md` convention is untouched — it reads the **profile
+projectDir** (`~/users/<profile>/projects/<id>/checklist.md`), never the repo root.
 
 
 ```bash
@@ -577,9 +570,9 @@ Enforced in CI (`ci.yml` → "Recruiter/HH tools must call OpenRouter, not spawn
 
 ### Hermes research
 
-`hermes_research` runs through OpenCode with the `research` profile: a pinned `opencode-go/mimo-v2.6-flash` (no ladder, no fallback — the `search` ladder is queued as the last item on `checklist.md`, #1792), with MCP/browser/repository tools available. Hermes is read-only and returns a sourced report (`file:line` or URL); it must not commit, open PRs, or check off tasks. Set `HERMES_RESEARCH_ENGINE=claude` for the temporary rollback path. Durable playbook steps with `executor_role: researcher` use this profile too; `PLAYBOOK_ROLE_MAP` can override the mapping, while an escalated model level uses the ordinary level map.
+`hermes_research` runs through OpenCode with the `research` profile: a pinned `opencode-go/mimo-v2.6-flash` (no ladder, no fallback — the `search` ladder is tracked in issue #1792), with MCP/browser/repository tools available. Hermes is read-only and returns a sourced report (`file:line` or URL); it must not commit, open PRs, or check off tasks. Set `HERMES_RESEARCH_ENGINE=claude` for the temporary rollback path. Durable playbook steps with `executor_role: researcher` use this profile too; `PLAYBOOK_ROLE_MAP` can override the mapping, while an escalated model level uses the ordinary level map.
 
-**Why OpenCode Go.** Go is a flat $10/mo subscription with a per-model monthly allowance (MiMo-V2.6-Flash: $0.14/$0.28 per 1M, ~150k requests/month included), so research has no marginal per-call cost — `ladder-log` classifies `opencode-go/*` as tier `subscription`. The built-in `opencode-go` provider authenticates with `OPENCODE_API_KEY`, while the box ships the rotation list as `OPENCODE_GO_API_KEYS` (two distinct `oc_sk_…` keys); `runEngineProcess` maps the whole list onto the single name the provider reads, so both keys — and therefore the rotation — reach the engine, and no shipped secret had to be renamed. What is still missing is a rung *beneath* Go: when both keys are spent the research run fails instead of degrading to `openrouter/google/gemini-2.5-flash`. That rung is the `search` ladder, queued as the last item on `checklist.md`, in the llm-ladder worker where ladders live (#1687). Because `opencode-go` is one of the two providers that get OpenCode's built-in `websearch` for free, the research profile also gets search without `OPENCODE_ENABLE_EXA`.
+**Why OpenCode Go.** Go is a flat $10/mo subscription with a per-model monthly allowance (MiMo-V2.6-Flash: $0.14/$0.28 per 1M, ~150k requests/month included), so research has no marginal per-call cost — `ladder-log` classifies `opencode-go/*` as tier `subscription`. The built-in `opencode-go` provider authenticates with `OPENCODE_API_KEY`, while the box ships the rotation list as `OPENCODE_GO_API_KEYS` (two distinct `oc_sk_…` keys); `runEngineProcess` maps the whole list onto the single name the provider reads, so both keys — and therefore the rotation — reach the engine, and no shipped secret had to be renamed. What is still missing is a rung *beneath* Go: when both keys are spent the research run fails instead of degrading to `openrouter/google/gemini-2.5-flash`. That rung is the `search` ladder, tracked in issue #1792, in the llm-ladder worker where ladders live (#1687). Because `opencode-go` is one of the two providers that get OpenCode's built-in `websearch` for free, the research profile also gets search without `OPENCODE_ENABLE_EXA`.
 
 **Web search (#1792).** OpenCode registers its built-in `websearch` tool only for the `opencode`/`opencode-go` providers *or* when `OPENCODE_ENABLE_EXA`/`OPENCODE_ENABLE_PARALLEL` is set — so with our `openrouter` model a run had **no search at all**, and research came back with invented sources instead of links. `runEngineProcess` now sets `OPENCODE_ENABLE_EXA=1` for every opencode run (free, no API key, public Exa endpoint; the parallel provider stays off — we hold no key). The same honesty applies at the tool level: `hermes_research` injects a `sources` array (`title`/`url`/`quote`) into the caller's schema, returns `grounded: true|false`, and the prompt tells the worker to probe the search first and never invent a URL.
 
