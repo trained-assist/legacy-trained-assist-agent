@@ -9,7 +9,8 @@
     "sales-skills": { "kind": "sibling", "repo": "trained-assist-sales-skill" },
     "documents-skills": { "kind": "sibling", "repo": "trained-assist-documents-skill" },
     "speech-skills": { "kind": "sibling", "repo": "trained-assist-speech-skill" },
-    "search-skills": { "kind": "sibling", "repo": "trained-assist-search-skill" }
+    "search-skills": { "kind": "sibling", "repo": "trained-assist-search-skill" },
+    "marketing-skills": { "kind": "sibling", "repo": "trained-assist-marketing-skill" }
   },
   "audienceDefaults": {
     "recruiter": { "enabled": ["recruiting"] }
@@ -46,6 +47,11 @@
     "recruiting/company": {
       "title": "Компании (ИНН, DaData, Checko)",
       "modules": ["sales-skills/40-company.js", "sales-skills/70-inn-enrichment.js", "sales-skills/71-dadata.js", "sales-skills/72-checko.js"]
+    },
+    "marketing": {
+      "title": "Маркетинг / Customer Development",
+      "modules": ["marketing-skills/10-cd-ingest.js", "marketing-skills/11-cd-stage-rubric.js"],
+      "promptDomains": ["customer-development"]
     },
     "software-engineering": {
       "title": "Разработка ПО",

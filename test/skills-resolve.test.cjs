@@ -177,7 +177,7 @@ test('shadow: legacy profile → diff=0, writes .skills-resolved.json, audience 
   for (const [k, v] of Object.entries(r)) if (k.includes('/')) { const [s, m] = k.split('/'); (probe[s] || (probe[s] = {}))[m] = v; }
   const picked = pd.selectDomains(pd.loadDomains(), probe).map(d => d.name);
   const mcp = path.join(dir, '.mcp.json');
-  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { playwright: {}, 'trained-skills': {}, 'hh-skills': {}, 'freelance-skills': {}, 'engineering-skills': {}, 'sales-skills': {}, 'documents-skills': {}, 'speech-skills': {}, 'search-skills': {} } }));
+  fs.writeFileSync(mcp, JSON.stringify({ mcpServers: { playwright: {}, 'trained-skills': {}, 'hh-skills': {}, 'freelance-skills': {}, 'engineering-skills': {}, 'sales-skills': {}, 'documents-skills': {}, 'speech-skills': {}, 'search-skills': {}, 'marketing-skills': {} } }));
   const lines = [];
   const rd = buildReadiness(catalog, { probe, siblingExists: () => true });
   assert.strictEqual(rd['engineering-skills'], true);
@@ -190,7 +190,7 @@ test('shadow: legacy profile → diff=0, writes .skills-resolved.json, audience 
   assert.match(lines[0], /^\[skills-shadow\] user=u1 mode=legacy diff=0 /);
   const saved = JSON.parse(fs.readFileSync(path.join(dir, '.skills-resolved.json'), 'utf8'));
   assert.strictEqual(saved.resolved.mode, 'legacy');
-  assert.deepStrictEqual(saved.preview.hides.siblings, ['documents-skills', 'engineering-skills', 'freelance-skills']);
+  assert.deepStrictEqual(saved.preview.hides.siblings, ['documents-skills', 'engineering-skills', 'freelance-skills', 'marketing-skills']);
   assert.ok(saved.preview.hides.promptDomains.includes('engineering'));
   assert.ok(!saved.preview.hides.promptDomains.some(d => d.startsWith('hh')));
 });
