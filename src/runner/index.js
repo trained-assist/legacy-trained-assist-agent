@@ -53,6 +53,7 @@ const skillsShadow = require('../skills/shadow');
 // primitives; runner.js keeps orchestration (queueing, retries around them).
 const { TG_API, tgSend, tgEdit } = require('./tg-stream');
 const { notifyRunFinished } = require('../gateway-callback');
+const liveInbox = require('../live-inbox');
 const {
   getQuickAnswer,
   verifyQuickAnswerIntent,
@@ -570,12 +571,16 @@ function stopTracesFor(owner = {}) {
 function _finishAcceptedChatRun(chatId, opts, outcome) {
   try { _releaseAcceptedByChat(chatId); } catch (e) { console.warn('[runner] release acceptedByChat:', e.message); }
   if (!opts) return;
+  // Live inbox: messages the model already took in mid-run are done (src/live-inbox.js).
+  let consumed = [];
+  try { consumed = liveInbox.takeConsumed(opts.taskId); } catch { /* keep the messages */ }
   notifyRunFinished({
     chatId,
     threadId: Number.isInteger(opts.threadId) && opts.threadId > 0 ? opts.threadId : null,
     requestId: opts.requestId || null,
     taskId: opts.taskId || null,
     outcome,
+    consumed,
     secret: opts.secrets?.AGENT_SECRET || process.env.AGENT_SECRET,
   }).catch(e => console.warn('[runner] notifyRunFinished:', e.message));
 }
@@ -728,6 +733,9 @@ function runTask(opts) {
   const rawChatId = Number(delivery.user?.id);
   const acceptedChatId = Number.isSafeInteger(rawChatId) && rawChatId !== 0 ? rawChatId : null;
   _bumpAcceptedByChat(acceptedChatId);
+  // Live inbox registry (get_new_messages): the server — not the engine — knows
+  // which chat/topic/gateway dispatch this task belongs to.
+  if (acceptedChatId != null) liveInbox.registerInboxRun({ taskId: delivery.taskId, chatId: acceptedChatId, threadId: delivery.threadId, requestId: delivery.requestId });
   // Реестр живых ранов — синхронно, до первого await: Стоп, пришедший сразу
   // после 202, обязан найти координаты рана. Ключ пробрасывается в _runTaskInner
   // через opts (taskDelivery копирует поля), там он добирается sessionId.

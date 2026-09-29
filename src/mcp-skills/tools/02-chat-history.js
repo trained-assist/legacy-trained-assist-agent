@@ -162,6 +162,38 @@ module.exports = {
       },
     },
 
+    get_new_messages: {
+      description:
+        'Messages the user sent in THIS chat AFTER the current task started (Telegram). ' +
+        'Call it when you are waiting for something from the user — a password, a file, a confirmation, ' +
+        '«напиши, когда…» — and before a final answer that would otherwise end with «жду от тебя…»: ' +
+        'if it arrived, take it into work right now in this same turn. Each message is returned once ' +
+        '(a repeat call gives only newer ones). Empty = nothing new yet; one empty call is not a reason ' +
+        'to finish early. Messages you take in here are not re-offered to the user as a new task.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Max messages to return (default 20, max 50).' },
+        },
+      },
+      handler: async ({ limit = 20 } = {}) => {
+        const taskId = process.env.AGENT_TASK_ID;
+        const port = process.env.PORT || '3000';
+        const secret = process.env.AGENT_RUN_TOKEN || process.env.AGENT_SECRET || '';
+        if (!taskId) return { ok: false, error: 'AGENT_TASK_ID not set — not running inside an agent task' };
+        if (!secret) return { ok: false, error: 'no run token / AGENT_SECRET available' };
+        try {
+          const res = await fetch(`http://localhost:${port}/tasks/${encodeURIComponent(taskId)}/new-messages?limit=${encodeURIComponent(limit)}`, {
+            headers: { Authorization: `Bearer ${secret}` },
+            signal: AbortSignal.timeout(8000),
+          });
+          return await res.json();
+        } catch (err) {
+          return { ok: false, error: `Failed to reach agent server: ${err.message}` };
+        }
+      },
+    },
+
     get_group_history: {
       description:
         'Messages group participants wrote while the bot stayed quiet (NOT addressed to the bot), ' +
