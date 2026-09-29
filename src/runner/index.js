@@ -1,4 +1,5 @@
 const { taskDelivery } = require('../bot-delivery');
+const { formatButtonsAuditLine } = require('./buttons-audit');
 const { startShadow: startInputRouterShadow } = require('../input-router');
 const { atomicJson } = require('../atomic-json');
 let restartShutdown = false;
@@ -3028,8 +3029,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // Retro-checkable audit trail (2026-09-15): раньше "была ли кнопка на самом деле
   // в сообщении X" нельзя было проверить постфактум — reply_markup нигде не логировался.
   // Одна строка на каждый исходящий ответ: session/причина/что реально прикреплено.
-  const buttonLabels = (finalMarkup?.inline_keyboard || []).flat().map(b => b.text);
-  console.log(`[buttons] session=${activeSessionId || '-'} internalGtd=${internalGtd} reason=${buttonReason} textLen=${final.length} attached=${JSON.stringify(buttonLabels)}`);
+  console.log(formatButtonsAuditLine({
+    sessionId: activeSessionId, internalGtd, reason: buttonReason, textLen: final.length, markup: finalMarkup,
+  }));
 
   // Preserve interrupted progress for continuation, distinctly from the user-facing status.
   if (incomplete && activeSessionId && fullOutput.text.trim()) {
