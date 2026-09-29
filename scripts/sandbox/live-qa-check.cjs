@@ -269,7 +269,7 @@ async function main() {
     const noAuth = await post({ op: 'status' }, { bearer: false });
     if (noAuth.status !== 401) fail(`без bearer ожидался 401, получено ${noAuth.status}`);
     if (lastCookieRouted) fail('маршрут НЕ исключён из cookie-роутинга в src/server.js — запрос съел handleWebRoute, агент не увидел запрос');
-    const r = await post({ op: 'status', expectSha: head, sinceMinutes: 30 });
+    const r = await post({ op: 'status', caller: CALLER, expectSha: head, sinceMinutes: 30 });
     if (r.status !== 200) fail(`/web/qa-bearer op=status → HTTP ${r.status}: ${r.text.slice(0, 160)} (маршрута или обработчика ещё нет — фича S1b не реализована)`);
     const j = r.json || {};
     if (!j.agent || !/^[0-9a-f]{7,40}$/i.test(String(j.agent.commit || ''))) fail('agent.commit не похож на SHA');
