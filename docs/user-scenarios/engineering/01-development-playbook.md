@@ -306,7 +306,7 @@ Task(durable item): [programmatic] Wait for CI and staging; repair failures
 - `delay_after_sec: 600` — шаг становится runnable не раньше, чем через 10 минут
 - Направление развития (#1846): ожидание CI/мержа — через событие каталога
   (`task_item_wait(until: {"ci_green": …})` + GitHub-вебхук, см.
-  `docs/user-scenarios/core/04-durable-wait-events.md`), а не sleep; опрос тиком
+  `docs/user-scenarios/core/05-durable-wait-events.md`), а не sleep; опрос тиком
   остаётся запасным путём
 - Пока шаг ждёт, он `waiting` с `wait_deadline_at`; `expireWaitingDeadlines` фейлит
   шаг, если внешнее ожидание переросло дедлайн (вечное откладывание исключено)
