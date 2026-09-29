@@ -67,6 +67,8 @@ describe('engineering playbook family (software-engineering-playbooks)', () => {
     expect(section).toMatch(/НЕ переспрашивай/);
     expect(section).toMatch(/не согласована/);
     expect(section).toMatch(/НЕ веди отдельный checklist\.md/);
+    expect(section).toMatch(/без `mode`/);
+    expect(section).toContain('mode: "background"');
     expect(section).not.toMatch(/НИКОГДА не запускай/);
   });
 
