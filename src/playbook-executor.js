@@ -25,8 +25,10 @@ const ROLES = ['researcher', 'developer', 'reviewer', 'verifier'];
 const DEFAULT_LEVEL_MAP = Object.freeze({
   // Both OpenCode levels run on the standard Go deepseek profile (owner 2026-09-27) — `value`
   // led with paid OpenRouter and `max` ended on it, which is how durable/web steps leaked there.
-  bachelor: { engine: 'opencode', ocProfile: 'deepseek' },
-  master: { engine: 'opencode', ocProfile: 'deepseek' },
+  // Fallback to Claude when the whole ladder is dead (every rung failed → CONFIG, 2026-09-29):
+  // without it a step retried the exhausted ladder until its attempts ran out.
+  bachelor: { engine: 'opencode', ocProfile: 'deepseek', fallback: [{ engine: 'claude', ocProfile: null }] },
+  master: { engine: 'opencode', ocProfile: 'deepseek', fallback: [{ engine: 'claude', ocProfile: null }] },
   // Claude has no model ladder of its own. When an engine is unavailable (engine
   // health) or this step already failed on it with AUTH/CONFIG, the step runs on the
   // next rung of `fallback` instead of failing: claude → codex → opencode `doctor`
@@ -47,7 +49,7 @@ const ROLE_TO_OC = Object.freeze({
   verifier: 'review',
 });
 const DEFAULT_ROLE_MAP = Object.freeze({
-  researcher: { engine: 'opencode', ocProfile: 'research' },
+  researcher: { engine: 'opencode', ocProfile: 'research', fallback: [{ engine: 'claude', ocProfile: null }] },
 });
 
 function loadLevelMap() {
