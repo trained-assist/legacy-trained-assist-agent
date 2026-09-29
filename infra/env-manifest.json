@@ -115,9 +115,7 @@
 
   "static_values_in_secrets_env": {
     "_doc": "Values written to secrets.env during deploy but NOT from GitHub Secrets — they are static config values hardcoded in ci.yml.",
-    "ru": [
-      { "name": "AGENT_PUBLIC_URL", "value": "https://platform.recruiter-assistant.ru", "description": "Public base URL for /connect/* links on RU VM" }
-    ]
+    "ru": []
   },
 
   "env_vars_bypassing_secrets_js": {

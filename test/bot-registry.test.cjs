@@ -2,7 +2,8 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');
 const {BOTS,loadRegistry,tokenSecretName,missingBotTokens}=require('../src/bot-registry');
 const {deliverySecrets}=require('../src/bot-delivery');
-const {alertMissingBotTokens,REQUIRED,OPTIONAL}=require('../src/secrets');
+const {alertMissingBotTokens,loadSecrets,REQUIRED,OPTIONAL}=require('../src/secrets');
+const fs=require('node:fs');const path=require('node:path');
 
 test('registry has the classic default bot and unique ids/audiences/token names',()=>{
  assert.equal(tokenSecretName('default'),'TELEGRAM_BOT_TOKEN');
@@ -33,4 +34,34 @@ test('boot alert: missing bot → operator message via the classic bot; nothing 
  assert.equal(await alertMissingBotTokens({BOT_TOKEN:'classic',OPERATOR_CHAT_ID:'42',MISSING_BOTS:['recruiter']},{fetchImpl}),true);
  assert.equal(calls.length,1);assert.match(calls[0].url,/\/botclassic\/sendMessage$/);
  assert.equal(calls[0].body.chat_id,'42');assert.match(calls[0].body.text,/recruiter/);
+});
+
+// 2026-09-28: the RU box printed two false `BOT TOKEN MISSING` lines on EVERY
+// ru-edge start — recruiter/freelance tokens are legitimately absent there (the
+// edge delivers only via the classic bot), so the audit had to become opt-out.
+test('auditBots:false silences the registry audit; the default stays loud', async()=>{
+ const saved={...process.env};
+ process.env.SECRETS_SOURCE='env';
+ process.env.TELEGRAM_BOT_TOKEN='classic';
+ process.env.AGENT_SECRET='s3cret';
+ delete process.env.RECRUITER_BOT_TOKEN;
+ delete process.env.FREELANCE_BOT_TOKEN;
+ const errs=[];const orig=console.error;console.error=(...a)=>errs.push(a.join(' '));
+ try{
+   const edge=await loadSecrets({auditBots:false});
+   assert.equal(errs.length,0,'ru-edge boot must not cry about registry bots');
+   // The data is unchanged — only the log is suppressed.
+   assert.deepEqual(edge.MISSING_BOTS,['recruiter','freelance']);
+   errs.length=0;
+   await loadSecrets();
+   assert.equal(errs.filter(e=>e.includes('BOT TOKEN MISSING')).length,2,'agent boot stays loud');
+ }finally{
+   console.error=orig;
+   for(const k of Object.keys(process.env)) if(!(k in saved)) delete process.env[k];
+   Object.assign(process.env,saved);
+ }
+});
+test('ru-edge passes auditBots:false (guard against reintroducing the noise)',()=>{
+ const src=fs.readFileSync(path.join(__dirname,'..','src','ru-edge.js'),'utf8');
+ assert.match(src,/loadSecrets\(\{\s*auditBots:\s*false\s*\}\)/,'ru-edge must opt out of the registry audit');
 });

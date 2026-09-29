@@ -75,7 +75,7 @@ async function loadSecretValues() {
   return values;
 }
 
-async function loadSecrets() {
+async function loadSecrets({ auditBots = true } = {}) {
   const values = await loadSecretValues();
 
   for (const name of REQUIRED) {
@@ -84,9 +84,15 @@ async function loadSecrets() {
 
   // An enabled bot without its token must be loud, not a silent 503 on every
   // delivery to that audience (2026-09-24 RECRUITER_BOT_TOKEN incident, epic #1342).
+  // auditBots:false — for processes that never deliver to a registry audience
+  // (ru-edge sends only via the classic bot): their tokens are legitimately
+  // absent there, so the warning would cry wolf on every start (2 lines of
+  // false "delivery will fail" in the ru-edge journal).
   const missingBots = missingBotTokens(values);
-  for (const b of missingBots) {
-    console.error(`[secrets] BOT TOKEN MISSING: bot "${b.botId}" (audience ${b.audience}) is enabled in bots.registry but ${b.token_secret_name} did not load — its delivery will fail`);
+  if (auditBots) {
+    for (const b of missingBots) {
+      console.error(`[secrets] BOT TOKEN MISSING: bot "${b.botId}" (audience ${b.audience}) is enabled in bots.registry but ${b.token_secret_name} did not load — its delivery will fail`);
+    }
   }
 
   return {
