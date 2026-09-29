@@ -219,6 +219,45 @@ describe('MCP surface: playbook_run', () => {
     expect(JSON.parse(got.task.execution_policy_json || '{}').hooks_approved).not.toBe(true);
   });
 
+  it('returns every step with enabled, and switches off the ones that do not apply before start', async () => {
+    const tools = loadTools();
+    const all = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'Все шаги' }, ALICE);
+    expect(all.steps).toHaveLength(16);
+    expect(all.steps.every(s => s.enabled)).toBe(true);
+    expect(all.steps.find(s => s.step === 'Wait for CI and staging; repair failures').protected).toBe(true);
+    expect(all.steps_hint).toMatch(/enabled:false/);
+
+    const res = await tools.playbook_run.handler({
+      playbook_id: 'development', goal: 'Однострочный фикс', activate: true,
+      steps: [
+        { step: 'Identify root cause when needed', enabled: false, reason: 'причина уже известна' },
+        { step: 8, enabled: false, reason: 'одна правка — нарезать нечего' },
+        { step: 'Implement', enabled: true },
+      ],
+    }, ALICE);
+    expect(res.task.status).toBe('active');
+    const off = res.steps.filter(s => !s.enabled).map(s => s.step);
+    expect(off).toEqual(['Identify root cause when needed', 'Split implementation into small slices']);
+    const got = await tools.task_get.handler({ task_id: res.task.id }, ALICE);
+    const skipped = got.items.filter(i => i.status === 'skipped').map(i => i.title);
+    expect(skipped).toEqual(off);
+  });
+
+  it('refuses to switch off a CI/merge gate, an unknown step or a step without reason — and writes no plan', async () => {
+    const tools = loadTools();
+    const gate = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'g',
+      steps: [{ step: 'Wait for CI and staging; repair failures', enabled: false, reason: 'долго' }] }, ALICE);
+    expect(gate.code).toBe('STEP_PROTECTED');
+    const unknown = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'g',
+      steps: [{ step: 'Нет такого', enabled: false, reason: 'r' }] }, ALICE);
+    expect(unknown.code).toBe('STEP_NOT_FOUND');
+    const noReason = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'g',
+      steps: [{ step: 2, enabled: false }] }, ALICE);
+    expect(noReason.code).toBe('STEP_REASON_REQUIRED');
+    const list = await tools.task_list.handler({}, ALICE);
+    expect(list.tasks).toHaveLength(0);
+  });
+
   it('without activate the plan stays a draft', async () => {
     const tools = loadTools();
     const res = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'Черновик', activate: false }, ALICE);

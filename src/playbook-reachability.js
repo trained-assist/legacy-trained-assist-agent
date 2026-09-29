@@ -217,6 +217,18 @@ function checkPlaybookReachability(id, opts = {}) {
   ].filter(Boolean);
   if (pointerHits.size) {
     add('dispatch', true, [`A1 playbook_run в промпт-доменах: ${[...pointerHits].join(', ')}`, ...weak].join('; '));
+  } else if (pb && pb.source === 'profile') {
+    // Route P (S4b, #1851): a personal playbook is routed by the runner injecting
+    // its when_to_use into the profile's system prompt — a direct chat route, so
+    // it passes even under --strict (unlike the weak routes below). No
+    // when_to_use → no route yet: the field IS the route.
+    const whenToUse = typeof pb.when_to_use === 'string' ? pb.when_to_use.trim() : '';
+    if (whenToUse) {
+      add('dispatch', true, `P профильный блок промпта: when_to_use «${whenToUse.slice(0, 140)}»`);
+    } else {
+      add('dispatch', false,
+        'P профильный плейбук без when_to_use: заполни when_to_use (playbook_edit + playbook_save) — тогда runner вставит его в системный промпт профиля и плейбук станет достижим из обычной просьбы');
+    }
   } else if (weak.length) {
     // strict: the repo promises a chat route — only A1 counts (weak routes alone = FAIL).
     add('dispatch', !opts.strict, `${weak.join('; ')}; нет прямого playbook_run("${id}") в промпт-домене`

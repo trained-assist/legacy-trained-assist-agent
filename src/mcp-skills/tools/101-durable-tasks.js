@@ -284,7 +284,8 @@ module.exports = {
       description:
         'Park the CURRENT durable step until something external happens, instead of waiting inside the run ' +
         'or failing the step. Then end your reply with the line `DURABLE: waiting`. The server polls the ' +
-        'condition cheaply (deterministic validators, no model) every poll_every_sec and re-runs this same ' +
+        'condition cheaply (deterministic validators, no model) every poll_every_sec (floored at min 30, ' +
+        'default 300) and re-runs this same ' +
         'step with a note on what happened when: the condition passes, the item is woken (task_item_wake — ' +
         'e.g. the user answered), or timeout_sec expires. Give at least one of: ' +
         '`until` — validator keys, e.g. {"ci_green": "<PR url>"}, {"merged": "<PR url>"}, ' +
@@ -292,6 +293,9 @@ module.exports = {
         '{"command_exit_zero": "journalctl -u svc --since -30min | grep -q \'ERR_X\'"}, {"task_done": "<task id>"}, ' +
         '{"file_exists": "path"}; `awaiting_user: true` — you asked the user something (send the question ' +
         'yourself first); `sleep_sec` — a plain timer (observe for a day, then re-check). ' +
+        'For CI or a merge pass `until:{ci_green}` / `{merged}` instead of `sleep_sec` — the wait tick ' +
+        're-checks conditions every ~30s, so a sleep would overshoot the event. ' +
+        'You set poll_every_sec, timeout_sec and sleep_sec yourself — pick them for what you are waiting on. ' +
         'Waiting does not spend the step\'s attempts.',
       inputSchema: {
         type: 'object',
@@ -301,7 +305,7 @@ module.exports = {
           until: { type: 'object', description: 'Condition: {validator_key: value, ...}; all must pass' },
           awaiting_user: { type: 'boolean', description: 'Wake when the user answers (task_item_wake) or at timeout' },
           sleep_sec: { type: 'integer', description: 'Plain timer: re-run this step after N seconds' },
-          poll_every_sec: { type: 'integer', description: 'How often to check `until` (default 300, min 60)' },
+          poll_every_sec: { type: 'integer', description: 'How often to check `until` (default 300, min 30)' },
           timeout_sec: { type: 'integer', description: 'Give up after N seconds (default 86400, max 30 days); the step is re-run with a timeout note' },
           reason: { type: 'string', description: 'What you are waiting for, in plain words (shown on resume and to the user)' },
         },
@@ -343,7 +347,12 @@ module.exports = {
       },
       handler: async ({ item_id, message }, ctx) => {
         const profileId = requireProfile(ctx);
-        return store().wakeItem(item_id, profileId, { message: message ?? null, by: 'user' });
+        const out = store().wakeItem(item_id, profileId, { message: message ?? null, by: 'user' });
+        // The wake is an event outside the wait tick: nudge the executor now so the
+        // step continues in seconds, not at the next tick (durable-wait-latency DW-04).
+        // Best-effort — a missed kick still resolves on the wait tick.
+        if (out && !out.error) { try { await require('../../durable-kick').notify('wake'); } catch { /* never fails the wake */ } }
+        return out;
       },
     },
 

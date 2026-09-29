@@ -38,6 +38,7 @@ SALES_SKILL_DIR="${SALES_SKILL_DIR:-$AGENT_HOME/trained-assist-sales-skill}"
 DOCUMENTS_SKILL_DIR="${DOCUMENTS_SKILL_DIR:-$AGENT_HOME/trained-assist-documents-skill}"
 SPEECH_SKILL_DIR="${SPEECH_SKILL_DIR:-$AGENT_HOME/trained-assist-speech-skill}"
 SEARCH_SKILL_DIR="${SEARCH_SKILL_DIR:-$AGENT_HOME/trained-assist-search-skill}"
+MARKETING_SKILL_DIR="${MARKETING_SKILL_DIR:-$AGENT_HOME/trained-assist-marketing-skill}"
 export REPO_DIR RELEASES_DIR CURRENT_LINK SERVICE
 
 if [ "${ASSIST_DEPLOY_LOCKED:-}" != 1 ]; then
@@ -152,6 +153,7 @@ ensure_sibling trained-assist-sales-skill "$SALES_SKILL_DIR"
 ensure_sibling trained-assist-documents-skill "$DOCUMENTS_SKILL_DIR"
 ensure_sibling trained-assist-speech-skill "$SPEECH_SKILL_DIR"
 ensure_sibling trained-assist-search-skill "$SEARCH_SKILL_DIR"
+ensure_sibling trained-assist-marketing-skill "$MARKETING_SKILL_DIR"
 
 # Core no longer ships the gdrive/doc-export/deck tools (#1470) — they live only in
 # trained-assist-documents-skill. `ensure_sibling` warns and continues on a failed clone,

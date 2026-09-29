@@ -84,7 +84,8 @@ function planFor(workDir, { catalog, warn = console.warn } = {}) {
 function writeEffective(workDir, plan, { warn = console.warn } = {}) {
   const file = path.join(workDir, EFFECTIVE_FILE);
   try {
-    atomicJson(file, { at: new Date().toISOString(), ...plan }, { space: 2 });
+    // 0660 like .mcp.json (see writeMcpConfig): the MCP server reads it as the slot user.
+    atomicJson(file, { at: new Date().toISOString(), ...plan }, { space: 2, mode: 0o660 });
     return file;
   } catch (e) {
     warn(`[skills] write ${file}: ${e.message} — legacy exposure`);

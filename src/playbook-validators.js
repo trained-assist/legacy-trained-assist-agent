@@ -652,6 +652,35 @@ function softenLlmVerdict(key, result, ctx) {
   };
 }
 
+// One-line RU note per registry key, kept next to the registry so the authoring
+// prompt (Hermes) documents exactly what the runtime can actually check. A key
+// without a note still appears in the catalog (empty note) — the source of truth
+// for WHICH keys exist is always the registry itself (never this map).
+const VALIDATOR_NOTES = {
+  ci_green: 'CI-прогон PR зелёный (по ссылке на PR)',
+  ci_and_staging_green: 'CI и staging-гейт по PR зелёные',
+  merged: 'PR смержен',
+  pr_merged: 'PR смержен (то же, что merged)',
+  merged_and_deployed: 'PR смержен и задеплоен',
+  pr_opened: 'PR открыт (в тексте есть ссылка на PR)',
+  file_exists: 'файл по указанному пути существует',
+  command_exit_zero: 'команда завершилась с кодом 0',
+  credential_present: 'нужный ключ/креденшл сохранён у профиля',
+  http_ok: 'URL отвечает 2xx (и содержит подстроку, если задана)',
+  task_done: 'другой durable-план завершён',
+  fanout_joined: 'все элементы пачки завершены или пропущены',
+};
+
+/**
+ * The catalog of real validation keys, derived from the registry (single source
+ * of truth, C3) plus the RU note from VALIDATOR_NOTES. Consumed by the authoring
+ * prompt and the authoring semantic check — never a hardcoded list.
+ */
+function listValidatorCatalog(registry) {
+  const reg = registry || getDefaultRegistry();
+  return Object.keys(reg).map(key => ({ key, note: VALIDATOR_NOTES[key] || '' }));
+}
+
 /**
  * Build a registry of the initial validation keys. `ghToken` / `ghFetch` are
  * overridable so tests drive the GitHub validators with fakes.
@@ -757,6 +786,7 @@ module.exports = {
   parseValidation, collectDocExcerpts, buildLlmValidatorPrompt, makeLlmValidate, getDefaultLlmValidate,
   makePrOpenedValidator, defaultGitInfo, gitRemoteRepo, extractPrRef, checkRunsGreen,
   credentialPresent, makeHttpOkValidator, makeTaskDoneValidator,
+  VALIDATOR_NOTES, listValidatorCatalog,
   PR_REF_RE, DEFAULT_COMMAND_TIMEOUT_MS,
   VALIDATION_MODES, DEFAULT_VALIDATION_MODE, DEFAULT_VALIDATION_MODEL, LLM_VALIDATOR_TIMEOUT_MS,
   FASTPASS_SKIP_MODE, FASTPASS_SKIP_RE, parseFastpassSkip,

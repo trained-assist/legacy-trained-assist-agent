@@ -229,7 +229,13 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
 function writeMcpConfig(workDir, userId, opts = {}) {
   const config = buildMcpConfig(workDir, userId, opts);
   const configPath = path.join(workDir, '.mcp.json');
-  atomicJson(configPath, config, { space: 2 });
+  // 0660, not atomicJson's default 0600: the run's claude reads this file as the
+  // profile's slot user. A 0600 file gets ACL mask --- and stays unreadable until
+  // shareServiceFiles() fixes it before a run — but a parallel run of the same
+  // profile rewrites the file in between, and the first run's claude then dies on
+  // start with «EACCES … .mcp.json» (exit code 1). The profile gate still keeps
+  // other profiles out.
+  atomicJson(configPath, config, { space: 2, mode: 0o660 });
   return configPath;
 }
 

@@ -13,6 +13,7 @@ echo "=== Creating browser-session scripts ==="
 mkdir -p "$SCRIPTS_DIR"
 cp "$(dirname "$0")/capture-cookies.js" "$SCRIPTS_DIR/"
 cp "$(dirname "$0")/navigate.js" "$SCRIPTS_DIR/"
+# login.js is NOT copied: the MCP tool runs it straight from the release (#1866).
 chown -R vova:vova "$SCRIPTS_DIR"
 
 echo "=== Installing systemd services ==="

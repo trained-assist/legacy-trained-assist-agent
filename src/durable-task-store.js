@@ -478,13 +478,23 @@ class DurableTaskStore {
    *
    * `now` is injectable so the tick and tests drive `due_at` selection
    * deterministically (defaults to the wall clock).
+   *
+   * `waitsOnly` (durable-wait-latency design §2.1) narrows the claim to items
+   * carrying an UNRESOLVED wait (`wait_json` without `$.resolved`) — that is the
+   * dedicated 30s wait tick: it polls waiting steps and must not claim a plain
+   * due step that belongs to the 5-min GTD tick. Everything else (positional
+   * gate, due filter, statuses) is shared, so one claim = one pass either way.
    */
-  claimNextRunnable(now = nowMs()) {
+  claimNextRunnable(now = nowMs(), { waitsOnly = false } = {}) {
+    const waitFilter = waitsOnly
+      ? `AND i.wait_json IS NOT NULL AND json_extract(i.wait_json, '$.resolved') IS NULL`
+      : '';
     return this.db.transaction(() => {
       const row = this._prep(`SELECT i.* FROM task_items i
         JOIN durable_tasks t ON t.id = i.task_id
         WHERE i.status IN ('pending','waiting') AND t.status = 'active'
           AND (i.due_at IS NULL OR i.due_at <= ?)
+          ${waitFilter}
           AND NOT EXISTS (
             SELECT 1 FROM task_items p
             WHERE p.task_id = i.task_id AND p.position < i.position
@@ -497,6 +507,21 @@ class DurableTaskStore {
         .run(now, row.id);
       return this.getTaskItem(row.id);
     })();
+  }
+
+  /**
+   * How many active plans currently carry an unresolved wait — the wait tick's
+   * fast no-op exit (0 → not a single SQL statement). Excludes terminal items
+   * (a completed declared wait keeps its wait_json), so a quiet profile costs
+   * one COUNT per 30s, nothing more.
+   */
+  countActiveWaits() {
+    const row = this._prep(`SELECT COUNT(*) AS n FROM task_items i
+      JOIN durable_tasks t ON t.id = i.task_id
+      WHERE t.status = 'active' AND i.status IN ('pending','waiting')
+        AND i.wait_json IS NOT NULL
+        AND json_extract(i.wait_json, '$.resolved') IS NULL`).get();
+    return row ? row.n : 0;
   }
 
   /**

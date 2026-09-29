@@ -334,6 +334,10 @@ function writeCredentialFile(filePath, value, opts = {}) {
     // Stored plaintext → a stale v2 sidecar would make the next read throw.
     removeMeta(filePath);
   }
+  // A durable step may be parked on until:{credential_present}: this single write
+  // chokepoint nudges the executor now (wait-latency DW-04/§2.2). Best-effort,
+  // fire-and-forget — the 30s wait tick is the fallback.
+  try { require('./durable-kick').notify('credential').catch(() => {}); } catch { /* never fails the write */ }
   return filePath;
 }
 

@@ -61,6 +61,46 @@ function safe(fn) {
   };
 }
 
+// Step toggles at plan start (playbook_run `steps`). A playbook is a template: for
+// a small goal a third of its steps do not apply, and skipping them one by one after
+// start (task_item_skip) meant nobody did it — plans ran research/design steps for a
+// one-line fix. The run now takes the switch list up front and returns the full step
+// list with `enabled`, so the calling session sees every step and what it may drop.
+// Quality gates the owner made mandatory (CI + staging green, merged/deployed) stay on:
+// a blanket skip of those is exactly what «общий skip недопустим» forbids.
+const PROTECTED_VALIDATORS = ['ci_green', 'ci_and_staging_green', 'merged', 'pr_merged', 'merged_and_deployed'];
+
+function isProtectedStep(item) {
+  return Object.keys(item.validation || {}).some(k => PROTECTED_VALIDATORS.includes(k));
+}
+
+// → Map(index → reason) of steps to switch off; coded error on an unknown/protected
+// step or a missing reason, before anything is written.
+function resolveStepToggles(items, steps) {
+  const off = new Map();
+  for (const t of steps || []) {
+    if (!t || t.enabled !== false) continue;
+    const ref = t.step;
+    const idx = Number.isInteger(ref) ? ref - 1
+      : items.findIndex(i => i.title.trim().toLowerCase() === String(ref ?? '').trim().toLowerCase());
+    if (idx < 0 || idx >= items.length) {
+      throw playbookError('STEP_NOT_FOUND', `шаг «${ref}» не найден — укажи точное название или номер (1…${items.length})`);
+    }
+    if (isProtectedStep(items[idx])) {
+      throw playbookError('STEP_PROTECTED', `шаг «${items[idx].title}» — обязательный гейт (CI/staging/мерж), выключить нельзя`);
+    }
+    const reason = String(t.reason || '').trim();
+    if (!reason) throw playbookError('STEP_REASON_REQUIRED', `шаг «${items[idx].title}»: укажи reason — почему он не нужен`);
+    off.set(idx, reason);
+  }
+  return off;
+}
+
+const STEPS_HINT = 'steps — все шаги плана с enabled. Шаги, которые к этой цели не относятся (исследование для ' +
+  'однострочного фикса, дизайн для очевидной правки и т.п.), выключай сразу: в playbook_run — steps:[{step, ' +
+  'enabled:false, reason}], для уже созданного плана — task_item_skip(item_id, reason). protected=true (CI/staging/' +
+  'мерж) не выключаются. Ожидания (wait) настраиваются в шаге: poll_every_sec/timeout_sec.';
+
 module.exports = {
   tools: {
 
@@ -242,13 +282,29 @@ module.exports = {
           },
           project_id: { type: 'string', description: 'Optional project to bind the plan (and its checklist.md projection) to' },
           session_id: { type: 'string', description: 'Optional session to attach the plan to' },
+          steps: {
+            type: 'array',
+            description: 'Step switches, applied before the plan starts: [{step: "<exact title>" | <1-based number>, ' +
+              'enabled: false, reason: "why it does not apply"}]. Look at the step list first (playbook_get) and switch ' +
+              'off every step that does not apply to THIS goal — for a small fix typically a third of a big playbook. ' +
+              'CI/staging/merge gates cannot be switched off. Omitted = all steps on.',
+            items: {
+              type: 'object', required: ['step', 'enabled'],
+              properties: {
+                step: { anyOf: [{ type: 'string' }, { type: 'integer', minimum: 1 }] },
+                enabled: { type: 'boolean' },
+                reason: { type: 'string', description: 'Required when enabled=false' },
+              },
+            },
+          },
         },
       },
-      handler: safe(async ({ playbook_id, goal, version, user_value, acceptance_criteria, vars, project_id, session_id, approve_hooks, activate }, ctx) => {
+      handler: safe(async ({ playbook_id, goal, version, user_value, acceptance_criteria, vars, project_id, session_id, approve_hooks, activate, steps }, ctx) => {
         const profileId = requireUser(ctx);
         const playbook = new PlaybookStore({ profileId }).get(playbook_id, version);
         if (!playbook) throw playbookError('PLAYBOOK_NOT_FOUND', `плейбук «${playbook_id}» не найден`);
         const compiled = compilePlaybook(playbook, { goal, vars, acceptance_criteria, user_value });
+        const off = resolveStepToggles(compiled.items, steps);
         // Persist through task_create so reference checks, the atomic SQLite
         // transaction and the checklist projection stay in one place.
         const { task_create } = require('./101-durable-tasks').tools;
@@ -267,14 +323,34 @@ module.exports = {
         // Activation goes through task_update — the same single write path the
         // user-driven «запускай» step uses — so no status write bypasses the store.
         let task = persisted.task;
+        let items = persisted.items;
+        if (off.size && task) {
+          const byPosition = [...(items || [])].sort((a, b) => a.position - b.position);
+          const { logDefect } = require('../../playbook-defects-log');
+          for (const [idx, reason] of off) {
+            const it = byPosition[idx];
+            batchStore().skipItem(it.id, profileId, { reason, by: 'playbook_run' });
+            // Same audit trail as task_item_skip: steps that keep being switched off are
+            // the signal to trim the playbook itself.
+            logDefect({ profile_id: profileId, task_id: task.id, playbook: playbook.id, kind: 'skip',
+              item_id: it.id, step: it.title, stage: it.stage, reason });
+          }
+          items = byPosition.map(i => batchStore().getTaskItem(i.id));
+        }
         if (activate === true && task && task.status === 'draft') {
           const { task_update } = require('./101-durable-tasks').tools;
           const updated = await task_update.handler({ task_id: task.id, status: 'active' }, ctx);
           if (updated && updated.task) task = updated.task;
         }
+        const ordered = [...(items || [])].sort((a, b) => a.position - b.position);
         return {
           task,
-          items: persisted.items,
+          items,
+          steps: ordered.map((i, n) => ({
+            n: n + 1, step: i.title, item_id: i.id, enabled: i.status !== 'skipped',
+            ...(isProtectedStep(compiled.items[n]) ? { protected: true } : {}),
+          })),
+          steps_hint: STEPS_HINT,
           projection: persisted.projection,
           projection_warning: persisted.projection_warning,
           playbook: { id: playbook.id, version: playbook.version, scope: playbook.scope, source: playbook.source },

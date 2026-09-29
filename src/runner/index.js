@@ -47,6 +47,10 @@ const promptDomains = require('../prompt-domains');
 // development-like task. Returns '' unless a playbook is actually available, so
 // profiles without one get a byte-identical prompt.
 const { buildDevPlaybookSuggestion } = require('../dev-task-playbook-suggestion');
+// S4b of #1851 (D2): route a profile's PERSONAL playbooks from a plain request
+// via when_to_use. Returns '' unless the profile actually has one, so profiles
+// without personal playbooks get a byte-identical system prompt.
+const { buildProfilePlaybookMenu } = require('../profile-playbook-menu');
 const { buildAwaitingUserNotice } = require('../durable-wait');
 const skillsShadow = require('../skills/shadow');
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
@@ -2344,6 +2348,22 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       systemPromptFile = out;
     }
   } catch (e) { console.warn('[runner] prompt domains:', e.message); }
+
+  // Profile playbooks menu (S4b, #1851): a personal playbook with a non-empty
+  // when_to_use becomes reachable from a plain request — the same injection
+  // point as the domain block (system prompt), skipped on internalGtd runs
+  // (recursive) like playbookSuggestionSection. '' → the prompt is unchanged.
+  try {
+    if (!internalGtd && user?.username) {
+      const menu = buildProfilePlaybookMenu({ profileId: user.username });
+      if (menu) {
+        const baseTxt = systemPromptFile && fs.existsSync(systemPromptFile) ? fs.readFileSync(systemPromptFile, 'utf8') : '';
+        const out = path.join(user.workDir, '.system-prompt.txt');
+        fs.writeFileSync(out, baseTxt + '\n\n' + menu, { mode: 0o600 });
+        systemPromptFile = out;
+      }
+    }
+  } catch (e) { console.warn('[runner] profile playbook menu:', e.message); }
 
   // Skills shadow (#1537 PR-A): resolve the skill catalog and log its diff against what
   // was just exposed above. Observation only — runShadow never throws, changes nothing.
