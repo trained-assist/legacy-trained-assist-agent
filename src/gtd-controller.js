@@ -428,6 +428,53 @@ async function bgTask(secrets, task, kind, detail = '') {
   } catch (e) { console.warn('[gtd] bg-notify:', e.message); }
 }
 
+// First step failure of a plan (#1725 root 4). A plan launched from chat used to go
+// silent until the step's budget ran out (task_failed after the 3rd attempt), so the
+// owner never learned the executor was stuck. This is the default, not the opt-in
+// stream above: ONE message per plan, on the first failed attempt of any step.
+//   - bg-notify configured → skip: enabled=true already streams every failure,
+//     enabled=false is an explicit «не пиши мне».
+//   - child plan of a batch → skip: the fanout supervisor reports its children.
+//   - once per plan: the hook ledger's unique boundary_key is claimed BEFORE the
+//     send (at-most-once — a crash or a concurrent settle can never double-send).
+// `send` is injectable for tests; a failed send never fails the step.
+async function firstFailureNotice(secrets, store, task, item, detail = '', { send = null, readFlag = readBgNotify } = {}) {
+  try {
+    if (!task?.id || !task.profile_id) return { sent: false, reason: 'no_task' };
+    if (task.parent_task_id) return { sent: false, reason: 'batch_child' };
+    if (readFlag(task.profile_id)) return { sent: false, reason: 'bg_notify_configured' };
+    const boundary_key = `${task.id}:first-step-failure`;
+    if (store.hasHookRun(boundary_key)) return { sent: false, reason: 'already_sent' };
+    const target = resolveOwnerTarget(store, task);
+    if (!target) return { sent: false, reason: 'no_chat_id' };
+    const routeSecrets = require('./bot-delivery').deliverySecrets(secrets || {}, target.audience || 'default');
+    const token = routeSecrets?.TELEGRAM_BOT_TOKEN || routeSecrets?.BOT_TOKEN;
+    if (!send && !token) return { sent: false, reason: 'no_bot_token' };
+    const claim = store.recordHookExecution({
+      task_id: task.id, task_item_id: item?.id || null, event: 'first_step_failure', hook_index: 0,
+      hook_type: 'notify', status: 'fired', detail: String(detail || '').slice(0, 500), boundary_key,
+    });
+    if (!claim.recorded) return { sent: false, reason: 'already_sent' };
+    let total = '?';
+    try { total = store.progressSummary(task.id, task.profile_id).total; } catch { /* legacy row */ }
+    const goal = String(task.goal || '').replace(/\s+/g, ' ').slice(0, 120);
+    const title = String(item?.title || '').replace(/\s+/g, ' ').slice(0, 80);
+    const fresh = item?.id ? store.getTaskItem(item.id) : null;
+    const tries = fresh && fresh.max_attempts ? ` (попытка ${fresh.attempt_count}/${fresh.max_attempts})` : '';
+    const retry = fresh && fresh.status === 'failed'
+      ? 'Попытки исчерпаны — план остановлен на этом шаге.'
+      : 'Исполнитель повторит сам; следующие сбои этого плана сюда не пишу.';
+    const why = String(detail || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    const text = `⚠️ План «${goal}»: шаг ${Number(item?.position ?? 0) + 1}/${total} «${title}» не удался${tries}.\n` +
+      (why ? `Причина: ${why}\n` : '') + retry;
+    await (send || ((t) => _tgNotify(token, target.chatId, t, target.threadId || null)))(text, target);
+    return { sent: true, text };
+  } catch (e) {
+    console.warn('[gtd] first-failure notice:', e.message);
+    return { sent: false, reason: e.message };
+  }
+}
+
 // Default sinks. `notify` reuses the audience-aware bot delivery; check /
 // create_issue / publish only run when a caller injects a sink (this slice does
 // not reimplement GitHub/publish orchestration — no transport configured means
@@ -737,9 +784,11 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
         if (rec.recovered) {
           console.log(`[gtd-durable] programmatic recovery ${item.id.slice(0, 8)} ${rec.failureClass}→${rec.action} (${rec.attempts}/${rec.maxAttempts})`);
           void bgStep(secrets, task, item, '⚠️ Шаг не удался — повтор', `попытка ${rec.attempts}/${rec.maxAttempts}: ${errText}`);
+          void firstFailureNotice(secrets, store, task, item, errText);
         } else {
           console.log(`[gtd-durable] programmatic item failed, ${rec.reason} (${rec.attempts}/${rec.maxAttempts}) class=${rec.failureClass}: ${item.id.slice(0, 8)}`);
           void bgStep(secrets, task, item, '🛑 Шаг не удался (бюджет исчерпан)', errText);
+          void firstFailureNotice(secrets, store, task, item, errText);
           // P4: terminal step failure → on_fail + task_failed.
           await fireItemHooks(store, task, item, 'on_fail', hookVars({ error: errText }), sinks, hooksApproved);
           await fireTaskHooks(store, task, 'task_failed', hookVars({ error: errText }), sinks, hooksApproved);
@@ -1020,10 +1069,17 @@ async function settleDurableCrash(ctx, e) {
 // user stop / crash) is reported without repeating the message in each branch.
 async function bgAfterStep(ctx) {
   try {
-    if (!ctx?.task?.profile_id || !isBgNotifyEnabled(ctx.task.profile_id)) return;
+    if (!ctx?.task?.profile_id) return;
     const fresh = ctx.store.getTaskItem(ctx.itemSnap.id);
     if (!fresh) return;
     const detail = String(fresh.last_error || '').trim().slice(0, 240);
+    if (!isBgNotifyEnabled(ctx.task.profile_id)) {
+      // Default path (#1725): only the plan's first failed attempt reaches the chat.
+      if ((fresh.status === 'failed' || fresh.status === 'pending') && fresh.last_error) {
+        await firstFailureNotice(ctx.secrets, ctx.store, ctx.task, fresh, fresh.last_error);
+      }
+      return;
+    }
     if (fresh.status === 'done') return bgStep(ctx.secrets, ctx.task, ctx.itemSnap, '✅ Шаг готов');
     if (fresh.status === 'failed') return bgStep(ctx.secrets, ctx.task, ctx.itemSnap, '🛑 Шаг не удался', detail);
     if (fresh.status === 'pending') return bgStep(ctx.secrets, ctx.task, ctx.itemSnap, '⚠️ Шаг не удался — повтор', detail);
@@ -2054,7 +2110,7 @@ module.exports = {
   _ghToken, _ghFetch,
   durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
   resumeDurableReply, resumeDurableCrash, planWorkspaceLabel, kickDurable, durableBudget, _setKickDeps,
-  tickHeartbeat, countOpenLegacy, durableItemCounts,
+  tickHeartbeat, countOpenLegacy, durableItemCounts, firstFailureNotice,
   DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP,
   CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,
 };
