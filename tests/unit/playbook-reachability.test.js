@@ -209,5 +209,28 @@ describe('checkPlaybookReachability', () => {
       expect(status(r, 'tools-visible')).toBe('fail');
     });
   });
+
+  describe('route P: a profile playbook via when_to_use (#1851 D2)', () => {
+    const profileStore = (extra = {}) => ({
+      resolve: () => ({
+        ...playbook('demo-pb'), scope: 'profile', source: 'profile',
+        path: join(root, 'users', 'alice', 'playbooks', 'demo-pb.json'),
+        ...extra,
+      }),
+      _levels: () => [],
+    });
+
+    it('passes dispatch with a non-empty when_to_use, even under --strict', () => {
+      const r = run('demo-pb', { store: profileStore({ when_to_use: 'когда проверяют прод' }), strict: true });
+      expect(status(r, 'dispatch')).toBe('pass');
+      expect(r.rows.find(x => x.gate === 'dispatch').detail).toMatch(/when_to_use/);
+    });
+
+    it('fails dispatch without when_to_use and names the field', () => {
+      const r = run('demo-pb', { store: profileStore() });
+      expect(status(r, 'dispatch')).toBe('fail');
+      expect(r.rows.find(x => x.gate === 'dispatch').detail).toMatch(/when_to_use/);
+    });
+  });
 });
 

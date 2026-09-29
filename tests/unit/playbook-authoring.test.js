@@ -35,6 +35,7 @@ function savedFile(p, id) { return join(profileDir(p), `${id}.json`); }
 function validPlaybook(over = {}) {
   return {
     id: 'sample', version: 1, scope: 'profile', title: 'Sample',
+    when_to_use: 'когда нужно провести процесс Sample',
     goal_template: 'Сделать {input}',
     stages: [{
       id: 'stage-one', title: 'Этап один',
@@ -310,6 +311,100 @@ describe('MCP surface: playbook_draft / playbook_edit / playbook_save', () => {
     expect(out.saved.path).toBe(savedFile('alice', 'sample'));
     expect(existsSync(savedFile('alice', 'sample'))).toBe(true);
     expect(existsSync(join(root, 'users', 'undefined'))).toBe(false);
+  });
+});
+
+describe('authoring semantic rules (S4a, issue #1851)', () => {
+  it('rejects a programmatic step with a validator outside the registry (D1) and writes nothing', async () => {
+    const bad = validPlaybook({ stages: [{ id: 's', title: 'S', steps: [
+      { title: 'Команда', execution_kind: 'programmatic', validation: { shell_command_success: true } },
+    ] }] });
+    const run = fakeHermes([bad, bad]);
+    const { authoring } = load({ runHermes: run });
+    await expect(authoring.draft({ username: 'alice', description: 'Процесс' }))
+      .rejects.toThrow(/shell_command_success/);
+    expect(existsSync(draftFile('alice', 'sample'))).toBe(false);
+    expect(run.calls).toHaveLength(2); // one repair attempt
+  });
+
+  it('accepts a programmatic step whose keys are all in the registry', async () => {
+    const good = validPlaybook({ stages: [{ id: 's', title: 'S', steps: [
+      { title: 'Файл', execution_kind: 'programmatic', validation: { file_exists: { path: '/tmp/x' } } },
+    ] }] });
+    const run = fakeHermes([good]);
+    const { authoring } = load({ runHermes: run });
+    const out = await authoring.draft({ username: 'alice', description: 'Процесс' });
+    expect(out.draft.stages[0].steps[0].execution_kind).toBe('programmatic');
+  });
+
+  it('rejects a goal_template {var} not declared in inputs[]', async () => {
+    const bad = validPlaybook({ goal_template: 'Проверить {scenario} на проде', inputs: undefined });
+    const run = fakeHermes([bad, bad]);
+    const { authoring } = load({ runHermes: run });
+    await expect(authoring.draft({ username: 'alice', description: 'Процесс' }))
+      .rejects.toThrow(/scenario/);
+  });
+
+  it('allows {input} in goal_template without inputs[] (C7)', async () => {
+    const good = validPlaybook({ goal_template: 'Сделать {input}', inputs: undefined });
+    const run = fakeHermes([good]);
+    const { authoring } = load({ runHermes: run });
+    const out = await authoring.draft({ username: 'alice', description: 'Процесс' });
+    expect(out.draft.goal_template).toBe('Сделать {input}');
+  });
+
+  it('allows arbitrary validation keys on agent steps (C4)', async () => {
+    const good = validPlaybook({ stages: [{ id: 's', title: 'S', steps: [
+      { title: 'Итог', execution_kind: 'agent', executor_role: 'verifier', minimum_model_level: 'bachelor', context_budget: 'small', validation: { my_free_key: true } },
+    ] }] });
+    const run = fakeHermes([good]);
+    const { authoring } = load({ runHermes: run });
+    const out = await authoring.draft({ username: 'alice', description: 'Процесс' });
+    expect(out.draft.stages[0].steps[0].validation.my_free_key).toBe(true);
+  });
+
+  it('rejects a profile draft without when_to_use (R4)', async () => {
+    const bad = validPlaybook();
+    delete bad.when_to_use;
+    const run = fakeHermes([bad, bad]);
+    const { authoring } = load({ runHermes: run });
+    await expect(authoring.draft({ username: 'alice', description: 'Процесс' }))
+      .rejects.toThrow(/WHEN_TO_USE_REQUIRED/);
+  });
+
+  it('save repeats the semantic check and writes nothing on a hand-edited bad draft (R6)', async () => {
+    const bad = validPlaybook({ stages: [{ id: 's', title: 'S', steps: [
+      { title: 'Команда', execution_kind: 'programmatic', validation: { shell_command_success: true } },
+    ] }] });
+    writeDraft('alice', bad);
+    const { authoring } = load();
+    await expect(authoring.save({ username: 'alice', playbook_id: 'sample' }))
+      .rejects.toThrow(/shell_command_success/);
+    expect(existsSync(savedFile('alice', 'sample'))).toBe(false);
+  });
+});
+
+describe('buildAuthoringPrompt (S4a step 1)', () => {
+  it('carries every registry key and the sibling step-type catalog', () => {
+    fresh(AUTHORING, STORE, PATHS, '../../src/playbook-validators.js');
+    const { buildAuthoringPrompt } = require(AUTHORING);
+    const { listValidatorCatalog } = require('../../src/playbook-validators');
+    const prev = process.env.PLAYBOOK_SIBLING_ROOTS;
+    const catRoot = mkdtempSync(join(tmpdir(), 'authoring-cat-'));
+    mkdirSync(join(catRoot, 'library'), { recursive: true });
+    mkdirSync(join(catRoot, 'playbooks'), { recursive: true });
+    writeFileSync(join(catRoot, 'library', 'step-types.json'), JSON.stringify([{ id: 'define-use-case', purpose: 'ценность' }]));
+    process.env.PLAYBOOK_SIBLING_ROOTS = catRoot;
+    try {
+      const prompt = buildAuthoringPrompt();
+      for (const { key } of listValidatorCatalog()) expect(prompt).toContain(key);
+      expect(prompt).toContain('define-use-case');
+      expect(prompt).toContain('[ДОСТУПНЫЕ ПРОВЕРКИ');
+    } finally {
+      if (prev === undefined) delete process.env.PLAYBOOK_SIBLING_ROOTS;
+      else process.env.PLAYBOOK_SIBLING_ROOTS = prev;
+      rmSync(catRoot, { recursive: true, force: true });
+    }
   });
 });
 
