@@ -1,5 +1,5 @@
-// Contract test for the agent-project-notes.md layer (Hermes Phase 2, see
-// docs/HERMES-INTEGRATION-CHECKLIST.md). Mirrors profile-tier agent-notes.md but scoped
+// Contract test for the agent-project-notes.md layer (Hermes Phase 2). Mirrors
+// profile-tier agent-notes.md but scoped
 // per project — must not leak across sibling projects and must never be seeded empty.
 const os = require('os');
 const fs = require('fs');

@@ -246,7 +246,6 @@ Goal: <одна строка>
 
 - `docs/user-scenarios/README.md` — формат сценария и планируемый runner
 - `docs/user-scenarios/GOALS.md` — скоуп/out-of-scope
-- `docs/CICD-REVIEW-2026-09-14.md` — состояние пайплайнов и дыры (staging-гейт)
 - `docs/REPO-HYGIENE-PLAYBOOK.md` — branch-per-session, immutable PRs, hooks
 - `contracts/mcp-skill-sources.schema.json` — формат `mcp.manifest.json` доменного репо
 - `scripts/staging/run.mjs`, `scripts/staging/isolation-guard.cjs` — эталон replay-гейта

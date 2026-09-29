@@ -7,10 +7,9 @@ This file is the **test** side of the same subject.
 
 The standing assumption is the one the 2026-09-26 production-readiness audit ended with:
 **"merged" ≠ "works in prod"**. Every local suite can be green while a promise is still
-undelivered — the audit found registered validation keys that fell through to the LLM judge
-and a role that was computed and then dropped, with no test noticing
-(`docs/audits/playbook-prod-readiness-2026-09-26.md`). Use the layers below in order; each
-one catches a class the previous one cannot.
+undelivered — that audit found registered validation keys that fell through to the LLM judge
+and a role that was computed and then dropped, with no test noticing. Use the layers below in
+order; each one catches a class the previous one cannot.
 
 ## Four layers
 
@@ -176,6 +175,4 @@ the loop below — it is the one gate that catches a playbook nobody can start.
 
 - [`docs/playbooks.md`](playbooks.md) — registry, step contract, lifecycle, reachability gates
 - [`docs/engineering-playbook-persistence.md`](engineering-playbook-persistence.md) — durable plans, waits, restart
-- [`docs/specs/engineering-playbook-master-plan.md`](specs/engineering-playbook-master-plan.md) — phased design
-- [`docs/audits/playbook-prod-readiness-2026-09-26.md`](audits/playbook-prod-readiness-2026-09-26.md) — the audit, its gap list and the sim output
-- [`docs/test-audit.md`](test-audit.md) — general test inventory
+- epic `#1372` (playbooks) + sub-issue `#1573` — the phased plan this test strategy serves

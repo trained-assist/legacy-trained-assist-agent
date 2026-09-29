@@ -1,4 +1,4 @@
-// Contract tests for Hermes Phase 1.5 tool-augmented worker (docs/HERMES-INTEGRATION-CHECKLIST.md).
+// Contract tests for Hermes Phase 1.5 tool-augmented worker.
 // No CLI spawn in CI: only the guard-clause contract is tested here. The live
 // claude-CLI path is smoke-tested manually (spawns a real process + MCP servers).
 let pass = 0, fail = 0;
