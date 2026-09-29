@@ -27,7 +27,7 @@ const RULES = [
   // The llm-ladder worker already tried every rung (all Go keys, paid OpenRouter tail) and all
   // refused — in practice Go weekly limit + OpenRouter credits at zero (2026-09-29). Retrying the
   // same engine cannot help until an operator tops up / the quota resets, so it is CONFIG: the
-  // durable executor then skips OpenCode for this step and runs the level's fallback engine.
+  // durable executor then moves the step to the level's fallback (the free ladder, never Claude — #1899).
   { class: 'CONFIG', pattern: /every rung failed|ladder_exhausted|все ступени отказали/i },
 
   // AUTH — credentials/session invalid.
