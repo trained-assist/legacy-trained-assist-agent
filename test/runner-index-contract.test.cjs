@@ -70,8 +70,9 @@ ok(/\(!internalGtd && user\?\.username\)/.test(runnerSrc),
   'playbook suggestion must be gated off for durable steps (internalGtd)');
 ok(/playbookSuggestionSection, awaitingUserSection, artifactsSection\]/.test(runnerSrc),
   'playbook suggestion + awaiting-user notice must be part of baseContext');
-ok(/buildAwaitingUserNotice\(user\.username\)/.test(runnerSrc),
-  'runner must inject the durable awaiting-user notice for the profile');
+// #1886: scoped to the plans this dialog owns (session + chat).
+ok(/buildAwaitingUserNotice\(user\.username, \{ sessionId: activeSessionId, chatId \}\)/.test(runnerSrc),
+  'runner must inject the durable awaiting-user notice scoped to this session/chat');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

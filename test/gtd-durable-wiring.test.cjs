@@ -39,6 +39,9 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     })),
   });
   store.db.prepare('UPDATE durable_tasks SET status=? WHERE id=?').run('active', r.task.id);
+  // #1886: createPlan no longer attaches session_id (it is the owner chat now);
+  // the re-entrancy guard still covers a session explicitly attached to the task.
+  if (sessionId) store.attachSession(r.task.id, sessionId, 'u1');
   return r.task.id;
 }
 

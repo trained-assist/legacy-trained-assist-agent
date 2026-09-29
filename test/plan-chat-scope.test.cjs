@@ -160,3 +160,44 @@ test('bgNotice sends to the plan owner chat, not to the bg-notify flag chat', as
   await G._bgNotice(secrets, orphan, 'step started');
   assert.equal(sent.at(-1), -555, 'orphan plan falls back to bg-notify flag chat');
 });
+// ── 6. task_create without session_id takes the caller's AGENT_SESSION_ID ──
+test('task_create falls back to AGENT_SESSION_ID for the owner chat; missing env session is ignored', async () => {
+  const { tools } = require('../src/mcp-skills/tools/101-durable-tasks');
+  const plan = {
+    goal: 'env', user_value: 'v', acceptance_criteria: [{ id: 'c' }],
+    items: [{ title: 'step', execution_kind: 'programmatic', validation: { ok: true } }],
+  };
+  writeSession('s-env', -4242);
+  const saved = process.env.AGENT_SESSION_ID;
+  try {
+    process.env.AGENT_SESSION_ID = 's-env';
+    const r = await tools.task_create.handler({ ...plan }, { userId: P });
+    assert.equal(r.task.origin_session_id, 's-env');
+    assert.equal(JSON.parse(r.task.origin_chat_json).chatId, -4242, 'chat snapshot taken at creation');
+    process.env.AGENT_SESSION_ID = 's-missing';
+    const r2 = await tools.task_create.handler({ ...plan }, { userId: P });
+    assert.equal(r2.task.origin_session_id, null, 'a missing env session is not an error and not an owner');
+  } finally {
+    if (saved === undefined) delete process.env.AGENT_SESSION_ID; else process.env.AGENT_SESSION_ID = saved;
+  }
+});
+
+// ── 7. a real plan step (session s-plan-<id8>, chatId=null) is stopped from its owner chat only ──
+test('chat stop reaches a plan step through its plan session owner chat', () => {
+  const store = freshStore();
+  writeSession('s-own7', -700);
+  const plan = activePlan(store, { session_id: 's-own7' });
+  const planSession = `s-plan-${plan.id.slice(0, 8)}`;
+  // A plan launched from inside that plan's step inherits the host plan's owner.
+  const nested = activePlan(store, { session_id: planSession });
+  assert.equal(G._resolvePlanOwner(store, nested).chatId, -700, 'nested plan → host plan owner chat');
+
+  runner._activeTimers.clear();
+  const step = { killed: null, kill(s) { this.killed = s; } };
+  runner._activeTimers.set(`durable-${P}-z`, { username: P, audience: 'default', chatId: null, sessionId: planSession, proc: step });
+  assert.equal(runner.stopUserTask(P, -800, 'default'), false, 'foreign chat does not reach the step');
+  assert.equal(step.killed, null);
+  assert.equal(runner.stopUserTask(P, -700, 'default'), true, 'owner chat stops its plan step');
+  assert.ok(step.killed);
+  runner._activeTimers.clear();
+});
