@@ -478,7 +478,8 @@ PR bodies. A shared root tracker was also a guaranteed merge conflict (hit twice
 #1829) and bought nothing GitHub itself doesn't show.
 
 Enforced: `checklist.md` is gitignored and `test/checklist-md-absent.test.cjs` fails if it ever
-comes back. The GTD controller's `checklist.md` convention is untouched — it reads the **profile
+comes back. Exception: a repo in **draft status** (no PR flow yet, one branch, nobody else merging)
+may keep a local checklist — the conflict only exists once PRs start merging into one branch. The GTD controller's `checklist.md` convention is untouched — it reads the **profile
 projectDir** (`~/users/<profile>/projects/<id>/checklist.md`), never the repo root.
 
 
