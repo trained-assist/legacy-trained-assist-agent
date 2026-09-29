@@ -328,6 +328,36 @@ const passAll = { command_exit_zero: async () => ({ status: 'pass', subject: {},
     ok(V.extractPrRef({ item: {}, planText, validation: 'https://github.com/x/y/pull/3' }).number === '3', 'PR lookup: explicit value wins');
   }
 
+  // 9. poll floor is 30s: poll_every_sec:30 accepted end-to-end, next poll within
+  //    30s (DW-02, durable-wait-latency plan a61bb2c5). The old clamp tests above
+  //    use poll_every_sec:60 and stay green — the floor dropped, nothing else moved.
+  {
+    const { G, store } = fresh('9');
+    const waitLib = require('../src/durable-wait.js');
+    ok(waitLib.MIN_POLL_SEC === 30, `MIN_POLL_SEC is 30 (got ${waitLib.MIN_POLL_SEC})`);
+    const now = Date.now();
+    const { wait, error } = waitLib.normalizeAgentWait(
+      { item_id: 'x', until: { ci_green: 'https://github.com/o/r/pull/1' }, poll_every_sec: 30, timeout_sec: 600, reason: 'CI' },
+      { now, registryKeys: ['ci_green'] });
+    ok(!error && wait && wait.poll_every_sec === 30,
+      `poll_every_sec:30 is accepted (${error || (wait && wait.poll_every_sec)})`);
+    ok(waitLib.nextDueAt(wait, now) <= now + 30_000,
+      `next poll due within 30s (in ${waitLib.nextDueAt(wait, now) - now}ms)`);
+    // The playbook compiler schema shares the same contract (validateItem).
+    const r = store.createPlan({
+      profile_id: 'u1', goal: 'floor 30', user_value: 'v',
+      acceptance_criteria: [{ description: 'c' }],
+      execution_policy: { validation_mode: 'programmatic' },
+      items: [{ title: 'Fast wait', execution_kind: 'programmatic', executor_role: 'developer',
+        minimum_model_level: 'bachelor', context_budget: 'small',
+        validation: { file_exists: 'flag' }, wait: { poll_every_sec: 30, timeout_sec: 300 } }],
+    });
+    ok(!!r.task.id, 'a declared wait with poll_every_sec:30 compiles into a plan');
+    ok(JSON.parse(store.listTaskItems(r.task.id, 'u1')[0].wait_json).then === 'complete',
+      'the 30s wait is stored as a declared wait');
+    void G;
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail > 0) process.exit(1);
 })().catch(e => { console.error(e); process.exit(1); });

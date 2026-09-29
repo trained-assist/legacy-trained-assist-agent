@@ -241,6 +241,12 @@ function scheduleGtdController(secrets) {
   const gtd = require('./gtd-controller');
   const { isSessionRunning } = require('./runner');
   const { getSession } = require('./session-store');
+  const isRunning = (_username, sessionId) => isSessionRunning(sessionId);
+  // #1752: durable steps fire into FREE engine slots only (running + queued < cap).
+  const freeSlots = () => {
+    const q = require('./runner/task-queue');
+    return q.MAX_CONCURRENT_TASKS - q._runningTasks() - q._slotWaiters.length;
+  };
   const run = () => {
     // isSessionRunning checks the live in-process activeTimers map — authoritative,
     // no TTL guesswork. The previous guard used the pending-task journal with a
@@ -255,18 +261,34 @@ function scheduleGtdController(secrets) {
     // (runs at boot, well before the first GTD tick 2 min later), so this guard
     // doesn't need its own crash-orphan fallback.
     return gtd.runDue({
-    secrets, baseUsersDir: BASE_USERS_DIR, isTaskRunning: (_username, sessionId) => isSessionRunning(sessionId), runTask, getSession,
+    secrets, baseUsersDir: BASE_USERS_DIR, isTaskRunning: isRunning, runTask, getSession,
     canRunSession: (_username, _sessionId) => true,
-    // #1752: durable steps fire into FREE engine slots only (running + queued < cap).
-    freeSlots: () => {
-      const q = require('./runner/task-queue');
-      return q.MAX_CONCURRENT_TASKS - q._runningTasks() - q._slotWaiters.length;
-    },
+    freeSlots,
   }).catch(err => console.error('[gtd] tick error:', err.message));
   };
   gtdTickNow = run;
   setTimeout(run, 2 * 60 * 1000);      // first tick 2 min after start
   setInterval(run, 5 * 60 * 1000);     // then every 5 min
+
+  // Wait tick (durable-wait-latency plan a61bb2c5): every ~30s poll ONLY steps
+  // parked on a wait (deterministic validators, no model, no checklists) so
+  // poll_every_sec works as documented and a woken step continues in seconds.
+  // DURABLE_WAIT_TICK_MS=0 → off: everything falls back to the 5-min GTD tick.
+  // Kick deps are recorded HERE, not on the first 2-min tick: a wake or a
+  // credential write in the first minutes after boot must fire immediately.
+  gtd._setKickDeps({ secrets, runTask, isTaskRunning: isRunning, freeSlots });
+  // In-process fast path for the kick (wait-latency §2.2): a credential written
+  // by the server itself wakes the executor directly, no HTTP. The MCP process
+  // has no such registration and falls back to /internal/durable/kick.
+  require('./durable-kick').useInProcess(() => { gtd.kickDurable(); });
+  const waitTickMs = process.env.DURABLE_WAIT_TICK_MS != null
+    ? Number(process.env.DURABLE_WAIT_TICK_MS) : 30_000;
+  if (Number.isFinite(waitTickMs) && waitTickMs > 0) {
+    const runWait = () => gtd.runWaitTick({ secrets, runTask, isTaskRunning: isRunning, freeSlots })
+      .catch(err => console.error('[gtd] wait tick error:', err.message));
+    setTimeout(runWait, Math.min(waitTickMs, 30_000));
+    setInterval(runWait, waitTickMs);
+  }
 }
 
 // Set by scheduleGtdController: POST /internal/gtd/tick runs the same tick now
@@ -683,7 +705,12 @@ async function main() {
 
     // ── Auth: all endpoints require Bearer token ──────────────────────────────
     const auth = req.headers['authorization'] || '';
-    if (auth !== `Bearer ${secrets.AGENT_SECRET}`) {
+    // Exception (wait-latency a61bb2c5): the durable kick route is a pure "poll
+    // now" trigger, and the MCP tool process that calls task_item_wake holds the
+    // run-scoped AGENT_RUN_TOKEN (never AGENT_SECRET, agent-run-tokens.js). It is
+    // accepted for THIS route only; handlers/internal.js serves it.
+    const kickByRunToken = url.pathname === '/internal/durable/kick' && !!runTokenFromAuthHeader(auth);
+    if (auth !== `Bearer ${secrets.AGENT_SECRET}` && !kickByRunToken) {
       res.writeHead(401).end(JSON.stringify({ error: 'unauthorized' }));
       return;
     }

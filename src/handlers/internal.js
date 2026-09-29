@@ -93,6 +93,18 @@ async function handleInternal(req, url, res, ctx) {
       return json(res, out.status === 'bad-request' ? 400 : 200, out);
     }
 
+    // POST /internal/durable/kick — run ONE durable pass now (wait-latency plan
+    // a61bb2c5): task_item_wake and a credential write nudge the executor instead
+    // of waiting for the 30s wait tick / the 5-min GTD tick. Kick is debounced (3s)
+    // and serialized in gtd-controller, so bursts collapse to one pass.
+    // NOT the full /internal/gtd/tick: that one also runs checklists and crons.
+    if (req.method === 'POST' && url.pathname === '/internal/durable/kick') {
+      let reason = null;
+      try { const raw = await readBody(req); if (raw) reason = (JSON.parse(raw) || {}).reason || null; } catch { /* best-effort */ }
+      const armed = require('../gtd-controller').kickDurable();
+      return json(res, 200, { ok: true, armed: !!armed, reason });
+    }
+
     // POST /internal/gtd/tick — run one GTD/durable tick right now (same code path and
     // re-entrancy guard as the 5-min timer). Used by scripts/e2e/playbooks-e2e.js.
     // Optional body {accelerate: {plan_id, profile}}: that plan's waiting steps poll now.
