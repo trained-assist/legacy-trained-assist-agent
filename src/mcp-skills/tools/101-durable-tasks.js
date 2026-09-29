@@ -301,7 +301,7 @@ module.exports = {
           until: { type: 'object', description: 'Condition: {validator_key: value, ...}; all must pass' },
           awaiting_user: { type: 'boolean', description: 'Wake when the user answers (task_item_wake) or at timeout' },
           sleep_sec: { type: 'integer', description: 'Plain timer: re-run this step after N seconds' },
-          poll_every_sec: { type: 'integer', description: 'How often to check `until` (default 300, min 60)' },
+          poll_every_sec: { type: 'integer', description: 'How often to check `until` (default 300, min 30)' },
           timeout_sec: { type: 'integer', description: 'Give up after N seconds (default 86400, max 30 days); the step is re-run with a timeout note' },
           reason: { type: 'string', description: 'What you are waiting for, in plain words (shown on resume and to the user)' },
         },

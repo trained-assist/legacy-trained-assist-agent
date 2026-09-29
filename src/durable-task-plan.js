@@ -19,8 +19,8 @@ const itemSchema = {
     wait: {
       type: 'object',
       properties: {
-        poll_every_sec: { type: 'integer', minimum: 60 },
-        timeout_sec: { type: 'integer', minimum: 60 },
+        poll_every_sec: { type: 'integer', minimum: 30 },
+        timeout_sec: { type: 'integer', minimum: 30 },
       },
     },
   },
@@ -42,7 +42,7 @@ function validateItem(item) {
     if (item.execution_kind !== 'programmatic') throw new Error('wait is only allowed on programmatic steps');
     if (typeof item.wait !== 'object' || Array.isArray(item.wait)) throw new Error('invalid wait');
     for (const key of ['poll_every_sec', 'timeout_sec']) {
-      if (!Number.isSafeInteger(item.wait[key]) || item.wait[key] < 60) throw new Error(`invalid wait.${key}`);
+      if (!Number.isSafeInteger(item.wait[key]) || item.wait[key] < 30) throw new Error(`invalid wait.${key}`);
     }
   }
 }
