@@ -869,7 +869,8 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       'Режимы: "programmatic" — только детерминированные проверки; "programmatic+llm" — детерминированные + дешёвый LLM-судья; "programmatic+llm-fastpass" — самый мягкий.',
       'Настоятельно рекомендуется "programmatic+llm" (полная проверка) — особенно на дешёвых моделях: не пропускай проверку молча.',
       'Fast-pass — это ЗАПИСЫВАЕМЫЙ escape hatch, а не тихий обход. Только в режиме "programmatic+llm-fastpass" ты можешь пропустить проверку, если она слишком тяжёлая, ломает работу или нужен срочный фикс — добавь финальной строкой: VALIDATION: fastpass-skip: <причина>. Пропуск попадёт в audit trail с причиной.',
-      `Один план = один git-workspace. Если шагу нужен репозиторий — engineering_spawn_workspace(repository_url, root_task_id: "${planWorkspaceLabel(task)}"): тот же root_task_id на всех шагах плана даёт ТОТ ЖЕ workspace и ветку (при BRANCH_COLLISION — это твой план: engineering_workspace_status с тем же root_task_id). Не придумывай свою метку. Всё, что шаг создал в репо, закоммить в эту ветку до конца шага — незакоммиченное следующий шаг не увидит.`,
+      `Папка артефактов плана (единственный artifact root): ${itemProjectDir}. Относительные пути проверок (file_exists, cwd command_exit_zero) резолвятся ОТ НЕЁ — все артефакты плана (отчёты, prod-check/*, deck/* и т.п.) клади сюда, а не в git-workspace.`,
+      `Один план = один git-workspace. Если шагу нужен репозиторий — engineering_spawn_workspace(repository_url, root_task_id: "${planWorkspaceLabel(task)}"): тот же root_task_id на всех шагах плана даёт ТОТ ЖЕ workspace и ветку (при BRANCH_COLLISION — это твой план: engineering_workspace_status с тем же root_task_id). Не придумывай свою метку. Всё, что шаг создал в репо, закоммить в эту ветку до конца шага — незакоммиченное следующий шаг не увидит. Инженерный git-workspace — только для кода репозитория; артефакты плана — в папке выше.`,
       `План можно легально править по ходу: нужен дополнительный шаг — task_item_add(task_id: "${task.id}", after_item_id: "<Step id>", title, execution_kind, executor_role, minimum_model_level, context_budget, validation, instructions) — он выполнится сразу после этого шага; следующий шаг не имеет смысла для этой задачи — task_item_skip(item_id, reason) с конкретной причиной.`,
       'Если пункт чек-листа для этой задачи не применим или ты сделал иначе — не подгоняй: вызови task_item_exception(item_id: "<Step id>", reason: "<почему>") и заверши DURABLE: done. Исключение видно владельцу и попадёт в журнал.',
       'Каждый шаг — новый ран без памяти: следующий шаг увидит только твой итог. Перед финальной строкой DURABLE дай блок «ИТОГ ШАГА» (≤10 строк): что сделано, ссылки (issue/PR/файлы/ветка), принятые решения, что важно следующему шагу.',
@@ -973,6 +974,8 @@ async function _settleDurableReply(ctx, reply) {
     // callback, not on the tick's critical path.
     // P3d-1c: re-read the item so a per-step validation_mode the agent set
     // during the run is honoured, and allow the fast-pass escape under that mode.
+    // #1861 Fix B: `gate` holds a failed registered check; it suppresses `done`.
+    let gate = null;
     try {
       const freshItem = store.getTaskItem(itemSnap.id) || itemSnap;
       const mode = resolveValidationMode({ task, item: freshItem });
@@ -993,16 +996,45 @@ async function _settleDurableReply(ctx, reply) {
       } else {
         // The reply joins the plan text: a step that just opened a PR is
         // validated (pr_opened / ci_green) against the URL it printed.
-        await recordItemValidations(store, {
+        const results = await recordItemValidations(store, {
           task, item: itemSnap, executionId, registry: validators, projectDir: itemProjectDir,
           validationMode: mode, llmValidate, planText: `${planText}\n${said}`, reply: said,
         });
+        // #1861 Fix B: a FAILED registered (deterministic) check must not be
+        // swallowed by `DURABLE: done`. registered → isBlockingCheck; semantic /
+        // inconclusive verdicts still fall through (soft finalization). Keep the
+        // verdict so the step is failed with the check's own key/path.
+        const bad = results.find(r => r.status === 'fail' && isBlockingCheck(r.key));
+        if (bad) gate = bad;
       }
       store.setItemEvidence(itemSnap.id, task.profile_id, {
-        evidence_json: JSON.stringify({ reply: said.slice(0, 4000) }), completed_at: Date.now(),
+        evidence_json: JSON.stringify(gate
+          ? { reply: said.slice(0, 4000), failed_validation: gate.key, subject: gate.subject ?? null }
+          : { reply: said.slice(0, 4000) }),
+        completed_at: gate ? null : Date.now(),
       });
     } catch (e) {
       console.error(`[gtd-durable] recordValidations ${itemSnap.id.slice(0, 8)}:`, e.message);
+    }
+    if (gate) {
+      const detail = gate.subject != null ? JSON.stringify(gate.subject) : '';
+      const errText = `deterministic validation failed: ${gate.key}${detail ? ` (${detail})` : ''}`;
+      store.failItem(itemSnap.id, task.profile_id, { executionId, error: errText.slice(0, 500) });
+      const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier, quality: true });
+      store.finishExecution(executionId, {
+        status: 'failed', error_class: rec.failureClass,
+        error_text: `${rec.action || 'terminal'}: ${errText}`.slice(0, 500),
+      });
+      if (rec.recovered) {
+        console.log(`[gtd-durable] gated check ${itemSnap.id.slice(0, 8)} failed (${gate.key}) → ${rec.failureClass}/${rec.action} (${rec.attempts}/${rec.maxAttempts})`);
+        void bgStep(secrets, task, itemSnap, '⚠️ Шаг не удался — повтор', `проверка не пройдена: ${gate.key}`);
+      } else {
+        console.log(`[gtd-durable] item blocked by failed check, ${rec.reason} (${rec.attempts}/${rec.maxAttempts}) class=${rec.failureClass}: ${itemSnap.id.slice(0, 8)}`);
+        void bgStep(secrets, task, itemSnap, '🛑 Шаг не удался — проверка не пройдена', errText);
+        await fireItemHooks(store, task, itemSnap, 'on_fail', hookVars({ error: errText }), sinks, hooksApproved);
+        await fireTaskHooks(store, task, 'task_failed', hookVars({ error: errText }), sinks, hooksApproved);
+      }
+      return;
     }
     store.completeItem(itemSnap.id, task.profile_id, { executionId });
     store.finishExecution(executionId, { status: 'success' });
