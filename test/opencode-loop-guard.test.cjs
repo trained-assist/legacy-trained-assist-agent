@@ -86,3 +86,53 @@ test('loop guard constants are exposed for tuning', async () => {
   assert.ok(_const.LOOP_GUARD_REPEAT_LIMIT >= 3, `repeat limit sane: ${_const.LOOP_GUARD_REPEAT_LIMIT}`);
   assert.ok(_const.LOOP_GUARD_TEXT_MIN_LEN >= 10, `min text len sane: ${_const.LOOP_GUARD_TEXT_MIN_LEN}`);
 });
+// 2026-09-29 regression: a DeepSeek run that could not emit the MCP call it wanted
+// (trained-skills_playbook_get) spun ~5 min on bash placeholders that DIFFER from each
+// other, so the identical-signature guard only fired much later. Replay of the real
+// sequence from that session: any LOOP_GUARD_NOOP_LIMIT no-op calls in a row → kill.
+function bashEvent(cmd) {
+  return JSON.stringify({ type: 'tool_use', part: { tool: 'bash', state: { input: { command: cmd } } } })
+    .replace(/'/g, `'"'"'`);
+}
+function fakeFromCommands(dir, cmds) {
+  return writeFake(dir, 'fake', `#!/usr/bin/env sh
+${cmds.map(c => `echo '${bashEvent(c)}'`).join('\n')}
+echo '{"type":"step_finish","part":{"tokens":{"input":1,"output":1}}}'
+`);
+}
+
+test('loop guard: streak of DIFFERENT no-op bash placeholders kills the run (real 2026-09-29 sequence)', async () => {
+  const dir = mkdir('loop-noop-');
+  const bin = fakeFromCommands(dir, [
+    'gh issue view 17 --repo trained-assist/trained-assist-llm-ladder --json title,state 2>&1',
+    'true', 'true', `node -e 'console.log("playbook check")' 2>&1`, 'echo "done"', 'echo ok',
+    `python3 -c "print('x')" 2>&1`, 'true', 'true', 'true',
+  ]);
+  const r = await runEngineProcess(baseOpts(dir, bin));
+  assert.equal(r.loopKilled, true, 'no-op streak must be treated as a loop');
+  assert.ok(/пустых bash-вызовов/.test(r.codexErrorMsg || ''), `error explains the no-op loop, got: ${r.codexErrorMsg}`);
+  assert.equal(r.terminalSuccess, false);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('loop guard: no-op calls interleaved with real work are NOT a loop', async () => {
+  const dir = mkdir('loop-noop-ok-');
+  const cmds = [];
+  for (let i = 0; i < 4; i++) cmds.push('true', 'echo ok', 'echo done', 'echo "---"', `ls /tmp/x${i}`);
+  const bin = fakeFromCommands(dir, cmds);
+  const r = await runEngineProcess(baseOpts(dir, bin));
+  assert.equal(r.loopKilled, false, 'streak resets on every real command');
+  assert.equal(r.terminalSuccess, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('isNoopBash: placeholders yes, real commands no', () => {
+  const { isNoopBash } = require('../src/runner/claude-runner');
+  for (const c of ['true', ':', '', 'echo ok', 'echo "done"', `python3 -c "print('x')" 2>&1`, `node -e 'console.log("hi")'`]) {
+    assert.equal(isNoopBash('bash', { command: c }), true, c);
+  }
+  for (const c of ['gh pr list', 'echo $HOME', 'echo ok > f', 'true && rm -rf x', 'echo a | tee f', 'python3 -c "import os;print(1)"']) {
+    assert.equal(isNoopBash('bash', { command: c }), false, c);
+  }
+  assert.equal(isNoopBash('read', { command: 'true' }), false, 'only bash counts');
+});

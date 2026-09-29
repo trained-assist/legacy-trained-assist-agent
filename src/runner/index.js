@@ -1691,42 +1691,9 @@ async function detectMenuInAnswer(text, apiKey, { timeoutMs = 10000 } = {}) {
   }
 }
 
-// Builds a runtime capabilities addendum for OpenCode system prompt.
-// OpenCode uses non-Claude models that don't auto-read CLAUDE.md, so we inject what's available.
-function buildOcCapabilitiesBlock(secrets) {
-  const lines = ['## Возможности системы (runtime)'];
-
-  if (secrets && secrets.DEEPGRAM_API_KEY) {
-    lines.push(
-      '',
-      '**Транскрибация аудио:** доступна (Deepgram nova-2)',
-      '• Поддерживает русский и другие языки',
-      '• Форматы: mp3, wav, ogg, m4a, голосовые сообщения Telegram',
-      '• Быстро, точнее Whisper, с пунктуацией и разбивкой по абзацам',
-      '• Пользователь присылает аудиофайл → бот транскрибирует → текст попадает к тебе',
-    );
-  }
-
-  if (secrets && secrets.OPENROUTER_API_KEY) {
-    lines.push(
-      '',
-      '**Распознавание изображений:** доступно (Gemini 2.5 Flash)',
-      '• Ты сам не видишь картинки — но текст/описание с фото уже распознан заранее',
-      '• Присланное фото приходит вместе с заметкой «[Файл сохранён: …]» и, если что-то распозналось,',
-      '  блоком «[Распознано на изображении: …]» прямо под ней — читай его, отдельно открывать файл не нужно',
-      '• Если блока с распознаванием нет — на фото не нашлось ни текста, ни узнаваемой сцены',
-    );
-  }
-
-  lines.push(
-    '',
-    '**Инструменты (MCP):** доступны только compress-on-input и Neon (Postgres).',
-    'Кастомные скилы (HH, Weeek, nalog, gdrive и др.) для OpenCode НЕ подключены.',
-    'Для задач с кастомными скилами пользователь должен переключиться на Claude (/switch2klod).',
-  );
-
-  return lines.join('\n');
-}
+// OpenCode runtime capabilities block — single source in ./system-prompt (derived from the
+// run's real MCP config; the old inline copy here hardcoded «скилы НЕ подключены»).
+const { buildOcCapabilitiesBlock } = require('./system-prompt');
 
 // Failure Event recording (issue #1175, PR #1179 follow-up) — Phase A: observational only. Every
 // branch of the crash/retry maze below calls this right before it acts, so execution-history.js
@@ -2428,7 +2395,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
 
   // OpenCode uses non-Claude models (DeepSeek, GigaChat, etc.) that don't auto-read CLAUDE.md.
   // Inject a runtime capabilities block so they know what's actually available.
-  const ocCapBlock = engine === 'opencode' ? buildOcCapabilitiesBlock(secrets) : '';
+  const ocCapBlock = engine === 'opencode' ? buildOcCapabilitiesBlock(secrets, mcpConfig) : '';
   const ocSystemPrompt = ocCapBlock
     ? (systemPromptText ? `${systemPromptText}\n\n${ocCapBlock}` : ocCapBlock)
     : systemPromptText;
