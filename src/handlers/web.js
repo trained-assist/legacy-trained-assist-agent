@@ -294,6 +294,26 @@ async function handleWeb(req, url, res, ctx) {
     }
   }
 
+  // ── POST /web/session-input — «📋 Посмотреть input» for external frontends ─
+  // Bearer twin of GET /web/session/:id/input. {username, id, at?} in → the REAL
+  // model input of the run that produced the answer at `at`, verbatim:
+  // {ok:true, taskId, at, input} or {ok:false, error:'no-input'|'session not found'}.
+  if (req.method === 'POST' && url.pathname === '/web/session-input') {
+    const verifySecret = secrets.WEB_VERIFY_SECRET || secrets.AGENT_SECRET;
+    const auth = req.headers['authorization'] || '';
+    if (!verifySecret || auth !== `Bearer ${verifySecret}`) return json(res, 401, { error: 'unauthorized' });
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const { username, id, at } = body || {};
+    if (!username || !/^[a-zA-Z0-9_-]{1,64}$/.test(username)) return json(res, 400, { error: 'invalid username' });
+    try {
+      const { getRunInputFor } = require('../web-routes');
+      return json(res, 200, getRunInputFor(username, id, at));
+    } catch (e) {
+      return json(res, 500, { error: 'session input failed' });
+    }
+  }
+
   // ── POST /web/session-digest — «📋 Сжатый лог» for external frontends ─────
   // Bearer twin of GET /web/session/:id/digest (the Cloudflare worker can't
   // hold a WEB_JWT cookie). Same delegation pattern as /web/session-trace:

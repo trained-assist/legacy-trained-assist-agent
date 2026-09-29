@@ -2411,7 +2411,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     runInputStore.writeInput(user.workDir, taskId, runInputStore.buildDocument({
       systemPrompt: ocSystemPrompt || systemPromptText,
       prompt,
-    }));
+    }), { sessionId: activeSessionId || null });
   } catch (e) { console.warn('[runner] run-input snapshot:', e.message); }
 
   const opencodeModel = process.env.OPENCODE_MODEL || null;

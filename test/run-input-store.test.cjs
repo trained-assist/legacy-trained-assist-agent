@@ -74,3 +74,33 @@ test('prune keeps the newest KEEP files', () => {
   assert.ok(left.includes('task-newest.txt'));
   assert.ok(!left.includes('task-000.txt')); // oldest evicted
 });
+
+// US-INPUT-01 (web channel): the web knows a session + an answer time, not a taskId.
+test('US-INPUT-01 web: findForSession returns the input of the run that produced the answer', () => {
+  const workDir = freshWorkDir();
+  store.writeInput(workDir, 'u-web-1', 'INPUT ONE', { sessionId: 's-a', at: 1000 });
+  store.writeInput(workDir, 'u-web-2', 'INPUT TWO', { sessionId: 's-a', at: 2000 });
+  store.writeInput(workDir, 'u-msg-9', 'OTHER SESSION', { sessionId: 's-b', at: 1500 });
+  // answer at 1800 was produced by run 1; answer at 2500 by run 2; no `before` → latest.
+  assert.deepEqual(store.findForSession(workDir, 's-a', 1800), { taskId: 'u-web-1', at: 1000, doc: 'INPUT ONE' });
+  assert.equal(store.findForSession(workDir, 's-a', 2500).doc, 'INPUT TWO');
+  assert.equal(store.findForSession(workDir, 's-a').doc, 'INPUT TWO');
+  assert.equal(store.findForSession(workDir, 's-b', 9999).doc, 'OTHER SESSION');
+  // before any run / unknown session → null (UI says "input not preserved").
+  assert.equal(store.findForSession(workDir, 's-a', 500), null);
+  assert.equal(store.findForSession(workDir, 's-zzz'), null);
+  // the document stays verbatim — the sidecar never leaks into it.
+  assert.equal(store.readInput(workDir, 'u-web-1'), 'INPUT ONE');
+});
+
+test('US-INPUT-01 web: pruning a run drops its sidecar too', () => {
+  const workDir = freshWorkDir();
+  const dir = path.join(workDir, '.run-inputs');
+  store.writeInput(workDir, 'old-run', 'OLD', { sessionId: 's-old', at: 1 });
+  const past = new Date(Date.now() - 3600e3);
+  fs.utimesSync(path.join(dir, 'old-run.txt'), past, past);
+  for (let i = 0; i < store.KEEP; i++) store.writeInput(workDir, `new-${i}`, 'N');
+  assert.equal(fs.existsSync(path.join(dir, 'old-run.txt')), false);
+  assert.equal(fs.existsSync(path.join(dir, 'old-run.json')), false);
+  assert.equal(store.findForSession(workDir, 's-old'), null);
+});
