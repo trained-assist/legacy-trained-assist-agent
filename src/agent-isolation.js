@@ -71,6 +71,10 @@ const ENGINE_ENV_ALLOW = new Set([
   // run identity (not secrets)
   // (no chat id: without a bot token the engine cannot use it; MCP tools get it via the bridge)
   'AGENT_USER_ID', 'AGENT_TASK_ID', 'AGENT_THREAD_ID', 'AGENT_SESSION_ID',
+  // trace labels only: opencode stamps them onto every llm-ladder call as x-ladder-* headers
+  // (src/opencode-ladder-provider.js). The chat goes under its own name so nothing starts
+  // reading it as a send target (epic #1365 ratchet on the chat-id env).
+  'AGENT_RUN_ID', 'AGENT_TRACE_CHAT',
   'AGENT_USER_NAME', 'AGENT_USER_HANDLE',
   // run-scoped callback credentials (src/agent-run-tokens.js, src/agent-mcp-bridge.js)
   'AGENT_RUN_TOKEN', 'AGENT_MCP_BRIDGE_SOCKET',

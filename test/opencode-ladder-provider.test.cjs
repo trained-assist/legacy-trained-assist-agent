@@ -45,6 +45,20 @@ test('provider = the llm-ladder worker (openai-compatible, token from env), ever
   assert.deepStrictEqual(Object.keys(o.provider), ['ladder'], 'one provider, no other routes');
 });
 
+test('every ladder call carries trace headers from run-identity env the engine actually gets', () => {
+  const { ENGINE_ENV_ALLOW } = require('../src/agent-isolation');
+  const h = p.buildOcProfileOverrides('deepseek').provider.ladder.options.headers;
+  assert.deepStrictEqual(Object.keys(h).sort(),
+    ['x-ladder-chat', 'x-ladder-run', 'x-ladder-session', 'x-ladder-trace', 'x-ladder-user']);
+  for (const v of Object.values(h)) {
+    const name = v.match(/^\{env:([A-Z_]+)\}$/)[1];
+    assert.ok(ENGINE_ENV_ALLOW.has(name), `${name} must pass the engine env allowlist, else the header is empty`);
+  }
+  const src = fs.readFileSync(path.join(ROOT, 'src/runner/claude-runner.js'), 'utf8');
+  assert.match(src, /AGENT_RUN_ID: require\('crypto'\)\.randomUUID\(\)/, 'a fresh run id per spawn');
+  assert.match(src, /AGENT_TRACE_CHAT: String\(chatId\)/, 'the chat reaches the header');
+});
+
 test('russian keeps its strict reviewer prompt; research is a pinned OpenCode Go model, not a ladder', () => {
   assert.match(p.buildOcProfileOverrides('russian').agent.review.prompt, /рецензент/);
   const r = p.buildOcProfileOverrides('research');

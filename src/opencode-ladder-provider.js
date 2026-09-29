@@ -70,6 +70,18 @@ function modelFor(profileName, role = 'build') {
   return `${PROVIDER_ID}/${ladderFor(profileName)}:${role}`;
 }
 
+// Every ladder call carries who made it, so the worker's D1 log (ladder_calls, llm-ladder#18)
+// can be queried per task/run/session/user/chat — the way to find the million-token sessions.
+// opencode expands {env:NAME} over the whole config file; an unset name becomes "" and the
+// worker stores it as null.
+const TRACE_HEADERS = Object.freeze({
+  'x-ladder-trace': '{env:AGENT_TASK_ID}',
+  'x-ladder-run': '{env:AGENT_RUN_ID}',
+  'x-ladder-session': '{env:AGENT_SESSION_ID}',
+  'x-ladder-user': '{env:AGENT_USER_ID}',
+  'x-ladder-chat': '{env:AGENT_TRACE_CHAT}',
+});
+
 function providerConfig() {
   const models = {};
   for (const ladder of new Set(Object.values(PROFILE_LADDER))) {
@@ -79,7 +91,7 @@ function providerConfig() {
     [PROVIDER_ID]: {
       npm: '@ai-sdk/openai-compatible',
       name: 'trained-assist-llm-ladder',
-      options: { baseURL: `${LADDER_URL()}/v1`, apiKey: `{env:${TOKEN_ENV}}` },
+      options: { baseURL: `${LADDER_URL()}/v1`, apiKey: `{env:${TOKEN_ENV}}`, headers: TRACE_HEADERS },
       models,
     },
   };
@@ -113,6 +125,6 @@ function classifyWorkerFailure(text) {
 }
 
 module.exports = {
-  ROLES, PROFILES, PROFILE_LADDER, DIRECT_MODEL, PROVIDER_ID, TOKEN_ENV,
+  ROLES, PROFILES, PROFILE_LADDER, DIRECT_MODEL, PROVIDER_ID, TOKEN_ENV, TRACE_HEADERS,
   ladderFor, modelFor, providerConfig, buildOcProfileOverrides, ladderToken, classifyWorkerFailure,
 };
