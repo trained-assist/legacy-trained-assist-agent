@@ -603,6 +603,7 @@ function _finishAcceptedChatRun(chatId, opts, outcome) {
     taskId: opts.taskId || null,
     outcome,
     consumed,
+    audience: opts.user?.audience || 'default',
     secret: opts.secrets?.AGENT_SECRET || process.env.AGENT_SECRET,
   }).catch(e => console.warn('[runner] notifyRunFinished:', e.message));
 }
@@ -757,7 +758,7 @@ function runTask(opts) {
   _bumpAcceptedByChat(acceptedChatId);
   // Live inbox registry (get_new_messages): the server — not the engine — knows
   // which chat/topic/gateway dispatch this task belongs to.
-  if (acceptedChatId != null) liveInbox.registerInboxRun({ taskId: delivery.taskId, chatId: acceptedChatId, threadId: delivery.threadId, requestId: delivery.requestId });
+  if (acceptedChatId != null) liveInbox.registerInboxRun({ taskId: delivery.taskId, chatId: acceptedChatId, threadId: delivery.threadId, requestId: delivery.requestId, audience: delivery.user?.audience });
   // Реестр живых ранов — синхронно, до первого await: Стоп, пришедший сразу
   // после 202, обязан найти координаты рана. Ключ пробрасывается в _runTaskInner
   // через opts (taskDelivery копирует поля), там он добирается sessionId.

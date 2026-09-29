@@ -18,7 +18,7 @@
 // chat stayed `busy` until the gateway's own poll/hard cap caught up. Every
 // notification is tracked here so shutdown can await the in-flight ones
 // (`flushRunFinished`) before exiting — see `drainRunFinished` in server.js.
-const MEDIA_GATEWAY_URL = (process.env.MEDIA_GATEWAY_URL || '').replace(/\/+$/, '');
+const { gatewayUrl } = require('./bot-registry');
 const inflight = new Set();
 
 /**
@@ -54,11 +54,14 @@ function pendingRunFinished() {
  * @param {string} [p.outcome]       'done' | 'error' | 'stopped' | 'quick'
  * @param {number[]} [p.consumed]   Telegram message ids the model took in mid-run
  *   via get_new_messages (src/live-inbox.js) — the gateway drops them from its collector
+ * @param {string} [p.audience]      Bot the run came through — picks its gateway
+ *   (bot-registry gateway_url); 'default' = env MEDIA_GATEWAY_URL
  * @param {string} [p.secret]        Bearer token (AGENT_SECRET)
  * @returns {Promise<boolean>} true if the gateway acknowledged
  */
-async function notifyRunFinished({ chatId, threadId = null, requestId = null, taskId = null, outcome = 'done', consumed = [], secret = process.env.AGENT_SECRET }) {
-  if (!MEDIA_GATEWAY_URL) return false;
+async function notifyRunFinished({ chatId, threadId = null, requestId = null, taskId = null, outcome = 'done', consumed = [], audience = 'default', secret = process.env.AGENT_SECRET }) {
+  const base = gatewayUrl(audience);
+  if (!base) return false;
   const numericChatId = Number(chatId);
   // 0 is the web/internal sentinel; any other safe integer is a real chat,
   // including NEGATIVE group/supergroup ids.
@@ -69,7 +72,7 @@ async function notifyRunFinished({ chatId, threadId = null, requestId = null, ta
   // else would keep the event loop alive for it.
   const request = (async () => {
     try {
-      const res = await fetch(`${MEDIA_GATEWAY_URL}/internal/run-finished`, {
+      const res = await fetch(`${base}/internal/run-finished`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` },
         body: JSON.stringify({
@@ -83,12 +86,12 @@ async function notifyRunFinished({ chatId, threadId = null, requestId = null, ta
         signal: AbortSignal.timeout(5000),
       });
       if (!res.ok) {
-        console.warn(`[gateway-callback] run-finished HTTP ${res.status} chat=${numericChatId} taskId=${taskId || '-'}`);
+        console.warn(`[gateway-callback] run-finished HTTP ${res.status} audience=${audience || 'default'} chat=${numericChatId} taskId=${taskId || '-'}`);
         return false;
       }
       return true;
     } catch (e) {
-      console.warn(`[gateway-callback] run-finished failed chat=${numericChatId} taskId=${taskId || '-'}: ${e.message}`);
+      console.warn(`[gateway-callback] run-finished failed audience=${audience || 'default'} chat=${numericChatId} taskId=${taskId || '-'}: ${e.message}`);
       return false;
     }
   })();
