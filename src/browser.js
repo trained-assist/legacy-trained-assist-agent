@@ -87,6 +87,57 @@ function buildStorageState(tokensDir) {
  * carry mutating tools — engineering's `github_create_pr`/`spawn_workspace`, the hh
  * posting tools and so on (measured 2026-09-28: a nested Hermes did create 2 PRs).
  */
+// The env every MCP server process gets (trained-skills and each domain sibling).
+// A pure function of its inputs + process.env, so the credential contract
+// (scripts/check-credential-reachability.js, #1891) can check the REAL object that
+// reaches a skill instead of grepping this file.
+function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, extraEnv } = {}) {
+  return {
+    USER_ID: String(userId || ''),
+    WORK_DIR: workDir,
+    HOME: os.homedir(),
+    PATH: process.env.PATH || '',
+    // INN enrichment credentials — pass-through from process env (loaded via secrets.env)
+    ...(process.env.INN_DADATA_TOKEN  ? { INN_DADATA_TOKEN:       process.env.INN_DADATA_TOKEN }  : {}),
+    ...(process.env.INN_DADATA_SECRET ? { INN_DADATA_SECRET:      process.env.INN_DADATA_SECRET } : {}),
+    ...(process.env.INN_CHECKO_KEY    ? { INN_CHECKO_KEY:         process.env.INN_CHECKO_KEY }    : {}),
+    ...(process.env.INN_RUSPROFILE_COOKIE ? { INN_RUSPROFILE_COOKIE: process.env.INN_RUSPROFILE_COOKIE } : {}),
+    // Serper (Google SERP) key for search_serper — the backup web-search engine shipped
+    // by the search-skills sibling (epic #1792). Same bypass pattern as INN_*: it only
+    // ever reaches the MCP child through this map, so a deploy without the GitHub secret
+    // makes the tool answer "serper не сконфигрирован: нужен SERPER_API_KEY" instead of
+    // taking the server down.
+    ...(process.env.SERPER_API_KEY ? { SERPER_API_KEY: process.env.SERPER_API_KEY } : {}),
+    ...(process.env.GOOGLE_OAUTH_CLIENT_ID     ? { GOOGLE_OAUTH_CLIENT_ID:     process.env.GOOGLE_OAUTH_CLIENT_ID }     : {}),
+    ...(process.env.GOOGLE_OAUTH_CLIENT_SECRET ? { GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET } : {}),
+    ...(process.env.AGENT_PUBLIC_URL ? { AGENT_PUBLIC_URL: process.env.AGENT_PUBLIC_URL } : {}),
+    ...(process.env.AGENT_SECRET    ? { AGENT_SECRET:    process.env.AGENT_SECRET }    : {}),
+    // Master key for the encrypted credential store (#1789 C4): MCP tools read and
+    // write credential files server-side, so they need to decrypt them too.
+    ...(masterKeyHex() ? { CRED_ENCRYPTION_KEY: masterKeyHex() } : {}),
+    ...(process.env.GCP_PROJECT     ? { GCP_PROJECT:     process.env.GCP_PROJECT }     : {}),
+    ...(process.env.GCP_REGION      ? { GCP_REGION:      process.env.GCP_REGION }      : {}),
+    ...(userName       ? { AGENT_USER_NAME:    userName }       : {}),
+    ...(userHandle     ? { AGENT_USER_HANDLE: userHandle }     : {}),
+    // Engineering workspaces + mirrors inside this profile (issue #1649, src/data-paths.js).
+    ...(userId ? {
+      ENGINEERING_WORKSPACE_ROOT: engineeringWorkspaceRoot(String(userId)),
+      ENGINEERING_MIRRORS_ROOT: engineeringMirrorsRoot(String(userId)),
+    } : {}),
+    // Registry (src/mcp-skills/registry.js) skips the catalog modules hidden by this file.
+    ...(skillsFile ? { SKILLS_RESOLVED: skillsFile } : {}),
+    // Per-run flags for the MCP server processes themselves (HERMES_DEPTH). This env
+    // wins over the engine's env — see the note below — so it is the one place a run
+    // can stamp a fact the server must see.
+    ...(extraEnv || {}),
+    // NO AGENT_SESSION_FILE here: .mcp.json is ONE file per profile, rewritten by every run,
+    // and config env overrides the engine's env — parallel sessions of a profile (different
+    // chats) would read each other's session file and get_chat_history would answer for the
+    // wrong chat. Per-run identity travels in the engine process env only (runEngineProcess;
+    // codex via env_vars in codexMcpArgs).
+  };
+}
+
 function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, extraEnv, siblings = true } = {}) {
   // Note: --user-data-dir creates a persistent context, which is incompatible
   // with --storage-state (Playwright limitation). We rely on --storage-state
@@ -144,50 +195,7 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
   if (skillsPlan && !skillsFile) skillsPlan = null;
   if (!skillsPlan) { try { fs.rmSync(path.join(workDir, skillsEnforce.EFFECTIVE_FILE), { force: true }); } catch { /* stale file is inert: no env points at it */ } }
 
-  const mcpToolEnv = {
-    USER_ID: String(userId || ''),
-    WORK_DIR: workDir,
-    HOME: os.homedir(),
-    PATH: process.env.PATH || '',
-    // INN enrichment credentials — pass-through from process env (loaded via secrets.env)
-    ...(process.env.INN_DADATA_TOKEN  ? { INN_DADATA_TOKEN:       process.env.INN_DADATA_TOKEN }  : {}),
-    ...(process.env.INN_DADATA_SECRET ? { INN_DADATA_SECRET:      process.env.INN_DADATA_SECRET } : {}),
-    ...(process.env.INN_CHECKO_KEY    ? { INN_CHECKO_KEY:         process.env.INN_CHECKO_KEY }    : {}),
-    ...(process.env.INN_RUSPROFILE_COOKIE ? { INN_RUSPROFILE_COOKIE: process.env.INN_RUSPROFILE_COOKIE } : {}),
-    // Serper (Google SERP) key for search_serper — the backup web-search engine shipped
-    // by the search-skills sibling (epic #1792). Same bypass pattern as INN_*: it only
-    // ever reaches the MCP child through this map, so a deploy without the GitHub secret
-    // makes the tool answer "serper не сконфигрирован: нужен SERPER_API_KEY" instead of
-    // taking the server down.
-    ...(process.env.SERPER_API_KEY ? { SERPER_API_KEY: process.env.SERPER_API_KEY } : {}),
-    ...(process.env.GOOGLE_OAUTH_CLIENT_ID     ? { GOOGLE_OAUTH_CLIENT_ID:     process.env.GOOGLE_OAUTH_CLIENT_ID }     : {}),
-    ...(process.env.GOOGLE_OAUTH_CLIENT_SECRET ? { GOOGLE_OAUTH_CLIENT_SECRET: process.env.GOOGLE_OAUTH_CLIENT_SECRET } : {}),
-    ...(process.env.AGENT_PUBLIC_URL ? { AGENT_PUBLIC_URL: process.env.AGENT_PUBLIC_URL } : {}),
-    ...(process.env.AGENT_SECRET    ? { AGENT_SECRET:    process.env.AGENT_SECRET }    : {}),
-    // Master key for the encrypted credential store (#1789 C4): MCP tools read and
-    // write credential files server-side, so they need to decrypt them too.
-    ...(masterKeyHex() ? { CRED_ENCRYPTION_KEY: masterKeyHex() } : {}),
-    ...(process.env.GCP_PROJECT     ? { GCP_PROJECT:     process.env.GCP_PROJECT }     : {}),
-    ...(process.env.GCP_REGION      ? { GCP_REGION:      process.env.GCP_REGION }      : {}),
-    ...(userName       ? { AGENT_USER_NAME:    userName }       : {}),
-    ...(userHandle     ? { AGENT_USER_HANDLE: userHandle }     : {}),
-    // Engineering workspaces + mirrors inside this profile (issue #1649, src/data-paths.js).
-    ...(userId ? {
-      ENGINEERING_WORKSPACE_ROOT: engineeringWorkspaceRoot(String(userId)),
-      ENGINEERING_MIRRORS_ROOT: engineeringMirrorsRoot(String(userId)),
-    } : {}),
-    // Registry (src/mcp-skills/registry.js) skips the catalog modules hidden by this file.
-    ...(skillsFile ? { SKILLS_RESOLVED: skillsFile } : {}),
-    // Per-run flags for the MCP server processes themselves (HERMES_DEPTH). This env
-    // wins over the engine's env — see the note below — so it is the one place a run
-    // can stamp a fact the server must see.
-    ...(extraEnv || {}),
-    // NO AGENT_SESSION_FILE here: .mcp.json is ONE file per profile, rewritten by every run,
-    // and config env overrides the engine's env — parallel sessions of a profile (different
-    // chats) would read each other's session file and get_chat_history would answer for the
-    // wrong chat. Per-run identity travels in the engine process env only (runEngineProcess;
-    // codex via env_vars in codexMcpArgs).
-  };
+  const mcpToolEnv = buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, extraEnv });
 
   const config = {
     mcpServers: {
@@ -254,4 +262,4 @@ function writeRunMcpConfig(workDir, userId, opts = {}, { bridged = false } = {})
   return { mcpConfig: configPath, servers: real.mcpServers };
 }
 
-module.exports = { writeMcpConfig, buildMcpConfig, writeRunMcpConfig, buildNalogOrigins };
+module.exports = { writeMcpConfig, buildMcpConfig, buildMcpToolEnv, writeRunMcpConfig, buildNalogOrigins };
