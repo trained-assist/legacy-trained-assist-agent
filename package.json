@@ -15,6 +15,7 @@
     "test:cjs": "node scripts/run-cjs-tests.js",
     "test:watch": "vitest",
     "sandbox:speech": "node scripts/sandbox/speech-f0.mjs",
+    "sandbox:playbook-s4": "node scripts/sandbox/playbook-authoring-s4.mjs",
     "sandbox:durable-wait": "node scripts/sandbox/durable-wait-latency.mjs",
     "test:staging": "node scripts/staging/run.mjs",
     "test:mainstream": "node src/mainstream-tester/index.js"

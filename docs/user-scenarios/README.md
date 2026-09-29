@@ -14,6 +14,7 @@ docs/user-scenarios/
     01-channel-concurrency.md       ← очередь чата, параллельные сессии (#1365)
     02-background-run-visibility.md ← ярлык/ack/сбой фоновых запусков, GTD-владелец чек-листа (#1729)
     03-web-session-log-views.md    ← «Полный/Сжатый лог» сессии (#1777)
+    04-durable-plan-artifacts.md    ← единый artifact root плана, гейт провала проверки, retry failed-шага (#1861)
     04-durable-wait-latency.md     ← ожидания шагов плана без 5-минутного пола (план a61bb2c5, [202])
     05-web-session-durability.md   ← id web-сессии живой в момент выдачи, нет фантомов 404 (#1867)
   recruiter/         ← домен: рекрутер с HeadHunter
@@ -29,6 +30,7 @@ docs/user-scenarios/
     05-web-session-durability.md ← id web-сессии живой в момент выдачи (#1867)
   engineering/       ← домен: инженерная разработка через Playbooks (#1372)
     01-development-playbook.md  ← playbook `development`: от запроса до проверенной поставки
+    02-custom-playbook-authoring.md ← личный плейбук: только реальные проверки + when_to_use-маршрут (#1851 S4a/S4b)
   exhibition/        ← домен: участники выставок → сайт продаж
     01-exhibition-catalog-to-sales-site.md ← каталог → обогащение → классификация → деплой
                                              (+ 🔵 новое: проверка реестров перед классификацией)

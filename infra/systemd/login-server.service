@@ -5,8 +5,10 @@ After=chrome-browser.service
 [Service]
 Type=simple
 User=vova
-WorkingDirectory=/home/vova/browser-session
-ExecStart=/usr/bin/node /home/vova/browser-session/login-server.js
+# Run from the release symlink, not from ~/browser-session: the hand copy there is never
+# redeployed and still carries the pre-#1866 false-success login.js (#1875).
+WorkingDirectory=/home/vova/agent-master/infra/browser-session
+ExecStart=/usr/bin/node /home/vova/agent-master/infra/browser-session/login-server.js
 Restart=always
 RestartSec=3
 

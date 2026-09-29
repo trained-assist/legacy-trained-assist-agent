@@ -7,9 +7,12 @@ const fs      = require('fs');
 const path    = require('path');
 const os      = require('os');
 const { execFileSync } = require('child_process');
+const { resolveShipped } = require('./script-paths');
 
-const LOGIN_SCRIPT   = path.join(os.homedir(), 'browser-session', 'login.js');
-const CAPTURE_SCRIPT = path.join(os.homedir(), 'browser-session', 'capture-cookies.js');
+// Shipped copies (same dir as this file) — never the hand copy in ~/browser-session, which
+// nothing deploys and which still reports success on rejected credentials (#1875).
+const LOGIN_SCRIPT   = resolveShipped('login.js');
+const CAPTURE_SCRIPT = resolveShipped('capture-cookies.js');
 const PENDING_DIR    = path.join(os.homedir(), 'browser-session', 'pending');
 const ORIGIN         = 'https://136-65-7-197.sslip.io';
 const PORT = 9090;
