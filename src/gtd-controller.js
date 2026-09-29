@@ -1633,7 +1633,12 @@ async function scheduleFromChecklist({ workDir, sessionId, chatId, username, pro
   // Один трекер на работу (#1719): у сессии есть активный durable-план → его ведёт
   // durable-исполнитель со своей проекцией; второй GTD-цикл по корневому
   // checklist.md гонял бы ту же работу параллельно. Ошибка стора → fail-open.
-  if (username) {
+  // Гайд (#1887 п.1) — исключение: он НЕ создаёт durable-план, а ведётся GTD по
+  // корневому checklist.md. Фоновый план, отцепившийся от занятого чата
+  // (`foreground_busy`), принадлежит тому же origin_session (#1886) — но это
+  // ДРУГАЯ работа, и валить из-за него гайд нельзя. Поэтому для guide-секции
+  // проверку активного плана пропускаем.
+  if (username && !(checklist.mode === 'guide')) {
     try {
       const plan = durableStore().activeTaskForSession(String(username), sessionId);
       if (plan) {
