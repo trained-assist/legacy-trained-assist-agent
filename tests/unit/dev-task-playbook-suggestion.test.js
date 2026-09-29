@@ -141,3 +141,38 @@ describe('buildDevPlaybookSuggestion boundaries', () => {
     })).toBe('');
   });
 });
+
+describe('recommended family member by task text', () => {
+  const { recommendEngineeringPlaybook } = require('../../src/dev-task-playbook-suggestion');
+  const familyStore = {
+    resolve: id => (['feature', 'debugging', 'new-software'].includes(id) ? { id, version: 1, scope: 'system', source: 'sibling' } : null),
+  };
+
+  const bugs = [
+    'еще бага. чат: -3814002203 не отвечает',
+    'бот перестал присылать фото',
+    'сервер упал',
+    'в логах error при сохранении',
+    'почини кнопку в новой фиче',
+  ];
+  for (const t of bugs) it(`debugging: ${t}`, () => expect(recommendEngineeringPlaybook(t)).toBe('debugging'));
+
+  it('new-software for a from-scratch service', () =>
+    expect(recommendEngineeringPlaybook('сделай новый сервис с нуля для оплаты')).toBe('new-software'));
+
+  for (const t of ['реализуй экспорт в CSV', 'сделай фичу: напоминания', '']) {
+    it(`no strong signal: ${JSON.stringify(t)}`, () => expect(recommendEngineeringPlaybook(t)).toBe(null));
+  }
+
+  it('a bug report gets an explicit debugging pick, not feature', () => {
+    const section = buildDevPlaybookSuggestion({ task: 'еще бага: бот не отвечает в чате', store: familyStore, env: {} });
+    expect(section).toContain('Для этой задачи: `debugging`');
+    expect(section).not.toContain('самый частый случай');
+  });
+
+  it('no pick line when the recommended member does not resolve', () => {
+    const noDebug = { resolve: id => (['feature', 'new-software'].includes(id) ? { id } : null) };
+    const section = buildDevPlaybookSuggestion({ task: 'баг: бот не отвечает', store: noDebug, env: {} });
+    expect(section).not.toContain('Для этой задачи');
+  });
+});

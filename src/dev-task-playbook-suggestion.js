@@ -61,10 +61,37 @@ function isDevelopmentTask(task) {
 }
 
 const ENGINEERING_FAMILY = ['feature', 'debugging', 'new-software'];
+// No member is advertised as «the usual one»: the earlier «самый частый случай»
+// on feature made the model push bug reports through the feature process
+// (user scenario, requirement challenge, design proposal…), steps that the
+// debugging playbook deliberately leaves out.
 const ENGINEERING_FAMILY_HINTS = {
-  feature: 'новая фича или изменение в существующем продукте (самый частый случай)',
+  feature: 'новая функциональность или изменение поведения по запросу (не баг)',
   debugging: 'баг / регрессия / ошибка в логах: воспроизвести → причина → фикс → убедиться, что ошибка ушла',
   'new-software': 'новый модуль/сервис с нуля, свобода в архитектуре: сначала песочница, потом код',
+};
+
+// Which family member fits this task text. Bug signals win over build signals:
+// «почини баг в новой фиче» is a bug. null = no strong signal, the model picks.
+const BUG_TASK_RE = new RegExp([
+  'баг|\\bbug\\b|ошибк|почини|исправь|багфикс|hotfix|bugfix',
+  'не\\s+(?:работает|отвечает|приходит|открывается|грузится|запускается|отправляет|сохраняет)',
+  'перестал|сломал|слома[нл]|пада[ею]т|упал|вылета|завис|регресс',
+  '\\bregression\\b|\\bcrash|\\bbroken\\b|\\berror\\b|\\bexception\\b|stack\\s*trace|traceback',
+].join('|'), 'i');
+const NEW_SOFTWARE_RE = /с\s+нуля|нов(?:ый|ого)\s+(?:сервис|модул|репозитор|бот)|\bfrom\s+scratch\b|\bnew\s+(?:service|module|repo)/i;
+
+function recommendEngineeringPlaybook(task) {
+  const text = typeof task === 'string' ? task : '';
+  if (!text.trim()) return null;
+  if (BUG_TASK_RE.test(text)) return 'debugging';
+  if (NEW_SOFTWARE_RE.test(text)) return 'new-software';
+  return null;
+}
+
+const RECOMMEND_REASONS = {
+  debugging: 'в запросе признаки бага. Баг-репорт идёт через `debugging` (контекст → воспроизведение → причина → фикс → ошибка ушла в проде), НЕ через `feature`: шаги «сценарий пользователя», «челлендж требований», «предложение дизайна» для бага лишние.',
+  'new-software': 'в запросе новый модуль/сервис с нуля.',
 };
 
 function isDisabled(env) {
@@ -108,10 +135,15 @@ function buildDevPlaybookSuggestion({ task, profileId = null, audience = null, s
     ? ENGINEERING_FAMILY.filter(pid => { try { return !!playbookStore.resolve(pid); } catch { return false; } })
     : [];
   if (family.length > 1) {
+    const recommended = recommendEngineeringPlaybook(task);
+    const pick = recommended && family.includes(recommended)
+      ? [`Для этой задачи: \`${recommended}\` — ${RECOMMEND_REASONS[recommended]}`]
+      : [];
     return [
       '[ПРОЦЕСС РАЗРАБОТКИ ДОСТУПЕН]',
       'Для инженерных задач есть плейбуки (пошаговый контракт с проверками и durable-ожиданиями CI/деплоя/ответа):',
       ...family.map(pid => `- \`${pid}\` — ${ENGINEERING_FAMILY_HINTS[pid]}`),
+      ...pick,
       ...CONSENT_RULES,
     ].join('\n');
   }
@@ -126,6 +158,8 @@ function buildDevPlaybookSuggestion({ task, profileId = null, audience = null, s
 module.exports = {
   ENGINEERING_FAMILY,
   DEV_TASK_RE,
+  BUG_TASK_RE,
+  recommendEngineeringPlaybook,
   isDevelopmentTask,
   buildDevPlaybookSuggestion,
 };
