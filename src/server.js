@@ -663,6 +663,20 @@ async function main() {
       }
     }
 
+    // GET /tasks/:taskId/new-messages — live inbox for the get_new_messages MCP tool:
+    // what the user sent after this run started (src/live-inbox.js). Run-scoped token
+    // → only its own task; AGENT_SECRET callers are accepted too (service-user MCP).
+    if (req.method === 'GET' && /^\/tasks\/[^/]+\/new-messages$/.test(url.pathname)) {
+      const taskId = decodeURIComponent(url.pathname.split('/')[2]);
+      const scope = runTokenFromAuthHeader(req.headers['authorization']);
+      const isServer = (req.headers['authorization'] || '') === `Bearer ${secrets.AGENT_SECRET}`;
+      if (!scope && !isServer) return json(res, 401, { ok: false, error: 'unauthorized' });
+      if (scope && scope.taskId !== taskId) return json(res, 403, { ok: false, error: 'forbidden: run token belongs to another task' });
+      const { fetchNewMessages } = require('./live-inbox');
+      const result = await fetchNewMessages(taskId, { secret: secrets.AGENT_SECRET, limit: Number(url.searchParams.get('limit')) || 20 });
+      return json(res, 200, result);
+    }
+
     // ── Auth: all endpoints require Bearer token ──────────────────────────────
     const auth = req.headers['authorization'] || '';
     if (auth !== `Bearer ${secrets.AGENT_SECRET}`) {

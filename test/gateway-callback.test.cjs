@@ -146,3 +146,13 @@ test('isChatTaskRunning tracks NEGATIVE group chatId too (#1534 regression)', as
   await p;
   assert.equal(runner.isChatTaskRunning(groupChatId), false);
 });
+test('live inbox: consumed ids ride on run-finished only when non-empty', async () => {
+  process.env.MEDIA_GATEWAY_URL = 'https://gw.example';
+  delete require.cache[require.resolve('../src/gateway-callback')];
+  const { notifyRunFinished } = cb();
+  mockFetchOk();
+  await notifyRunFinished({ chatId: 42, requestId: 'r1', consumed: [501, 502], secret: 's' });
+  await notifyRunFinished({ chatId: 42, requestId: 'r2', consumed: [], secret: 's' });
+  assert.deepEqual(JSON.parse(fetched[0].init.body).consumed, [501, 502]);
+  assert.equal('consumed' in JSON.parse(fetched[1].init.body), false);
+});
