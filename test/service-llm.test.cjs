@@ -39,11 +39,52 @@ test('no ladder token → unavailable, no request', async () => {
     delete require.cache[require.resolve('../src/data-paths')];
     assert.equal(s.available(), false);
     let called = false;
-    assert.equal(await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], fetchImpl: async () => { called = true; } }), null);
+    const seen = [];
+    assert.equal(await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], fetchImpl: async () => { called = true; }, onDiagnose: d => seen.push(d) }), null);
     assert.equal(called, false);
+    assert.deepEqual(seen.map(d => d.reason), ['no_token'], 'a null must say WHY — no silent fallback upstream');
   } finally {
     if (saved !== undefined) process.env.LLM_LADDER_TOKEN = saved;
     if (saveDir !== undefined) process.env.AGENT_TOKENS_DIR = saveDir; else delete process.env.AGENT_TOKENS_DIR;
     delete require.cache[require.resolve('../src/data-paths')];
   }
 });
+
+test('onDiagnose reports the reason + rung/raw/status for every failure mode', async () => {
+  const seen = [];
+  const onDiagnose = d => seen.push(d);
+  const call = (fetchImpl, json = true) => s.serviceChat({ messages: [{ role: 'user', content: 'x' }], json, fetchImpl, onDiagnose, source: 'diag-test' });
+
+  // ok
+  await call(async () => ok({ model: 'rung-a', choices: [{ finish_reason: 'stop', message: { content: '{"a":1}' } }] }));
+  // model answered, but not JSON → the raw answer is what the caller needs to see
+  await call(async () => ok({ model: 'rung-a', choices: [{ finish_reason: 'stop', message: { content: 'Сейчас подумаю...' } }] }));
+  // reasoning rung burned its whole budget → content empty
+  await call(async () => ok({ model: 'rung-b', choices: [{ finish_reason: 'length', message: { content: '' } }] }));
+  // worker HTTP error (with per-rung attempts)
+  await call(async () => ok({ model: 'rung-a', error: { message: 'all rungs failed', attempts: [{ rung: 'go-1', error: 'timeout' }] } }, 502));
+  // ladder unreachable
+  await call(async () => { throw new Error('The operation was aborted due to timeout'); });
+
+  assert.deepEqual(seen.map(d => d.reason), ['ok', 'json_parse_error', 'empty_content', 'http_error', 'fetch_error']);
+  assert.equal(seen[1].model, 'rung-a');
+  assert.equal(seen[1].raw, 'Сейчас подумаю...');
+  assert.equal(seen[1].error, 'no JSON object found in content');
+  assert.equal(seen[2].model, 'rung-b');
+  assert.equal(seen[2].finishReason, 'length');
+  assert.equal(seen[3].status, 502);
+  assert.match(seen[3].attempts, /go-1/);
+  assert.match(seen[4].error, /aborted/);
+  for (const d of seen) assert.equal(d.source, 'diag-test');
+});
+
+test('a broken onDiagnose callback can never break the call', async () => {
+  const r = await s.serviceChat({
+    messages: [{ role: 'user', content: 'x' }],
+    json: true,
+    fetchImpl: async () => ok({ model: 'rung-a', choices: [{ message: { content: '{"a":1}' } }] }),
+    onDiagnose: () => { throw new Error('diagnostics exploded'); },
+  });
+  assert.deepEqual(r.value, { a: 1 });
+});
+

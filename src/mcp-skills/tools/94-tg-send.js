@@ -5,12 +5,49 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const https = require('https');
 const http = require('http');
 
 const BOT_TOKEN = process.env.AGENT_BOT_TOKEN || '';
 const CHAT_ID   = process.env.AGENT_CHAT_ID   || '';
 const TG_API    = (process.env.TELEGRAM_API_URL || 'https://api.telegram.org').replace(/\/$/, '');
+
+// ── Path guard (epic #1805, §3-1) ─────────────────────────────────────────────
+// The MCP server runs as the SERVICE user, so an unchecked file_path lets any
+// profile's agent exfiltrate any service-readable file (/home/vova/secrets.env,
+// ~/.ssh, ~/.git-credentials, чужие agent-tokens) into its own chat. Allowed
+// roots are the run's OWN scope: profile workspace (WORK_DIR), the run cwd,
+// TMPDIR/system tmp, and this profile's hermes-research dir. Everything else —
+// denied, before even checking existence (no existence oracle).
+// Note: system tmp is shared across profiles (#1712) — accepted here because
+// the guard's job is service secrets outside /tmp, not cross-profile /tmp.
+
+function allowedSendRoots() {
+  const userId = process.env.USER_ID || process.env.AGENT_USER_ID || '';
+  const roots = [
+    process.env.WORK_DIR,       // profile workspace (mcpToolEnv)
+    process.cwd(),              // run cwd (bridge spawns MCP with cwd: run.cwd)
+    process.env.TMPDIR,         // per-run tmp (inside .agent-home for slots)
+    os.tmpdir(),                // engine default tmp
+    userId && path.join(
+      process.env.AGENT_TOKENS_DIR || path.join(os.homedir(), 'agent-tokens'),
+      String(userId), 'hermes-research'), // own profile's research output only
+  ].filter(Boolean);
+  return [...new Set(roots.map(r => path.resolve(r)))];
+}
+
+function realpathOrResolve(p) {
+  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+}
+
+// Symlinks are followed (realpath) on both sides, so a link inside the
+// workspace pointing at /home/vova/secrets.env is denied too.
+function isAllowedSendPath(filePath) {
+  const real = realpathOrResolve(filePath);
+  return allowedSendRoots().map(realpathOrResolve)
+    .some(root => real === root || real.startsWith(root + path.sep));
+}
 
 function detectMime(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -125,6 +162,7 @@ async function sendChatReply({ text, document }, { target = chatTarget(), fetchI
 module.exports = {
   chatTarget,
   sendChatReply,
+  isAllowedSendPath, // test seam: path guard (epic #1805 §3-1)
   tools: {
     tg_send_file: {
       description:
@@ -137,7 +175,7 @@ module.exports = {
         properties: {
           file_path: {
             type: 'string',
-            description: 'Absolute path to the local file to send.',
+            description: 'Absolute path to the local file to send. Must be inside the run workspace (WORK_DIR), the run cwd, TMPDIR, or this profile\'s hermes-research dir — files elsewhere (secrets, other profiles, system paths) are rejected.',
           },
           caption: {
             type: 'string',
@@ -151,6 +189,9 @@ module.exports = {
       },
       async handler({ file_path, caption, as_document }) {
         if (!file_path) return { error: 'file_path is required' };
+        if (!isAllowedSendPath(file_path)) {
+          return { error: `file_path is outside the allowed roots (run workspace / tmp / own hermes-research): ${file_path}` };
+        }
         if (!fs.existsSync(file_path)) return { error: `File not found: ${file_path}` };
         try {
           const result = await sendFile(file_path, caption, !as_document);

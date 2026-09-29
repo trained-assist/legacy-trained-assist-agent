@@ -21,6 +21,10 @@ const SKILL_SIBLINGS = [
   // Speech (Ф0, #1779): the one recognition tool. Core keeps the ffmpeg/ledger chain
   // and delegates the engine here (src/mcp-skills/tools/95-video-analysis.js).
   { id: 'speech', repo: 'trained-assist-speech-skill', mcpServerId: 'speech-skills' },
+  // Internet search (#1792): the keyless web-search tools (search_serp_free first).
+  // Until the core copy is deleted (#1470 follow-up) both serve the same tool name —
+  // the sibling wins by rule #1648, core's copy is the transition leftover.
+  { id: 'search', repo: 'trained-assist-search-skill', mcpServerId: 'search-skills' },
 ];
 
 const DEFAULT_ROOT = path.join(__dirname, '..', '..');

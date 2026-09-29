@@ -74,7 +74,7 @@ jobs:
             DEPLOY_TMP=$(mktemp -d)
             git archive "$DEPLOY_TARGET_COMMIT" scripts | tar -x -C "$DEPLOY_TMP"
             REPO_DIR=/home/vova/trained-assist-agent bash "$DEPLOY_TMP/scripts/deploy-preflight.sh" "$DEPLOY_TARGET_COMMIT"
-            printf 'AGENT_SECRET=%s\nINN_DADATA_TOKEN=%s\nINN_DADATA_SECRET=%s\nINN_CHECKO_KEY=%s\nOPENAI_API_KEY=%s\nFAL_KEY=%s\nIDEOGRAM_API_KEY=%s\nRECRAFT_API_KEY=%s\nOPENROUTER_API_KEY=%s\nZEROCREDS_ADMIN_TOKEN=%s\nGITHUB_ISSUES_TOKEN=%s\nOPENCODE_MODEL=%s\nOPENCODE_PROFILE=%s\n' \
+            printf 'AGENT_SECRET=%s\nINN_DADATA_TOKEN=%s\nINN_DADATA_SECRET=%s\nINN_CHECKO_KEY=%s\nOPENAI_API_KEY=%s\nFAL_KEY=%s\nIDEOGRAM_API_KEY=%s\nRECRAFT_API_KEY=%s\nOPENROUTER_API_KEY=%s\nZEROCREDS_ADMIN_TOKEN=%s\nGITHUB_ISSUES_TOKEN=%s\nOPENCODE_MODEL=%s\nOPENCODE_PROFILE=%s\nCRED_ENCRYPTION_KEY=%s\nSERPER_API_KEY=%s\n' \
               '${{ secrets.AGENT_SECRET }}' \
               '${{ secrets.INN_DADATA_TOKEN }}' \
               '${{ secrets.INN_DADATA_SECRET }}' \
@@ -88,6 +88,8 @@ jobs:
               '${{ secrets.ISSUES_PIPELINE_TOKEN }}' \
               '' \
               '' \
+              '${{ secrets.CRED_ENCRYPTION_KEY }}' \
+              '${{ secrets.SERPER_API_KEY }}' \
               > /home/vova/secrets.env
             chmod 600 /home/vova/secrets.env
             node "$DEPLOY_TMP/scripts/register-hook.js"
@@ -121,10 +123,9 @@ jobs:
             REPO_DIR=/home/vova/trained-assist-agent bash "$DEPLOY_TMP/scripts/deploy-preflight.sh" "$DEPLOY_TARGET_COMMIT"
             # ru-edge (src/ru-edge.js, issue #1288) has no Claude Code, no runner,
             # no MCP — only TELEGRAM_BOT_TOKEN and AGENT_SECRET are required.
-            printf 'TELEGRAM_BOT_TOKEN=%s\nAGENT_SECRET=%s\nAGENT_PUBLIC_URL=%s\n' \
+            printf 'TELEGRAM_BOT_TOKEN=%s\nAGENT_SECRET=%s\n' \
               '${{ secrets.TELEGRAM_BOT_TOKEN }}' \
               '${{ secrets.AGENT_SECRET }}' \
-              'https://platform.recruiter-assistant.ru' \
               > /home/vova/secrets.env
             chmod 600 /home/vova/secrets.env
             AGENT_SECRET="${{ secrets.AGENT_SECRET }}" DEPLOY_ENV=ru REPO_DIR=/home/vova/trained-assist-agent bash "$DEPLOY_TMP/scripts/deploy-ru-edge.sh"

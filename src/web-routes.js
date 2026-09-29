@@ -460,6 +460,9 @@ async function streamWebTask({ req, res, secrets, username, task, sessionId, new
   runTask({
     taskId,
     user: { id: 0, name: username, username, workDir },
+    // Запрос из веб-UI — человек нажал «Запустить». Trace-гейт Стопа его
+    // не блокирует (K1); внутренние хопы (retry/продолжение) сюда не попадают.
+    fromUser: true,
     task,
     context: '',
     sessionId: sessionId || undefined,

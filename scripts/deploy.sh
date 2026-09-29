@@ -37,6 +37,7 @@ FREELANCE_SKILL_DIR="${FREELANCE_SKILL_DIR:-$AGENT_HOME/trained-assist-freelance
 SALES_SKILL_DIR="${SALES_SKILL_DIR:-$AGENT_HOME/trained-assist-sales-skill}"
 DOCUMENTS_SKILL_DIR="${DOCUMENTS_SKILL_DIR:-$AGENT_HOME/trained-assist-documents-skill}"
 SPEECH_SKILL_DIR="${SPEECH_SKILL_DIR:-$AGENT_HOME/trained-assist-speech-skill}"
+SEARCH_SKILL_DIR="${SEARCH_SKILL_DIR:-$AGENT_HOME/trained-assist-search-skill}"
 export REPO_DIR RELEASES_DIR CURRENT_LINK SERVICE
 
 if [ "${ASSIST_DEPLOY_LOCKED:-}" != 1 ]; then
@@ -150,6 +151,7 @@ ensure_sibling trained-assist-freelance-skill "$FREELANCE_SKILL_DIR"
 ensure_sibling trained-assist-sales-skill "$SALES_SKILL_DIR"
 ensure_sibling trained-assist-documents-skill "$DOCUMENTS_SKILL_DIR"
 ensure_sibling trained-assist-speech-skill "$SPEECH_SKILL_DIR"
+ensure_sibling trained-assist-search-skill "$SEARCH_SKILL_DIR"
 
 # Core no longer ships the gdrive/doc-export/deck tools (#1470) — they live only in
 # trained-assist-documents-skill. `ensure_sibling` warns and continues on a failed clone,
@@ -310,6 +312,31 @@ if [ -x "$RELEASE_DIR/ops/cron/install.sh" ]; then
   else
     echo "  ⚠️  cron install failed — disk guard may be stale"
   fi
+fi
+
+# claude-oauth-refresh block: installed from THIS release, so its wrapper path
+# points at ~/agent-master instead of wherever someone last ran the installer
+# from (2026-09-28: a checkout run left both entries on ~/trained-assist-agent,
+# and that checkout sat on a stale feature branch — the cron then ran code that
+# was never deployed).
+echo "==> Installing claude-oauth-refresh cron..."
+if sh "$RELEASE_DIR/scripts/install-claude-token-refresh.sh"; then
+  echo "  claude-oauth-refresh cron installed"
+else
+  echo "  ⚠️  claude-oauth-refresh cron install failed"
+fi
+
+# Audit: every crontab entry must execute through the stable ~/agent-master
+# symlink. Anything else means a scheduled job can run code this deploy did NOT
+# ship (a checkout on an arbitrary branch) — exactly the class of bug that hides
+# for days because nothing errors. Warn loudly; never block the deploy on it.
+echo "==> Auditing crontab for non-release paths..."
+CRON_AUDIT=$(crontab -l 2>/dev/null | grep -E '^[^#]' | grep -v 'agent-master/' | grep -E 'trained-assist-agent|agent-releases/' || true)
+if [ -n "$CRON_AUDIT" ]; then
+  echo "  ⚠️  CRON RUNS NON-RELEASE CODE — these entries do not go through ~/agent-master:"
+  printf '%s\n' "$CRON_AUDIT" | sed 's/^/     /'
+else
+  echo "  all crontab entries run through ~/agent-master"
 fi
 
 echo "==> Garbage-collecting old releases..."

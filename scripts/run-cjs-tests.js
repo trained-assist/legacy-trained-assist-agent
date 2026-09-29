@@ -27,13 +27,18 @@ const os = require('os');
 const isoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cjs-oc-state-'));
 const isoEnv = {
   LADDER_LOG_DIR: path.join(isoDir, 'ladder-log'),
+  // Server-side state (pending-tasks, execution-history, stop-trace tombstones) —
+  // same reasoning as LADDER_LOG_DIR: a test must never write into the live
+  // ~/agent-data, least of all a «Стоп» tombstone that would then block real runs.
+  // A test file may still point this at its own temp dir (see line below).
+  AGENT_DATA_DIR: path.join(isoDir, 'agent-data'),
   // Runner RAM watchdog off in tests (see tests/setup-isolation.mjs).
   MIN_FREE_RAM_MB: '0',
 };
 // A test file may still point these at its own temp dir; it just can't fall through to $HOME.
 const childEnv = { ...isoEnv, ...process.env };
 // Provider keys from the developer's shell must not leak into tests (CI has none).
-for (const k of ['OPENROUTER_API_KEY', 'OPENCODE_GO_API_KEYS', 'OPENCODE_GO_API_KEY', 'LLM_LADDER_TOKEN']) delete childEnv[k];
+for (const k of ['OPENROUTER_API_KEY', 'OPENCODE_GO_API_KEYS', 'OPENCODE_GO_API_KEY', 'LLM_LADDER_TOKEN', 'CRED_ENCRYPTION_KEY']) delete childEnv[k];
 // …nor may they call the live llm-ladder worker: point service-llm at an unroutable host with a
 // dummy token — tests that mock fetch see the worker's OpenAI-shaped protocol, anything unmocked
 // fails soft instead of reaching production.

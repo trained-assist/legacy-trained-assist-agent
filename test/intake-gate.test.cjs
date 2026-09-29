@@ -1,11 +1,6 @@
-// service-llm → llm-ladder worker: pin tests to an unroutable host + dummy token so they are
-// self-contained (staging runs this file directly, outside scripts/run-cjs-tests.js) and can
-// never reach the live worker via the VM's token file.
-process.env.LLM_LADDER_URL = 'http://llm-ladder.invalid';
-process.env.LLM_LADDER_TOKEN = 'test-ladder-token';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { checkCompleteness } = require('../src/intake-gate');
+const { checkCompleteness, loadLastAssistant, DELAY_CONTINUE_MS, DELAY_STANDARD_MS } = require('../src/intake-gate');
 
 function fakeFetch(content) {
   return async () => ({
@@ -16,10 +11,8 @@ function fakeFetch(content) {
 }
 
 test('holds when text or key is missing', async () => {
-  assert.deepEqual(await checkCompleteness('', 'key'), { level: 'insufficient', complete: false });
-  const saved = process.env.LLM_LADDER_TOKEN; delete process.env.LLM_LADDER_TOKEN; // no ladder token
-  try { assert.deepEqual(await checkCompleteness('hi', ''), { level: 'insufficient', complete: false }); }
-  finally { if (saved !== undefined) process.env.LLM_LADDER_TOKEN = saved; }
+  assert.deepEqual(await checkCompleteness('', 'key'), { level: 'insufficient', complete: false, delayMs: null, announce: null });
+  assert.deepEqual(await checkCompleteness('hi', ''), { level: 'insufficient', complete: false, delayMs: null, announce: null });
 });
 
 test('propagates API errors to the fail-closed HTTP boundary', async () => {
@@ -27,24 +20,59 @@ test('propagates API errors to the fail-closed HTTP boundary', async () => {
   await assert.rejects(() => checkCompleteness('do the thing', 'key', { fetchImpl }));
 });
 
-test('maps clear to actionable after the gateway quiet period', async () => {
+test('maps clear to an understandable request with the standard delay + announcement', async () => {
   const result = await checkCompleteness('запусти отчёт по кандидатам', 'key', { fetchImpl: fakeFetch('clear') });
-  assert.deepEqual(result, { level: 'clear', complete: true });
+  assert.equal(result.level, 'clear');
+  assert.equal(result.complete, true);
+  assert.equal(result.delayMs, DELAY_STANDARD_MS);
+  assert.match(result.announce, /3 минуты/);
 });
 
 test('maps likely to actionable after the gateway quiet period', async () => {
   const result = await checkCompleteness('наверное готово', 'key', { fetchImpl: fakeFetch('likely') });
-  assert.deepEqual(result, { level: 'likely', complete: true });
+  assert.equal(result.level, 'likely');
+  assert.equal(result.complete, true);
+  assert.equal(result.delayMs, DELAY_STANDARD_MS);
 });
 
-test('maps model answer "insufficient" to complete=false', async () => {
+test('maps model answer "insufficient" to a hold with the "недосказана" notice', async () => {
   const result = await checkCompleteness('сделай так чтобы', 'key', { fetchImpl: fakeFetch('insufficient') });
-  assert.deepEqual(result, { level: 'insufficient', complete: false });
+  assert.equal(result.level, 'insufficient');
+  assert.equal(result.complete, false);
+  assert.equal(result.delayMs, null);
+  assert.match(result.announce, /недосказана/);
 });
 
 test('an unrecognised answer holds the buffer', async () => {
   const result = await checkCompleteness('что-то', 'key', { fetchImpl: fakeFetch('maybe???') });
-  assert.deepEqual(result, { level: 'insufficient', complete: false });
+  assert.equal(result.level, 'insufficient');
+  assert.equal(result.complete, false);
+  assert.equal(result.delayMs, null);
+});
+
+// Owner 2026-09-29: a short «продолжай» may only auto-launch when the previous
+// assistant answer makes the continuation obvious — otherwise it is underspecified.
+test('a short continuation fast-path needs the previous assistant message', async () => {
+  const withContext = await checkCompleteness('давай дальше', 'key', {
+    fetchImpl: fakeFetch('continue'), lastAssistant: 'План: 1) собрать данные 2) построить отчёт. Продолжить?',
+  });
+  assert.equal(withContext.level, 'continue');
+  assert.equal(withContext.delayMs, DELAY_CONTINUE_MS);
+  assert.match(withContext.announce, /30 секунд/);
+
+  const noContext = await checkCompleteness('давай дальше', 'key', { fetchImpl: fakeFetch('continue') });
+  assert.equal(noContext.level, 'insufficient');
+  assert.equal(noContext.delayMs, null);
+});
+
+test('the assistant context reaches the classifier prompt', async () => {
+  let prompt;
+  await checkCompleteness('продолжай', 'key', {
+    lastAssistant: 'ASSISTANT-SAID-THIS', fetchImpl: async (_, options) => {
+      prompt = JSON.parse(options.body).messages[0].content; return fakeFetch('continue')();
+    },
+  });
+  assert.ok(prompt.includes('ASSISTANT-SAID-THIS'));
 });
 
 // The exact voice transcript must be actionable even if the model would refuse it.
@@ -55,26 +83,30 @@ test('named link recall bypasses model ambiguity without a paid request', async 
     'дай мне ссылку на результаты',
   ]) {
     const result = await checkCompleteness(text, 'key', { fetchImpl: () => { throw new Error('must not call model'); } });
-    assert.deepEqual(result, { level: 'clear', complete: true });
+    assert.equal(result.level, 'clear');
+    assert.equal(result.delayMs, DELAY_STANDARD_MS);
   }
 });
 test('unfinished link requests remain subject to the gate', async () => {
   for (const text of ['напомни ссылку', 'дай ссылку на', 'пришли ссылку на отчёт и', 'пришли ссылку на отчёт\nи сделай так чтобы']) {
     const result = await checkCompleteness(text, 'key', { fetchImpl: fakeFetch('insufficient') });
-    assert.deepEqual(result, { level: 'insufficient', complete: false });
+    assert.equal(result.level, 'insufficient');
   }
 });
 
 test('wait instructions dominate named-link shortcuts and optimistic model answers', async () => {
   for (const text of ['пришли ссылку на отчёт, подожди, ещё допишу', 'я ещё пишу', 'не запускай', 'сейчас пришлю файл']) {
-    assert.deepEqual(await checkCompleteness(text, 'key', {fetchImpl: () => {throw Error('must not call');}}), {level:'insufficient',complete:false});
+    const result = await checkCompleteness(text, 'key', { fetchImpl: () => { throw Error('must not call'); } });
+    assert.equal(result.level, 'insufficient');
+    assert.equal(result.delayMs, null);
+    assert.equal(result.announce, null); // explicit «подожди» → do not nag
   }
 });
 test('keeps the end of long input where waiting instructions or task details arrive', async () => {
   let prompt;
-  await checkCompleteness('a'.repeat(7000)+' LAST DETAIL', 'key', {fetchImpl: async (_, options) => {
-    prompt=JSON.parse(options.body).messages[0].content; return fakeFetch('likely')();
-  }});
+  await checkCompleteness('a'.repeat(7000) + ' LAST DETAIL', 'key', { fetchImpl: async (_, options) => {
+    prompt = JSON.parse(options.body).messages[0].content; return fakeFetch('likely')();
+  } });
   assert.ok(prompt.includes('LAST DETAIL'));
 });
 
@@ -94,4 +126,9 @@ test('gate request is a small, non-reasoning completion with a sane token budget
   await checkCompleteness('сделай отчёт', 'key', { fetchImpl: async (_, options) => { body = JSON.parse(options.body); return fakeFetch('clear')(); } });
   assert.ok(body.max_tokens >= 8, 'max_tokens must allow a label to be emitted');
   assert.ok(!/glm-5\.3-flash/.test(body.model), 'must not use the reasoning model that returns content:null');
+});
+
+test('loadLastAssistant reads the newest assistant line and tolerates missing input', () => {
+  assert.equal(loadLastAssistant({}), null);
+  assert.equal(loadLastAssistant({ username: 'u' }), null);
 });

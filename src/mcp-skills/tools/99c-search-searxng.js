@@ -10,6 +10,15 @@
 //                              ~0.6s, relevant. It flips back to 202 after a handful of rapid
 //                              requests (cooldown of minutes) — so 202 is detected as a rate-limit
 //                              and the chain falls through, it is never mistaken for "no results".
+//                              When rate-limited it can also STALL (one probe sat on the socket
+//                              the whole 15s instead of answering), which used to eat the whole
+//                              call budget before the fallbacks were reached. DuckDuckGo is
+//                              therefore capped at DDG_TIMEOUT_MS, never retried on a timeout, and
+//                              remembered in a cooldown (DDG_COOLDOWN_MS) after any failure.
+//                              The same cooldown applies per SearXNG instance on a transport
+//                              failure (timeout/429/5xx/network): one 15s stall used to consume the
+//                              whole 30s call budget before the fallbacks were even reached, so a
+//                              dead instance is now skipped for FREE_SEARCH_SEARXNG_COOLDOWN_MS.
 //   * SearXNG public pool    → 3 of 95 searx.space instances answer `format=json` with real
 //                              organic results from GCP: search.lumy.live (Yandex engine — the only
 //                              one that answers Russian queries, 2-8s but sometimes >15s), sx.xo.st
@@ -36,6 +45,12 @@
 
 const TIMEOUT_MS = 15_000; // per HTTP request (repo convention)
 const BUDGET_MS = 30_000; // whole call — a pool of dead instances must not stall a chat turn
+// DuckDuckGo answers in ~0.6s when it works; a stalled socket means it is rate-limiting us,
+// so waiting the full 15s only steals the budget from the searxng fallbacks.
+const DDG_TIMEOUT_MS = 8_000;
+// After a transport failure (stall, 429, 5xx, connection error) the source is skipped for this
+// long: the block is IP-global, so re-probing it on every call only burns the call budget twice.
+const COOLDOWN_DEFAULT_MS = 120_000;
 const RETRY_DELAY_MS = 250;
 const MAX_ATTEMPTS = 6; // hard cap on candidates probed per call
 const DEFAULT_NUM = 10;
@@ -121,6 +136,29 @@ function searxngUrls() {
 function backendChain() {
   const raw = splitList(process.env.FREE_SEARCH_BACKEND).map((s) => s.toLowerCase());
   return raw.length ? raw : ['duckduckgo', 'searxng', 'brave'];
+}
+
+// Cooldown memory (see the header). Keys: 'duckduckgo' | 'brave' (the backend) or a SearXNG
+// instance base URL. DuckDuckGo and Brave cool down after ANY failure (their block is IP-global),
+// an instance only after a transport failure — an empty SERP is query-dependent, not an outage.
+const downUntil = new Map();
+function cooldownMs(key) {
+  const env =
+    key === 'duckduckgo' ? process.env.FREE_SEARCH_DDG_COOLDOWN_MS
+      : key === 'brave' ? process.env.FREE_SEARCH_BRAVE_COOLDOWN_MS
+        : process.env.FREE_SEARCH_SEARXNG_COOLDOWN_MS;
+  const n = Number.parseInt(env, 10);
+  return Number.isFinite(n) ? n : COOLDOWN_DEFAULT_MS;
+}
+function isCoolingDown(key) {
+  const ms = cooldownMs(key);
+  return ms > 0 && Date.now() < (downUntil.get(key) || 0);
+}
+function markDown(key) {
+  downUntil.set(key, Date.now() + cooldownMs(key));
+}
+function markUp(key) {
+  downUntil.delete(key);
 }
 
 function parseSearxng(body, contentType) {
@@ -242,12 +280,17 @@ async function fetchOnce(req, fetchImpl, timeoutMs) {
   return { status: (res && res.status) || 0, contentType, text };
 }
 
-// One retry, and only for failures that a retry can plausibly fix (network/timeout, 429, 5xx).
-// 403/bans/challenge pages and parse failures are definitive — retrying them just burns the budget.
+// One retry, and only for failures a retry can plausibly fix while the budget allows it:
+// fast failures (429/5xx/connection refused) get one retry, a TIMEOUT never does — it already
+// ate the bulk of the call budget, and re-running it is what used to push every fallback past
+// the deadline. 403/bans/challenge pages and parse failures are definitive.
+// `transport: true` on the result marks a transport-level failure (stall/429/5xx/network) so the
+// caller can put that source into cooldown; an empty SERP is not an outage and cools nothing down.
 // `deadline` caps the per-request timeout at what is left of the whole call, so a pool of dead
 // instances can never push a single call past BUDGET_MS (each request is still ≤ TIMEOUT_MS).
 async function attempt(req, kind, fetchImpl, deadline) {
   let last = 'unknown failure';
+  let transport = false;
   for (let n = 0; n < 2; n++) {
     if (n) await sleep(RETRY_DELAY_MS);
     const remaining = deadline - Date.now();
@@ -255,16 +298,22 @@ async function attempt(req, kind, fetchImpl, deadline) {
       last = last === 'unknown failure' ? `time budget of ${BUDGET_MS}ms exhausted` : last;
       break;
     }
-    const timeoutMs = Math.min(TIMEOUT_MS, remaining);
+    const timeoutMs = Math.min(kind === 'duckduckgo' ? DDG_TIMEOUT_MS : TIMEOUT_MS, remaining);
     let r;
     try {
       r = await fetchOnce(req, fetchImpl, timeoutMs);
     } catch (e) {
-      last = `network error: ${e && e.name === 'TimeoutError' ? `timeout after ${timeoutMs}ms` : ((e && e.message) || 'fetch failed')}`;
+      const isTimeout = !!(e && e.name === 'TimeoutError');
+      last = `network error: ${isTimeout ? `timeout after ${timeoutMs}ms` : ((e && e.message) || 'fetch failed')}`;
+      // A timeout already ate the bulk of the call budget — spending the retry (and another
+      // full timeout) on it is what used to push every fallback past the 30s deadline.
+      if (isTimeout) return { fail: last, transport: true };
+      transport = true;
       continue;
     }
     if (r.status === 429) {
       last = 'HTTP 429 rate-limited';
+      transport = true;
       continue;
     }
     if (r.status === 202) {
@@ -273,6 +322,7 @@ async function attempt(req, kind, fetchImpl, deadline) {
     }
     if (r.status >= 500) {
       last = `HTTP ${r.status}`;
+      transport = true;
       continue;
     }
     if (r.status >= 400) {
@@ -285,7 +335,7 @@ async function attempt(req, kind, fetchImpl, deadline) {
     if (parsed.results) return { results: parsed.results };
     return { fail: parsed.fail };
   }
-  return { fail: last };
+  return { fail: last, transport };
 }
 
 function buildRequest(backend, base, query) {
@@ -319,10 +369,11 @@ const tools = {
       'Search the web WITHOUT any API key or account (keyless SERP scraping). ' +
       'Returns organic results {engine, results:[{title,url,snippet,position}], took_ms}. ' +
       'Chain (first that answers wins): DuckDuckGo html (POST, no key), a pool of public SearXNG ' +
-      'instances (format=json), then Brave Search HTML. Use it for research/fact-finding when no ' +
-      'other search tool is available. It can fail with an explicit error when every upstream ' +
-      'rate-limits our IP — in that case read the message, do not retry blindly in a loop, and say ' +
-      'plainly that search is unavailable.',
+      'instances (format=json), then Brave Search HTML. ' +
+      'THIS IS THE FIRST SEARCH TOOL TO USE: prefer it over the engine\'s built-in websearch for ' +
+      'every web query (it is free, keyless and fast) and only fall back to the built-in search when ' +
+      'it returns an explicit error. It can fail when every upstream rate-limits our IP — in that ' +
+      'case read the message, do not retry blindly in a loop, and say plainly that search is unavailable.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -373,11 +424,21 @@ const tools = {
             ? searxngUrls().map((base) => ({ base, source: base }))
             : [{ base: null, source: backend === 'duckduckgo' ? 'html.duckduckgo.com' : 'search.brave.com' }];
         for (const job of jobs) {
+          const key = backend === 'searxng' ? job.base : backend;
+          if (isCoolingDown(key)) {
+            attempts.push({
+              backend,
+              source: job.source,
+              reason: `cooling down after a recent failure (${Math.ceil(((downUntil.get(key) || 0) - Date.now()) / 1000)}s left)`,
+            });
+            continue;
+          }
           if (probed >= MAX_ATTEMPTS || Date.now() >= deadline) break;
           probed++;
           const out = await attempt(buildRequest(backend, job.base, query), backend, fetchImpl, deadline);
           if (out.results) {
             if (backend === 'searxng') lastGood = job.base;
+            markUp(key);
             return {
               engine: backend,
               source: job.source,
@@ -385,6 +446,10 @@ const tools = {
               took_ms: Date.now() - started,
             };
           }
+          // DuckDuckGo/Brave cool down after any failure (their block is IP-global); a SearXNG
+          // instance only after a transport failure — an empty SERP for THIS query says nothing
+          // about the next one, and cooling it down would drop the only RU-capable instance.
+          if (backend !== 'searxng' || out.transport) markDown(key);
           attempts.push({ backend, source: job.source, reason: out.fail });
         }
       }

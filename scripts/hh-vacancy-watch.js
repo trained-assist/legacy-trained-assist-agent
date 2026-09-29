@@ -16,6 +16,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const Database = require('better-sqlite3');
+const { readCredentialFile } = require('../src/credential-store');
 
 // --- Config ---
 
@@ -43,7 +44,7 @@ function getHhToken() {
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) {
-      try { return JSON.parse(fs.readFileSync(p, 'utf8')).access_token; } catch {}
+      try { return JSON.parse(readCredentialFile(p)).access_token; } catch {}
     }
   }
   return null;

@@ -104,9 +104,26 @@ function systemFlagsDir() {
   return path.join(SYSTEM_ROOT, 'system-flags');
 }
 
+// Durable «Стоп» tombstones — one file per stopped trace (dialog/session address;
+// spec: docs/user-scenarios/core/02-stop-and-supplement.md §2/§2а). Server-wide,
+// not per-profile: the runner checks them on every spawn attempt and a restarted
+// process must see the Stop that happened before the restart (K14).
+function stoppedTracesDir() {
+  return path.join(SYSTEM_ROOT, 'stopped-traces');
+}
+
 
 function pendingTaskPath(taskId) {
   return path.join(SYSTEM_ROOT, 'pending-tasks', `${taskId}.json`);
+}
+
+// Per-profile MAINTENANCE lock (epic #1784, src/profile-lock.js) — held by the
+// profile migrator (a SEPARATE process) while it archives/deletes workspace
+// files, so the server starts no new run for that profile. Server-side state,
+// never profile content: it must survive a workspace wipe and must never be
+// archived with the profile.
+function profileLockPath(username) {
+  return path.join(SYSTEM_ROOT, 'agent-locks', `${username}.lock`);
 }
 
 // One shared SQLite file for all profiles — DurableTaskStore scopes every
@@ -194,7 +211,9 @@ module.exports = {
   projectDir,
   executionHistoryPath,
   systemFlagsDir,
+  stoppedTracesDir,
   pendingTaskPath,
+  profileLockPath,
   sessionIndexPath,
   sessionFilePath,
   groupHistoryPath,

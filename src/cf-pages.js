@@ -25,6 +25,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { TOKENS_ROOT, SYSTEM_ROOT, userWorkDir } = require('./data-paths');
 const { readTokenValue } = require('./token-value');
+const { readCredentialFile } = require('./credential-store');
 
 const CF_API = 'https://api.cloudflare.com/client/v4';
 const PROJECT_RE = /^[a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?$/;
@@ -36,7 +37,7 @@ function ownTokenFile(username, tokensRoot = TOKENS_ROOT) {
 
 function readOwnToken(username, tokensRoot = TOKENS_ROOT) {
   let raw;
-  try { raw = fs.readFileSync(ownTokenFile(username, tokensRoot), 'utf8').trim(); } catch { return null; }
+  try { raw = readCredentialFile(ownTokenFile(username, tokensRoot)).trim(); } catch { return null; }
   if (!raw) return null;
   let accountId = '';
   try {

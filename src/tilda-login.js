@@ -3,13 +3,9 @@
 // Headless Playwright login to tilda.ru (email + password form).
 // On success: saves cookie string to ~/agent-tokens/{userId}/tilda-session.
 
-const fs = require('fs');
 const path = require('path');
 const os = require('os');
-
-function sessionPath(userId) {
-  return path.join(os.homedir(), 'agent-tokens', String(userId), 'tilda-session');
-}
+const { writeCredential } = require('./credential-store');
 
 /**
  * @returns {{ status:'ok', cookiesCount:number }|{ error:string }}
@@ -122,9 +118,7 @@ async function startTildaLogin(userId, email, password) {
     const tildaCookies = allCookies.filter(c => c.domain.includes('tilda'));
     const cookieStr = tildaCookies.map(c => `${c.name}=${c.value}`).join('; ');
 
-    const file = sessionPath(userId);
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, cookieStr, { mode: 0o600 });
+    writeCredential(userId, 'tilda-session', cookieStr);
 
     await browser.close();
     console.log('[tilda-login] session saved userId=%s cookies=%d', userId, tildaCookies.length);

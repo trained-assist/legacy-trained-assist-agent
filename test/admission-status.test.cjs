@@ -1,7 +1,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const vm = require('node:vm');
+// Isolated AGENT_DATA_DIR: the profile maintenance lock (src/profile-lock.js,
+// epic #1784) resolves its file through data-paths — the harness must never see
+// (or create) a lock under the live agent-data.
+process.env.AGENT_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'adm-status-data-'));
+const profileLock = require('../src/profile-lock');
 const { createAdmissionStatus } = require('../src/admission-status');
 const tick = () => new Promise(r => setImmediate(r));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -20,7 +27,8 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
   // into a thin acceptedByChat/run-finished wrapper around _runTaskInner — the
   // harness exercises admission, so it pins the inner function (the wrapper's
   // helpers live outside this slice and would ReferenceError in the sandbox).
-  const start = source.indexOf('function _runTaskInner(opts) {');
+  const start = source.indexOf('async function _runTaskInner(opts) {');
+  assert.ok(start > 0, 'runner source must still declare "async function _runTaskInner(opts) {"');
   const end = source.indexOf('// Returns context card string', start);
   const messages = [], journal = new Map();
   const gate = chatPending ? deferred() : null;
@@ -32,10 +40,18 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
     console, Promise, Set, Date,
     STOP_TASK_INTENT: /$^/, GTD_STOP_INTENT: /$^/, WAKEUP_INTENT: /$^/, SKIP_TASK_INTENT: /$^/, ACTIVE_CHECKLIST_INTENT: /$^/, FORGOTTEN_CHECKLISTS_INTENT: /$^/, CHECKLIST_EDIT_INTENT: /$^/,
     isPreQueueQuickIntent: () => false,
+    // Module-level runner imports the slice needs once a test lets the pre-queue
+    // quick-answer block run (see the profile-lock quick-answer test below).
+    getQuickAnswer: () => 'быстрый ответ',
+    recordQuickExchange: () => 'ex-1',
+    escalateRows: () => [],
     ...intents,
     queuedSessions: new Set(),
     queuedByOwner: new Map(), pendingSessionStops: new Set(),
     ownerKey: (u, id) => `${u}\0${id}`, consumePendingStop: () => false,
+    stopUserTask: () => false,
+    // module-level runner helpers the /stop block calls (#1800 stop-trace gate)
+    stopTracesFor: () => 0,
     legacyAdmissionScopes: args => { scopeCalls.push(args); return ['lane:test']; },
     getCurrentSessionId: () => null,
     sessions: {
@@ -43,6 +59,16 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
       belongsToConversation: require('../src/session-store').belongsToConversation,
     },
     fromLegacyTelegram: () => null, sessionShadow: { shadowCompare: () => null },
+    // Real profile maintenance lock (#1784): the slice reads these as free
+    // variables, exactly like the runner's module-level imports.
+    isProfileLocked: profileLock.isProfileLocked,
+    waitForProfileUnlocked: profileLock.waitForProfileUnlocked,
+    // Stop-trace gate (spec §2а): the harness exercises admission, not stopping.
+    // Stubs keep the gate inert — no tombstone on disk, never blocks.
+    traceIdFor: () => 'tg:stub',
+    isRunStopped: () => false,
+    STOP_NOT_STARTED_MSG: '⛔ Остановлено до начала выполнения.',
+    liveRuns: new Map(),
     admission: {
       isBusy: () => !!gate,
       run: (_scopes, fn) => gate ? gate.promise.then(fn) : Promise.resolve().then(fn),
@@ -168,4 +194,78 @@ test('durable step prompt reaches the engine even when it matches a chat intent'
     run: async () => { engineRuns++; } });
   await h.start(); await tick();
   assert.equal(engineRuns, 1, 'engine ran — no chat-intent interception for a machine prompt');
+});
+
+// Epic #1784 (G1+G2): a profile under a maintenance lock must not START a run —
+// and the wait has to happen BEFORE savePendingTask. A run that is only waiting
+// for the lock must stay invisible to the migrator's drain: if it existed as a
+// journal entry, the migrator would wait for a run that waits for the migrator.
+test('profile maintenance lock: run waits before journaling, shows maintenance status, proceeds on release', async () => {
+  const username = opts.user.username;
+  assert.equal(profileLock.isProfileLocked(username), false, 'no lock at the start');
+  await profileLock.acquireProfileLock(username, { reason: 'migrate', ttlMs: 60_000 });
+  let started = 0;
+  try {
+    const h = harness({ run: async () => { started++; } });
+    const done = h.start();
+    await tick(); await tick();
+    assert.equal(started, 0, 'no run starts while the profile is locked');
+    assert.equal(h.journal.size, 0, 'a lock-waiting run must not exist as a journal entry');
+    assert.match(h.messages[0] || '', /обслуживании/, 'the chat is told the profile is under maintenance');
+    assert.ok(profileLock.isProfileLocked(username), 'the holder still holds it');
+    assert.ok(profileLock.releaseProfileLock(username));
+    await done; await tick();
+    assert.equal(started, 1, 'the run proceeds once the lock is gone');
+    assert.equal(h.journal.size, 0, 'journal cleared on completion');
+  } finally {
+    profileLock.releaseProfileLock(username);
+  }
+});
+
+// Control commands bypass the lock: /stop must work WHILE the migrator holds it,
+// or a user could not cancel anything during a maintenance window.
+test('control commands bypass the profile maintenance lock (stop never waits)', async () => {
+  const username = opts.user.username;
+  await profileLock.acquireProfileLock(username, { reason: 'migrate', ttlMs: 60_000 });
+  try {
+    const h = harness({ taskOpts: { ...opts, task: 'стоп' }, intents: { STOP_TASK_INTENT: /^стоп$/ } });
+    const out = await h.start();
+    assert.match(String(out), /Нет активной задачи|остановлен/i);
+    assert.equal(profileLock.isProfileLocked(username), true, 'the lock is untouched');
+  } finally {
+    profileLock.releaseProfileLock(username);
+  }
+});
+
+// A quick answer is a profile WRITE (recordQuickExchange appends into the
+// workspace), so it parks on the maintenance lock exactly like a run — and it
+// must never become a journal entry, waiting or not.
+test('pre-queue quick answer waits for the profile lock, then answers without journaling', async () => {
+  const username = opts.user.username;
+  await profileLock.acquireProfileLock(username, { reason: 'migrate', ttlMs: 60_000 });
+  let exchanges = 0;
+  try {
+    const h = harness({
+      taskOpts: { ...opts, task: '/agent_info' },
+      intents: {
+        isPreQueueQuickIntent: () => true,
+        getQuickAnswer: () => 'модель claude',
+        recordQuickExchange: () => { exchanges++; return 'ex-1'; },
+        escalateRows: () => [],
+      },
+    });
+    const done = h.start();
+    await tick(); await tick();
+    assert.equal(exchanges, 0, 'no profile write while the lock is held');
+    assert.equal(h.journal.size, 0, 'a quick answer is never a journal entry');
+    assert.match(h.messages[0] || '', /обслуживании/, 'the wait is announced');
+    assert.ok(profileLock.releaseProfileLock(username));
+    const out = await done;
+    assert.equal(out, 'модель claude');
+    assert.equal(exchanges, 1, 'the exchange lands only after the lock clears');
+    assert.equal(h.journal.size, 0, 'still no journal entry');
+    assert.ok(h.messages.some(m => /⚡/.test(m)), 'the \u26a1 reply went out');
+  } finally {
+    profileLock.releaseProfileLock(username);
+  }
 });
