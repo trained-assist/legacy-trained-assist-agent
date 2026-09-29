@@ -1,7 +1,7 @@
 // The shared web//run intake materializer (src/intake-materializer.js). Vitest so it
 // rides the existing `vitest run` suite without a package.json test:cjs union-line edit
 // (that line is a rebase conflict hotspot).
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -48,6 +48,22 @@ describe('shared intake materializer', () => {
       const claude = await buildFileNote({ filePath: file, mimeType: 'image/png', engine: 'claude', openrouterKey: 'k', vision });
       expect(claude).not.toMatch(/TEXT FROM IMAGE/);
       expect(calls).toBe(1);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+
+  it('logs the reason instead of silently dropping a failed recognition (#1844)', async () => {
+    const f = fixture();
+    try {
+      const file = join(f.workDir, 'y.png'); writeFileSync(file, 'img');
+      const vision = { extractImageText: async () => ({ ok: false, reason: 'http_402' }) };
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const note = await buildFileNote({ filePath: file, mimeType: 'image/png', engine: 'opencode', openrouterKey: 'k', vision });
+        expect(note).not.toMatch(/Распознано/);
+        expect(note).toMatch(/Файл сохранён/);
+        expect(warn.mock.calls.flat().join(' ')).toContain('http_402');
+        expect(warn.mock.calls.flat().join(' ')).toContain(file);
+      } finally { warn.mockRestore(); }
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   });
 

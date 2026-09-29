@@ -76,6 +76,7 @@ describe('extractImageText', () => {
     expect(r.ok).toBe(true);
     const imagePart = sentBody.messages[0].content.find(c => c.type === 'image_url');
     expect(imagePart.image_url.url).toMatch(/^data:image\/png;base64,/);
+    expect(sentBody.max_tokens).toBe(8192); // bounded output (#1844)
   });
 
   it('treats a refusal sentence as no extraction, not as content', async () => {
@@ -87,21 +88,53 @@ describe('extractImageText', () => {
     expect(r.reason).toBe('refusal');
   });
 
-  it('returns ok:false on a non-OK HTTP response', async () => {
+  it('retries once on 429 and reports it after the retry fails too', async () => {
+    let calls = 0;
     const r = await extractImageText({
       filePath, mimeType: 'image/jpeg', openrouterKey: 'test-key',
-      fetchImpl: async () => ({ ok: false, status: 429 }),
+      fetchImpl: async () => { calls++; return { ok: false, status: 429 }; },
     });
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('http_429');
+    expect(calls).toBe(2); // transient → exactly one retry (#1844)
   });
 
-  it('returns ok:false when fetch itself throws (network error)', async () => {
+  it('retries once when fetch itself throws (network error)', async () => {
+    let calls = 0;
     const r = await extractImageText({
       filePath, mimeType: 'image/jpeg', openrouterKey: 'test-key',
-      fetchImpl: async () => { throw new Error('boom'); },
+      fetchImpl: async () => { calls++; throw new Error('boom'); },
     });
     expect(r.ok).toBe(false);
     expect(r.reason).toBe('network_error');
+    expect(calls).toBe(2);
+  });
+
+  it('recovers when the first attempt fails transiently and the retry succeeds', async () => {
+    let calls = 0;
+    const r = await extractImageText({
+      filePath, mimeType: 'image/jpeg', openrouterKey: 'test-key',
+      fetchImpl: async () => {
+        if (++calls === 1) throw new Error('socket reset');
+        return { ok: true, json: async () => ({ choices: [{ message: { content: 'Текст: 123' } }] }) };
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain('123');
+    expect(calls).toBe(2);
+  });
+
+  it('does NOT retry a timeout — the call runs inline in the /run accept path', async () => {
+    let calls = 0;
+    const r = await extractImageText({
+      filePath, mimeType: 'image/jpeg', openrouterKey: 'test-key',
+      fetchImpl: async () => {
+        calls++;
+        const e = new Error('aborted'); e.name = 'TimeoutError'; throw e;
+      },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('timeout');
+    expect(calls).toBe(1);
   });
 });
