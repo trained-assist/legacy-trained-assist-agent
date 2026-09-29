@@ -111,13 +111,16 @@ function planLevelMap(policy) {
 
 // Quality escalation: the next level whose resolved engine/profile actually differs
 // from the current one (with bachelor and master on the same profile, a one-rung
-// bump would change nothing). null at the ceiling.
+// bump would change nothing). null at the ceiling. Automatic escalation never lands on
+// Claude/Codex (owner requirement #1899: no paid insurance when cheap models fail) —
+// a step runs there only when its plan declares that level as its minimum.
 function nextDistinctLevel(item, levelMap) {
   const cur = resolveStepExecution(item, { levelMap, useRoleMap: false });
   const from = LEVELS.indexOf(cur.modelLevel);
   if (from < 0) return null;
   for (let i = from + 1; i < LEVELS.length; i++) {
     const r = resolveStepExecution({ ...item, current_model_level: LEVELS[i] }, { levelMap, useRoleMap: false });
+    if (r.engine !== 'opencode') return null;
     if (r.engine !== cur.engine || r.ocProfile !== cur.ocProfile) return LEVELS[i];
   }
   return null;
