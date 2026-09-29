@@ -172,6 +172,21 @@ function getTraceFor(username, sessionId) {
   return res;
 }
 
+// «📋 Посмотреть input» for the web (US-INPUT-01): the REAL model input of the
+// run that produced an answer — latest run of this session started at or before
+// `before` (the answer's `at`). The doc is verbatim (run-input-store); the UI
+// must show it as-is. { ok:false, error } when the run predates the snapshot
+// store or was pruned (store keeps the newest KEEP runs per profile).
+function getRunInputFor(username, sessionId, before = null) {
+  if (!sessionId || !SESSION_ID_RE.test(sessionId)) return { ok: false, error: 'invalid session id' };
+  const workDir = userWorkDir(username);
+  if (!getSession(workDir, sessionId)) return { ok: false, error: 'session not found' };
+  const at = before == null || before === '' ? null : Number(before);
+  const hit = require('./run-input-store').findForSession(workDir, sessionId, Number.isFinite(at) ? at : null);
+  if (!hit) return { ok: false, error: 'no-input' };
+  return { ok: true, taskId: hit.taskId, at: hit.at, input: hit.doc };
+}
+
 // Stop the running task for one session, scoped to the chat it's attached to
 // (see stopUserTask's comment — a profile's workDir/activeTimers is shared
 // across chats, so an unscoped kill would also hit a different chat's task).
@@ -228,6 +243,16 @@ async function handleWebRoute(req, url, res, secrets) {
 
     const digest = await getDigestFor(username, sessionId);
     return json(res, 200, digest), true;
+  }
+
+  // ── GET /web/session/:id/input?at=<ts> — «📋 Посмотреть input» ─────────────
+  // Must be matched before the generic /web/session/:id branch (startsWith).
+  if (req.method === 'GET' && p.match(/^\/web\/session\/[^/]+\/input$/)) {
+    const username = webAuth(req, secrets.WEB_JWT_SECRET);
+    if (!username) return json(res, 401, { error: 'unauthorized' }), true;
+    const out = getRunInputFor(username, p.split('/')[3], url.searchParams.get('at'));
+    if (!out.ok && out.error === 'invalid session id') return json(res, 400, out), true;
+    return json(res, 200, out), true;
   }
 
   // ── GET /web/session/:id — full session with messages ────────────────────
@@ -529,6 +554,6 @@ async function streamWebTask({ req, res, secrets, username, task, sessionId, new
 }
 
 module.exports = {
-  handleWebRoute, listSessionsFor, getSessionFor, getTraceFor, prepareWebTaskFiles,
+  handleWebRoute, listSessionsFor, getSessionFor, getTraceFor, getRunInputFor, prepareWebTaskFiles,
   claimWebMutation, completeWebMutation, streamWebTask, stopSessionFor,
 };

@@ -26,6 +26,7 @@
     "test/bot-registry.test.cjs",
     "test/reproject-sandbox.test.cjs",
     "test/chat-pinned-project.test.cjs",
-    "test/published-page-password.test.cjs"
+    "test/published-page-password.test.cjs",
+    "test/web-session-input.test.cjs"
   ]
 }
