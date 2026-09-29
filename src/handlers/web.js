@@ -287,7 +287,7 @@ async function handleWeb(req, url, res, ctx) {
       const { getTraceFor } = require('../web-routes');
       const trace = getTraceFor(username, id);
       return json(res, 200, trace.ok
-        ? { ok: true, engine: trace.engine, sessionId: trace.sessionId, events: trace.events, byMessage: trace.byMessage, ttlMs: trace.ttlMs }
+        ? { ok: true, engine: trace.engine, source: trace.source, reasoning: trace.reasoning, sessionId: trace.sessionId, events: trace.events, byMessage: trace.byMessage, ttlMs: trace.ttlMs }
         : { ok: false, error: trace.error, engine: trace.engine || null });
     } catch (e) {
       return json(res, 500, { error: 'session trace failed' });

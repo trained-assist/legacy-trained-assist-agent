@@ -82,6 +82,12 @@ const TRACE_HEADERS = Object.freeze({
   'x-ladder-chat': '{env:AGENT_TRACE_CHAT}',
 });
 
+// AGENT_TRACE_CHAT value: runs with no chat (plan/durable sessions) → "" (stored as null),
+// never the literal string "null" that would group them under a fake chat in the log.
+function traceChat(chatId) {
+  return chatId == null || chatId === '' ? '' : String(chatId);
+}
+
 function providerConfig() {
   const models = {};
   for (const ladder of new Set(Object.values(PROFILE_LADDER))) {
@@ -126,5 +132,5 @@ function classifyWorkerFailure(text) {
 
 module.exports = {
   ROLES, PROFILES, PROFILE_LADDER, DIRECT_MODEL, PROVIDER_ID, TOKEN_ENV, TRACE_HEADERS,
-  ladderFor, modelFor, providerConfig, buildOcProfileOverrides, ladderToken, classifyWorkerFailure,
+  ladderFor, modelFor, providerConfig, traceChat, buildOcProfileOverrides, ladderToken, classifyWorkerFailure,
 };

@@ -25,7 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { tokensRoot } = require('./data-paths');
 const crypto = require('crypto');
 const { readTokenValue } = require('./token-value');
 const { readCredentialFile } = require('./credential-store');
@@ -52,11 +52,16 @@ function pickUsableTarget(store, item, step, engineHealth) {
     ...(Array.isArray(step.fallbacks) ? step.fallbacks : []),
   ];
   if (candidates.length < 2) return step;
-  const hardFailed = new Set(store.db.prepare(`SELECT engine FROM executions
+  const hardRows = store.db.prepare(`SELECT engine, profile FROM executions
       WHERE task_item_id = ? AND engine IS NOT NULL AND error_class IN ('AUTH','CONFIG')`)
-    .all(item.id).map(r => r.engine));
+    .all(item.id);
+  // OpenCode rungs differ by ladder profile: an exhausted `deepseek` ladder must not rule out the
+  // `free` ladder fallback (#1899). Other engines are hard-failed as a whole.
+  const failedOn = c => hardRows.some(r => r.engine === c.engine
+    && (c.engine !== 'opencode' || (r.profile || null) === (c.ocProfile || null)));
+  const hardFailed = { has: engine => hardRows.some(r => r.engine === engine) };
   const usable = c => {
-    if (hardFailed.has(c.engine)) return false;
+    if (failedOn(c)) return false;
     try { return (engineHealth(c.engine) || {}).status !== 'unavailable'; } catch { return true; }
   };
   const idx = candidates.findIndex(usable);
@@ -162,7 +167,7 @@ function durableItemCounts(store = durableStore()) {
 
 const GTD_DIR = 'gtd';
 const CHECKLIST_FILE = 'checklist.md';
-const TOKENS_ROOT = process.env.AGENT_TOKENS_ROOT || path.join(os.homedir(), 'agent-tokens');
+const TOKENS_ROOT = tokensRoot();
 
 // ── Durable-task scheduler wiring (Slice A, issue #1201) ────────────────────
 // The SQLite DurableTaskStore is the source of truth for durable tasks; this

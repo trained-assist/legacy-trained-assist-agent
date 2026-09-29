@@ -8,6 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { tokenPath, userTokensDir } = require('../../data-paths');
 const os = require('os');
 const { createHash } = require('crypto');
 const { marked } = require('marked');
@@ -38,7 +39,7 @@ function ownerIndexPath(username) {
 }
 
 function profileDomain(username) {
-  const domainFile = path.join(os.homedir(), 'agent-tokens', String(username || USER_ID), 'publish-domain');
+  const domainFile = tokenPath(String(username || USER_ID), 'publish-domain');
   try {
     const d = readCredentialFile(domainFile).trim();
     return publicPageBase(d);
@@ -357,7 +358,7 @@ module.exports = {
         if (!domain) return { error: 'domain required' };
         if (!USER_ID) return { error: 'USER_ID not set' };
         const clean = domain.trim().replace(/\/$/, '');
-        const dir = path.join(os.homedir(), 'agent-tokens', USER_ID);
+        const dir = userTokensDir(USER_ID);
         fs.mkdirSync(dir, { recursive: true });
         writeCredentialFile(path.join(dir, 'publish-domain'), clean);
         return { ok: true, domain: clean, message: `Домен установлен. Все новые ссылки будут на ${clean}/p/{slug}` };

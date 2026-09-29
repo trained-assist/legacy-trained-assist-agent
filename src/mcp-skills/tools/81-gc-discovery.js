@@ -14,14 +14,14 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { tokensRoot } = require('../../data-paths');
 const { readCredentialFile } = require('../../credential-store');
 
 const USER_ID = process.env.USER_ID || '';
 const FALLBACK_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 function tokenBase() {
-  return process.env.AGENT_TOKENS_DIR || path.join(os.homedir(), 'agent-tokens');
+  return tokensRoot();
 }
 
 function readConfig(userId) {

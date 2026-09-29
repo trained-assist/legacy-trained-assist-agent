@@ -143,4 +143,31 @@ async function alertMissingBotTokens(secrets, { fetchImpl = fetch } = {}) {
   }
 }
 
-module.exports = { loadSecrets, loadSecretValues, alertMissingBotTokens, REQUIRED, OPTIONAL };
+// Platform keys the MCP tool servers need (#1892). Loaded secrets live only in
+// memory on prod (GCP Secret Manager), never in process.env, so the tools get them
+// through this explicit list — tool env name → loaded-secrets field. Only the MCP
+// servers receive them (bridge, in memory); the engine env strips them
+// (SERVER_ONLY_ENV) and .mcp.json on disk never carries them.
+const TOOL_PLATFORM_KEYS = {
+  AGENT_BOT_TOKEN: 'BOT_TOKEN',
+  DEEPGRAM_API_KEY: 'DEEPGRAM_API_KEY',
+  CLOUDFLARE_API_TOKEN: 'CF_API_TOKEN',
+  HH_CLIENT_ID: 'HH_CLIENT_ID',
+  HH_CLIENT_SECRET: 'HH_CLIENT_SECRET',
+};
+
+let _loaded = null;
+function setLoadedSecrets(s) { _loaded = s || null; }
+function getLoadedSecrets() { return _loaded; }
+
+function toolPlatformEnv(src = _loaded) {
+  const out = {};
+  if (!src) return out;
+  for (const [envName, field] of Object.entries(TOOL_PLATFORM_KEYS)) {
+    if (src[field]) out[envName] = String(src[field]);
+  }
+  return out;
+}
+
+module.exports = { loadSecrets, loadSecretValues, alertMissingBotTokens, REQUIRED, OPTIONAL,
+  TOOL_PLATFORM_KEYS, setLoadedSecrets, getLoadedSecrets, toolPlatformEnv };

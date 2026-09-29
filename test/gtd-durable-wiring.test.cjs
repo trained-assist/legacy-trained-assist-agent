@@ -707,7 +707,9 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     const r = store.createPlan({
       profile_id: 'u1', goal: 'terminal recovery', user_value: 'uv',
       acceptance_criteria: [{ description: 'c' }],
-      execution_policy: { validation_mode: 'programmatic' },
+      // Pinned level without a fallback engine: default bachelor falls back to the free ladder
+      // (#1899), which would turn this AUTH into fallback_rung — covered by 22b.
+      execution_policy: { validation_mode: 'programmatic', level_map: { bachelor: { engine: 'opencode', ocProfile: 'deepseek' } } },
       items: [{ title: 'auth step', execution_kind: 'agent', executor_role: 'developer',
         minimum_model_level: 'bachelor', context_budget: 'small', validation: { command: 'true' }, max_attempts: 5 }],
     });
@@ -725,6 +727,39 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     const item = store.listTaskItems(r.task.id, 'u1')[0];
     ok(item.status === 'failed' && item.last_recovery_action === 'terminal',
       `p3c: terminal class leaves the item failed (got ${item.status}/${item.last_recovery_action})`);
+  }
+
+  // 22b. Exhausted llm-ladder (2026-09-29: Go weekly limit + OpenRouter credits at zero) on a
+  // default bachelor step: "every rung failed" is CONFIG → fallback_rung, and the next run of the
+  // step goes to the FREE ladder (opencode/free) — never Claude (owner requirement #1899).
+  {
+    const G22b = freshStore('22b');
+    const store = G22b.durableStore();
+    const r = store.createPlan({
+      profile_id: 'u1', goal: 'ladder exhausted', user_value: 'uv',
+      acceptance_criteria: [{ description: 'c' }],
+      execution_policy: { validation_mode: 'programmatic' },
+      items: [{ title: 'cheap step', execution_kind: 'agent', executor_role: 'developer',
+        minimum_model_level: 'bachelor', context_budget: 'small', validation: { command: 'true' }, max_attempts: 5 }],
+    });
+    store.updateTask(r.task.id, 'u1', { status: 'active' });
+    const engines = [];
+    const run = (now) => G22b.runDueDurable({
+      secrets: {}, now, isTaskRunning: () => false,
+      runTask: async (opts) => {
+        engines.push(`${opts.engine}/${opts.ocProfile}`);
+        return opts.ocProfile === 'deepseek' ? '⚠️ OpenCode завершился с ошибкой: every rung failed' : 'ok. DURABLE: done';
+      },
+    });
+    await run(Date.now()); await drain();
+    let item = store.listTaskItems(r.task.id, 'u1')[0];
+    ok(item.status === 'pending' && item.last_recovery_action === 'fallback_rung' && item.last_failure_class === 'CONFIG',
+      `ladder exhausted: CONFIG → fallback_rung (got ${item.status}/${item.last_failure_class}/${item.last_recovery_action})`);
+    store.db.prepare('UPDATE task_items SET due_at=NULL WHERE id=?').run(item.id);
+    await run(Date.now() + 24 * 3600 * 1000); await drain();
+    item = store.listTaskItems(r.task.id, 'u1')[0];
+    ok(engines.join(',') === 'opencode/deepseek,opencode/free' && item.status === 'done',
+      `ladder exhausted: next run goes to the free ladder (not claude) and completes (got ${engines.join(',')}/${item.status})`);
   }
 
   // 23. P3c recovery is bounded by DEFAULT_RECOVERY_BUDGET: even with attempt

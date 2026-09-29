@@ -47,6 +47,7 @@
   },
   "src/secrets.js": {
    "telegram_api": 1,
+   "env_bot_token": 1,
    "removeIn": "PR8"
   },
   "src/sent-messages.js": {
