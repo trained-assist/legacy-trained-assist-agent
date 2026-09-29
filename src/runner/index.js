@@ -12,7 +12,7 @@ const answerActions = require('../answer-actions');
 const { getCurrentSessionId, setCurrentSessionId } = require('../session-store');
 const projects = require('../projects');
 const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag } = require('../auth-flag');
-const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice } = require('../engine-crash-policy');
+const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice, loopRecoveryEngine, loopFallbackNotice } = require('../engine-crash-policy');
 const ocLadder = require('../opencode-ladder-provider');
 const { MAX_RETRIES: MAX_INCOMPLETE_RETRIES, getRetryDelayMs } = require('../retry-policy');
 const { recordUsage } = require('../usage-store');
@@ -2516,6 +2516,33 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     if (activeSessionId && partialText) {
       sessions.appendReply(user.workDir, activeSessionId, `[прервано: модель зациклилась]\n${partialText}`);
       setCurrentSessionId(user.workDir, activeSessionId, chatId, audience, threadId);
+    }
+    // One automatic re-run on Claude instead of asking the user to /switch2klod.
+    const recoveryEngine = loopRecoveryEngine(engine, engineFallbackDone);
+    if (recoveryEngine) {
+      const fallbackMsg = loopFallbackNotice();
+      if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, fallbackMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId));
+      else await tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId);
+      if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, fallbackMsg);
+      _recordFailureAttempt(executionId, {
+        taskId, projectId, sessionId: activeSessionId, webExactSession, engine,
+        errorText: codexErrorMsg || 'loop guard: repeated identical output',
+        action: 'engine_fallback_to_claude_loop',
+      });
+      const queuedRetry = runTask({
+        initiatedAt, threadId,
+        taskId: `${user.username}-${Date.now()}`,
+        user, task, context,
+        sessionId: activeSessionId, webExactSession,
+        forceClaude,
+        initialMsgId: msgId, pinnedMsgId, secrets,
+        retryCount, continuationCount, mode, projectId, internalGtd,
+        engine: recoveryEngine,
+        engineFallbackDone: true,
+        stepTimeoutMs,
+        executionId,
+      });
+      return { queuedRetry };
     }
     const loopMsg = '⛔ Остановлено: модель зациклилась (повторяла одно и то же действие N раз, реальный вызов не выполнялся). Публикация не выполнена. Переключись на Claude: /switch2klod и повтори запрос.';
     if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, loopMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, loopMsg, threadId));
