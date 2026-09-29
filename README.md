@@ -1000,7 +1000,8 @@ cat ~/agent-tokens/<username>/<service-key>
 LOGIN_EMAIL="user@example.com" \
 LOGIN_PASSWORD="secret" \
 LOGIN_URL="https://app.example.com/login" \
-timeout 30 node ~/browser-session/login.js
+timeout 30 node /home/vova/agent-master/infra/browser-session/login.js
+# (the hand copy ~/browser-session/login.js is deleted — nothing deploys it, #1875)
 # Expected outputs:
 # {"ok":true, "navigated":true} → login succeeded (URL changed)
 # {"ok":true, "already_logged_in":true} → already logged in (session alive)

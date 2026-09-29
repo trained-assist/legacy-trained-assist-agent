@@ -49,9 +49,10 @@ function generateLoginLink(userId, domain) {
 // login.js runs from the release this module ships in, so a merged fix is live on the
 // next deploy. It used to run a hand-copied ~/browser-session/login.js that nothing
 // deployed (setup.sh never copied it) and that silently drifted from the repo (#1866).
+// Shared with login-server.js so both executable paths stay on the same file (#1875).
+const { resolveShipped } = require('../../../infra/browser-session/script-paths');
 function loginScriptPath() {
-  const shipped = path.join(__dirname, '..', '..', '..', 'infra', 'browser-session', 'login.js');
-  return fs.existsSync(shipped) ? shipped : path.join(os.homedir(), 'browser-session', 'login.js');
+  return resolveShipped('login.js');
 }
 
 const CDP_PORT = 9224;
