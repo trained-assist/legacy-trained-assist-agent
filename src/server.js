@@ -277,6 +277,10 @@ function scheduleGtdController(secrets) {
   // Kick deps are recorded HERE, not on the first 2-min tick: a wake or a
   // credential write in the first minutes after boot must fire immediately.
   gtd._setKickDeps({ secrets, runTask, isTaskRunning: isRunning, freeSlots });
+  // In-process fast path for the kick (wait-latency §2.2): a credential written
+  // by the server itself wakes the executor directly, no HTTP. The MCP process
+  // has no such registration and falls back to /internal/durable/kick.
+  require('./durable-kick').useInProcess(() => { gtd.kickDurable(); });
   const waitTickMs = process.env.DURABLE_WAIT_TICK_MS != null
     ? Number(process.env.DURABLE_WAIT_TICK_MS) : 30_000;
   if (Number.isFinite(waitTickMs) && waitTickMs > 0) {
@@ -701,7 +705,12 @@ async function main() {
 
     // ── Auth: all endpoints require Bearer token ──────────────────────────────
     const auth = req.headers['authorization'] || '';
-    if (auth !== `Bearer ${secrets.AGENT_SECRET}`) {
+    // Exception (wait-latency a61bb2c5): the durable kick route is a pure "poll
+    // now" trigger, and the MCP tool process that calls task_item_wake holds the
+    // run-scoped AGENT_RUN_TOKEN (never AGENT_SECRET, agent-run-tokens.js). It is
+    // accepted for THIS route only; handlers/internal.js serves it.
+    const kickByRunToken = url.pathname === '/internal/durable/kick' && !!runTokenFromAuthHeader(auth);
+    if (auth !== `Bearer ${secrets.AGENT_SECRET}` && !kickByRunToken) {
       res.writeHead(401).end(JSON.stringify({ error: 'unauthorized' }));
       return;
     }

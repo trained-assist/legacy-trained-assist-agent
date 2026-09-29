@@ -343,7 +343,12 @@ module.exports = {
       },
       handler: async ({ item_id, message }, ctx) => {
         const profileId = requireProfile(ctx);
-        return store().wakeItem(item_id, profileId, { message: message ?? null, by: 'user' });
+        const out = store().wakeItem(item_id, profileId, { message: message ?? null, by: 'user' });
+        // The wake is an event outside the wait tick: nudge the executor now so the
+        // step continues in seconds, not at the next tick (durable-wait-latency DW-04).
+        // Best-effort — a missed kick still resolves on the wait tick.
+        if (out && !out.error) { try { await require('../../durable-kick').notify('wake'); } catch { /* never fails the wake */ } }
+        return out;
       },
     },
 

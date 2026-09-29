@@ -1857,7 +1857,7 @@ let _kickDeps = null;
 let _kickTimer = null;
 const KICK_DEBOUNCE_MS = Number(process.env.DURABLE_KICK_DEBOUNCE_MS || 3000);
 function kickDurable() {
-  if (!_kickDeps || _kickTimer) return;
+  if (!_kickDeps || _kickTimer) return false;
   _kickTimer = setTimeout(() => {
     _kickTimer = null;
     const d = _kickDeps;
@@ -1865,6 +1865,7 @@ function kickDurable() {
       .catch(e => console.error('[gtd-durable] kick error:', e.message));
   }, KICK_DEBOUNCE_MS);
   _kickTimer.unref?.();
+  return true;
 }
 function _setKickDeps(d) { _kickDeps = d; }
 
