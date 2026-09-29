@@ -217,4 +217,18 @@ describe('playbook_run mode selection (#1887 п.1)', () => {
     expect(byId.mode).toBe('guide');
     expect(checklist(projectDir('proj-a'))).toMatch(/^Goal: По project_id$/m);
   });
+  it('GTD drives the tool-written guide by Owner-session; the busy background plan does not block it (S4)', async () => {
+    telegram();
+    const tools = loadTools();
+    await tools.playbook_run.handler({ playbook_id: 'development', goal: 'Гайд под GTD' }, CTX);
+    const bg = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'Фоновый рядом', activate: true }, CTX);
+    expect(bg.mode_reason).toBe('foreground_busy');
+    const gtd = require(GTD);
+    const workDir = join(root, 'users', PROFILE);
+    const rec = await gtd.scheduleFromChecklist({ workDir, sessionId: SID, chatId: CHAT, username: PROFILE, projectDir: projectDir('proj-a') });
+    expect(rec && rec.sessionId).toBe(SID);
+    expect(rec.status).toBe('open');
+    const other = await gtd.scheduleFromChecklist({ workDir, sessionId: 'tg-777001-other', chatId: CHAT, username: PROFILE, projectDir: projectDir('proj-a') });
+    expect(other === null || other.sessionId === SID).toBe(true);
+  });
 });
