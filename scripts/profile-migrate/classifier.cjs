@@ -8,8 +8,12 @@
 // READ-ONLY by contract: this script never writes, moves or deletes anything
 // inside a profile. Its only writes are (a) an optional --json report path,
 //   which is rejected if it points inside the users root, and (b) a temp file
-// for the gitleaks report (in os.tmpdir, deleted afterwards). Delete/move
-// logic lands in a later phase-runner PR.
+// for the gitleaks report (in os.tmpdir, deleted afterwards). The mutating
+// half of the migration lives in runner.cjs and reuses THIS walk through the
+// `opts.onEntry` callback, so a plan can never drift from the classification:
+//   opts.onEntry({kind:'file'|'dir', rel, action, ruleIdx, size?, isSymlink?, isFile?})
+// called once per directory entry (size only for files). Callback exceptions
+// propagate — they are a caller bug, not a classification error.
 //
 // Usage:
 //   node scripts/profile-migrate/classifier.cjs --profile <name> [flags]
@@ -254,6 +258,7 @@ function emptyCounter() {
 function classifyProfile(profileRoot, opts = {}) {
   const rules = opts.rules;
   if (!Array.isArray(rules) || !rules.length) throw new Error('classifyProfile: compiled rules are required');
+  const onEntry = typeof opts.onEntry === 'function' ? opts.onEntry : null;
   const absRoot = path.resolve(profileRoot);
   const stat = {
     files: 0, bytes: 0, dirs: 0, symlinks: 0,
@@ -291,6 +296,7 @@ function classifyProfile(profileRoot, opts = {}) {
         const idx = classifyIndex(rel, parentIdx, repoHere, rules);
         // -1 (UNKNOWN) must not poison the subtree: an unclassified directory
         // just means "no rule hit yet", so children start from scratch.
+        if (onEntry) onEntry({ kind: 'dir', rel, action: idx === -1 ? UNKNOWN : rules[idx].action, ruleIdx: idx });
         walk(rel, idx === -1 ? Infinity : idx, repoHere);
         continue;
       }
@@ -309,6 +315,7 @@ function classifyProfile(profileRoot, opts = {}) {
       stat.bytes += size;
       const idx = classifyIndex(rel, parentIdx, repoHere, rules);
       const action = idx === -1 ? UNKNOWN : rules[idx].action;
+      if (onEntry) onEntry({ kind: 'file', rel, action, ruleIdx: idx, size, isSymlink: entry.isSymbolicLink(), isFile: entry.isFile() });
       add(stat.classes[action], 1, size);
       if (idx !== -1) {
         add(stat.ruleHits[idx], 1, size);
