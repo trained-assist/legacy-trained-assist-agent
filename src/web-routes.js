@@ -255,20 +255,9 @@ async function handleWebRoute(req, url, res, secrets) {
     return json(res, 200, out), true;
   }
 
-  // ── GET /web/session/:id — full session with messages ────────────────────
-  if (req.method === 'GET' && p.startsWith('/web/session/')) {
-    const username = webAuth(req, secrets.WEB_JWT_SECRET);
-    if (!username) return json(res, 401, { error: 'unauthorized' }), true;
-
-    const sessionId = p.slice('/web/session/'.length);
-    if (!sessionId || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) return json(res, 400, { error: 'invalid session id' }), true;
-
-    const out = getSessionFor(username, sessionId);
-    if (!out) return json(res, 404, { error: 'session not found' }), true;
-    return json(res, 200, out), true;
-  }
-
   // ── GET /web/session/:id/trace — full working log (reasoning/tools) ───────
+  // Must be matched before the generic /web/session/:id branch (startsWith) —
+  // below it the two-segment path was swallowed and always answered 400.
   if (req.method === 'GET' && p.match(/^\/web\/session\/[^/]+\/trace$/)) {
     const username = webAuth(req, secrets.WEB_JWT_SECRET);
     if (!username) return json(res, 401, { error: 'unauthorized' }), true;
@@ -282,7 +271,20 @@ async function handleWebRoute(req, url, res, secrets) {
       // (claude engine, pre-migration session). Signal it distinctly.
       return json(res, 200, { ok: false, error: trace.error, engine: trace.engine || null }), true;
     }
-    return json(res, 200, { ok: true, engine: trace.engine, sessionId: trace.sessionId, events: trace.events, byMessage: trace.byMessage, ttlMs: trace.ttlMs }), true;
+    return json(res, 200, { ok: true, engine: trace.engine, source: trace.source, reasoning: trace.reasoning, sessionId: trace.sessionId, events: trace.events, byMessage: trace.byMessage, ttlMs: trace.ttlMs }), true;
+  }
+
+  // ── GET /web/session/:id — full session with messages ────────────────────
+  if (req.method === 'GET' && p.startsWith('/web/session/')) {
+    const username = webAuth(req, secrets.WEB_JWT_SECRET);
+    if (!username) return json(res, 401, { error: 'unauthorized' }), true;
+
+    const sessionId = p.slice('/web/session/'.length);
+    if (!sessionId || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) return json(res, 400, { error: 'invalid session id' }), true;
+
+    const out = getSessionFor(username, sessionId);
+    if (!out) return json(res, 404, { error: 'session not found' }), true;
+    return json(res, 200, out), true;
   }
 
   // ── GET /web/files/tree — directory tree inside profile workDir ──────────

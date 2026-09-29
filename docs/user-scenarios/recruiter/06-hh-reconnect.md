@@ -75,6 +75,8 @@ User: покажи топ кандидатов
 - Пользователь не видит запроса на переавторизацию
 - Новый токен записан в `~/agent-tokens/{username}/hh`
 - refresh_token обновлён тоже (HH ротирует их)
+- То же в фоне: `hh_sync_messages` сам обновляет просроченный токен через refresh_token, без переподключения. Для этого серверу инструментов нужны HH_CLIENT_ID/HH_CLIENT_SECRET — они приходят из секретов сервера (issue #1892, см. `core/06-tool-platform-keys.md`); в логе нет «HH OAuth client credentials are not configured»
+- Переподключение нужно только если HH отклонил refresh (сценарий B2)
 
 ---
 

@@ -91,7 +91,7 @@ function buildStorageState(tokensDir) {
 // A pure function of its inputs + process.env, so the credential contract
 // (scripts/check-credential-reachability.js, #1891) can check the REAL object that
 // reaches a skill instead of grepping this file.
-function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, extraEnv } = {}) {
+function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, toolSecrets, extraEnv } = {}) {
   return {
     USER_ID: String(userId || ''),
     WORK_DIR: workDir,
@@ -136,6 +136,10 @@ function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, ex
     // Per-run flags for the MCP server processes themselves (HERMES_DEPTH). This env
     // wins over the engine's env — see the note below — so it is the one place a run
     // can stamp a fact the server must see.
+    // Platform keys from the loaded secrets (#1892: HH OAuth client for token refresh,
+    // bot/Deepgram/Cloudflare tokens). Only writeRunMcpConfig(bridged) passes them — the
+    // specs stay in memory there; writeMcpConfig writes .mcp.json, which the engine reads.
+    ...(toolSecrets || {}),
     ...(extraEnv || {}),
     // NO AGENT_SESSION_FILE here: .mcp.json is ONE file per profile, rewritten by every run,
     // and config env overrides the engine's env — parallel sessions of a profile (different
@@ -145,7 +149,7 @@ function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, ex
   };
 }
 
-function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, extraEnv, siblings = true } = {}) {
+function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, extraEnv, toolSecrets, siblings = true } = {}) {
   // Note: --user-data-dir creates a persistent context, which is incompatible
   // with --storage-state (Playwright limitation). We rely on --storage-state
   // for both cookie injection and session persistence. Per-user isolation is
@@ -202,7 +206,7 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
   if (skillsPlan && !skillsFile) skillsPlan = null;
   if (!skillsPlan) { try { fs.rmSync(path.join(workDir, skillsEnforce.EFFECTIVE_FILE), { force: true }); } catch { /* stale file is inert: no env points at it */ } }
 
-  const mcpToolEnv = buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, extraEnv });
+  const mcpToolEnv = buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, toolSecrets, extraEnv });
 
   const config = {
     mcpServers: {
@@ -263,7 +267,7 @@ function writeMcpConfig(workDir, userId, opts = {}) {
 function writeRunMcpConfig(workDir, userId, opts = {}, { bridged = false } = {}) {
   if (!bridged) return { mcpConfig: writeMcpConfig(workDir, userId, opts), servers: null };
   const { bridgedMcpConfig } = require('./agent-mcp-bridge');
-  const real = buildMcpConfig(workDir, userId, opts);
+  const real = buildMcpConfig(workDir, userId, { ...opts, toolSecrets: require('./secrets').toolPlatformEnv() });
   const configPath = path.join(workDir, '.mcp.json');
   atomicJson(configPath, bridgedMcpConfig(real), { space: 2 });
   return { mcpConfig: configPath, servers: real.mcpServers };
