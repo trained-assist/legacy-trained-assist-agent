@@ -164,8 +164,21 @@ const {
   OC_GO_TOGGLE_INTENT, AGENT_INFO_INTENT, MODEL_INFO_INTENT,
 } = require('./quick/profile-commands');
 const { secretsQuickAnswer, SECRETS_LIST_INTENT, SECRETS_LOG_INTENT } = require('./quick/secrets');
+// A standalone slash command (one message, one line: «/bg_notify_on», «[Сообщение 1]\n/usage»)
+// is ALWAYS tried before the queue — the class fix for the whitelist whack-a-mole above
+// (/switch2codex 09-24, /oc_go 09-26, /bg_notify_on 09-29 each «Ожидаю завершения предыдущей
+// работы»). Owner requirement 2026-09-29: Telegram commands and quick answers are never
+// blocked by a running agent. getQuickAnswer is sync local state only (no Claude, no network),
+// so every command it answers is safe here; a command it doesn't know returns null and falls
+// through to the normal queued path (runner/index.js).
+function isStandaloneSlashCommand(task) {
+  const raw = String(task || '').trim();
+  if ((raw.match(/\[Сообщение \d+\]/g) || []).length > 1) return false;
+  const text = raw.replace(/^\[Сообщение \d+\]\s*/, '').replace(/^@\w+\s*/, '').trim();
+  return /^\/[A-Za-z0-9_а-яё]/i.test(text) && !/\n/.test(text) && text.length <= 200;
+}
 function isPreQueueQuickIntent(task) {
-  return PING_INTENT.test(task) || fuzzyInfoIntent(HELP_INTENT, task) || AGENT_INFO_INTENT.test(task) ||
+  return isStandaloneSlashCommand(task) || PING_INTENT.test(task) || fuzzyInfoIntent(HELP_INTENT, task) || AGENT_INFO_INTENT.test(task) ||
     fuzzyInfoIntent(MODEL_INFO_INTENT, task) || fuzzyInfoIntent(SECRETS_LIST_INTENT, task) || fuzzyInfoIntent(SECRETS_LOG_INTENT, task) ||
     fuzzyInfoIntent(USAGE_INTENT, task) || fuzzyInfoIntent(CONTEXT_OFF_INTENT, task) || fuzzyInfoIntent(CONTEXT_ON_INTENT, task) ||
     ENGINE_SWITCH_INTENT.test(task) || OC_GO_TOGGLE_INTENT.test(task) ||
@@ -1032,6 +1045,7 @@ module.exports = {
   MODEL_INFO_INTENT,
   BUG_OR_FEATURE_INTENT,
   isPreQueueQuickIntent,
+  isStandaloneSlashCommand,
   fuzzyInfoIntent,
   isSlashCommand,
   shouldAttemptQuickAnswer,
