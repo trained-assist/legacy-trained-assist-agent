@@ -1,6 +1,6 @@
 'use strict';
 
-// Hermes Phase 1 (docs/HERMES-INTEGRATION-CHECKLIST.md) — «тупой worker»:
+// Hermes Phase 1 — «тупой worker»:
 // один LLM-вызов со structured-output контрактом, без памяти/инструментов/cron.
 // Переиспользует GigaChat(primary)+OpenRouter(fallback), уже проверенные в
 // hh-scoring.js (теперь платформенный src/llm-client.js) — отдельный провайдер не нужен.

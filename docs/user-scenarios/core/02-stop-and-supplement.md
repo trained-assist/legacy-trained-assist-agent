@@ -233,7 +233,7 @@ GTD-итерации, durable-шаг. Стоп и Дополнить дейст�
 5. R4: durable-шаг → Стоп → `cancelled_by_user`, нет `recoverDurableItem`.
 6. R5: `timedOut=true` + `userStopped` → нет автопродолжения.
 7. K14: Стоп → рестарт (новый инстанс runner на том же data-dir, **не** полный
-   `server.js` — см. agent-notes) → `resumePendingTasks` не поднимает цепочку.
+   `server.js`) → `resumePendingTasks` не поднимает цепочку.
 8. K1: Стоп → новый запрос в тот же диалог → запускается.
 9. K4: две цепочки в разных чатах одного профиля → стоп одной не трогает другую.
 10. SS-02: частичный результат записан в сессию, статус `CANCELLED`.

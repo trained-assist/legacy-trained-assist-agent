@@ -46,7 +46,7 @@ Existing call sites to copy from:
 
 `google/gemini-2.0-flash-001` is retired (404) — do not use it; `2.5-flash` /
 `2.5-flash-lite` are the live replacements (confirmed working on CID/Cyrillic
-PDF OCR, see `agent-notes.md`).
+PDF OCR).
 
 ## Free-tier ladder for PR-review/auto-fix (bench-validated 2026-09-26)
 

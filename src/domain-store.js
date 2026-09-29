@@ -1,7 +1,7 @@
 'use strict';
 
 // Domain Store — generic, scoped JSON records for Domain Skill Servers.
-// Spec: docs/specs/domain-module-actions-cron-web-surface-v2.md §3.
+// Tracked by issue #1220 (Domain Store + Domain Web Surface над action-v1).
 //
 // Core owns persistence; a provider only reaches this through the scoped
 // capability layer (a separate slice). Scope is therefore an explicit argument
