@@ -50,3 +50,20 @@ test('#1479: short standalone info questions and slash commands still answer ins
     assert.equal(isPreQueueQuickIntent(q), true, q);
   }
 });
+
+// Class fix 2026-09-29 (/bg_notify_on queued behind a running task — 4th whitelist miss).
+// Owner requirement: Telegram commands and quick answers are never blocked by a running agent.
+// Any standalone slash command is tried pre-queue; unknown ones fall through (getQuickAnswer=null).
+const { isStandaloneSlashCommand } = require('../src/runner/intent-engine');
+test('any standalone slash command is a pre-queue candidate (no whitelist entry needed)', () => {
+  for (const c of ['/bg_notify_on', '/bg_notify_off', '/bg_notify_status', '/gdrive_notif_off', '/sessions',
+    '[Сообщение 1]\n/bg_notify_on', '@bot /usage', '/some_future_command arg']) {
+    assert.equal(isPreQueueQuickIntent(c), true, c);
+  }
+});
+test('a task that merely contains a slash command is NOT a standalone command', () => {
+  for (const t of ['/bg_notify_on\nи ещё сделай отчёт', '[Сообщение 1]\n/usage\n\n[Сообщение 2]\nпочини баг',
+    'посмотри /tmp/x.log', '/' + 'x'.repeat(250)]) {
+    assert.equal(isStandaloneSlashCommand(t), false, t);
+  }
+});
