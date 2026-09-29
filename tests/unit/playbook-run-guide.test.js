@@ -31,7 +31,7 @@ const CTX = { userId: PROFILE };
 const CHAT = '777001';
 const SID = 'tg-777001-guide-sess';
 const GATE = 'Wait for CI and staging; repair failures';
-const ENV_KEYS = ['USERS_DIR', 'AGENT_DATA_DIR', 'PLAYBOOK_SIBLING_ROOTS', 'AGENT_CHAT_ID', 'AGENT_SESSION_ID', 'AGENT_USER_ID', 'PLAYBOOK_GUIDE_DEFAULT'];
+const ENV_KEYS = ['USERS_DIR', 'AGENT_DATA_DIR', 'PLAYBOOK_SIBLING_ROOTS', 'AGENT_SESSION_FILE', 'AGENT_SESSION_ID', 'AGENT_USER_ID', 'PLAYBOOK_GUIDE_DEFAULT'];
 
 let root; let prevEnv; let prevCwd;
 
@@ -47,8 +47,14 @@ function makeProject(id) {
   writeFileSync(join(dir, 'project.json'), JSON.stringify({ id, name: id, type: 'generic' }));
   return dir;
 }
+// The runner stamps the current chat on the session record; feature code reads it there
+// (src/run-identity), never from the chat-id env (epic #1365 ratchet). Chat 0 = Web → null.
 function telegram({ chat = CHAT, sid = SID } = {}) {
-  process.env.AGENT_CHAT_ID = chat;
+  const dir = join(root, 'users', PROFILE, 'sessions');
+  mkdirSync(dir, { recursive: true });
+  const f = join(dir, `${sid}.json`);
+  writeFileSync(f, JSON.stringify({ id: sid, liveChatId: (chat && String(chat) !== '0') ? String(chat) : null }));
+  process.env.AGENT_SESSION_FILE = f;
   process.env.AGENT_SESSION_ID = sid;
   process.env.AGENT_USER_ID = PROFILE;
 }
@@ -61,7 +67,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'playbook-guide-'));
   process.env.USERS_DIR = join(root, 'users');
   process.env.AGENT_DATA_DIR = join(root, 'data');
-  for (const k of ['AGENT_CHAT_ID', 'AGENT_SESSION_ID', 'AGENT_USER_ID', 'PLAYBOOK_GUIDE_DEFAULT']) delete process.env[k];
+  for (const k of ['AGENT_SESSION_FILE', 'AGENT_SESSION_ID', 'AGENT_USER_ID', 'PLAYBOOK_GUIDE_DEFAULT']) delete process.env[k];
   const sibling = join(root, 'siblings', 'trained-assist-engineering');
   mkdirSync(join(sibling, 'playbooks'), { recursive: true });
   writeFileSync(join(sibling, 'playbooks', 'development.json'),

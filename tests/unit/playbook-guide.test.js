@@ -9,30 +9,58 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const g = require('../../src/playbook-guide.js');
+const runIdentity = require('../../src/run-identity.js');
 
-const TG = { AGENT_CHAT_ID: '777', AGENT_SESSION_ID: 'tg-777-s' };
+const TG = { interactive: true };
 
 describe('resolveMode', () => {
   it.each([
     [{ mode: 'background' }, TG, 'background', 'explicit'],
-    [{ mode: 'guide' }, { AGENT_CHAT_ID: '0' }, 'guide', 'explicit'],
-    [{}, { AGENT_CHAT_ID: '0', AGENT_SESSION_ID: 'web-1' }, 'background', 'non_interactive'],
-    [{}, { AGENT_CHAT_ID: '777', AGENT_SESSION_ID: 's-plan-x' }, 'background', 'non_interactive'],
-    [{}, { AGENT_CHAT_ID: '777' }, 'background', 'non_interactive'],
-    [{}, {}, 'background', 'non_interactive'],
+    [{ mode: 'guide' }, { interactive: false }, 'guide', 'explicit'],
+    [{}, { interactive: false }, 'background', 'non_interactive'],
     [{ openGuide: { goal: 'A' } }, TG, 'background', 'foreground_busy'],
     [{ sessionPlan: { id: 't1' } }, TG, 'background', 'session_has_plan'],
-    [{}, { ...TG, PLAYBOOK_GUIDE_DEFAULT: '0' }, 'background', 'guide_default_off'],
+    [{}, { interactive: true, guideDefault: false }, 'background', 'guide_default_off'],
     [{}, TG, 'guide', 'default_telegram'],
     [{ activate: true }, TG, 'guide', 'default_telegram'],
-    [{}, { AGENT_CHAT_ID: '-100123', AGENT_SESSION_ID: 'tg-g' }, 'guide', 'default_telegram'],
   ])('%j in %j → %s/%s', (args, env, mode, reason) => {
-    expect(g.resolveMode({ ...args, env })).toEqual({ mode, reason });
+    expect(g.resolveMode({ ...args, ...env })).toEqual({ mode, reason });
   });
 
   it('explicit guide + activate → MODE_CONFLICT; unknown mode → MODE_INVALID', () => {
-    expect(() => g.resolveMode({ mode: 'guide', activate: true, env: TG })).toThrow(expect.objectContaining({ code: 'MODE_CONFLICT' }));
-    expect(() => g.resolveMode({ mode: 'fg', env: TG })).toThrow(expect.objectContaining({ code: 'MODE_INVALID' }));
+    expect(() => g.resolveMode({ mode: 'guide', activate: true, ...TG })).toThrow(expect.objectContaining({ code: 'MODE_CONFLICT' }));
+    expect(() => g.resolveMode({ mode: 'fg', ...TG })).toThrow(expect.objectContaining({ code: 'MODE_INVALID' }));
+  });
+});
+
+describe('run identity (session file, not the chat-id env)', () => {
+  let root;
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  function session(md) {
+    root = mkdtempSync(join(tmpdir(), 'run-id-'));
+    const f = join(root, 'sess.json');
+    writeFileSync(f, JSON.stringify(md));
+    return f;
+  }
+
+  it('interactive Telegram: real chat + live session → interactive', () => {
+    const f = session({ id: 'tg-1', liveChatId: 777 });
+    expect(runIdentity.currentRunIdentity({ AGENT_SESSION_FILE: f, AGENT_SESSION_ID: 'tg-1' }))
+      .toEqual({ chatId: '777', sessionId: 'tg-1', interactive: true });
+  });
+
+  it('legacy ownerChatId read-compat; Web chat 0 and plan steps are not interactive', () => {
+    const legacy = session({ ownerChatId: 5 });
+    expect(runIdentity.sessionChatId(legacy)).toBe('5');
+    const web = session({ id: 'web-1', liveChatId: null });
+    expect(runIdentity.currentRunIdentity({ AGENT_SESSION_FILE: web, AGENT_SESSION_ID: 'web-1' }).interactive).toBe(false);
+    const plan = session({ id: 's-plan-x', liveChatId: 777 });
+    expect(runIdentity.currentRunIdentity({ AGENT_SESSION_FILE: plan, AGENT_SESSION_ID: 's-plan-x' }).interactive).toBe(false);
+  });
+
+  it('no session file → no chat, non-interactive', () => {
+    expect(runIdentity.currentRunIdentity({ AGENT_SESSION_ID: 'tg-1' }))
+      .toEqual({ chatId: null, sessionId: 'tg-1', interactive: false });
   });
 });
 

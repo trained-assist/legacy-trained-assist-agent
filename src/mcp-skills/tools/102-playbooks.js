@@ -110,18 +110,23 @@ const STEPS_HINT = 'steps — все шаги плана с enabled. Шаги, �
 // matter (no explicit mode, interactive Telegram).
 function chooseRunMode({ profileId, mode, activate, project_id }) {
   const guide = require('../../playbook-guide');
+  const { currentRunIdentity } = require('../../run-identity');
   const { userWorkDir } = require('../../data-paths');
   const env = process.env;
+  const identity = currentRunIdentity(env);
   const profileRoot = userWorkDir(profileId);
-  const probe = !mode && guide.isInteractiveTelegram(env);
-  const openGuide = probe ? guide.findOpenGuide({ profileRoot, chatId: env.AGENT_CHAT_ID }) : null;
+  const probe = !mode && identity.interactive;
+  const openGuide = probe ? guide.findOpenGuide({ profileRoot, chatId: identity.chatId }) : null;
   let sessionPlan = null;
   if (probe && !openGuide) {
-    try { sessionPlan = batchStore().activeTaskForSession(profileId, env.AGENT_SESSION_ID); } catch { /* fail-open */ }
+    try { sessionPlan = batchStore().activeTaskForSession(profileId, identity.sessionId); } catch { /* fail-open */ }
   }
   let chosen;
-  try { chosen = guide.resolveMode({ mode, activate, env, openGuide, sessionPlan }); }
-  catch (e) { throw playbookError(e.code || 'MODE_INVALID', e.message); }
+  try {
+    chosen = guide.resolveMode({
+      mode, activate, interactive: identity.interactive, guideDefault: guide.guideDefaultOn(env), openGuide, sessionPlan,
+    });
+  } catch (e) { throw playbookError(e.code || 'MODE_INVALID', e.message); }
   if (openGuide && chosen.reason === 'foreground_busy') chosen.busy = { goal: openGuide.goal, checklist_path: openGuide.checklist_path };
   if (chosen.mode !== 'guide') return chosen;
   // The section lands in the project the session works in (runner cwd = projectDir, which
@@ -141,11 +146,12 @@ function chooseRunMode({ profileId, mode, activate, project_id }) {
 
 function runGuide({ profileId, playbook, compiled, off, chosen }) {
   const guide = require('../../playbook-guide');
-  const env = process.env;
+  const { currentRunIdentity } = require('../../run-identity');
+  const identity = currentRunIdentity();
   const file = path.join(chosen.dir, 'checklist.md');
   const section = guide.renderGuideSection({
     goal: compiled.goal, items: compiled.items, off, isProtected: isProtectedStep,
-    sessionId: env.AGENT_SESSION_ID || 'unknown', chatId: env.AGENT_CHAT_ID || '0', playbook,
+    sessionId: identity.sessionId || 'unknown', chatId: identity.chatId || '0', playbook,
   });
   guide.appendGuideSection(file, section);
   if (off.size) {

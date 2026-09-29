@@ -13,23 +13,16 @@ const path = require('path');
 
 const GUIDE_STALE_MS = 24 * 3600e3;
 
-// Interactive Telegram = the runner stamped a real chat id and a live (non-plan) session.
-// Web (chat 0), durable plan steps (s-plan-*), cron/internal calls without a session → no.
-function isInteractiveTelegram(env = process.env) {
-  const chat = String(env.AGENT_CHAT_ID || '').trim();
-  const sid = String(env.AGENT_SESSION_ID || '').trim();
-  if (!/^-?\d+$/.test(chat) || Number(chat) === 0) return false;
-  return !!sid && !sid.startsWith('s-plan-');
-}
-
 function guideDefaultOn(env = process.env) {
   return !['0', 'false', 'off', 'no'].includes(String(env.PLAYBOOK_GUIDE_DEFAULT ?? '').trim().toLowerCase());
 }
 
 function modeError(code, message) { const e = new Error(message); e.code = code; return e; }
 
-// First match wins (design §2.1). `activate` only matters for the resulting background plan.
-function resolveMode({ mode, activate, env = process.env, openGuide = null, sessionPlan = null } = {}) {
+// First match wins (design §2.1). Whether this run is an interactive Telegram dialog is
+// resolved by the caller from src/run-identity (session file, not the chat-id env);
+// `activate` only matters for the resulting background plan.
+function resolveMode({ mode, activate, interactive = false, guideDefault = true, openGuide = null, sessionPlan = null } = {}) {
   if (mode != null && mode !== 'guide' && mode !== 'background') {
     throw modeError('MODE_INVALID', `mode «${mode}» не поддерживается — "guide" или "background"`);
   }
@@ -38,10 +31,10 @@ function resolveMode({ mode, activate, env = process.env, openGuide = null, sess
       'Убери activate (гайд) или передай mode:"background"');
   }
   if (mode) return { mode, reason: 'explicit' };
-  if (!isInteractiveTelegram(env)) return { mode: 'background', reason: 'non_interactive' };
+  if (!interactive) return { mode: 'background', reason: 'non_interactive' };
   if (openGuide) return { mode: 'background', reason: 'foreground_busy' };
   if (sessionPlan) return { mode: 'background', reason: 'session_has_plan' };
-  if (!guideDefaultOn(env)) return { mode: 'background', reason: 'guide_default_off' };
+  if (!guideDefault) return { mode: 'background', reason: 'guide_default_off' };
   return { mode: 'guide', reason: 'default_telegram' };
 }
 
@@ -112,6 +105,6 @@ const GUIDE_HINT = 'Режим гайд: фонового плана нет — 
   'Шаги [ГЕЙТ] (CI/staging/мерж) закрываются только зелёной проверкой. Секцию уже записал тул — не дублируй её.';
 
 module.exports = {
-  isInteractiveTelegram, guideDefaultOn, resolveMode, findOpenGuide, renderGuideSection, appendGuideSection,
+  guideDefaultOn, resolveMode, findOpenGuide, renderGuideSection, appendGuideSection,
   GUIDE_HINT, GUIDE_STALE_MS,
 };
