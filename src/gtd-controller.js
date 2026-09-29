@@ -1303,17 +1303,32 @@ function listGtd(workDir) {
 // остаётся активной (старые секции не воскрешаются), просто считается закрытой.
 const OWNER_LINE_RE = /^\s*(?:[-*]\s*)?owner-session:\s*([A-Za-z0-9_.:-]+)\s*$/i;
 const CANCELLED_LINE_RE = /^\s*(?:[-*]\s*)?cancelled:\s*(.*)$/i;
+// Гайд-секция плейбука (#1887 п.1): `Mode: guide`, `Owner-chat: <chatId>`, `Playbook:`,
+// `Started:` — метаданные секции (не пункты, не goal). `Closed: <дата>` закрывает секцию
+// так же, как `Cancelled:` (гайд завершён — больше не держит чат и не доводится GTD).
+const SECTION_META_RE = /^\s*(?:[-*]\s*)?(mode|owner-chat|playbook|started|closed):\s*(.*)$/i;
+function _newSection(goal, goalLine) {
+  return { goal, goalLine, owner: null, ownerLine: -1, cancelled: false, closed: false, mode: null, ownerChat: null, items: [] };
+}
 function _parseChecklistSections(raw) {
   const lines = raw.split('\n');
   const sections = [];
-  let cur = { goal: null, goalLine: -1, owner: null, ownerLine: -1, cancelled: false, items: [] };
+  let cur = _newSection(null, -1);
   sections.push(cur);
   for (let i = 0; i < lines.length; i++) {
     const g = lines[i].match(/^\s*#*\s*goal:\s*(.+)$/i);
-    if (g) { cur = { goal: g[1].trim(), goalLine: i, owner: null, ownerLine: -1, cancelled: false, items: [] }; sections.push(cur); continue; }
+    if (g) { cur = _newSection(g[1].trim(), i); sections.push(cur); continue; }
     const o = lines[i].match(OWNER_LINE_RE);
     if (o) { cur.owner = o[1]; cur.ownerLine = i; continue; }
     if (CANCELLED_LINE_RE.test(lines[i])) { cur.cancelled = true; continue; }
+    const m = lines[i].match(SECTION_META_RE);
+    if (m) {
+      const key = m[1].toLowerCase(); const val = m[2].trim();
+      if (key === 'mode') cur.mode = val.toLowerCase() || null;
+      else if (key === 'owner-chat') cur.ownerChat = val || null;
+      else if (key === 'closed') { cur.closed = true; cur.cancelled = true; }
+      continue;
+    }
     const item = lines[i].match(/^\s*-\s*\[([ xX])\]\s*(.+)$/);
     if (item) cur.items.push({ text: item[2].trim(), done: item[1].toLowerCase() === 'x', line: i });
   }
@@ -1332,7 +1347,7 @@ function readChecklist(projectDir, { goals = null } = {}) {
   const { sections } = _parseChecklistSections(raw);
   const last = _activeSection(sections);
   if (last) {
-    const meta = { owner: last.owner, cancelled: last.cancelled };
+    const meta = { owner: last.owner, cancelled: last.cancelled, closed: last.closed, mode: last.mode, ownerChat: last.ownerChat };
     const tracked = new Set((goals || []).map(g => String(g).trim()).filter(Boolean));
     if (!tracked.size) return { goal: last.goal, items: last.items, ...meta };
     const items = sections.filter(x => x === last || (x.goal && tracked.has(x.goal)))
@@ -1341,7 +1356,7 @@ function readChecklist(projectDir, { goals = null } = {}) {
   }
   // Ни одного чекбокса — отдаём последний объявленный goal (fallback для
   // originalTask) с пустыми items.
-  return { goal: sections[sections.length - 1].goal, items: [], owner: null, cancelled: false };
+  return { goal: sections[sections.length - 1].goal, items: [], owner: null, cancelled: false, closed: false, mode: null, ownerChat: null };
 }
 
 // Пишет/заменяет строку `Owner-session:` активной секции (или добавляет `Cancelled:`).
@@ -2191,6 +2206,7 @@ module.exports = {
   detectIntent, maybeSchedule, scheduleFromChecklist, runDue, buildReopenMessage,
   readGtd, writeGtd, clearGtd, clearGtdForChat, clearAllGtd, closeStoppedGtd, isGtdStopped, listGtd, settleResumedGtd,
   readChecklist, trackedChecklist, checklistSummary, computeMaxIterations,
+  _parseChecklistSections, _activeSection,
   setChecklistOwner, markChecklistCancelled, claimFreshChecklist, _tgNotify,
   checklistCheapPrecheck, writeChecklistDone, mirrorGtdChecklist, CHECKLIST_API_BASE, checklistAutologinUrl,
   _ghToken, _ghFetch,
