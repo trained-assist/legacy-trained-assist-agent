@@ -72,6 +72,11 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
     // reports "nothing to bring back" keeps the slice's sync/await shape intact.
     materializeRunSessions: async () => ({ materialized: [], checked: [] }),
     archiveUserMessage: e => `⚠️ ${e && e.code}`,
+    // #1916 PR-D: the post-run sweep is scheduled in the same `finally` that
+    // clears the journal. This harness isolates admission, not the archive — a
+    // stub that does nothing keeps the slice's shape (the runner never awaits
+    // it, so returning an inert promise is exactly production behaviour).
+    schedulePostRunSweep: () => Promise.resolve({ skipped: 'harness' }),
     // Stop-trace gate (spec §2а): the harness exercises admission, not stopping.
     // Stubs keep the gate inert — no tombstone on disk, never blocks.
     traceIdFor: () => 'tg:stub',

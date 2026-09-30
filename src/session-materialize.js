@@ -34,7 +34,7 @@ const fs = require('fs');
 const path = require('path');
 const archive = require('./session-archive');
 const sessions = require('./session-store');
-const { slugCwd, transcriptKey, isSafeSegment } = require('./session-blob-store');
+const { slugCwd, transcriptKey, isSafeSegment, sessionKey } = require('./session-blob-store');
 
 // Bound for every read-path fetch: a hung GCS call must surface as an honest
 // error the user can retry, never as a run that waits forever at admission.
@@ -142,9 +142,24 @@ async function materializeSessionForRun({ workDir, profile, sessionId, marker, t
  * pointer — exactly the two ids resolveRunSession can pick. `forceNew` means the
  * caller wants a FRESH session under that id, so nothing is resurrected for it.
  *
+ * Two shapes of "archived", both brought back the same way:
+ *   · indexed  — the record carries `archived: {key, sha256, size}`, so the
+ *     download is integrity-checked against the marker (the normal case);
+ *   · marker-less — a ⚡ side session (`recordQuickExchange`, `sideSession:true`)
+ *     is deliberately NOT in the index and therefore can carry no marker, yet
+ *     the post-run sweep (PR-D) archives it exactly like any other body — the
+ *     same thing the `archive-sessions` CLI phase already does to them. Its blob
+ *     key is derivable from the id alone, so the body is fetched without a
+ *     marker (best effort: a miss or an outage here must never fail the run —
+ *     the id may simply never have existed, and GCS being down says nothing
+ *     about that). Without this probe the escalation button on an old ⚡ reply
+ *     (`qa_more` → forceClaude) would resolve `getSession → null` and silently
+ *     continue in ANOTHER session — red-team B6 one level down.
+ *
  * @returns {{materialized: string[], checked: string[]}}
- * @throws {SessionArchiveError} — the caller MUST surface it to the user and
- *   stop; falling through would create the blind session this exists to prevent.
+ * @throws {SessionArchiveError} — for the INDEXED shape only. The caller MUST
+ *   surface it to the user and stop; falling through would create the blind
+ *   session this exists to prevent.
  */
 async function materializeRunSessions({
   workDir, profile, sessionId = null, chatId = null, audience = null,
@@ -161,12 +176,40 @@ async function materializeRunSessions({
   for (const id of [...new Set(ids)]) {
     if (!isSafeSegment(id)) continue;
     out.checked.push(id);
-    if (!isArchived(workDir, id)) continue;
-    const marker = recordFor(workDir, id).archived;
-    const res = await materializeSessionForRun({ workDir, profile, sessionId: id, marker, timeoutMs });
+    const record = recordFor(workDir, id);
+    if (record && record.archived && typeof record.archived.key === 'string') {
+      const res = await materializeSessionForRun({ workDir, profile, sessionId: id, marker: record.archived, timeoutMs });
+      if (res.status === 'written') out.materialized.push(id);
+      continue;
+    }
+    if (record) continue; // indexed and never archived → local or genuinely gone, nothing to fetch
+    if (fs.existsSync(sessionBodyPath(workDir, id))) continue;
+    const res = await materializeMarkerlessSession({ workDir, profile, sessionId: id, timeoutMs });
     if (res.status === 'written') out.materialized.push(id);
   }
   return out;
+}
+
+/** Fetch one body whose key is derivable from the id alone (no index marker).
+ *  Best effort by contract — see the marker-less case in materializeRunSessions. */
+async function materializeMarkerlessSession({ workDir, profile, sessionId, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+  let key;
+  try {
+    key = sessionKey(profile, sessionId);
+  } catch {
+    return { status: 'skipped' };
+  }
+  try {
+    return await withDeadline(
+      archive.materializeBlob({ blob: blob(), key, destPath: sessionBodyPath(workDir, sessionId), mode: 0o600 }),
+      timeoutMs,
+      `materialize session ${sessionId}`,
+    );
+  } catch (e) {
+    if (e && e.code === 'BLOB_NOT_FOUND') return { status: 'missing' };
+    console.warn('[session-materialize] marker-less probe for %s failed: %s', sessionId, e && e.message);
+    return { status: 'error' };
+  }
 }
 
 /**
