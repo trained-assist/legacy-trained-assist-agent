@@ -833,7 +833,7 @@ async function runQuickAnswerUnchecked(task, userId, workDir, openrouterKey = nu
       const meta = list[n - 1];
       if (sessions.needsSummary(meta)) {
         const full = sessions.getSession(workDir, meta.id);
-        const sum = full && await generateSummary(full.messages, { apiKey: openrouterKey });
+        const sum = full && await generateSummary(full.messages, { apiKey: openrouterKey, ctx: { session: meta.id, user: userId } });
         if (sum) { sessions.setSummary(workDir, meta.id, sum, meta.messageCount); meta.summary = sum; }
       }
       return renderSessionDetail(meta, n);
@@ -847,7 +847,7 @@ async function runQuickAnswerUnchecked(task, userId, workDir, openrouterKey = nu
         await Promise.all(stale.map(async (s) => {
           const full = sessions.getSession(workDir, s.id);
           if (!full) return;
-          const sum = await generateSummary(full.messages, { apiKey: openrouterKey });
+          const sum = await generateSummary(full.messages, { apiKey: openrouterKey, ctx: { session: s.id, user: userId } });
           if (sum) sessions.setSummary(workDir, s.id, sum, s.messageCount);
         }));
         list = sessions.listSessions(workDir, 10, audience); // reload with fresh summaries

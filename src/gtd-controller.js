@@ -256,6 +256,7 @@ async function recordItemValidations(store, { task, item, executionId, registry,
   try {
     results = await evaluateItemValidationsModeAware(item, {
       task, profileId: task.profile_id, projectDir, registry, mode: validationMode, llmValidate, planText, reply,
+      executionId,
     });
   } catch (e) {
     results = [{ key: '*', status: 'inconclusive', subject: null, evidence: { reason: 'evaluator-error', error: e.message } }];
@@ -1575,7 +1576,10 @@ function checklistSummary(checklist) {
 
 // ── Intent-gate (дешёвая LLM, консервативная) ───────────────────────────────
 // Возвращает {wanted:boolean, etaMinutes:number}. Сомнение → wanted:false.
-async function detectIntent(task, { apiKey, timeoutMs = 12000 } = {}) {
+// `ctx` (#1917) — trace ids для D1 (x-ladder-trace/run/user/session): gtd-intent зовётся
+// ДО создания durable-записи, поэтому своего task.id у вызова ещё нет — trace приходит
+// снаружи (taskId рана), user/session — из аргументов maybeSchedule.
+async function detectIntent(task, { apiKey, timeoutMs = 12000, ctx = null } = {}) {
   const t = String(task || '').trim();
   if (t.length < 8) return { wanted: false };
   if (!CONTROL_HINT.test(t)) return { wanted: false }; // pre-gate: не жжём LLM зря
@@ -1593,7 +1597,7 @@ async function detectIntent(task, { apiKey, timeoutMs = 12000 } = {}) {
 
   try {
     // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
-    const obj = await serviceLlm.serviceJson({ system, user: t.slice(0, 1500), maxTokens: 60, timeoutMs, apiKey, source: 'gtd-intent' });
+    const obj = await serviceLlm.serviceJson({ system, user: t.slice(0, 1500), maxTokens: 60, timeoutMs, apiKey, source: 'gtd-intent', ctx });
     if (!obj || obj.wanted !== true) return { wanted: false };
     let eta = Number(obj.etaMinutes);
     if (!Number.isFinite(eta)) eta = DEFAULT_ETA_MIN;
@@ -1616,9 +1620,13 @@ function computeMaxIterations(checklist) {
 // Вызывается на успешном завершении WORKRUN (гейт в runner). Если юзер просил
 // довести до конца — пишем durable-запись. Идемпотентно перезаписывает открытую
 // запись сессии (новый workrun с контролем → свежий отсчёт).
-async function maybeSchedule({ workDir, sessionId, chatId, username, task, apiKey, projectDir, audience, threadId = null }) {
+// `taskId` (#1917) — taskId рана, ставший x-ladder-trace для gtd-intent (D1).
+async function maybeSchedule({ workDir, sessionId, chatId, username, task, apiKey, projectDir, audience, threadId = null, taskId = null }) {
   if (!workDir || !sessionId) return null;
-  const intent = await detectIntent(task, { apiKey });
+  const intent = await detectIntent(task, {
+    apiKey,
+    ctx: { trace: taskId, user: username, session: sessionId },
+  });
   if (!intent.wanted) return null;
   const chatIdStr = chatId != null ? String(chatId) : null;
   if (chatIdStr) {

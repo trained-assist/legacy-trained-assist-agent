@@ -55,7 +55,9 @@ function coerceSummary(obj) {
 // Generate a summary object for a session's messages. Returns null on any failure
 // (no key, network, unparseable) — caller keeps the previous summary / topic fallback.
 // Runs on the service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
-async function generateSummary(messages, { apiKey, timeoutMs = 20000 } = {}) {
+// `ctx` (#1917) — {session, user} → x-ladder-* headers, so a summary call is queryable
+// in the worker's D1 log per session/user (no ctx → no headers, as before).
+async function generateSummary(messages, { apiKey, timeoutMs = 20000, ctx = null } = {}) {
   const serviceLlm = require('./service-llm');
   if (!serviceLlm.available(apiKey)) return null;
   const transcript = buildTranscript(messages);
@@ -65,6 +67,7 @@ async function generateSummary(messages, { apiKey, timeoutMs = 20000 } = {}) {
       system: SYSTEM_PROMPT,
       user: `Диалог:\n\n${transcript}\n\nВерни JSON-резюме.`,
       maxTokens: 600, temperature: 0.2, timeoutMs, apiKey, source: 'session-summary',
+      ctx,
     });
     return parsed ? coerceSummary(parsed) : null;
   } catch (e) {
