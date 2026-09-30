@@ -99,7 +99,8 @@
       { "name": "RU_EDGE_URL",              "value": "https://platform.recruiter-assistant.ru", "description": "RU-IP edge service (issue #1288) — nalog.ru login delegation (POST /nalog/start-login) and the lknpd.nalog.ru API relay (POST /nalog-api-relay). Same host as VACANCY_REMOTE_STORE_URL." },
       { "name": "VM_NAME",                  "value": "gcp-main" },
       { "name": "ZEROCREDS_URL",            "value": "http://localhost:3456", "description": "Local zerocreds-server (runs on same VM, not exposed publicly)" },
-      { "name": "ANTHROPIC_MODEL",          "value": "claude-opus-5-5", "description": "Claude model used by Claude Code agent" }
+      { "name": "ANTHROPIC_MODEL",          "value": "claude-opus-5-5", "description": "Claude model used by Claude Code agent" },
+      { "name": "GCS_BUCKET",               "value": "trained-assist-workspaces", "description": "Bucket src/session-blob-store.js archives sessions/transcripts into (epic #1784 M2, issue #1916). Code default is the same value, so an unset var is safe. GCP only — the VM service account needs storage.objectAdmin on it; auth is ADC via the metadata server, no key file on disk." }
     ],
     "ru": [
       { "name": "NODE_ENV",           "value": "production" },
