@@ -94,3 +94,24 @@ test('terminal (no-fallback) notice is class-aware too', () => {
   assert.doesNotMatch(engineAuthNotice('Codex', 'QUOTA'), /авторизац/i);
   assert.match(engineAuthNotice('OpenCode', 'AUTH'), /Авторизация OpenCode истекла/);
 });
+
+// Owner 2026-09-30: architect chain claude → codex → opencode.
+const { chatFallbackEngine, engineLabelOf } = require('../src/engine-crash-policy');
+
+test('claude falls back to codex while codex is usable', () => {
+  assert.equal(chatFallbackEngine('claude', { healthOf: () => ({ status: 'healthy' }) }), 'codex');
+  assert.equal(chatFallbackEngine('claude', { healthOf: () => ({ status: 'degraded', half_open: true }) }), 'codex');
+});
+
+test('claude skips an unavailable codex straight to opencode', () => {
+  assert.equal(chatFallbackEngine('claude', { healthOf: () => ({ status: 'unavailable' }) }), 'opencode');
+});
+
+test('codex (and anything else) falls back to opencode — never upward', () => {
+  assert.equal(chatFallbackEngine('codex', { healthOf: () => ({ status: 'healthy' }) }), 'opencode');
+  assert.equal(chatFallbackEngine('opencode', { healthOf: () => ({ status: 'healthy' }) }), 'opencode');
+});
+
+test('fallback notice names the real target engine', () => {
+  assert.match(engineFallbackNotice('Claude Code', 'QUOTA', engineLabelOf('codex')), /переключаюсь на Codex/);
+});

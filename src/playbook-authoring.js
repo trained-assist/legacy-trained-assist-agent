@@ -124,7 +124,16 @@ function loadStepTypeCatalog({ siblingRoots } = {}) {
     } catch {
       continue; // missing / unreadable / malformed → try the next root
     }
-    const arr = Array.isArray(raw) ? raw : (Array.isArray(raw && raw.step_types) ? raw.step_types : null);
+    // The live library (software-engineering-playbooks) keeps its types as an object keyed by
+    // id under `types`; the array shapes are the earlier format. Reading only the arrays left
+    // the authoring catalog silently empty for every profile.
+    const byId = raw && raw.types && typeof raw.types === 'object' && !Array.isArray(raw.types)
+      ? Object.entries(raw.types).map(([id, t]) => ({ ...(t || {}), id }))
+      : null;
+    const arr = Array.isArray(raw) ? raw
+      : Array.isArray(raw && raw.step_types) ? raw.step_types
+      : Array.isArray(raw && raw.types) ? raw.types
+      : byId;
     if (!arr) continue;
     return arr
       .map(t => ({ id: t && (t.id || t.title), purpose: (t && t.purpose) || '', execution_kind: (t && t.execution_kind) || '' }))

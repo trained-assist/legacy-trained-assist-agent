@@ -12,7 +12,7 @@ const answerActions = require('../answer-actions');
 const { getCurrentSessionId, setCurrentSessionId } = require('../session-store');
 const projects = require('../projects');
 const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag } = require('../auth-flag');
-const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice, loopRecoveryEngine, loopFallbackNotice } = require('../engine-crash-policy');
+const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice, loopRecoveryEngine, loopFallbackNotice, chatFallbackEngine, engineLabelOf } = require('../engine-crash-policy');
 const { ladderFallbackTarget, ladderFallbackMessage } = require('../ladder-fallback');
 const ocLadder = require('../opencode-ladder-provider');
 const { MAX_RETRIES: MAX_INCOMPLETE_RETRIES, getRetryDelayMs } = require('../retry-policy');
@@ -3363,13 +3363,15 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     const engineLabel = engine === 'codex' ? 'Codex' : engine === 'opencode' ? 'OpenCode' : 'Claude Code';
 
     if ((engine === 'claude' || engine === 'codex') && !engineFallbackDone) {
-      const fallbackMsg = engineFallbackNotice(engineLabel, authClass);
+      // claude → codex (if usable) → opencode; only the final hop to OpenCode closes the chain.
+      const fallbackEngine = chatFallbackEngine(engine);
+      const fallbackMsg = engineFallbackNotice(engineLabel, authClass, engineLabelOf(fallbackEngine));
       if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, fallbackMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId));
       else await tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId);
       if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, fallbackMsg);
       _recordFailureAttempt(executionId, {
         taskId, projectId, sessionId: activeSessionId, webExactSession, engine,
-        errorText: authText, action: 'engine_fallback_to_opencode',
+        errorText: authText, action: `engine_fallback_to_${fallbackEngine}`,
       });
       const queuedRetry = runTask({
         initiatedAt, threadId,
@@ -3384,8 +3386,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         secrets,
         retryCount,
         continuationCount, mode, projectId, internalGtd,
-        engine: 'opencode',
-        engineFallbackDone: true,
+        engine: fallbackEngine,
+        engineFallbackDone: fallbackEngine === 'opencode',
         executionId,
       });
       return { queuedRetry };
