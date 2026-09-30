@@ -37,8 +37,14 @@ const RULES = [
   { class: 'AUTH', pattern: /authentication[^.]{0,30}failed/i },
 
   // RATE_LIMIT — short-lived, provider is throttling this request rate specifically.
-  { class: 'RATE_LIMIT', pattern: /rate[_\s-]{0,5}limit/i },
+  { class: 'RATE_LIMIT', pattern: /rate[_\s-]?limit/i },
   { class: 'RATE_LIMIT', pattern: /\b429\b/ },
+
+  // Russian auth/quota notices the runner RETURNS as the run's reply (#1908): engine
+  // failure texts must classify by their real class, not fall through to UNKNOWN →
+  // quality escalation (the audit's 66 wasted doctor runs).
+  { class: 'AUTH', pattern: /Авторизация \S+ истекла/i },
+  { class: 'QUOTA', pattern: /упёрся в лимит/i },
 
   // QUOTA — account/plan quota exhausted, longer-lived than a rate limit.
   { class: 'QUOTA', pattern: /quota[^.]{0,20}exceeded/i },
@@ -54,6 +60,7 @@ const RULES = [
   { class: 'CONTEXT', pattern: /prompt is too long/i },
   { class: 'CONTEXT', pattern: /input (?:is )?too long/i },
   { class: 'CONTEXT', pattern: /too many tokens/i },
+  { class: 'CONTEXT', pattern: /запрос слишком большой/i },
 
   // MODEL_ERROR — the model/provider itself errored on this request (not our tool call).
   { class: 'MODEL_ERROR', pattern: /internal server error/i },
@@ -65,6 +72,11 @@ const RULES = [
   { class: 'TRANSIENT', pattern: /\b503\b/ },
   { class: 'TRANSIENT', pattern: /\b502\b/ },
   { class: 'TRANSIENT', pattern: /econnreset|econnrefused|etimedout|socket hang up/i },
+  // Engine process failures / interrupted runs returned as the reply (#1908): the
+  // model never answered — retry the same rung after a backoff, never escalate.
+  { class: 'TRANSIENT', pattern: /Процесс (?:снова )?завершился с ошибкой/i },
+  { class: 'TRANSIENT', pattern: /Работа прервана \(/i },
+  { class: 'TRANSIENT', pattern: /llm-ladder (?:недоступен|unreachable)/i },
   // opencode keeps ALL runs of the VM in one SQLite file (~/.local/share/opencode/opencode.db).
   // Two concurrent runs (different chats/users) → "Unexpected error / database is locked"
   // for one of them. Reproduced on the sandbox smoke (#1311 C5): 1 of 4 parallel runs failed,
@@ -73,6 +85,15 @@ const RULES = [
 
   // TOOL_ERROR — the agent's own tool call failed, not the model/provider.
   { class: 'TOOL_ERROR', pattern: /tool[_\s-]?(call|use)[^.]{0,20}(failed|error)/i },
+
+  // #1911 — killed by a declared budget. Its own class: backoff + retry at the same
+  // level, never the quality ladder (before this rule the kill text fell to UNKNOWN
+  // and burned a quality attempt / escalated the model).
+  { class: 'TIMEOUT', pattern: /step timeout: \d+s budget exhausted/i },
+  { class: 'TIMEOUT', pattern: /inactivity timeout: no output for/i },
+  { class: 'TIMEOUT', pattern: /claude timed out after \d+s/i },
+  { class: 'TIMEOUT', pattern: /timeout: (?:\d+min|40min) budget/i },
+  { class: 'TIMEOUT', pattern: /Шаг не уложился в бюджет/i },
 ];
 
 // Failure classes CONFIG/USER_STOP are not worth retrying the SAME target — recovery-policy.js
@@ -116,7 +137,7 @@ async function classifyWithLLM(text, { apiKey, timeoutMs = 8000 } = {}) {
     // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
     const obj = await serviceLlm.serviceJson({
       system: 'Classify execution failure text into a fixed enum. Reply only with compact JSON.',
-      user: `Error text from an AI coding agent execution:\n${t.slice(-2000)}\n\nJSON: {"class":"AUTH|QUOTA|RATE_LIMIT|CONTEXT|TRANSIENT|MODEL_ERROR|TOOL_ERROR|CONFIG|UNKNOWN","retryable":bool,"confidence":0..1}`,
+      user: `Error text from an AI coding agent execution:\n${t.slice(-2000)}\n\nJSON: {"class":"AUTH|QUOTA|RATE_LIMIT|CONTEXT|TRANSIENT|MODEL_ERROR|TOOL_ERROR|CONFIG|TIMEOUT|UNKNOWN","retryable":bool,"confidence":0..1}`,
       maxTokens: 40, timeoutMs, apiKey, source: 'failure-classifier',
     });
     if (!LLM_VALID_CLASSES.has(obj?.class)) {

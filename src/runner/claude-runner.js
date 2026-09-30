@@ -375,6 +375,9 @@ function formatToolActivity(name, input = {}) {
  *   formatToolActivity, readOcAgentModels
  *   onHeartbeat (optional, () => void — called on the existing 30s inactivity-check tick so the
  *   pending-task journal's lastHeartbeatAt stays fresh while the process is alive; issue #942 [011])
+ *   ladderApp, internalGtd, resumeSink (optional, #1917) — only used to pick AGENT_LADDER_APP,
+ *   the run-type slug behind x-ladder-app; see resolveLadderApp. Callers that know their type
+ *   (hermes) pass `ladderApp` directly, the runner passes its own internalGtd/resumeSink.
  *
  * Returns a plain result object — never throws for process-level failures:
  *   { fullOutput, lastAssistantMsg, claudeResult, terminalSuccess,
@@ -394,6 +397,23 @@ function persistOpencodePart(workDir, engineSessionId, event, taskId) {
   } catch { return false; }
 }
 
+// OpenRouter "Application" slice (#1917): one slug per run type, read by opencode as
+// x-ladder-app ({env:AGENT_LADDER_APP} in TRACE_HEADERS) and by the worker for the
+// `…/app/<slug>` breakdown. Precedence: an explicit `ladderApp` (hermes names itself) →
+// the run's own shape — a durable plan step / an internal GTD turn is background work,
+// everything else is an ordinary chat run.
+const LADDER_APP = Object.freeze({
+  durable: 'background-playbooks',
+  hermes: 'hermes-research',
+  chat: 'opencode-chat',
+});
+
+function resolveLadderApp({ ladderApp = null, internalGtd = false, resumeSink = null } = {}) {
+  if (ladderApp) return ladderApp;
+  if (internalGtd || (resumeSink && resumeSink.kind === 'durable')) return LADDER_APP.durable;
+  return LADDER_APP.chat;
+}
+
 async function runEngineProcess(opts) {
   const {
     engine, taskId, chatId, thinkingStart, msgId, BOT_TOKEN, secrets, user, threadId,
@@ -401,6 +421,7 @@ async function runEngineProcess(opts) {
     tgEdit, tgSend, outputCallback, engineBin, engineArgs, cwd, env, mcpConfig,
     ocProfileOverrides, onHeartbeat, onEngineSessionId, onProgress, timeoutMs = null,
     bridgedServers = null, warnTimeoutMs: warnOverrideMs = null, maxToolCalls = null,
+    ladderApp = null, internalGtd = false, resumeSink = null,
   } = opts;
   const { hardTimeoutMs, warnTimeoutMs } = computeEngineTimeoutMs(timeoutMs, warnOverrideMs);
   const warnLeftMin = Math.max(1, Math.round((hardTimeoutMs - warnTimeoutMs) / 60000));
@@ -434,6 +455,10 @@ async function runEngineProcess(opts) {
       // call log (x-ladder-run, see src/opencode-ladder-provider.js).
       AGENT_RUN_ID: require('crypto').randomUUID(),
       AGENT_TRACE_CHAT: require('../opencode-ladder-provider').traceChat(chatId),
+      // Run type → x-ladder-app → OpenRouter "Application" (#1917). traceChat-style rule:
+      // always a non-empty slug, so the header never lands as "" and the worker never
+      // groups these calls under an empty application.
+      AGENT_LADDER_APP: resolveLadderApp({ ladderApp, internalGtd, resumeSink }),
       // Session identity for checklist ownership (#1729 BV-08): a new `Goal:` section in the
       // project's checklist.md is signed `Owner-session: $AGENT_SESSION_ID`.
       ...(sessionId ? { AGENT_SESSION_ID: String(sessionId) } : {}),
@@ -1121,6 +1146,8 @@ async function runEngineProcess(opts) {
 module.exports = {
   persistOpencodePart,
   runEngineProcess,
+  resolveLadderApp,
+  LADDER_APP,
   isNoopBash,
   buildEngineCommand,
   resolveEngineCwd,

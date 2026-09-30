@@ -80,6 +80,10 @@ const TRACE_HEADERS = Object.freeze({
   'x-ladder-session': '{env:AGENT_SESSION_ID}',
   'x-ladder-user': '{env:AGENT_USER_ID}',
   'x-ladder-chat': '{env:AGENT_TRACE_CHAT}',
+  // "Application" slice in the OpenRouter console (worker: llm-ladder#33 — the slug goes
+  // out as HTTP-Referer/X-OpenRouter-Title). AGENT_LADDER_APP is the run type, set in
+  // runEngineProcess: background-playbooks | hermes-research | opencode-chat (#1917).
+  'x-ladder-app': '{env:AGENT_LADDER_APP}',
 });
 
 // AGENT_TRACE_CHAT value: runs with no chat (plan/durable sessions) → "" (stored as null),
