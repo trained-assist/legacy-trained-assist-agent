@@ -2531,6 +2531,34 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     inactivityKill, loopKilled, toolBudgetKilled, outputPersistenceError, codexErrorMsg, sessionState,
   } = engineResult;
 
+  // #1910: attribute the durable execution right where the engine answered — the
+  // concrete model id and token usage exist only here, and this spot precedes every
+  // early return (crash/ladder/auth/timeout), so ALL paths get attributed. It only
+  // patches model/result_json; status/error_* stay owned by the settle path, so the
+  // two writes can never clobber each other (patch runs first, settle after).
+  if (resumeSink && resumeSink.kind === 'durable' && resumeSink.executionId) {
+    try {
+      const attributedModel = engine === 'opencode'
+        ? (ocActiveModel || opencodeModel || 'opencode-config')
+        : (claudeModel || process.env.ANTHROPIC_MODEL || engine || null);
+      const usage = engine === 'opencode'
+        ? (opencodeUsage ? {
+          input: opencodeUsage.input || 0, output: opencodeUsage.output || 0,
+          cache_read: opencodeUsage.cacheRead || 0, cache_write: opencodeUsage.cacheWrite || 0,
+          cost_usd: opencodeUsage.cost ?? null,
+        } : null)
+        : (claudeUsage ? {
+          input: claudeUsage.input_tokens || 0, output: claudeUsage.output_tokens || 0,
+          cache_read: claudeUsage.cache_read_input_tokens || 0,
+          cache_write: claudeUsage.cache_creation_input_tokens || 0,
+        } : null);
+      require('../gtd-controller').durableStore().patchExecution(resumeSink.executionId, {
+        model: attributedModel,
+        result_json: usage ? JSON.stringify({ usage, at: Date.now() }) : null,
+      });
+    } catch (e) { console.warn('[runner] durable execution attribution:', e.message); }
+  }
+
   // Loop guard (#1583): the engine kept repeating identical output/tool calls — the
   // model is stuck, NOT making progress. Unlike a plain timeout this must NOT auto-
   // continue (the continuation would just re-enter the same loop); fail the run with

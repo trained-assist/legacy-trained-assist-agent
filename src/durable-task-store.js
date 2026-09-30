@@ -857,12 +857,17 @@ class DurableTaskStore {
         this._prep(`UPDATE task_items SET attempt_count = attempt_count + 1, updated_at = ?
           WHERE id = ?`).run(nowMs(), task_item_id);
       }
+      // #1910: record WHICH attempt this execution is — without it a failure chain
+      // can't be told apart from retries in any export.
+      const attempt = task_item_id
+        ? (this._prep('SELECT attempt_count FROM task_items WHERE id = ?').get(task_item_id)?.attempt_count || null)
+        : null;
       this._prep(`INSERT INTO executions
           (id, task_id, task_item_id, session_id, engine, model, tier, status, started_at,
-           profile, model_level, executor_role, provider)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`)
+           profile, model_level, executor_role, provider, attempt_number)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)`)
         .run(id, task_id, task_item_id, session_id, engine, model, tier, nowMs(),
-          profile, model_level, executor_role, provider);
+          profile, model_level, executor_role, provider, attempt);
       return this.getExecution(id);
     })();
   }
@@ -871,6 +876,22 @@ class DurableTaskStore {
     this._prep(`UPDATE executions SET status = ?, finished_at = ?, error_class = ?,
         error_text = ? WHERE id = ?`)
       .run(status, nowMs(), error_class, error_text, id);
+    return this.getExecution(id);
+  }
+
+  /**
+   * #1910: patch attribution fields the runner learns only AFTER the engine answered
+   * (the concrete model id, the token usage). Deliberately does NOT touch status /
+   * error_* — the settle path owns those and the two writes must not clobber each
+   * other when they race (runner patches first, settle finishes after).
+   */
+  patchExecution(id, { model = null, result_json = null } = {}) {
+    const sets = []; const args = [];
+    if (model != null) { sets.push('model = ?'); args.push(model); }
+    if (result_json != null) { sets.push('result_json = ?'); args.push(result_json); }
+    if (!sets.length) return this.getExecution(id);
+    args.push(id);
+    this._prep(`UPDATE executions SET ${sets.join(', ')} WHERE id = ?`).run(...args);
     return this.getExecution(id);
   }
 
