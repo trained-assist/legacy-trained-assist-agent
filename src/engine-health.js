@@ -127,7 +127,7 @@ function markEngineFailure(engine, { failureClass, message, vm, at } = {}) {
   const prev = _row(eng);
   const consecutive = (prev.consecutive_failures || 0) + 1;
   const now = at || new Date().toISOString();
-  return _upsert({
+  const row = _upsert({
     engine: eng,
     vm: vm || VM_NAME,
     status: consecutive >= unavailableAfter() ? 'unavailable' : 'degraded',
@@ -138,6 +138,13 @@ function markEngineFailure(engine, { failureClass, message, vm, at } = {}) {
     consecutive_failures: consecutive,
     updated_at: now,
   });
+  // #1912: the degraded → unavailable TRANSITION alerts the operator once per
+  // outage (audit: codex sat `unavailable` (QUOTA) 5 days with no signal to anyone).
+  if (row && row.status === 'unavailable' && prev.status !== 'unavailable') {
+    try { require('./degrade-alert').engineUnavailable(eng, { message: message || cls }); }
+    catch { /* alerting must never break health bookkeeping */ }
+  }
+  return row;
 }
 
 // Self-heal: a successful authenticated engine call resets status to healthy and the failure
