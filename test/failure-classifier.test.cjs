@@ -207,4 +207,15 @@ test('deterministic: step/inactivity/hard timeouts classify as TIMEOUT', () => {
   assert.equal(classifyDeterministic('claude timed out after 2400s').class, 'TIMEOUT');
   assert.equal(classifyDeterministic('timeout: 40min budget').class, 'TIMEOUT');
   assert.equal(classifyDeterministic('no DURABLE terminal marker in reply: ⏱ Шаг не уложился в бюджет: 600с.').class, 'TIMEOUT');
+  assert.equal(classifyDeterministic('no DURABLE terminal marker in reply: ⏱ Движок молчал 5 мин (завис…) — шаг прерван.').class, 'TIMEOUT');
+});
+
+test('playbook researcher is not pinned to the Go `research` subscription profile (2026-10-01)', () => {
+  const { resolveStepExecution } = require('../src/playbook-executor');
+  for (const lvl of ['bachelor', 'master']) {
+    const r = resolveStepExecution({ executor_role: 'researcher', minimum_model_level: lvl, current_model_level: lvl });
+    assert.equal(r.engine, 'opencode');
+    assert.equal(r.ocProfile, 'deepseek', 'researcher goes through the llm-ladder');
+    assert.equal(r.ocRole, 'explore');
+  }
 });

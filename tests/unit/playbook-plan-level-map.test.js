@@ -73,6 +73,7 @@ describe('plan level_map vs role defaults', () => {
     const item = { executor_role: 'researcher', minimum_model_level: 'master', current_model_level: 'master' };
     const levelMap = { master: { engine: 'opencode', ocProfile: 'free' } };
     expect(resolveStepExecution(item, { levelMap, useRoleMap: false }).ocProfile).toBe('free');
-    expect(resolveStepExecution(item, { levelMap }).ocProfile).toBe('research');
+    // researcher is no longer pinned to the Go `research` profile (2026-10-01) → the level map wins
+    expect(resolveStepExecution(item, { levelMap }).ocProfile).toBe('free');
   });
 });

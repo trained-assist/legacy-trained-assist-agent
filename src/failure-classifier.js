@@ -94,6 +94,7 @@ const RULES = [
   { class: 'TIMEOUT', pattern: /claude timed out after \d+s/i },
   { class: 'TIMEOUT', pattern: /timeout: (?:\d+min|40min) budget/i },
   { class: 'TIMEOUT', pattern: /Шаг не уложился в бюджет/i },
+  { class: 'TIMEOUT', pattern: /Движок молчал 5 мин/i },
 ];
 
 // Failure classes CONFIG/USER_STOP are not worth retrying the SAME target — recovery-policy.js

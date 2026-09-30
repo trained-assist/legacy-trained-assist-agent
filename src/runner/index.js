@@ -3009,10 +3009,17 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // settle classifies it TIMEOUT → backoff retry, instead of an empty reply that
     // read as a quality miss and burned escalation attempts.
     if (stepTimeoutMs) {
-      const timeoutMsg = `⏱ Шаг не уложился в бюджет: ${Math.round(stepTimeoutMs / 1000)}с. Частичный результат сохранён в истории сессии — повтори с меньшим объёмом.`;
+      // Name the REAL kill reason: a 5-min silent engine (hung provider, e.g. an exhausted
+      // subscription retried in silence) was reported as «не уложился в бюджет 900с», which
+      // sent the diagnosis to the step budget instead of the provider (2026-10-01).
+      const timeoutMsg = inactivityKill
+        ? `⏱ Движок молчал 5 мин (завис: вероятно, провайдер модели не отвечает или исчерпан лимит) — шаг прерван. Бюджет шага ${Math.round(stepTimeoutMs / 1000)}с не исчерпан.`
+        : `⏱ Шаг не уложился в бюджет: ${Math.round(stepTimeoutMs / 1000)}с. Частичный результат сохранён в истории сессии — повтори с меньшим объёмом.`;
       _recordFailureAttempt(executionId, {
         taskId, projectId, sessionId: activeSessionId, engine,
-        errorText: `step timeout: ${Math.round(stepTimeoutMs / 1000)}s budget exhausted`,
+        errorText: inactivityKill
+          ? 'inactivity timeout: no output for 5min'
+          : `step timeout: ${Math.round(stepTimeoutMs / 1000)}s budget exhausted`,
         action: 'step_failed',
       });
       executionHistory.finalizeExecution(executionId, 'FAILED');
