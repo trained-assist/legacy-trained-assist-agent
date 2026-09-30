@@ -31,6 +31,11 @@
    "env_bot_token": 2,
    "removeIn": "PR5"
   },
+  "src/channels/telegram-files.js": {
+   "telegram_api": 1,
+   "env_bot_token": 1,
+   "removeIn": "adapter"
+  },
    "src/ru-edge.js": {
    "telegram_api": 2,
    "removeIn": "adapter"
