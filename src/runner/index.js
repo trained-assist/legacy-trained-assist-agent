@@ -13,6 +13,7 @@ const { getCurrentSessionId, setCurrentSessionId } = require('../session-store')
 const projects = require('../projects');
 const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag } = require('../auth-flag');
 const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice, loopRecoveryEngine, loopFallbackNotice } = require('../engine-crash-policy');
+const { ladderFallbackTarget, ladderFallbackMessage } = require('../ladder-fallback');
 const ocLadder = require('../opencode-ladder-provider');
 const { MAX_RETRIES: MAX_INCOMPLETE_RETRIES, getRetryDelayMs } = require('../retry-policy');
 const { recordUsage } = require('../usage-store');
@@ -1890,7 +1891,7 @@ function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task,
     .catch(e => { console.warn('[gtd] schedule:', e.message); return null; });
 }
 
-async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null }) {
+async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, ladderFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null }) {
   // Strip @botname suffix from slash commands once at intake so all INTENT regexes match cleanly.
   let task = rawTask ? rawTask.replace(/^(\/\S+?)@\S+/, '$1') : rawTask;
   // Старт рана для claimFreshChecklist (BV-08): initiatedAt — момент запроса у шлюза
@@ -2559,6 +2560,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         engine: recovery.engine,
         ocProfile: recovery.ocProfile,
         engineFallbackDone: true,
+        // Same run chain, second free-ladder guard (#1899): if the re-run then exhausts the
+        // ladder it must dead-end instead of buying yet another free re-run.
+        ladderFallbackDone,
         stepTimeoutMs,
         executionId,
       });
@@ -2871,7 +2875,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // answering, so there is nothing left to try in-process — no local fallback ladder. The run
   // fails with a clear category instead:
   //   worker_unreachable — the worker never served the call (network / rejected token) → BLOCKED
-  //   ladder_exhausted   — the worker answered 502 ladder_error, every rung failed      → BLOCKED
+  //   ladder_exhausted   — the worker answered 502 ladder_error, every rung failed      → ONE free re-run (#1899
+  //                                                                                        п.2), else BLOCKED
   //   context            — the prompt did not fit the model; ask to split the task     → FAILED
   // Checked before isAuthError below, which would otherwise treat "401"/"rate limit" text as a
   // total engine auth loss. codexErrorMsg (the error event's own message) is the most reliable
@@ -2886,12 +2891,53 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     ? ocLadder.classifyWorkerFailure(preLadderText) : null;
   if (workerFailure) {
     const ladderName = ocLadder.ladderFor(ocProfileName) || ocProfileName;
+    console.warn(`[${taskId}] opencode ${workerFailure} (ladder ${ladderName}): ${String(preLadderText || '').slice(0, 300)}`);
+
+    // #1899 п.2: «каждая ступень отказала» is not «попробуй позже» — it is «переходим на
+    // бесплатную ступень». ONE automatic re-run of the same task on opencode/free, guarded by
+    // ladderFallbackDone exactly like engineFallbackDone guards the engine fallback. NEVER
+    // claude/codex (owner requirement: the Claude balance is not insurance), and never a second
+    // time in the same run. Durable plan steps keep their terminal message here — their own
+    // free-ladder move is the durable executor's CONFIG → fallback_rung (#1900/#1901).
+    const recovery = ladderFallbackTarget({
+      engine, workerFailure, ladderFallbackDone,
+      durable: !!(stepTimeoutMs || (resumeSink && resumeSink.kind === 'durable')),
+    });
+    if (recovery) {
+      // #1899 п.3: the tariff warning goes out once per profile (contexts/ladder/free-tariff.json);
+      // every later switch only shows the retry notice.
+      const fallbackMsg = ladderFallbackMessage(user.username);
+      if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, fallbackMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId));
+      else await tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId);
+      if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, fallbackMsg);
+      _recordFailureAttempt(executionId, {
+        taskId, projectId, sessionId: activeSessionId, webExactSession, engine: 'opencode', model: ocActiveModel,
+        errorText: `${workerFailure}: ${preLadderText || ''}`, action: 'ladder_fallback_to_free',
+      });
+      const queuedRetry = runTask({
+        initiatedAt, threadId,
+        taskId: `${user.username}-${Date.now()}`,
+        user, task, context,
+        sessionId: activeSessionId, webExactSession,
+        forceClaude,
+        initialMsgId: msgId, pinnedMsgId, secrets,
+        retryCount, continuationCount, mode, projectId, internalGtd,
+        engine: recovery.engine,
+        ocProfile: recovery.ocProfile,
+        // Both free-ladder guards carry over: at most ONE re-run per guard per run chain, in
+        // either order (loop → exhausted must not buy a third run, #1899 «повтор ровно один раз»).
+        engineFallbackDone,
+        ladderFallbackDone: true,
+        executionId,
+      });
+      return { queuedRetry };
+    }
+
     const failMsg = workerFailure === 'context'
       ? `⛔ Запрос слишком большой для модели лестницы «${ladderName}» — разбей задачу на более мелкие части и отправь по шагам.`
       : workerFailure === 'ladder_exhausted'
       ? `⛔ Вся лестница моделей «${ladderName}» временно недоступна (все ступени отказали в llm-ladder) — попробуй позже.`
       : `⛔ Сервис моделей llm-ladder недоступен (лестница «${ladderName}») — задача не выполнена, попробуй позже.`;
-    console.warn(`[${taskId}] opencode ${workerFailure} (ladder ${ladderName}): ${String(preLadderText || '').slice(0, 300)}`);
     if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, failMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, failMsg, threadId));
     else await tgSend(BOT_TOKEN, chatId, failMsg, threadId);
     if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, failMsg);
