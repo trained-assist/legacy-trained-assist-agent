@@ -127,14 +127,17 @@ function planLevelMap(policy) {
 // from the current one (with bachelor and master on the same profile, a one-rung
 // bump would change nothing). null at the ceiling. Automatic escalation never lands on
 // Claude/Codex (owner requirement #1899: no paid insurance when cheap models fail) —
-// a step runs there only when its plan declares that level as its minimum.
-function nextDistinctLevel(item, levelMap) {
+// a step runs there only when its plan declares that level as its minimum, or when the
+// plan opts in with execution_policy.quality_escalation_to_doctor (owner 2026-09-30:
+// «опенкод облажался — тогда Claude»). The opt-in covers QUALITY failures only; quota /
+// provider exhaustion never reaches this function, so #1899 still holds there.
+function nextDistinctLevel(item, levelMap, { allowPaid = false } = {}) {
   const cur = resolveStepExecution(item, { levelMap, useRoleMap: false });
   const from = LEVELS.indexOf(cur.modelLevel);
   if (from < 0) return null;
   for (let i = from + 1; i < LEVELS.length; i++) {
     const r = resolveStepExecution({ ...item, current_model_level: LEVELS[i] }, { levelMap, useRoleMap: false });
-    if (r.engine !== 'opencode') return null;
+    if (r.engine !== 'opencode') return allowPaid ? LEVELS[i] : null;
     if (r.engine !== cur.engine || r.ocProfile !== cur.ocProfile) return LEVELS[i];
   }
   return null;

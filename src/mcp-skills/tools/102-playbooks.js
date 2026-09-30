@@ -354,6 +354,12 @@ module.exports = {
             description: 'Explicit consent to run external-effect hooks (notify/create_issue/publish) for this run. ' +
               'Without it those hooks are recorded as skipped and never fail the task.',
           },
+          escalate_to_doctor: {
+            type: 'boolean',
+            description: 'Opt this plan into quality escalation onto the doctor level (Claude): a cheap-model step that ' +
+              'failed twice on quality gets its third attempt on Claude. Quota/provider exhaustion still never falls ' +
+              'back to Claude (#1899). Use only when the owner asked for it (e.g. epic-delivery child plans).',
+          },
           activate: {
             type: 'boolean',
             description: 'Create the plan already active (status=active) so the durable executor starts it. Use when the ' +
@@ -387,7 +393,7 @@ module.exports = {
           },
         },
       },
-      handler: safe(async ({ playbook_id, goal, version, user_value, acceptance_criteria, vars, project_id, session_id, approve_hooks, activate, steps, mode }, ctx) => {
+      handler: safe(async ({ playbook_id, goal, version, user_value, acceptance_criteria, vars, project_id, session_id, approve_hooks, escalate_to_doctor, activate, steps, mode }, ctx) => {
         const profileId = requireUser(ctx);
         const playbook = new PlaybookStore({ profileId }).get(playbook_id, version);
         if (!playbook) throw playbookError('PLAYBOOK_NOT_FOUND', `плейбук «${playbook_id}» не найден`);
@@ -408,7 +414,10 @@ module.exports = {
           acceptance_criteria: compiled.acceptance_criteria,
           items: compiled.items,
           hooks: compiled.hooks,
-          execution_policy: approve_hooks ? { hooks_approved: true } : undefined,
+          execution_policy: (approve_hooks || escalate_to_doctor) ? {
+            ...(approve_hooks ? { hooks_approved: true } : {}),
+            ...(escalate_to_doctor ? { quality_escalation_to_doctor: true } : {}),
+          } : undefined,
           playbook_id: playbook.id,
           playbook_version: playbook.version,
           project_id: project_id || undefined,

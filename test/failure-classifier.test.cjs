@@ -150,6 +150,18 @@ test('#1899: nextDistinctLevel never escalates onto Claude/Codex', () => {
   assert.equal(nextDistinctLevel(item, map), 'master', 'escalation between OpenCode rungs still works');
 });
 
+// Owner 2026-09-30: a plan may opt into QUALITY escalation onto doctor (Claude).
+test('quality_escalation_to_doctor: opted-in plan escalates master → doctor, default stays capped', () => {
+  const { nextDistinctLevel, resolveStepExecution, DEFAULT_LEVEL_MAP } = require('../src/playbook-executor');
+  const item = { executor_role: 'developer', minimum_model_level: 'master', current_model_level: 'master' };
+  assert.equal(nextDistinctLevel(item, DEFAULT_LEVEL_MAP), null);
+  assert.equal(nextDistinctLevel(item, DEFAULT_LEVEL_MAP, { allowPaid: true }), 'doctor');
+  const r = resolveStepExecution({ ...item, current_model_level: 'doctor' }, { levelMap: DEFAULT_LEVEL_MAP });
+  assert.equal(r.engine, 'claude', 'escalated builder runs on Claude');
+  const top = { executor_role: 'developer', minimum_model_level: 'doctor', current_model_level: 'doctor' };
+  assert.equal(nextDistinctLevel(top, DEFAULT_LEVEL_MAP, { allowPaid: true }), null, 'ceiling stays null');
+});
+
 test('#1899: QUOTA/model recovery never bumps a step onto the Claude level', async () => {
   const { recoverDurableItem } = require('../src/durable-recovery');
   const item = { id: 'i1', task_id: 't1', executor_role: 'developer', minimum_model_level: 'master', current_model_level: 'master', attempt_count: 1, max_attempts: 3 };

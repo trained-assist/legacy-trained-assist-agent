@@ -304,6 +304,8 @@ describe('MCP surface: playbook_run', () => {
     expect(res.task.execution_policy_json).toBeNull();
     const approved = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'hooks ok', approve_hooks: true }, ALICE);
     expect(JSON.parse(approved.task.execution_policy_json)).toEqual({ hooks_approved: true });
+    const esc = await tools.playbook_run.handler({ playbook_id: 'development', goal: 'escalate ok', escalate_to_doctor: true }, ALICE);
+    expect(JSON.parse(esc.task.execution_policy_json)).toEqual({ quality_escalation_to_doctor: true });
   });
 
   it('pins the version: editing the playbook never mutates a plan already run', async () => {

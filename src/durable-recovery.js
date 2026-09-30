@@ -136,7 +136,7 @@ async function recoverDurableItem({
     if (attempts >= QUALITY_MAX_ATTEMPTS) return terminal('quality-attempts-exhausted');
     let move = 'retry_same_with_reasons';
     if (attempts >= 2 && escalateLevel) {
-      const next = nextDistinctLevel(item, _planMap(task));
+      const next = nextDistinctLevel(item, _planMap(task), { allowPaid: !!(_policy(task) || {}).quality_escalation_to_doctor });
       if (next) {
         store.updateTaskItem(itemId, { current_model_level: next }, profileId);
         move = `escalate:${item.current_model_level || item.minimum_model_level}→${next}`;
