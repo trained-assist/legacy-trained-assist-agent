@@ -130,6 +130,7 @@ async function handleInternal(req, url, res, ctx) {
     // POST /internal/durable/items/:id/wake {profile, message}            → answer a waiting step
     // GET  /internal/e2e/defects?profile=&plan=&kind=                     → playbook defects log
     if (url.pathname === '/internal/e2e/plans' || url.pathname.startsWith('/internal/e2e/plans/') || url.pathname === '/internal/e2e/defects'
+      || url.pathname === '/internal/e2e/usage'
       || /^\/internal\/durable\/items\/[^/]+\/wake$/.test(url.pathname)) {
       const e2e = require('../durable-e2e');
       const readJson = async () => { const raw = await readBody(req); return raw ? JSON.parse(raw) : {}; };
@@ -141,6 +142,27 @@ async function handleInternal(req, url, res, ctx) {
         if (req.method === 'GET' && url.pathname === '/internal/e2e/defects') {
           const { readDefects } = require('../playbook-defects-log');
           return json(res, 200, { defects: readDefects({ profileId: url.searchParams.get('profile') || null, taskId: url.searchParams.get('plan') || null, kind: url.searchParams.get('kind') || null }) });
+        }
+        // GET /internal/e2e/usage — #1910 attribution view: token usage and failure
+        // counts per model, straight from the executions patch the runner writes.
+        // The answer to «which model burns the most cache_read / fails most» — the
+        // audit found all 622 rows had model=NULL, so no such question was answerable.
+        if (req.method === 'GET' && url.pathname === '/internal/e2e/usage') {
+          const store = require('../gtd-controller').durableStore();
+          const rows = store.db.prepare(`SELECT engine, model, status, error_class,
+              COUNT(*) AS runs,
+              SUM(COALESCE(json_extract(result_json, '$.usage.input'), 0)) AS input_tokens,
+              SUM(COALESCE(json_extract(result_json, '$.usage.output'), 0)) AS output_tokens,
+              SUM(COALESCE(json_extract(result_json, '$.usage.cache_read'), 0)) AS cache_read,
+              SUM(COALESCE(json_extract(result_json, '$.usage.cache_write'), 0)) AS cache_write
+            FROM executions
+            WHERE engine IS NOT NULL
+            GROUP BY engine, model, status, error_class
+            ORDER BY cache_read DESC, runs DESC
+            LIMIT 200`).all();
+          return json(res, 200, { rows, attributed: store.db.prepare(
+            'SELECT COUNT(*) AS total, SUM(CASE WHEN model IS NOT NULL THEN 1 ELSE 0 END) AS with_model, SUM(CASE WHEN result_json IS NOT NULL THEN 1 ELSE 0 END) AS with_usage FROM executions WHERE engine IS NOT NULL',
+          ).get() });
         }
         if (req.method === 'GET' && url.pathname === '/internal/e2e/plans') {
           return json(res, 200, { plans: e2e.listPlans(url.searchParams.get('profile')) });

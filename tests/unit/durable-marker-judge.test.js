@@ -230,3 +230,44 @@ describe('durable-marker-judge unit', () => {
     expect(looksLikeEngineFailure('ИТОГ ШАГА: сделал всё, но процесс завершился с ошибкой в конце')).toBe(false);
   });
 });
+
+describe('#1910 execution attribution', () => {
+  it('startExecution records attempt_number; patchExecution adds model+usage without touching status', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { store, task, item } = plan(G);
+    const executionId = 'exec-attr-1';
+    store.startExecution({
+      id: executionId, task_id: task.id, task_item_id: item.id,
+      engine: 'opencode', profile: 'deepseek', model_level: 'bachelor', executor_role: 'developer',
+    });
+    let row = store.getExecution(executionId);
+    expect(row.attempt_number).toBe(1); // не NULL — аудит: колонка была пустой во всех 622 строках
+    expect(row.status).toBe('running');
+
+    store.patchExecution(executionId, {
+      model: 'opencode-go/deepseek-v4-flash-0731',
+      result_json: JSON.stringify({ usage: { input: 100, output: 20, cache_read: 5000, cache_write: 300 }, at: 1 }),
+    });
+    row = store.getExecution(executionId);
+    expect(row.model).toBe('opencode-go/deepseek-v4-flash-0731');
+    expect(JSON.parse(row.result_json).usage.cache_read).toBe(5000);
+    expect(row.status).toBe('running'); // status остаётся за settle-путём
+
+    store.finishExecution(executionId, { status: 'success' });
+    row = store.getExecution(executionId);
+    expect(row.status).toBe('success');
+    expect(row.model).toBe('opencode-go/deepseek-v4-flash-0731'); // не затёрто
+    expect(row.attempt_number).toBe(1);
+  });
+
+  it('second attempt records attempt_number = 2', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { store, task, item } = plan(G);
+    for (const n of [1, 2]) {
+      const id = `exec-attr-${n}`;
+      store.startExecution({ id, task_id: task.id, task_item_id: item.id, engine: 'opencode' });
+      store.finishExecution(id, { status: 'failed' });
+      expect(store.getExecution(id).attempt_number).toBe(n);
+    }
+  });
+});
