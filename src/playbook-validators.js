@@ -592,6 +592,13 @@ function makeLlmValidate({ fetchImpl = null, apiKey = null, timeoutMs = LLM_VALI
     const r = await serviceLlm.serviceChat({
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       json: true, maxTokens: 200, timeoutMs, apiKey, source: 'playbook-validator', fetchImpl,
+      // D1 attribution (#1917): the ids this call actually has — the plan task, the
+      // execution that fired the step, the profile that owns them.
+      ctx: {
+        trace: ctx.task && ctx.task.id,
+        run: ctx.executionId,
+        user: ctx.profileId,
+      },
     });
     if (!r) return { status: 'inconclusive', reason: 'llm-unavailable' };
     const obj = r.value;
@@ -756,6 +763,8 @@ async function evaluateItemValidations(item, { task = null, profileId = null, pr
 async function evaluateItemValidationsModeAware(item, {
   task = null, profileId = null, projectDir = null, registry = null,
   mode = DEFAULT_VALIDATION_MODE, llmValidate = null, planText = null, reply = null,
+  // #1917: forwarded into the LLM judge's x-ladder-run (D1 ladder_calls.run_id).
+  executionId = null,
 } = {}) {
   const raw = item && item.validation_json != null ? item.validation_json : item && item.validation;
   const validation = parseValidation(raw);
@@ -765,7 +774,7 @@ async function evaluateItemValidationsModeAware(item, {
   let planEvidence;
   const results = [];
   for (const [key, value] of entries) {
-    const ctx = { task, item, profileId, projectDir, validation: value, key, planText };
+    const ctx = { task, item, profileId, projectDir, validation: value, key, planText, executionId };
     let res = await evaluateValidation(key, ctx, registry);
     if (useLlm && res.status === 'inconclusive') {
       if (excerpts === null) excerpts = collectDocExcerpts(projectDir);

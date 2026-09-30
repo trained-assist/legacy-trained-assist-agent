@@ -49,7 +49,7 @@ test('every ladder call carries trace headers from run-identity env the engine a
   const { ENGINE_ENV_ALLOW } = require('../src/agent-isolation');
   const h = p.buildOcProfileOverrides('deepseek').provider.ladder.options.headers;
   assert.deepStrictEqual(Object.keys(h).sort(),
-    ['x-ladder-chat', 'x-ladder-run', 'x-ladder-session', 'x-ladder-trace', 'x-ladder-user']);
+    ['x-ladder-app', 'x-ladder-chat', 'x-ladder-run', 'x-ladder-session', 'x-ladder-trace', 'x-ladder-user']);
   for (const v of Object.values(h)) {
     const name = v.match(/^\{env:([A-Z_]+)\}$/)[1];
     assert.ok(ENGINE_ENV_ALLOW.has(name), `${name} must pass the engine env allowlist, else the header is empty`);
@@ -57,6 +57,7 @@ test('every ladder call carries trace headers from run-identity env the engine a
   const src = fs.readFileSync(path.join(ROOT, 'src/runner/claude-runner.js'), 'utf8');
   assert.match(src, /AGENT_RUN_ID: require\('crypto'\)\.randomUUID\(\)/, 'a fresh run id per spawn');
   assert.match(src, /AGENT_TRACE_CHAT: require\('\.\.\/opencode-ladder-provider'\)\.traceChat\(chatId\)/, 'the chat reaches the header (null → "", see traceChat)');
+  assert.match(src, /AGENT_LADDER_APP: resolveLadderApp\(/, 'the run type reaches x-ladder-app (#1917)');
 });
 
 test('russian keeps its strict reviewer prompt; research is a pinned OpenCode Go model, not a ladder', () => {

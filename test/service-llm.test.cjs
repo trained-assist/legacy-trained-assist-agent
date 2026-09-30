@@ -88,3 +88,60 @@ test('a broken onDiagnose callback can never break the call', async () => {
   assert.deepEqual(r.value, { a: 1 });
 });
 
+// ── #1917: D1 attribution ────────────────────────────────────────────────────
+// ctx → x-ladder-* (trace/run/user/session + app), so service calls show up in
+// ladder_calls (query-trace.py presets) and in OpenRouter's Application slice.
+
+test('ctx → x-ladder-* headers on every entry point; app falls back to source', async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => { seen.push(init.headers); return ok({ choices: [{ message: { content: 'ok' } }] }); };
+
+  await s.serviceChat({
+    messages: [{ role: 'user', content: 'x' }], source: 'gtd-intent', fetchImpl,
+    ctx: { trace: 'alice-tg-1', run: 'exec-2', user: 'alice', session: 's-3' },
+  });
+  const h = seen[seen.length - 1];
+  assert.equal(h['x-ladder-trace'], 'alice-tg-1');
+  assert.equal(h['x-ladder-run'], 'exec-2');
+  assert.equal(h['x-ladder-user'], 'alice');
+  assert.equal(h['x-ladder-session'], 's-3');
+  assert.equal(h['x-ladder-app'], 'gtd-intent', 'x-ladder-app = source when ctx.app is absent');
+  assert.equal(h.Authorization, `Bearer ${process.env.LLM_LADDER_TOKEN}`, 'auth header untouched');
+
+  // serviceJson/serviceText forward ctx via ...rest
+  await s.serviceJson({ user: 'x', source: 'playbook-validator', fetchImpl, ctx: { trace: 'p-1', run: 'e-9', user: 'bob' } });
+  const h2 = seen[seen.length - 1];
+  assert.equal(h2['x-ladder-trace'], 'p-1');
+  assert.equal(h2['x-ladder-run'], 'e-9');
+  assert.equal(h2['x-ladder-user'], 'bob');
+  assert.equal(h2['x-ladder-app'], 'playbook-validator');
+  assert.ok(!('x-ladder-session' in h2), 'a field the caller has no id for is omitted, not sent empty');
+
+  await s.serviceText({ user: 'x', source: 'session-summary', fetchImpl, ctx: { session: 's-9', user: 'alice', app: 'custom-app' } });
+  const h3 = seen[seen.length - 1];
+  assert.equal(h3['x-ladder-session'], 's-9');
+  assert.equal(h3['x-ladder-app'], 'custom-app', 'ctx.app wins over source');
+});
+
+test('no ctx → no x-ladder-* headers at all (pre-#1917 call sites unchanged)', async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => { seen.push(init.headers); return ok({ choices: [{ message: { content: 'ok' } }] }); };
+
+  await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], source: 'gtd-intent', fetchImpl });
+  await s.serviceJson({ user: 'x', source: 'session-summary', fetchImpl });
+  await s.serviceText({ user: 'x', fetchImpl });
+
+  assert.equal(seen.length, 3);
+  for (const h of seen) {
+    const ladder = Object.keys(h).filter(k => k.startsWith('x-ladder-'));
+    assert.deepEqual(ladder, [], `no ctx → no x-ladder-* headers, got ${ladder.join(', ')}`);
+    assert.equal(h.Authorization, `Bearer ${process.env.LLM_LADDER_TOKEN}`);
+  }
+
+  // A degenerate ctx must not fabricate headers either (only x-ladder-app, from source).
+  await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], source: 'answer-format', fetchImpl, ctx: {} });
+  const h = seen[seen.length - 1];
+  assert.deepEqual(Object.keys(h).filter(k => k.startsWith('x-ladder-')), ['x-ladder-app']);
+  assert.equal(h['x-ladder-app'], 'answer-format');
+});
+
