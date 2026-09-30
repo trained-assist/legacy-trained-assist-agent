@@ -356,9 +356,9 @@ module.exports = {
           },
           escalate_to_doctor: {
             type: 'boolean',
-            description: 'Opt this plan into quality escalation onto the doctor level (Claude): a cheap-model step that ' +
-              'failed twice on quality gets its third attempt on Claude. Quota/provider exhaustion still never falls ' +
-              'back to Claude (#1899). Use only when the owner asked for it (e.g. epic-delivery child plans).',
+            description: 'Quality escalation onto the doctor level (Claude): a cheap-model step that failed twice on ' +
+              'quality gets its third attempt on Claude. ON by default (owner 2026-10-01); pass false to keep a plan ' +
+              'on OpenCode only. Quota/provider exhaustion never falls back to Claude either way (#1899).',
           },
           activate: {
             type: 'boolean',
@@ -414,9 +414,9 @@ module.exports = {
           acceptance_criteria: compiled.acceptance_criteria,
           items: compiled.items,
           hooks: compiled.hooks,
-          execution_policy: (approve_hooks || escalate_to_doctor) ? {
+          execution_policy: (approve_hooks || escalate_to_doctor === false) ? {
             ...(approve_hooks ? { hooks_approved: true } : {}),
-            ...(escalate_to_doctor ? { quality_escalation_to_doctor: true } : {}),
+            ...(escalate_to_doctor === false ? { quality_escalation_to_doctor: false } : {}),
           } : undefined,
           playbook_id: playbook.id,
           playbook_version: playbook.version,

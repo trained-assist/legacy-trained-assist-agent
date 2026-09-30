@@ -126,10 +126,10 @@ function planLevelMap(policy) {
 // Quality escalation: the next level whose resolved engine/profile actually differs
 // from the current one (with bachelor and master on the same profile, a one-rung
 // bump would change nothing). null at the ceiling. Automatic escalation never lands on
-// Claude/Codex (owner requirement #1899: no paid insurance when cheap models fail) —
-// a step runs there only when its plan declares that level as its minimum, or when the
-// plan opts in with execution_policy.quality_escalation_to_doctor (owner 2026-09-30:
-// «опенкод облажался — тогда Claude»). The opt-in covers QUALITY failures only; quota /
+// Claude/Codex unless allowPaid (owner requirement #1899: no paid insurance when cheap
+// models run OUT OF QUOTA). Since 2026-10-01 durable-recovery passes allowPaid for every
+// plan unless it sets execution_policy.quality_escalation_to_doctor=false (owner: «по
+// дефолту OpenCode, Claude на doctor и на эскалации» — опенкод облажался → Claude). The opt-in covers QUALITY failures only; quota /
 // provider exhaustion never reaches this function, so #1899 still holds there.
 function nextDistinctLevel(item, levelMap, { allowPaid = false } = {}) {
   const cur = resolveStepExecution(item, { levelMap, useRoleMap: false });
@@ -143,7 +143,7 @@ function nextDistinctLevel(item, levelMap, { allowPaid = false } = {}) {
   return null;
 }
 
-function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = null, roleMap = null, useRoleMap = true } = {}) {
+function resolveStepExecution(item = {}, { defaultEngine = null, levelMap = null, roleMap = null, useRoleMap = true } = {}) {
   const map = levelMap || loadLevelMap();
   const executionKind = item && item.execution_kind === 'programmatic' ? 'programmatic' : 'agent';
 
@@ -158,8 +158,18 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
     : LEVELS.includes(item.minimum_model_level) ? item.minimum_model_level
     : null;
 
+  // A step without a full contract (legacy task_create items, a playbook step that
+  // forgot role/level) runs on OpenCode at the master level (owner 2026-10-01: «по
+  // дефолту OpenCode, Claude только на doctor и эскалации»). Claude is reachable only
+  // through an explicit doctor level or quality escalation. `defaultEngine` still lets
+  // a caller pin the pre-2026-10 behaviour.
   if (!role || !level) {
-    return { executionKind, engine: defaultEngine, ocProfile: null, ocRole: null, skipModels: [], modelLevel: level, reason: 'no-contract' };
+    if (defaultEngine) {
+      return { executionKind, engine: defaultEngine, ocProfile: null, ocRole: null, skipModels: [], modelLevel: level, reason: 'no-contract' };
+    }
+    const r = resolveStepExecution({ ...item, executor_role: role || 'developer', minimum_model_level: level || 'master', current_model_level: level || 'master' },
+      { levelMap: map, roleMap, useRoleMap: false });
+    return { ...r, reason: 'no-contract' };
   }
 
   // A role override is intended for the normal rung only. Once durable recovery

@@ -30,7 +30,8 @@ function waitableKeys() {
 }
 
 const DEFAULT_MAX_ATTEMPTS = 3;
-const DEFAULT_TIMEOUT_SECONDS = 600;
+// 40 min = the engine run cap; the executor also floors every step at it (gtd-controller).
+const DEFAULT_TIMEOUT_SECONDS = 2400;
 
 // Resolve one step's boundary hooks. Step hooks stay on their own item; a stage
 // boundary is carried by the stage's first/last item (items are strictly ordered,
