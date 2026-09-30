@@ -105,13 +105,26 @@ function hookBoundaryKey({ taskId, itemId = null, event, index }) {
 
 // Resolve consent for external-effect hooks. Explicit boolean/function wins;
 // otherwise the plan's own run policy may opt in (`hooks_approved`).
+//
+// #1909: a profile with the standing bg-notify preference ON has already said
+// «пиши мне о фоновой работе» — that opt-in is the consent for `notify` hooks
+// (the audit found 52/63 notify hooks skipped with «no explicit consent»: nobody
+// ever passed approve_hooks, so plan failures/questions never reached anyone).
+// create_issue / publish are NOT covered by it — a message in one's own chat is
+// one thing, opening an issue or publishing a page is another; those still need
+// the explicit approve_hooks.
 function resolveHookApproval(task, approveHooks = null) {
   if (typeof approveHooks === 'function') return approveHooks;
   if (typeof approveHooks === 'boolean') return () => approveHooks;
   let policy = {};
   try { policy = task && task.execution_policy_json ? JSON.parse(task.execution_policy_json) : {}; } catch { policy = {}; }
   const approved = policy && (policy.hooks_approved === true || policy.approve_hooks === true);
-  return () => approved === true;
+  if (approved === true) return () => true;
+  const profileId = task && task.profile_id;
+  if (!profileId) return () => false;
+  let notifyOptIn = false;
+  try { notifyOptIn = require('./bg-notify').isBgNotifyEnabled(profileId); } catch { /* unreadable flag → no consent */ }
+  return (hook) => !!(notifyOptIn && hook && hook.type === 'notify');
 }
 
 // Execute every hook for one boundary. Never throws: an unavailable transport or
