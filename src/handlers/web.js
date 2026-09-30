@@ -263,10 +263,15 @@ async function handleWeb(req, url, res, ctx) {
     if (!username || !/^[a-zA-Z0-9_-]{1,64}$/.test(username)) return json(res, 400, { error: 'invalid username' });
     try {
       const { getSessionFor } = require('../web-routes');
-      const session = getSessionFor(username, id);
+      // async (#1916 PR-C): an archived session is served from GCS in memory —
+      // an outage answers 503 with the reason, never a 404 «session not found».
+      const session = await getSessionFor(username, id);
       if (!session) return json(res, 404, { error: 'session not found' });
       return json(res, 200, { session });
     } catch (e) {
+      if (e && (e.code === 'ARCHIVE_UNAVAILABLE' || e.code === 'ARCHIVE_MISSING')) {
+        return json(res, 503, { error: 'session archive unavailable', detail: e.message });
+      }
       return json(res, 500, { error: 'session read failed' });
     }
   }
@@ -285,11 +290,14 @@ async function handleWeb(req, url, res, ctx) {
     if (!username || !/^[a-zA-Z0-9_-]{1,64}$/.test(username)) return json(res, 400, { error: 'invalid username' });
     try {
       const { getTraceFor } = require('../web-routes');
-      const trace = getTraceFor(username, id);
+      const trace = await getTraceFor(username, id);
       return json(res, 200, trace.ok
         ? { ok: true, engine: trace.engine, source: trace.source, reasoning: trace.reasoning, sessionId: trace.sessionId, events: trace.events, byMessage: trace.byMessage, ttlMs: trace.ttlMs }
         : { ok: false, error: trace.error, engine: trace.engine || null });
     } catch (e) {
+      if (e && (e.code === 'ARCHIVE_UNAVAILABLE' || e.code === 'ARCHIVE_MISSING')) {
+        return json(res, 503, { error: 'session archive unavailable', detail: e.message });
+      }
       return json(res, 500, { error: 'session trace failed' });
     }
   }
@@ -440,11 +448,18 @@ async function handleWeb(req, url, res, ctx) {
     const refs = Array.isArray(fileRefs) ? fileRefs : [];
     const messageText = typeof message === 'string' ? message.trim() : '';
     if (!messageText && !refs.length) return json(res, 400, { error: 'message or attachment required' });
-    const { streamWebTask, prepareWebTaskFiles, claimWebMutation, getSessionFor } = require('../web-routes');
+    const { streamWebTask, prepareWebTaskFiles, claimWebMutation } = require('../web-routes');
+    const { getSession, getSessionRecord } = require('../session-store');
+    const { userWorkDir } = require('../data-paths');
     // A reply targets an EXISTING dialog. An unknown id used to start a silent
     // new session under a client-chosen name (exact-session runs never heal
     // onto a pointer) — the UI then showed an answer in a dialog nobody opened.
-    if (!getSessionFor(username, id)) return json(res, 404, { error: 'session not found', id });
+    // Existence check stays local and sync: an ARCHIVED session counts as existing
+    // (its index record is enough) — the runner materializes the body at admission,
+    // so this guard must not 404 it and must not pay for a GCS fetch either (#1916 PR-C).
+    if (!getSession(userWorkDir(username), id) && !getSessionRecord(userWorkDir(username), id)) {
+      return json(res, 404, { error: 'session not found', id });
+    }
     let prepared;
     try { prepared = await prepareWebTaskFiles(username, messageText, refs, secrets); }
     catch (e) { return json(res, e.statusCode || 503, { error: e.message || 'attachment preparation failed' }); }

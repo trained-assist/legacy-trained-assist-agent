@@ -2037,7 +2037,12 @@ function clearGtdForChat(workDir, chatId, threadId = null) {
     // Forum topics (#255): a stop in topic A must not cancel topic B's tracking.
     if (Number.isInteger(threadId) && threadId > 0 && rec.threadId != null && Number(rec.threadId) !== Number(threadId)) continue;
     const sess = getSession(workDir, rec.sessionId);
-    const attachedChatId = sess ? (sess.liveChatId ?? sess.ownerChatId) : null;
+    // Issue #1916 PR-C: an ARCHIVED session has no local body between runs, and
+    // index records carry no liveChatId — so fall back to the record's own owner
+    // chat, which is what this record was scheduled from. Only applied when the
+    // body is absent: for a live session the attachment still wins, exactly as
+    // before (a session that moved chats must not be cancelled via rec.chatId).
+    const attachedChatId = sess ? (sess.liveChatId ?? sess.ownerChatId) : rec.chatId ?? null;
     if (attachedChatId == null || String(attachedChatId) !== String(chatId)) continue;
     rec.status = 'closed';
     rec.closedReason = 'user-stop';
@@ -2164,7 +2169,35 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
       if (isTaskRunning(username, rec.sessionId)) { console.log(`[gtd] skip ${rec.sessionId}: task running for this session`); continue; }
 
       if (!canRunSession(username, rec.sessionId)) continue;
-      const session = getSession(workDir, rec.sessionId);
+      let session = getSession(workDir, rec.sessionId);
+      if (!session) {
+        // Issue #1916 PR-C: between runs a session body may live ONLY in GCS
+        // (archived). A missing file therefore must not be read as a dead session
+        // — clearing here would silently cancel a perfectly alive check. The index
+        // is the authority: it is always local; only a session NEITHER the file
+        // nor the index knows is genuinely gone.
+        const record = require('./session-store').getSessionRecord(workDir, rec.sessionId);
+        if (!record) { clearGtd(workDir, rec.sessionId); continue; }
+        if (record.archived && typeof record.archived.key === 'string') {
+          // Read the body back IN MEMORY (no disk residue for a background tick)
+          // so ownership/audience resolve exactly as they did before archiving.
+          // An outage must not cancel the check — it falls through to the
+          // rec-based stand-in below and the fired run materializes at admission.
+          try {
+            session = await require('./session-materialize').readArchivedSessionBody({
+              sessionId: rec.sessionId, marker: record.archived, timeoutMs: 15_000,
+            });
+          } catch (e) {
+            console.warn('[gtd] session %s: archive read failed (%s) — falling back to the record', rec.sessionId, e.code || e.message);
+          }
+        }
+        if (!session) {
+          // Minimal stand-in so the owner-chat resolution below keeps its exact
+          // shape (rec.chatId first, then the session's attachment); rec.chatId is
+          // the durable owner chat recorded when the check was scheduled.
+          session = { id: record.id, liveChatId: rec.chatId ?? null, ownerChatId: null, audience: record.audience ?? null };
+        }
+      }
       // rec.audience is durable and wins once set — a session's audience must never
       // silently override an already-recorded GTD record (see #1302 §3.3). Falls back
       // to session.audience for legacy GTD records that predate this field.
@@ -2172,7 +2205,6 @@ async function _runDueInner({ secrets, baseUsersDir, isTaskRunning, runTask, get
       let routeSecrets;
       try { routeSecrets = require('./bot-delivery').deliverySecrets(secrets, audience); }
       catch (e) { console.error('[gtd] delivery unavailable:', e.message); continue; }
-      if (!session) { clearGtd(workDir, rec.sessionId); continue; }
 
       // Дешёвая пре-проверка ПЕРЕД тем как будить дорогого Claude/Codex: объективные
       // факты (CI зелёный / замержено) берём напрямую из GitHub API. Если чек-лист

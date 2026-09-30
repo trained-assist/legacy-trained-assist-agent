@@ -7,9 +7,9 @@
 //     driven CLI phase (lock → drain → flush → ledger → this module);
 //   · PR-D  the post-run sweep in the runner — the same archive* calls after a
 //     run (and after a quick answer, which also writes a session);
-//   · PR-C  materialize* — wired into the read paths (admission before
-//     resolveChatSession, native --resume, session_search, chat-history). Here
-//     the functions exist and are tested; the wiring lands in PR-C.
+//   · PR-C  materialize* — wired into the read paths through
+//     src/session-materialize.js (admission before resolveChatSession, native
+//     --resume, session_search, chat-history, the web/API readers).
 //
 // Exact payload — the clean-list ARCHIVE class is INHERITED by a whole subtree,
 // so the phase filters and this module states what is actually archived:
@@ -143,6 +143,29 @@ function transcriptArchiveKey(profile, rel, cwd) {
   if (!id) throw new Error(`not an archivable transcript path: ${rel}`);
   if (typeof cwd !== 'string' || !cwd) throw new Error(`no cwd for transcript ${rel}`);
   return transcriptKey(profile, slugCwd(cwd), id);
+}
+
+// Claude's own project-directory slug — the LOCAL DEST half of a transcript
+// restore (PR-C native --resume). Claude names the directory by replacing every
+// non-alphanumeric character of the cwd with '-' (verified against live
+// transcripts under <profile>/.agent-home/.claude/projects/ and against the same
+// mapping scripts/skills-migration-dry-run.js calls escapeDir). It is NOT
+// slugCwd (the blob KEY half): slugCwd keeps '.' and '_' and trims edge dashes,
+// so `/home/u/projects/web` → key slug `home-u-projects-web`, dest dir
+// `-home-u-projects-web`. Kept here so a restore never depends on a script.
+function claudeProjectSlug(cwd) {
+  if (typeof cwd !== 'string' || !cwd) throw new Error(`invalid cwd: ${JSON.stringify(cwd)}`);
+  return cwd.replace(/[^A-Za-z0-9]/g, '-');
+}
+
+// The relative path a restored transcript must land on for `claude --resume
+// <id>` (run with HOME=<profile>/.agent-home) to find it. archiveRelKind accepts
+// it: exactly one level of <slug> below TRANSCRIPTS_DIR, .jsonl.
+function transcriptDestRel(cwd, engineSessionId) {
+  if (!isSafeSegment(engineSessionId)) {
+    throw new Error(`invalid engineSessionId: ${JSON.stringify(engineSessionId)}`);
+  }
+  return `${TRANSCRIPTS_DIR}/${claudeProjectSlug(cwd)}/${engineSessionId}${TRANSCRIPT_EXT}`;
 }
 
 // `cwd` as Claude writes it into every message envelope of a transcript
@@ -351,7 +374,7 @@ function writeRestoredFile(profileRoot, relPath, raw) {
   return abs;
 }
 
-// ── materialize (PR-C wiring comes later; the function + its test are here) ──
+// ── materialize (PR-C: consumed by src/session-materialize.js) ───────────────
 /**
  * Download one archived object back to `destPath`.
  *
@@ -421,6 +444,8 @@ module.exports = {
   transcriptRelId,
   sessionArchiveKey,
   transcriptArchiveKey,
+  claudeProjectSlug,
+  transcriptDestRel,
   readTranscriptCwd,
   fetchArchivedBlob,
   checkArchivedBlob,

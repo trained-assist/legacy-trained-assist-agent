@@ -41,6 +41,12 @@ const { TOKENS_ROOT } = require('../data-paths');
 // (a separate process) holds while it mutates a workspace. Checked here, before
 // a run is journaled — see the block comment in _runTaskInner.
 const { isProfileLocked, waitForProfileUnlocked } = require('../profile-lock');
+// Session archive read paths (epic #1784 M2, issue #1916 PR-C): bring a body or
+// an engine transcript back from GCS before the code below reads it — admission,
+// native --resume, the chat-history warm-up. See src/session-materialize.js.
+const {
+  materializeRunSessions, materializeTranscriptForResume, materializeRecentArchivedSessions,
+} = require('../session-materialize');
 const answerRouter = require('../answer-router');
 const closureIntent = require('../closure-intent');
 const promptDomains = require('../prompt-domains');
@@ -103,6 +109,16 @@ const { runEngineProcess, buildEngineCommand, inputInspectionRows, resolveEngine
 // (spec: docs/user-scenarios/core/02-stop-and-supplement.md §2/§2а).
 const { stopEngineProcess, runAlive } = require('./engine-stop');
 const { traceIdFor, markTraceStopped, isRunStopped, traceStoppedAt } = require('../stop-trace');
+
+// Wording for a failed session materialize (#1916 PR-C) — one string for every
+// path that reports it (admission quick-answer, admission.run's catch, resume).
+// Must say what did NOT happen: the session was not recreated, the context is safe.
+function archiveUserMessage(e) {
+  const why = e && e.code === 'ARCHIVE_MISSING'
+    ? 'архивная копия не найдена в хранилище'
+    : 'хранилище GCS недоступно';
+  return `⚠️ Не могу открыть сессию: ${why}. Контекст не потерян — сессия НЕ пересоздана, повтори запрос позже.`;
+}
 
 const STREAM_INTERVAL_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 3000;
@@ -1058,6 +1074,70 @@ async function _runTaskInner(opts) {
     console.log('[%s] maintenance lock released — proceeding', opts.taskId);
   }
 
+  // ── PR-C: materialize the session this run is about to touch (#1916, B6) ────
+  // Between runs the VM holds NO session bodies (epic #1784 M2) — the body of the
+  // session this run resolves (the explicit id, or the chat's current-session
+  // pointer) may exist only in GCS. resolveChatSession reads bodies synchronously
+  // and its `getSession → null` cannot tell "archived" from "never existed", so
+  // an archived session that is not brought back first turns into a BLANK
+  // replacement and the accumulated context is lost (red-team B6, #1808).
+  //
+  // Started here — after the profile maintenance lock (the migrator may be moving
+  // these very bytes) — but deliberately NOT awaited on this path: everything
+  // from runTask() down to the journal write must stay SYNCHRONOUS («a restart
+  // must not silently lose accepted work», enforced by
+  // test/stop-trace.test.cjs asserting the journal exists the moment runTask
+  // returns). The promise is awaited at the two points that actually READ a body:
+  //   · the pre-queue quick answer's web-exact write (it would otherwise mint a
+  //     replacement shell over the archived id and duplicate its index record);
+  //   · the admission callback — which runs resolveChatSession, so the body is
+  //     back before the first authoritative read. Cost of starting early: the
+  //     sync foreign-session probe below may still see "no file" for an archived
+  //     id and skip its drop — resolveRunSession re-checks AFTER materialize, so
+  //     chat isolation still holds there.
+  // Any archive failure is reported to the user and stops the task. Recreating
+  // the session silently is the one thing this hook exists to make impossible.
+  const sessionMaterialize = materializeRunSessions({
+    workDir: opts.user.workDir,
+    profile: opts.user.username,
+    sessionId: opts.sessionId,
+    chatId: opts.user.id,
+    audience: opts.user.audience,
+    threadId: runThreadId,
+    forceNew: opts.forceNew,
+  });
+  // Some paths return without ever awaiting (stop-gate, journal failure) — a late
+  // rejection must not be an unhandled one. Awaiting the same promise later still
+  // rethrows, so this is not swallowing anything.
+  sessionMaterialize.catch(() => {});
+  // → null when the bodies are in place, otherwise the archive error (already
+  // carrying the user-facing wording). Non-archive errors are thrown as-is.
+  const awaitSessionMaterialize = async () => {
+    try {
+      const mat = await sessionMaterialize;
+      if (mat.materialized.length) {
+        console.log('[%s] materialized archived session(s) from GCS: %s', opts.taskId, mat.materialized.join(', '));
+      }
+      return null;
+    } catch (e) {
+      if (e.code !== 'ARCHIVE_UNAVAILABLE' && e.code !== 'ARCHIVE_MISSING') throw e;
+      console.error('[%s] session materialize failed: %s %s', opts.taskId, e.code, e.message);
+      e.userMessage = archiveUserMessage(e);
+      return e;
+    }
+  };
+  const reportArchiveFailure = async (e) => {
+    const text = e.userMessage || archiveUserMessage(e);
+    await status.close();
+    const token = opts.secrets?.TELEGRAM_BOT_TOKEN || opts.secrets?.BOT_TOKEN;
+    if (token && opts.user.id) {
+      const im = opts.initialMsgId;
+      if (im) await tgEdit(token, opts.user.id, im, text, {}).catch(() => sendTo(token, opts.user.id, text).catch(() => {}));
+      else await sendTo(token, opts.user.id, text).catch(() => {});
+    }
+    return text;
+  };
+
   // Pure-info quick answers (/agent_info, /secrets_list, /usage, ...) bypass the queue
   // entirely, same as /stop above — they read local state synchronously and don't touch
   // Claude or the session transcript, so there's no reason to make them wait behind
@@ -1085,6 +1165,12 @@ async function _runTaskInner(opts) {
         username: opts.user.username, chatId, threadId: runThreadId, audience: opts.user.audience,
         projectId: opts.projectId || null, task: opts.task, reply: quick,
       };
+      // Only this write needs the BODY (it appends into the named session). The
+      // plain Telegram path writes a side qa-<hash> session and needs nothing.
+      if (opts.webExactSession && opts.sessionId) {
+        const mErr = await awaitSessionMaterialize();
+        if (mErr) return await reportArchiveFailure(mErr);
+      }
       const qaSessionId = (opts.webExactSession && opts.sessionId
           && recordWebQuickExchange(opts.user.workDir, opts.sessionId, exchange))
         || recordQuickExchange(opts.user.workDir, exchange);
@@ -1253,6 +1339,14 @@ async function _runTaskInner(opts) {
         await status.finish(STOP_NOT_STARTED_MSG);
         return STOP_NOT_STARTED_MSG;
       }
+      // PR-C (#1916): the body must be on disk before _runTask resolves the
+      // session — `getSession → null` would otherwise adopt the archived id for a
+      // BLANK session (red-team B6). Thrown, not returned: admission.run's own
+      // catch reports it honestly and its `finally` clears the journal entry this
+      // task already wrote, so a failed materialize never leaves a phantom
+      // resumable task behind.
+      const materializeErr = await awaitSessionMaterialize();
+      if (materializeErr) throw materializeErr;
       // Global admission control: wait for a free slot + enough RAM before we
       // actually spawn `claude`. This is the OOM guard — the only remaining gate.
       const ramT0 = Date.now();
@@ -1281,9 +1375,29 @@ async function _runTaskInner(opts) {
       logStage('total', stageT0);
     }
   }).catch(async err => {
-    const msg = '❌ Не удалось запустить или завершить работу. Попробуй запустить задачу ещё раз.';
-    await status.finish(msg);
+    // Session-archive failures (issue #1916 PR-C) get their own, honest wording
+    // and an EXPLICIT send: status.finish() is a no-op without initialMsgId (web
+    // runs, journal resumes), and "no message at all" would read as the task
+    // silently vanishing. The message is also returned, so a caller that treats
+    // the resolved value as the answer (web SSE, GTD) echoes it instead of
+    // «задача завершилась без ответа».
+    const isArchive = !!err && (err.code === 'ARCHIVE_UNAVAILABLE' || err.code === 'ARCHIVE_MISSING');
+    const msg = isArchive
+      ? (err.userMessage || archiveUserMessage(err))
+      : '❌ Не удалось запустить или завершить работу. Попробуй запустить задачу ещё раз.';
     console.error(`[${opts.taskId}] unhandled queue error:`, err.message);
+    if (!isArchive) {
+      await status.finish(msg);
+      return;
+    }
+    await status.close();
+    const token = opts.secrets?.TELEGRAM_BOT_TOKEN || opts.secrets?.BOT_TOKEN;
+    if (token && opts.user.id) {
+      const im = opts.initialMsgId;
+      if (im) await tgEdit(token, opts.user.id, im, msg, {}).catch(() => sendTo(token, opts.user.id, msg).catch(() => {}));
+      else await sendTo(token, opts.user.id, msg).catch(() => {});
+    }
+    return msg;
   });
   current.finally(() => {
     // A task cut off by a restart keeps its journal entry: the next process resumes it.
@@ -1966,6 +2080,25 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     if (sourceCtx) sessionContext = context ? `${sourceCtx}\n\n${context}` : sourceCtx;
   }
 
+  // ── PR-C: chat-history warm-up (#1916) ──────────────────────────────────────
+  // buildRecentChatBlock (below) and the get_chat_history MCP tool both scan the
+  // sessions DIRECTORY, and between runs the last few sessions live only in GCS.
+  // Bring the top-5 most recently active archived ones back before either runs.
+  // Best-effort on purpose: the session THIS run continues was already
+  // materialized at admission and a failure here must not kill the task — it
+  // only costs the «недавняя история чата» reference block. Index-only fallback
+  // is deliberately NOT used: sessions.json carries no liveChatId, so a
+  // chat-scoped block built from it would leak another chat's lines here.
+  try {
+    const warm = await materializeRecentArchivedSessions({
+      workDir: user.workDir, profile: user.username, limit: 5,
+    });
+    if (warm.materialized.length) console.log('[%s] chat-history warm-up: %s', taskId, warm.materialized.join(', '));
+    for (const f of warm.failed) console.warn('[%s] chat-history warm-up failed for %s: %s', taskId, f.sessionId, f.message);
+  } catch (e) {
+    console.warn('[%s] chat-history warm-up:', taskId, e.message);
+  }
+
   // Fresh session in a chat with recent history (4h window expired / new topic):
   // session-scoped context is empty, so without this the model has no idea what
   // the user said an hour ago in the SAME chat ("с той задачей разобрались…").
@@ -2441,6 +2574,35 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // resolveEngineCwd. This is what keeps `-C` and the actual process cwd from
   // silently diverging once a distinct per-run code cwd (workspace/A2) exists.
   const codeCwd = resolveEngineCwd(user);
+  // ── PR-C: native resume needs the transcript back first (#1916) ─────────────
+  // `claude --resume <id>` looks for <HOME>/.claude/projects/<cwd-slug>/<id>.jsonl
+  // (HOME=<profile>/.agent-home), and between runs those jsonl files are in GCS,
+  // not on the VM — without this the resume silently fails and the run falls back
+  // to a fresh engine session, losing exactly the context resume exists for.
+  // Only claude has transcripts in M2 scope (opencode keeps them inside its own
+  // SQLite, SYSTEM class; codex has none under .agent-home).
+  // Failure contract: object not in the archive → proceed as before PR-C (it was
+  // never archived, or the run's cwd differs); a GCS outage/timeouts → honest
+  // ARCHIVE_UNAVAILABLE surfaced to the user by the admission catch below, never
+  // a quiet context-losing fallback.
+  if (resumeSessionId && engine === 'claude') {
+    try {
+      const tr = await materializeTranscriptForResume({
+        workDir: user.workDir, profile: user.username, cwd: codeCwd, engineSessionId: resumeSessionId,
+      });
+      if (tr.status === 'written') console.log('[%s] materialized transcript %s from GCS', taskId, resumeSessionId);
+      else if (tr.status === 'missing') console.warn('[%s] transcript %s not in the archive (%s) — resuming without it', taskId, resumeSessionId, tr.key);
+      else if (tr.status === 'skipped') console.warn('[%s] transcript materialize skipped: %s', taskId, tr.reason);
+    } catch (e) {
+      if (e.code !== 'ARCHIVE_UNAVAILABLE' && e.code !== 'ARCHIVE_MISSING') throw e;
+      const fail = new Error(`не могу вернуть транскрипт сессии из архива: ${e.message}`);
+      fail.code = e.code;
+      // The session body itself is already materialized by the admission hook, so
+      // the honest wording is the shared one: context intact, nothing recreated.
+      fail.userMessage = archiveUserMessage(e);
+      throw fail;
+    }
+  }
   const [engineBin, engineArgs] = buildEngineCommand({
     engine, prompt, systemPromptText, ocSystemPrompt, opencodeModel,
     mcpConfig, systemPromptFile, user, cwd: codeCwd, resumeSessionId,

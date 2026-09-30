@@ -23,8 +23,13 @@ function deliverySecrets(secrets, audience = 'default') {
 function taskDelivery(opts) {
   let audience = opts.user.audience;
   // Legacy pending records did not persist audience; recover it from the session.
+  // Index FIRST (issue #1916 PR-C): a body read here would miss an ARCHIVED
+  // session — its record in sessions.json carries `audience` and is always local,
+  // so the answer needs no GCS and no materialize this early in the run.
   if (!audience && opts.sessionId && opts.user.workDir) {
-    audience = require('./session-store').getSession(opts.user.workDir, opts.sessionId)?.audience;
+    const store = require('./session-store');
+    audience = store.getSessionRecord(opts.user.workDir, opts.sessionId)?.audience
+      || store.getSession(opts.user.workDir, opts.sessionId)?.audience;
   }
   audience ||= 'default';
   return { ...opts, user: { ...opts.user, audience }, secrets: deliverySecrets(opts.secrets, audience) };

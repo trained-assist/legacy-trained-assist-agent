@@ -314,7 +314,18 @@ async function handleApi(req, url, res, ctx) {
       if (!username || !/^[a-zA-Z0-9_-]+$/.test(username))
         return json(res, 400, { error: 'invalid username' });
       const workDir = workspacePath(username);
-      const session = getSessionData(workDir, id);
+      // #1916 PR-C: between runs the body may be in GCS only — fetch it into
+      // memory for this response (nothing lands on disk), and answer 503 with the
+      // real reason on an outage instead of a 404 that would read as «deleted».
+      let session;
+      try {
+        session = await require('../session-materialize').readSessionMaybeArchived({ workDir, sessionId: id });
+      } catch (e) {
+        if (e && (e.code === 'ARCHIVE_UNAVAILABLE' || e.code === 'ARCHIVE_MISSING')) {
+          return json(res, 503, { error: 'session archive unavailable', detail: e.message });
+        }
+        throw e;
+      }
       if (!session) return json(res, 404, { error: 'not found' });
       return json(res, 200, session);
     }
