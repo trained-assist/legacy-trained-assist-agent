@@ -40,7 +40,12 @@ const os = require('os');
 const { spawnSync } = require('child_process');
 
 const SCHEMA = 'profile-migrate/classifier@1';
-const ACTIONS = ['DELETE', 'ARCHIVE', 'MOVE', 'DEDUP', 'SYSTEM', 'KEEP'];
+// EXCLUDE (issue #1923, blocker B1 of #1808): the file stays on disk — never
+// deleted, archived or moved — but it never enters the git image (M6 .gitignore,
+// generator in scripts/profile-migrate/gitignore.cjs). No phase declares EXCLUDE
+// in its `actions`, so the runner's `actions.includes(e.action)` filter hands it
+// to nobody; it is only counted, as its own class, in classSummary / reports.
+const ACTIONS = ['DELETE', 'ARCHIVE', 'MOVE', 'DEDUP', 'SYSTEM', 'KEEP', 'EXCLUDE'];
 const UNKNOWN = 'UNKNOWN';
 const ALL_CLASSES = [...ACTIONS, UNKNOWN];
 const DEFAULT_CLEAN_LIST = path.join(__dirname, '..', '..', 'config', 'profile-clean-list.yaml');
