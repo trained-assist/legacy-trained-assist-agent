@@ -218,9 +218,10 @@ module.exports = {
         properties: {
           id: { type: 'string', description: 'Playbook id; omit to check all playbooks visible to the profile' },
           audience: { type: 'string', description: 'Also check that the id is the default for this audience' },
+          verbose: { type: 'boolean', description: 'Return every gate row (default: only non-pass rows + passed count)' },
         },
       },
-      handler: safe(async ({ id, audience } = {}, ctx) => {
+      handler: safe(async ({ id, audience, verbose } = {}, ctx) => {
         const profileId = requireUser(ctx);
         const { checkPlaybookReachability } = require('../../playbook-reachability');
         const resolved = readResolvedSkills(profileId);
@@ -231,7 +232,16 @@ module.exports = {
         return {
           ok: reports.every(r => r.ok),
           exposure_source: resolved ? `.skills-resolved.json (${resolved.at})` : 'computed from skills.json (no run record yet)',
-          reports: reports.map(r => ({ id: r.id, ok: r.ok, rows: r.rows })),
+          // Only the non-pass rows by default: a full 11-row report per playbook was
+          // collapsed by the input compressor («... 8 more items») — exactly hiding
+          // the failing gates. verbose=true returns every row.
+          reports: reports.map(r => ({
+            id: r.id, ok: r.ok,
+            ...(verbose ? { rows: r.rows } : {
+              passed: r.rows.filter(x => x.status === 'pass').length,
+              issues: r.rows.filter(x => x.status !== 'pass'),
+            }),
+          })),
         };
       }),
     },
