@@ -24,6 +24,10 @@ const POLICY = {
   TOOL_ERROR: ['tool_specific_retry', 'execution_retry'],
   CONFIG: ['alternate_target', 'terminal'],
   USER_STOP: ['terminal'],
+  // #1911: killed by the step's own budget. Backoff first (a step that needs more
+  // time usually needs less scope, the retry sees the failure reasons), then one
+  // rung up; never the quality ladder's doctor jump — a timeout is not a bad answer.
+  TIMEOUT: ['backoff_retry_same', 'next_model'],
   UNKNOWN: ['conservative_retry', 'fallback', 'terminal'],
 };
 

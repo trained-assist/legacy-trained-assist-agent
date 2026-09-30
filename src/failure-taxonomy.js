@@ -8,6 +8,10 @@
 const FAILURE_CLASSES = [
   'AUTH', 'QUOTA', 'RATE_LIMIT', 'CONTEXT', 'TRANSIENT',
   'MODEL_ERROR', 'TOOL_ERROR', 'CONFIG', 'USER_STOP', 'UNKNOWN',
+  // #1911: the engine was killed by a declared budget (execution_timeout_seconds /
+  // inactivity / hard cap). Its own recovery — backoff, not «the answer was bad»:
+  // before this class the kill surfaced as UNKNOWN and burned quality attempts.
+  'TIMEOUT',
 ];
 
 const EXECUTION_STATES = [
