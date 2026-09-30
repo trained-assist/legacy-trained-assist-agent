@@ -123,6 +123,26 @@ test('no predecessor: task starts immediately, no waiting message (session-lane 
   assert.ok(!h.messages.some(m => /Ожидаю/.test(m)), 'must never announce waiting when nothing is pending in the chat');
 });
 
+test('Ф5 web: with no initialMsgId the admission phase goes to onProgress (SSE), never to Telegram edits', async () => {
+  // A web run has no progress message to edit (web-routes passes initialMsgId:
+  // null) — before Ф5 the «Ожидаю завершения предыдущей работы» status silently
+  // evaporated and the submitting tab saw a bare spinner. The same texts must
+  // now surface on the progress channel the SSE stream forwards to the browser.
+  const progress = [];
+  const webOpts = { ...opts, initialMsgId: null, onProgress: t => progress.push(t) };
+  let runs = 0;
+  const h = harness({ chatPending: true, taskOpts: webOpts, run: async () => { runs++; } });
+  const done = h.start();
+  await tick();
+  assert.ok(progress.some(t => /Ожидаю завершения предыдущей работы/.test(t)),
+    `waiting phase must reach onProgress, got: ${JSON.stringify(progress)}`);
+  assert.equal(runs, 0, 'still queued at the gate');
+  assert.ok(!h.messages.some(m => /Ожидаю/.test(m)), 'web must never edit a Telegram message it does not have');
+  h.gate.resolve(); await done; await tick();
+  assert.equal(runs, 1);
+  assert.ok(progress.some(t => /Начинаю работу/.test(t)), 'start phase also surfaces on the web channel');
+});
+
 test('unexpected runner error replaces waiting/start with explicit failure', async () => {
   const h = harness({ run: async () => { throw Error('preparation broke'); } });
   await h.start();

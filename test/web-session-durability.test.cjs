@@ -34,7 +34,7 @@ function loadStream(runTaskImpl) {
   }
   const runnerPath = require.resolve('../src/runner');
   require.cache[runnerPath] = { id: runnerPath, filename: runnerPath, loaded: true,
-    exports: { runTask: runTaskImpl, isSessionRunning: () => false, stopSessionTask: () => false } };
+    exports: { runTask: runTaskImpl, isSessionRunning: () => false, isSessionQueuedFor: () => false, sessionRunPhase: () => null, stopSessionTask: () => false } };
   return require('../src/web-routes');
 }
 

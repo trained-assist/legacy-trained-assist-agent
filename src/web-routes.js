@@ -6,7 +6,7 @@ const { listSessions, getSession, getSessionRecord, getCurrentSessionId, createS
 // readers below serve it from GCS IN MEMORY — nothing is written to disk, so
 // reading a session can never leave a body behind (owner contract).
 const { readSessionMaybeArchived, SessionArchiveError } = require('./session-materialize');
-const { isTaskRunning, isSessionRunning, isSessionQueuedFor, runTask, stopSessionTask } = require('./runner');
+const { isTaskRunning, isSessionRunning, isSessionQueuedFor, sessionRunPhase, runTask, stopSessionTask } = require('./runner');
 const { userWorkDir, SYSTEM_ROOT } = require('./data-paths');
 const { readTrace } = require('./session-trace');
 const { getDigestFor } = require('./session-digest');
@@ -144,6 +144,8 @@ function listSessionsFor(username, limit = 20) {
     summary: s.summary || null,
     projectId: s.projectId || null,
     status: isSessionRunning(s.id) ? 'running' : (s.status || 'completed'),
+    // Ф5: accepted-but-waiting is a DIFFERENT state from a live run for the UI.
+    queued: sessionRunPhase(username, s.id) === 'queued',
   }));
 }
 
@@ -173,6 +175,7 @@ async function getSessionFor(username, sessionId) {
     projectId: session.projectId || meta.projectId || null,
     audience: session.audience || 'default',
     status: isSessionRunning(sessionId) ? 'running' : (session.status || 'completed'),
+    queued: sessionRunPhase(username, sessionId) === 'queued',
     messages: session.messages || [],
   };
 }
