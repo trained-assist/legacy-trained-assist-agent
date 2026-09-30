@@ -47,6 +47,14 @@ childEnv.LLM_LADDER_TOKEN = 'test-ladder-token';
 for (const k of Object.keys(isoEnv)) {
   if (process.env[k] && process.env[k].startsWith(os.homedir())) childEnv[k] = isoEnv[k];
 }
+// Post-run sweep (#1916 PR-D): a settled run arms a sweep 1s later, and every runner test
+// settles one. Without this it would (a) build a REAL GCS client — ADC on a dev box means the
+// production bucket — and (b) once an upload succeeds, unlink the very fixture the next
+// assertion reads. Point it at a fake bucket under the same temp root and defer it past the
+// life of any test process. A test that WANTS the sweep sets either value itself (in-process
+// assignment wins over this env).
+childEnv.GCS_FAKE_DIR = path.join(isoDir, 'gcs');
+childEnv.POST_RUN_SWEEP_DELAY_MS = '3600000';
 
 const failed = [];
 for (const f of files) {

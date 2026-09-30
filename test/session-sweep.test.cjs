@@ -298,14 +298,21 @@ test('schedulePostRunSweep arms a timer only — the run that scheduled it is ne
   assert.equal(fs.existsSync(bodyPath(profile, 's-999')), true);
   assert.equal(fs.existsSync(LOCK(profile)), false);
 
-  const r = await p;
-  assert.equal(r.skipped, null, JSON.stringify(r));
-  assert.equal(fs.existsSync(bodyPath(profile, 's-999')), false, 'the deferred sweep ran');
-  assert.equal(fs.existsSync(LOCK(profile)), false);
+  // The sweep timer is unref'd on purpose (a pending sweep must never keep a process alive), so
+  // an idle event loop would drain before it fires — hold a ref'd handle for the two awaits.
+  const keepAlive = setInterval(() => {}, 25);
+  try {
+    const r = await p;
+    assert.equal(r.skipped, null, JSON.stringify(r));
+    assert.equal(fs.existsSync(bodyPath(profile, 's-999')), false, 'the deferred sweep ran');
+    assert.equal(fs.existsSync(LOCK(profile)), false);
 
-  // Scheduling must never reject: the runner calls it fire-and-forget.
-  const bad = await sweep.schedulePostRunSweep({ profile: 'no-such', workDir: path.join(TMP, 'gone'), delayMs: 0 });
-  assert.equal(bad.skipped, 'no-workdir');
+    // Scheduling must never reject: the runner calls it fire-and-forget.
+    const bad = await sweep.schedulePostRunSweep({ profile: 'no-such', workDir: path.join(TMP, 'gone'), delayMs: 0 });
+    assert.equal(bad.skipped, 'no-workdir');
+  } finally {
+    clearInterval(keepAlive);
+  }
 });
 
 // ── 6. flush before touch ─────────────────────────────────────────────────────
