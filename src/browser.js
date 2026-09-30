@@ -267,7 +267,14 @@ function writeMcpConfig(workDir, userId, opts = {}) {
 function writeRunMcpConfig(workDir, userId, opts = {}, { bridged = false } = {}) {
   if (!bridged) return { mcpConfig: writeMcpConfig(workDir, userId, opts), servers: null };
   const { bridgedMcpConfig } = require('./agent-mcp-bridge');
-  const real = buildMcpConfig(workDir, userId, { ...opts, toolSecrets: require('./secrets').toolPlatformEnv() });
+  // The tool bot token must be the bot of THIS run's audience (runner passes the
+  // taskDelivery token): tg_send_file / get_group_file in a freelance or recruiter
+  // chat with the classic bot's token hit a chat that bot is not in, and a
+  // file_id minted for one bot cannot be fetched with another.
+  const { TOOL_BOT_TOKEN_ENV } = require('./channels/telegram-files');
+  const { botToken, ...rest } = opts;
+  const toolSecrets = { ...require('./secrets').toolPlatformEnv(), ...(botToken ? { [TOOL_BOT_TOKEN_ENV]: String(botToken) } : {}) };
+  const real = buildMcpConfig(workDir, userId, { ...rest, toolSecrets });
   const configPath = path.join(workDir, '.mcp.json');
   atomicJson(configPath, bridgedMcpConfig(real), { space: 2 });
   return { mcpConfig: configPath, servers: real.mcpServers };
