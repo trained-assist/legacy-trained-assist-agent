@@ -10,6 +10,16 @@ when the executions belong to different sessions. Within one profile, project or
 folder, different sessions may run in parallel (2, 3, 5+ as resources allow).
 In Web, different sessions have separate workspaces and run in parallel.
 
+**Explicit-choice exception (owner decision 2026-09-30, RC-03).** The lane is a
+default, not a hidden ban: when the user is offered the launch menu during a
+running task and explicitly picks **«⚡ Параллельно»**, the gateway sends
+`parallel: true` on `/run` and that run skips the lane check. The flag may come
+only from a user's menu choice on the gateway — never from the model, a retry or
+any automatic path. The session writer guard is never bypassed, so «параллельно»
+into the SAME session still queues (CH-05); the menu launches it as a separate
+session. Everything without the flag behaves exactly as before: default = one
+interactive run per dialog.
+
 **Why:** Telegram is one message stream — two concurrent runs make it unclear which
 task an input, answer, «Стоп» or «Дополнить» belongs to. A Web tab shows one
 session's input/output/controls, so profile-wide serialization is not needed there.
@@ -19,6 +29,8 @@ session's input/output/controls, so profile-wide serialization is not needed the
 ```text
 Telegram execution → Telegram conversation lane free
                    AND target session writer slot free
+Telegram execution with user's `parallel` flag
+                   → target session writer slot free   (lane check skipped for THIS run)
 Web execution      → target session writer slot free
 All executions     → ordinary admission by real resources
 ```
@@ -45,7 +57,9 @@ All executions     → ordinary admission by real resources
 
 `profileId`/`projectId`/`workDir` as a global single-run lock; releasing the Telegram
 lane once a sessionId is known; bypassing the lane via a new session, project/engine
-switch, retry, restart/resume, GTD, or another group member.
+switch, retry, restart/resume, GTD, or another group member — or by any automatic
+decision. The only sanctioned exception is the user's explicit parallel choice
+(`parallel: true` from the gateway's launch menu, RC-03).
 
 Supersedes older notes stating "the only concurrency boundary is the session".
 

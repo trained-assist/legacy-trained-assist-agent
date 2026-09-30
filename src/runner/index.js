@@ -1320,6 +1320,9 @@ async function _runTaskInner(opts) {
   const admissionScopes = legacyAdmissionScopes({
     chatId: opts.user.id, audience: opts.user.audience, threadId: runThreadId,
     profileId: opts.user.username, sessionId: opts.webExactSession ? opts.sessionId : opts.forceNew ? null : (opts.sessionId || opts.activitySessionId),
+    // RC-03: the user's explicit «⚡ Параллельно» (owner 2026-09-30) — the only
+    // way past the dialog lane. Session writer scope above stays untouched.
+    parallel: opts.parallel === true,
   });
   if (admission.isBusy(admissionScopes)) status.waiting(
     '↪️ Ожидаю завершения предыдущей работы. В этом диалоге выполняю задачи по очереди. Начну автоматически; повторно отправлять не нужно.'
