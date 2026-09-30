@@ -2625,16 +2625,18 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // P3a durable step: a run carrying its own `stepTimeoutMs` is a single step
     // with a declared budget + its own retry budget (max_attempts), owned by the
     // durable executor. Never auto-continue it 10× — overrunning the step budget
-    // is a step failure. Returning no DURABLE marker lets runDueDurable's failure
-    // branch fail the item and retry per max_attempts.
+    // is a step failure. #1911: return the timeout as TEXT (was `undefined`) so the
+    // settle classifies it TIMEOUT → backoff retry, instead of an empty reply that
+    // read as a quality miss and burned escalation attempts.
     if (stepTimeoutMs) {
+      const timeoutMsg = `⏱ Шаг не уложился в бюджет: ${Math.round(stepTimeoutMs / 1000)}с. Частичный результат сохранён в истории сессии — повтори с меньшим объёмом.`;
       _recordFailureAttempt(executionId, {
         taskId, projectId, sessionId: activeSessionId, engine,
         errorText: `step timeout: ${Math.round(stepTimeoutMs / 1000)}s budget exhausted`,
         action: 'step_failed',
       });
       executionHistory.finalizeExecution(executionId, 'FAILED');
-      return;
+      return timeoutMsg;
     }
 
     if (continuationCount < MAX_CONTINUATIONS) {

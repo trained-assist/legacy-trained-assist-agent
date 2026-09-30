@@ -170,6 +170,23 @@ describe('#1908 engine failure returned as the reply', () => {
   }
 });
 
+describe('#1911 step timeout → TIMEOUT class, no quality escalation', () => {
+  it('timeout text: retries at the same level with the policy backoff, never escalates', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { store, item } = plan(G);
+    await tick(G, {
+      runTask: async () => '⏱ Шаг не уложился в бюджет: 600с. Частичный результат сохранён в истории сессии — повтори с меньшим объёмом.',
+    });
+    await drain();
+    const after = store.getTaskItem(item.id);
+    expect(after.status).toBe('pending');
+    expect(after.last_failure_class).toBe('TIMEOUT'); // не UNKNOWN → не quality-путь
+    expect(after.current_model_level).toBe('bachelor'); // без эскалации в doctor
+    expect(after.last_recovery_action).toBe('backoff_retry_same');
+    expect(after.due_at).toBeGreaterThan(Date.now()); // бэкофф реально применён
+  });
+});
+
 describe('durable-marker-judge unit', () => {
   it('judgeMarkerlessReply: empty and too-short replies never reach the LLM', async () => {
     const { judgeMarkerlessReply } = require('../../src/durable-marker-judge.js');
