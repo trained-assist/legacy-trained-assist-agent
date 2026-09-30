@@ -598,12 +598,14 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
       items: [
         { title: 'research', execution_kind: 'agent', executor_role: 'researcher', minimum_model_level: 'bachelor', context_budget: 'small', validation: { command: 'true' } },
         { title: 'review', execution_kind: 'agent', executor_role: 'reviewer', minimum_model_level: 'master', context_budget: 'medium', validation: { command: 'true' } },
-        { title: 'finalize', execution_kind: 'agent', executor_role: 'reviewer', minimum_model_level: 'doctor', context_budget: 'medium', validation: { command: 'true' } },
+        { title: 'finalize', execution_kind: 'agent', executor_role: 'developer', minimum_model_level: 'doctor', context_budget: 'medium', validation: { command: 'true' } },
+        // reviewer@doctor = independent review on another model family (owner 2026-09-30): codex, not claude.
+        { title: 'independent review', execution_kind: 'agent', executor_role: 'reviewer', minimum_model_level: 'doctor', context_budget: 'medium', validation: { command: 'true' } },
       ],
     });
     store.updateTask(r.task.id, 'u1', { status: 'active' });
     const opts = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       await G19.runDueDurable({
         secrets: {}, now: Date.now(), isTaskRunning: () => false,
         runTask: async (o) => { opts.push(o); return 'DURABLE: done'; },
@@ -611,7 +613,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
       });
       await drain();
     }
-    ok(opts.length === 3, `role: three agent steps fired (got ${opts.length})`);
+    ok(opts.length === 4, `role: four agent steps fired (got ${opts.length})`);
     const shape = o => o && { engine: o.engine, ocProfile: o.ocProfile, ocRole: o.ocRole, forceClaude: o.forceClaude };
     ok(opts[0] && opts[0].engine === 'opencode' && opts[0].ocRole === 'explore' && opts[0].forceClaude === false,
       `role: researcher→opencode/explore, forceClaude=false (got ${JSON.stringify(shape(opts[0]))})`);
@@ -619,6 +621,8 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
       `role: reviewer→opencode/review, forceClaude=false (got ${JSON.stringify(shape(opts[1]))})`);
     ok(opts[2] && opts[2].engine === 'claude' && !opts[2].ocRole && opts[2].forceClaude === true,
       `role: doctor→claude, forceClaude=true (got ${JSON.stringify(shape(opts[2]))})`);
+    ok(opts[3] && opts[3].engine === 'codex' && !opts[3].ocRole && opts[3].forceClaude === false,
+      `role: reviewer@doctor→codex, forceClaude=false (got ${JSON.stringify(shape(opts[3]))})`);
   }
 
   // 20. strict positional ordering (#1450): a 3-item plan with a delay-gated step

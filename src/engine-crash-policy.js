@@ -51,9 +51,30 @@ function isQuotaLikeClass(failureClass) {
   return failureClass === 'QUOTA' || failureClass === 'RATE_LIMIT';
 }
 
-function engineFallbackNotice(engineLabel, failureClass) {
+function engineFallbackNotice(engineLabel, failureClass, targetLabel = 'OpenCode') {
   const reason = isQuotaLikeClass(failureClass) ? 'упёрся в лимит' : 'потерял авторизацию';
-  return `⚠️ ${engineLabel} ${reason} — автоматически переключаюсь на OpenCode для этой задачи.`;
+  return `⚠️ ${engineLabel} ${reason} — автоматически переключаюсь на ${targetLabel} для этой задачи.`;
+}
+
+// Where a chat task goes when its engine is out of quota / credentials (owner 2026-09-30:
+// «архитектор — Claude; кончился лимит → Codex, потом OpenCode»). Claude → Codex while Codex is
+// usable (engine health not `unavailable`; an expired verdict reads half-open, so a recovered
+// quota is probed instead of being skipped forever), else OpenCode. Codex → OpenCode. This is
+// a LATERAL move between the paid engines the user already runs on, not an escalation from a
+// cheap model — #1899 (never auto-spend Claude/Codex as insurance for cheap models) still holds:
+// nothing here ever routes opencode upward.
+function chatFallbackEngine(engine, { healthOf } = {}) {
+  if (engine !== 'claude') return 'opencode';
+  let status = null;
+  try {
+    const of = healthOf || (e => require('./engine-health').getEngineHealth(e));
+    status = (of('codex') || {}).status || null;
+  } catch { status = null; }
+  return status === 'unavailable' ? 'opencode' : 'codex';
+}
+
+function engineLabelOf(engine) {
+  return engine === 'codex' ? 'Codex' : engine === 'opencode' ? 'OpenCode' : 'Claude Code';
 }
 
 function engineAuthNotice(engineLabel, failureClass) {
@@ -80,4 +101,5 @@ module.exports = {
   loopRecoveryEngine, loopFallbackNotice,
   isTerminalQuickCrash, engineCanFallBack, QUICK_CRASH_MAX_OUTPUT,
   isQuotaLikeClass, engineFallbackNotice, engineAuthNotice,
+  chatFallbackEngine, engineLabelOf,
 };

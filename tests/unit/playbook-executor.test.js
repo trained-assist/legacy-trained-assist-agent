@@ -32,8 +32,24 @@ describe('resolveStepExecution', () => {
   });
 
   it('doctor → claude, no opencode override', () => {
-    expect(resolveStepExecution(agent({ executor_role: 'reviewer', minimum_model_level: 'doctor', current_model_level: 'doctor' })))
+    expect(resolveStepExecution(agent({ executor_role: 'developer', minimum_model_level: 'doctor', current_model_level: 'doctor' })))
       .toMatchObject({ engine: 'claude', ocProfile: null, ocRole: null, modelLevel: 'doctor' });
+  });
+
+  it('reviewer@doctor = independent review: codex, then opencode doctor, never claude (owner 2026-09-30)', () => {
+    const r = resolveStepExecution(agent({ executor_role: 'reviewer', minimum_model_level: 'doctor', current_model_level: 'doctor' }));
+    expect(r).toMatchObject({ engine: 'codex', ocProfile: null, ocRole: null, modelLevel: 'doctor' });
+    expect(r.fallbacks).toEqual([{ engine: 'opencode', ocProfile: 'doctor', ocRole: 'review' }]);
+    expect([r.engine, ...r.fallbacks.map(f => f.engine)]).not.toContain('claude');
+  });
+
+  it('reviewer@doctor without role routing (plan pins its own level_map) keeps the level map', () => {
+    expect(resolveStepExecution(agent({ executor_role: 'reviewer', minimum_model_level: 'doctor', current_model_level: 'doctor' }), { useRoleMap: false }).engine)
+      .toBe('claude');
+  });
+
+  it('reviewer below doctor stays on opencode review', () => {
+    expect(resolveStepExecution(agent({ executor_role: 'reviewer' }))).toMatchObject({ engine: 'opencode', ocRole: 'review' });
   });
 
   it('verifier maps to the review OC role', () => {

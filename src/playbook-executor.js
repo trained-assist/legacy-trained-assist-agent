@@ -55,6 +55,18 @@ const DEFAULT_ROLE_MAP = Object.freeze({
   researcher: { engine: 'opencode', ocProfile: 'research', fallback: [{ engine: 'opencode', ocProfile: 'free' }] },
 });
 
+// role × level routes that beat the plain level map. reviewer@doctor is the INDEPENDENT
+// review (owner 2026-09-30): the doctor builder runs on Claude, so the strongest review must
+// come «с другой стороны» — a different model family. Codex first, then the OpenCode doctor
+// profile; never Claude (a Claude review of Claude's work is not independent). Applies on the
+// normal rung only, like role overrides; a plan with its own level_map runs without role
+// routing (gtd-controller passes useRoleMap:false), so a pinned plan still owns every step.
+const DEFAULT_ROLE_LEVEL_MAP = Object.freeze({
+  reviewer: Object.freeze({
+    doctor: { engine: 'codex', ocProfile: null, fallback: [{ engine: 'opencode', ocProfile: 'doctor' }] },
+  }),
+});
+
 function loadLevelMap() {
   const raw = process.env.PLAYBOOK_LEVEL_MAP;
   if (!raw) return DEFAULT_LEVEL_MAP;
@@ -152,9 +164,9 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
   const roleOverrides = { ...DEFAULT_ROLE_MAP, ...(roleMap || loadRoleMap()) };
   // A plan that pins its own routing (execution_policy.level_map, e.g. the playbook
   // e2e harness) owns every step's engine — role defaults don't override it.
-  const roleMapped = useRoleMap && item.current_model_level === item.minimum_model_level
-    ? roleOverrides[role]
-    : null;
+  const normalRung = useRoleMap && item.current_model_level === item.minimum_model_level;
+  const roleLevelMapped = normalRung ? (DEFAULT_ROLE_LEVEL_MAP[role] || {})[level] : null;
+  const roleMapped = roleLevelMapped || (normalRung ? roleOverrides[role] : null);
   const mapped = roleMapped || map[level] || DEFAULT_LEVEL_MAP[level];
   const ocRole = mapped.engine === 'opencode' ? (ROLE_TO_OC[role] || 'build') : null;
   const fbList = Array.isArray(mapped.fallback) ? mapped.fallback
@@ -177,4 +189,4 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
   };
 }
 
-module.exports = { resolveStepExecution, planLevelMap, nextDistinctLevel, DEFAULT_LEVEL_MAP, DEFAULT_ROLE_MAP, ROLE_TO_OC, LEVELS, ROLES, loadRoleMap };
+module.exports = { resolveStepExecution, planLevelMap, nextDistinctLevel, DEFAULT_LEVEL_MAP, DEFAULT_ROLE_MAP, DEFAULT_ROLE_LEVEL_MAP, ROLE_TO_OC, LEVELS, ROLES, loadRoleMap };
