@@ -34,8 +34,10 @@ const DEFAULT_LEVEL_MAP = Object.freeze({
   // health) or this step already failed on it with AUTH/CONFIG, the step runs on the
   // next rung of `fallback` instead of failing: claude → codex → opencode `doctor`
   // profile (owner 2026-09-28, #1689: Go MiMo first, then stronger models — not the
-  // cheapest `deepseek` tier; interim local copy of the llm-ladder worker's `doctor`
-  // ladder, keep in sync until #1687 lands). Default behaviour, overridable per plan / env.
+  // cheapest `deepseek` tier). This is the CROSS-ENGINE rung ladder and it is owned
+  // here; the model ladder INSIDE the opencode rung lives in the llm-ladder worker
+  // (#1687 landed — the earlier «interim local copy, keep in sync» note referred to
+  // that worker-side ladder, not to this table). Default, overridable per plan / env.
   doctor: { engine: 'claude', ocProfile: null, fallback: [
     { engine: 'codex', ocProfile: null },
     { engine: 'opencode', ocProfile: 'doctor' },
