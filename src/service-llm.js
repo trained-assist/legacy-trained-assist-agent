@@ -97,6 +97,11 @@ function traceHeadersFor(ctx, source) {
  */
 async function serviceChat({ messages, maxTokens = 800, temperature = 0, json = false, timeoutMs = 20000, totalTimeoutMs = null, source = 'service-llm', fetchImpl = null, onDiagnose = null, ctx = null } = {}) {
   const diag = (reason, info = {}) => {
+    // #1912: every rung outcome feeds the degradation streak — N consecutive
+    // failures alert the operator instead of hiding in journalctl (audit: 397
+    // «every rung failed» lines over 2 days, noticed days later).
+    try { require('./degrade-alert').ladderOutcome({ ok: reason === 'ok', reason, source, detail: info.message || info.error || info.attempts || null }); }
+    catch { /* alerting must never break the call */ }
     if (typeof onDiagnose !== 'function') return;
     try { onDiagnose({ reason, source, ...info }); } catch { /* diagnostics must never break the call */ }
   };
