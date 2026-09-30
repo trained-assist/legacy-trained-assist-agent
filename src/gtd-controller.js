@@ -640,6 +640,21 @@ async function fireTaskHooks(store, task, event, vars, sinks, approved) {
   }
 }
 
+// Step wall-clock floor (owner 2026-10-01): a declared 600/900s budget killed real
+// steps (scenario/research on OpenCode) mid-work and burned retries on a TIMEOUT that
+// was never a quality failure. Every durable step now gets at least the engine's
+// 40-min run cap; a longer declared budget is still clamped to that cap by the runner.
+// Overridable with DURABLE_STEP_MIN_TIMEOUT_SEC (0 = honour the declared budget as-is).
+const DURABLE_STEP_MIN_TIMEOUT_SEC = (() => {
+  const v = Number(process.env.DURABLE_STEP_MIN_TIMEOUT_SEC);
+  return Number.isFinite(v) && v >= 0 ? v : 40 * 60;
+})();
+function effectiveStepTimeoutMs(declaredSec, floorSec = DURABLE_STEP_MIN_TIMEOUT_SEC) {
+  const declared = Number.isFinite(declaredSec) && declaredSec > 0 ? declaredSec : 0;
+  const sec = Math.max(declared, floorSec || 0);
+  return sec > 0 ? sec * 1000 : null;
+}
+
 // Fire a claimed durable item through the same pipeline as legacy GTD fires.
 // Contract plans are executable once explicitly activated (P3a: draft→active via
 // task_update); they stay unclaimable while draft. The step honors the item's
@@ -835,7 +850,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     // execution_policy.level_map overrides the level→engine table for that plan only.
     let step = task.acceptance_criteria_json
       ? resolveStepExecution(item, { levelMap: planLevelMap(parsePolicy(task)), useRoleMap: !parsePolicy(task)?.level_map })
-      : { executionKind: 'agent', engine: 'claude', ocProfile: null, ocRole: null, skipModels: [] };
+      : resolveStepExecution(item);
     if (step.executionKind === 'agent') step = pickUsableTarget(store, item, step, healthOf);
     // No free engine slot left this pass: an agent step goes back to the queue
     // untouched (no attempt, no execution row); programmatic steps and batch
@@ -972,8 +987,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     // hard-kill this run at that budget (clamped to the 40-min global cap) and
     // suppresses auto-continuation — a step that overruns is a step failure to be
     // retried per max_attempts, not vaguely continued 10×.
-    const stepTimeoutMs = Number.isFinite(item.execution_timeout_seconds) && item.execution_timeout_seconds > 0
-      ? item.execution_timeout_seconds * 1000 : null;
+    const stepTimeoutMs = effectiveStepTimeoutMs(item.execution_timeout_seconds);
     const settleCtx = {
       store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText,
       sinks, hooksApproved, hookVars, classifier, secrets, markerJudge,

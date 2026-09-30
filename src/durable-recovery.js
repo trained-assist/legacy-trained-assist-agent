@@ -66,7 +66,7 @@ function _step(item, task) {
   return task && task.acceptance_criteria_json
     // same routing as the executor: a plan with its own level map ignores the role map
     ? resolveStepExecution(item, { levelMap: _planMap(task), useRoleMap: !(_policy(task) || {}).level_map })
-    : { engine: 'claude', ocProfile: null, ocRole: null };
+    : resolveStepExecution(item);
 }
 
 /**
@@ -136,7 +136,7 @@ async function recoverDurableItem({
     if (attempts >= QUALITY_MAX_ATTEMPTS) return terminal('quality-attempts-exhausted');
     let move = 'retry_same_with_reasons';
     if (attempts >= 2 && escalateLevel) {
-      const next = nextDistinctLevel(item, _planMap(task), { allowPaid: !!(_policy(task) || {}).quality_escalation_to_doctor });
+      const next = nextDistinctLevel(item, _planMap(task), { allowPaid: (_policy(task) || {}).quality_escalation_to_doctor !== false });
       if (next) {
         store.updateTaskItem(itemId, { current_model_level: next }, profileId);
         move = `escalate:${item.current_model_level || item.minimum_model_level}→${next}`;

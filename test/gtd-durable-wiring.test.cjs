@@ -61,7 +61,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     const item = store.listTaskItems(taskId, 'u1')[0];
     ok(fired === 1, `durable: one item fired (got ${fired})`);
     ok(/step one/.test(prompted) && /DURABLE: done/.test(prompted), 'durable: prompt carries step + completion marker');
-    ok(firedOpts.stepTimeoutMs === 600 * 1000, `durable: step carries execution_timeout_seconds as the engine budget (got ${firedOpts && firedOpts.stepTimeoutMs})`);
+    ok(firedOpts.stepTimeoutMs === 2400 * 1000, `durable: a 600s step is floored at the 40-min run cap (got ${firedOpts && firedOpts.stepTimeoutMs})`);
     ok(firedOpts.engine === 'opencode' && firedOpts.ocProfile === 'deepseek',
       `durable: bachelor contract item resolves to opencode/deepseek (got ${firedOpts && firedOpts.engine}/${firedOpts && firedOpts.ocProfile})`);
     ok(firedOpts.user && /users[/\\]u1$/.test(firedOpts.user.workDir),
@@ -195,8 +195,9 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     let firedOpts = null;
     await G8.runDueDurable({ secrets: {}, now: Date.now(), isTaskRunning: () => false,
       runTask: async (opts) => { firedOpts = opts; return 'DURABLE: done'; } });
-    ok(firedOpts && firedOpts.engine === 'claude' && !firedOpts.ocProfile,
-      `durable: legacy item still runs on claude with no oc profile (got ${firedOpts && firedOpts.engine}/${firedOpts && firedOpts.ocProfile})`);
+    // Owner 2026-10-01: a legacy (contract-less) item defaults to OpenCode master, not Claude.
+    ok(firedOpts && firedOpts.engine === 'opencode' && firedOpts.ocProfile === 'deepseek',
+      `durable: legacy item runs on opencode/deepseek by default (got ${firedOpts && firedOpts.engine}/${firedOpts && firedOpts.ocProfile})`);
   }
 
   // 9. programmatic item executes deterministically: NO runTask, verdicts recorded (P3d-1)
