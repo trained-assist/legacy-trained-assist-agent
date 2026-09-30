@@ -84,12 +84,19 @@ function admissionScopes(ctx) {
 // runner is driven by a real ExecutionContext (PR3/PR4). chatId 0 (Web /
 // internal) has no dialog → session writer guard only. An audience missing
 // from the bot registry still gets a lane (never silently unserialized).
-function legacyAdmissionScopes({ chatId, audience, threadId, profileId, sessionId } = {}) {
+//
+// `parallel: true` is the USER'S EXPLICIT choice to run a second interactive
+// execution in the same dialog («⚡ Параллельно», RC-03 in trained-agent-
+// architecture; owner decision 2026-09-30) — the only way past the lane. The
+// opt-out applies to THIS run's lane only; the session writer guard is never
+// bypassed (two writers of one history stay impossible, CH-05), and every run
+// without the flag keeps taking the lane as before (default = one at a time).
+function legacyAdmissionScopes({ chatId, audience, threadId, profileId, sessionId, parallel } = {}) {
   const scopes = [];
   let ref = null;
   try { ref = fromLegacyTelegram({ chatId, audience, threadId }); }
-  catch { scopes.push(`lane:legacy:${encodeURIComponent(audience || 'default')}|${chatId}|${threadId || ''}`); }
-  if (ref) scopes.push(laneScope(ref));
+  catch { if (!parallel) scopes.push(`lane:legacy:${encodeURIComponent(audience || 'default')}|${chatId}|${threadId || ''}`); }
+  if (ref && !parallel) scopes.push(laneScope(ref));
   if (sessionId && profileId) scopes.push(sessionScope(profileId, sessionId));
   return scopes;
 }
