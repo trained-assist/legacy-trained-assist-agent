@@ -6,7 +6,9 @@
 //   · POST /internal/flush-profile runs BEFORE the first file is touched and a
 //     failing flush aborts the run («flush → snapshot», Q1 / risk R2);
 //   · --verify re-checks the post-state, --revert restores byte-exact;
-//   · the ionice/nice prefix is detected per platform and degrades gracefully.
+//   · the ionice/nice prefix is detected per platform and degrades gracefully;
+//   · EXCLUDE (secrets, #1923): counted as its own class in classSummary,
+//     planned by no phase, untouched byte-for-byte by --apply.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -324,6 +326,69 @@ test('--revert replays the ledger in reverse and restores byte-exact', async () 
   const again = await runCli(['delete', '--profile', 'alice', '--apply', '--drain-timeout', '0']);
   assert.equal(again.status, 0, `${again.stdout}\n${again.stderr}`);
   assert.equal(fs.existsSync(path.join(root, 'node_modules')), false);
+});
+
+// ── EXCLUDE: secrets are counted, never planned (#1923, blocker B1) ────────
+const DANA = {
+  'playwright-storage-state.json': 'SECRET-STATE',
+  '.agent-home/.codex/auth.json': '{"token":"SECRET"}',
+  '.mcp.json': '{"mcpServers":{}}',
+  '.webpasswd': 'SECRET-PW',
+  'kinescope-creds': 'SECRET-CREDS',
+  'notes/todo.md': '# keep me',
+  'node_modules/pkg/index.js': 'REGEN-CONTENT-12345',
+  'weird.bin': 'UNKNOWN-BYTES',
+};
+
+test('EXCLUDE: dry-run reports the class in classSummary and hands it to no phase', async () => {
+  buildProfile('dana', DANA);
+
+  const r = await runCli(['delete', '--profile', 'dana', '--json']);
+  assert.equal(r.status, 0, r.stderr);
+  const p = r.json().profiles[0];
+  assert.ok(p.stats.EXCLUDE, 'classSummary carries the EXCLUDE class');
+  assert.equal(p.stats.EXCLUDE.files, 5, `expected 5 secrets, stats: ${JSON.stringify(p.stats)}`);
+  assert.ok(p.stats.EXCLUDE.bytes > 0);
+  assert.equal(p.items.filter(i => i.action === 'EXCLUDE').length, 0, 'no EXCLUDE item reaches a phase');
+  assert.equal(p.planned, 1, 'only the DELETE-class file is planned');
+  assert.ok(p.items.every(i => i.action === 'DELETE'), 'the plan is pure DELETE');
+
+  const t = await runCli(['delete', '--profile', 'dana']);
+  assert.equal(t.status, 0, t.stderr);
+  assert.match(t.stdout, /EXCLUDE\s+5 secret file\(s\)/, `text report names the class:\n${t.stdout}`);
+  assert.match(t.stdout, /planned 1 file/, 'the report is still readable as a plan');
+});
+
+test('EXCLUDE: no phase owns the class — apply leaves every secret byte-identical', async () => {
+  const phases = require('../scripts/profile-migrate/phases/index.cjs').loadPhases();
+  for (const [name, ph] of Object.entries(phases)) {
+    assert.ok(!(ph.actions || []).includes('EXCLUDE'), `phase "${name}" must not own EXCLUDE`);
+  }
+
+  const root = path.join(USERS, 'dana');
+  const before = Object.fromEntries(Object.keys(DANA).map(rel => [rel, sha(path.join(root, rel))]));
+
+  const r = await runCli(['delete', '--profile', 'dana', '--apply', '--drain-timeout', '0']);
+  assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+
+  for (const [rel, digest] of Object.entries(before)) {
+    if (rel === 'node_modules/pkg/index.js') {
+      assert.equal(fs.existsSync(path.join(root, rel)), false, 'the DELETE file went to quarantine');
+      continue;
+    }
+    assert.equal(fs.existsSync(path.join(root, rel)), true, `${rel} stays on disk`);
+    assert.equal(sha(path.join(root, rel)), digest, `${rel} is byte-identical`);
+    assert.equal(fs.existsSync(path.join(QUAR('dana'), rel)), false, `${rel} is not quarantined`);
+  }
+  const records = fs.readFileSync(LEDGER('dana'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepStrictEqual(records.map(x => x.path), ['node_modules/pkg/index.js'],
+    'the ledger records the phase action only — never an EXCLUDE');
+
+  const v = await runCli(['delete', '--profile', 'dana', '--verify', '--json']);
+  assert.equal(v.status, 0, v.stderr);
+  const vp = v.json().profiles[0];
+  assert.equal(vp.verify.pendingCount, 0, 'no EXCLUDE file shows up as "planned but unrecorded"');
+  assert.equal(vp.verify.failures.length, 0);
 });
 
 test('buildNicePrefix detects ionice/nice and degrades gracefully when they are missing', () => {
