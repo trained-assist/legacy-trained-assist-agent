@@ -37,8 +37,14 @@ const RULES = [
   { class: 'AUTH', pattern: /authentication[^.]{0,30}failed/i },
 
   // RATE_LIMIT — short-lived, provider is throttling this request rate specifically.
-  { class: 'RATE_LIMIT', pattern: /rate[_\s-]{0,5}limit/i },
+  { class: 'RATE_LIMIT', pattern: /rate[_\s-]?limit/i },
   { class: 'RATE_LIMIT', pattern: /\b429\b/ },
+
+  // Russian auth/quota notices the runner RETURNS as the run's reply (#1908): engine
+  // failure texts must classify by their real class, not fall through to UNKNOWN →
+  // quality escalation (the audit's 66 wasted doctor runs).
+  { class: 'AUTH', pattern: /Авторизация \S+ истекла/i },
+  { class: 'QUOTA', pattern: /упёрся в лимит/i },
 
   // QUOTA — account/plan quota exhausted, longer-lived than a rate limit.
   { class: 'QUOTA', pattern: /quota[^.]{0,20}exceeded/i },
@@ -54,6 +60,7 @@ const RULES = [
   { class: 'CONTEXT', pattern: /prompt is too long/i },
   { class: 'CONTEXT', pattern: /input (?:is )?too long/i },
   { class: 'CONTEXT', pattern: /too many tokens/i },
+  { class: 'CONTEXT', pattern: /запрос слишком большой/i },
 
   // MODEL_ERROR — the model/provider itself errored on this request (not our tool call).
   { class: 'MODEL_ERROR', pattern: /internal server error/i },
@@ -65,6 +72,11 @@ const RULES = [
   { class: 'TRANSIENT', pattern: /\b503\b/ },
   { class: 'TRANSIENT', pattern: /\b502\b/ },
   { class: 'TRANSIENT', pattern: /econnreset|econnrefused|etimedout|socket hang up/i },
+  // Engine process failures / interrupted runs returned as the reply (#1908): the
+  // model never answered — retry the same rung after a backoff, never escalate.
+  { class: 'TRANSIENT', pattern: /Процесс (?:снова )?завершился с ошибкой/i },
+  { class: 'TRANSIENT', pattern: /Работа прервана \(/i },
+  { class: 'TRANSIENT', pattern: /llm-ladder (?:недоступен|unreachable)/i },
   // opencode keeps ALL runs of the VM in one SQLite file (~/.local/share/opencode/opencode.db).
   // Two concurrent runs (different chats/users) → "Unexpected error / database is locked"
   // for one of them. Reproduced on the sandbox smoke (#1311 C5): 1 of 4 parallel runs failed,
