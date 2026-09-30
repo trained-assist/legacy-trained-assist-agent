@@ -268,7 +268,7 @@ async function handleApi(req, url, res, ctx) {
           try {
             const full = getSessionData(workDir, s.id);
             if (!full) return;
-            const sum = await generateSummary(full.messages, { apiKey: orKey });
+            const sum = await generateSummary(full.messages, { apiKey: orKey, ctx: { session: s.id, user: username } });
             if (sum) setSummary(workDir, s.id, sum, s.messageCount);
           } catch { /* best-effort; fall back to raw topic */ }
         }));

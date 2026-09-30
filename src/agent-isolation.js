@@ -74,7 +74,7 @@ const ENGINE_ENV_ALLOW = new Set([
   // trace labels only: opencode stamps them onto every llm-ladder call as x-ladder-* headers
   // (src/opencode-ladder-provider.js). The chat goes under its own name so nothing starts
   // reading it as a send target (epic #1365 ratchet on the chat-id env).
-  'AGENT_RUN_ID', 'AGENT_TRACE_CHAT',
+  'AGENT_RUN_ID', 'AGENT_TRACE_CHAT', 'AGENT_LADDER_APP',
   'AGENT_USER_NAME', 'AGENT_USER_HANDLE',
   // run-scoped callback credentials (src/agent-run-tokens.js, src/agent-mcp-bridge.js)
   'AGENT_RUN_TOKEN', 'AGENT_MCP_BRIDGE_SOCKET',

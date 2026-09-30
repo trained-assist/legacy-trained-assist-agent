@@ -1858,7 +1858,8 @@ function resolveRunSession(sessions, getCurrent, { workDir, sessionId, chatId, a
 // `runThreadId` referenced from _runTask, where only the `threadId` param exists).
 // Returns the scheduling promise (fire-and-forget at the call site); a null return
 // means "nothing scheduled" (internal re-run / no session / no checklist).
-function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task, secrets, workDir, username, projectDir, audience, chatId, threadId, runStartedAt = null }) {
+// `taskId` only feeds the gtd-intent LLM call's x-ladder-trace (#1917) — nothing keys on it.
+function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task, secrets, workDir, username, projectDir, audience, chatId, threadId, runStartedAt = null, taskId = null }) {
   if (internalGtd || !activeSessionId) return null;
   const gtd = require('../gtd-controller');
   // BV-08 (#1729): секция, которую этот ран дописал без `Owner-session:` (агент забыл
@@ -1879,7 +1880,7 @@ function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task,
     // задачи ("доведи до конца") гоняем через LLM-гейт (#501/#502/#505); если
     // фраза не совпала, но в проекте уже лежит незакрытый checklist.md — тот сам
     // по себе достаточное основание трекать (checklist ⇒ intent).
-    return gtd.maybeSchedule({ ...checklistArgs, task, apiKey: secrets?.OPENROUTER_API_KEY })
+    return gtd.maybeSchedule({ ...checklistArgs, task, apiKey: secrets?.OPENROUTER_API_KEY, taskId })
       .then(rec => rec || gtd.scheduleFromChecklist(checklistArgs))
       .catch(e => { console.warn('[gtd] schedule:', e.message); return null; });
   }
@@ -2499,6 +2500,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     activeTimers, tgEdit, tgSend, outputCallback, onProgress,
     consumePendingStop: () => consumePendingStop(user.username, activeSessionId),
     engineBin, engineArgs, mcpConfig, ocProfileOverrides, bridgedServers,
+    // x-ladder-app (#1917): a durable step / an internal GTD turn is background work,
+    // every other run is a chat run — resolved into AGENT_LADDER_APP in claude-runner.
+    internalGtd, resumeSink,
     cwd: codeCwd,
     // Watchdog step 1a (issue #942 [011]): heartbeat the pending-task journal on the
     // same 30s tick claude-runner.js already runs for the inactivity check, so a
@@ -3251,7 +3255,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     scheduleGtdAfterRun({
       internalGtd, activeSessionId, explicitMode, task, secrets,
       workDir: user.workDir, username: user.username, projectDir: user.cwd || null,
-      audience: user.audience || 'default', chatId, threadId, runStartedAt,
+      audience: user.audience || 'default', chatId, threadId, runStartedAt, taskId,
     });
   } catch (e) { console.warn('[gtd] hook:', e.message); }
 
