@@ -51,9 +51,15 @@ const ROLE_TO_OC = Object.freeze({
   reviewer: 'review',
   verifier: 'review',
 });
-const DEFAULT_ROLE_MAP = Object.freeze({
-  researcher: { engine: 'opencode', ocProfile: 'research', fallback: [{ engine: 'opencode', ocProfile: 'free' }] },
-});
+// researcher used to be pinned to the `research` profile (OpenCode Go subscription, MiMo)
+// for playbook steps too. Owner 2026-10-01 incident: both Go keys hit the WEEKLY usage cap;
+// opencode then retries the 429 silently (no stdout) until the 5-min inactivity watchdog
+// kills it — every research step of every plan "timed out" and burned its attempts. A
+// flat-cap subscription is not a durable-step route: playbook researchers now go through
+// the llm-ladder like every other level (the worker owns provider failover). hermes_research
+// keeps its own Go pin (opencode-ladder-provider DIRECT_MODEL). Env PLAYBOOK_ROLE_MAP can
+// re-pin it.
+const DEFAULT_ROLE_MAP = Object.freeze({});
 
 // role × level routes that beat the plain level map. reviewer@doctor is the INDEPENDENT
 // review (owner 2026-09-30): the doctor builder runs on Claude, so the strongest review must

@@ -40,7 +40,7 @@ const ENGINE_FAILURE_RES = [
   /Авторизация \S+ истекла/i,
   /Не удалось принять задачу/i,
   // #1911: killed by the step's own budget — deterministic class, never the judge.
-  /Шаг не уложился в бюджет|step timeout: \d+s budget exhausted/i,
+  /Шаг не уложился в бюджет|step timeout: \d+s budget exhausted|Движок молчал 5 мин|inactivity timeout: no output/i,
 ];
 
 const SUBSTANTIAL_RE = /ИТОГ ШАГА/i;
