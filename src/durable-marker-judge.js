@@ -39,6 +39,8 @@ const ENGINE_FAILURE_RES = [
   /not logged in|please run \/login|invalid[_\s-]?api[_\s-]?key|authentication failed/i,
   /Авторизация \S+ истекла/i,
   /Не удалось принять задачу/i,
+  // #1911: killed by the step's own budget — deterministic class, never the judge.
+  /Шаг не уложился в бюджет|step timeout: \d+s budget exhausted/i,
 ];
 
 const SUBSTANTIAL_RE = /ИТОГ ШАГА/i;

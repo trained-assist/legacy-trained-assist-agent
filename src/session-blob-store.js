@@ -35,7 +35,16 @@
 // (the `bucket.file(key).save/getMetadata/download/exists` shape) and never touch
 // ADC, the network or a real bucket. The @google-cloud/storage require is lazy
 // for exactly that reason.
+//
+// File-backed test backend: `GCS_FAKE_DIR=<dir>` (test-only, NEVER set in
+// systemd — createSessionBlobStore refuses it under NODE_ENV=production) makes
+// the default store read/write plain files under that directory instead of GCS.
+// That is how the profile-migrate phase runner is tested: it spawns the CLI as a
+// child process, so the fake has to travel through the environment, not through
+// a module seam. Same bucket shape as the injected fake in the unit tests.
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const DEFAULT_BUCKET = 'trained-assist-workspaces';
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -72,8 +81,16 @@ function assertProfileName(profile) {
   return profile;
 }
 
+// One key path segment (sessionId, slug-cwd, engineSessionId) — same contract as
+// src/session-trace-store.js SESSION_RE. Exported so callers that build a path
+// shape themselves (src/session-archive.js) can test a segment WITHOUT paying
+// for a throw: "can I name this file?" is a filter question, not an error.
+function isSafeSegment(value) {
+  return typeof value === 'string' && SEGMENT_RE.test(value) && value !== '.' && value !== '..';
+}
+
 function assertSegment(value, field) {
-  if (typeof value !== 'string' || !SEGMENT_RE.test(value) || value === '.' || value === '..') {
+  if (!isSafeSegment(value)) {
     throw new Error(`invalid ${field}: ${JSON.stringify(value)} (expected one path segment, ${SEGMENT_RE})`);
   }
   return value;
@@ -173,15 +190,100 @@ function defaultBucket(bucketName) {
   return new Storage({ projectId }).bucket(bucketName);
 }
 
+// ── file-backed test backend (GCS_FAKE_DIR) ───────────────────────────────────
+// A directory standing in for the bucket: the same `bucket.file(key).{save,
+// getMetadata, download, exists}` shape @google-cloud/storage exposes, so every
+// caller path (upload → download → exists, BLOB_NOT_FOUND on 404) behaves as it
+// does against real GCS. Objects are files under <dir>/<key>; keys have already
+// passed assertSafeKey before they reach here, so the join is traversal-safe.
+//
+// GCS_FAKE_FAIL=<op[,op…]> (test-only) makes the named operation(s) throw —
+// how a test proves "nothing is deleted without a confirmed upload" without a
+// network. Operations: save, getMetadata, download, exists.
+function createFileBackedBucket(dir, env = process.env) {
+  if (typeof dir !== 'string' || !dir) throw new Error('createFileBackedBucket: a directory is required');
+  const root = path.resolve(dir);
+
+  function failOps() {
+    const raw = typeof env.GCS_FAKE_FAIL === 'string' ? env.GCS_FAKE_FAIL : '';
+    return new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
+  }
+
+  function objectPath(key) {
+    return path.join(root, ...key.split('/'));
+  }
+
+  function notFound(key) {
+    const err = new Error(`No such object: ${key}`);
+    err.code = 404;
+    return err;
+  }
+
+  function maybeFail(op, key) {
+    if (failOps().has(op)) {
+      const err = new Error(`GCS_FAKE_FAIL=${op}: injected failure for ${key}`);
+      err.code = 'EINJECTED';
+      throw err;
+    }
+  }
+
+  return {
+    name: 'gcs-fake',
+    root,
+    file(key) {
+      const abs = objectPath(key);
+      return {
+        async save(data) {
+          maybeFail('save', key);
+          fs.mkdirSync(path.dirname(abs), { recursive: true });
+          const tmp = `${abs}.${process.pid}.tmp`;
+          fs.writeFileSync(tmp, data);
+          fs.renameSync(tmp, abs);
+        },
+        async getMetadata() {
+          maybeFail('getMetadata', key);
+          let st;
+          try { st = fs.statSync(abs); } catch { throw notFound(key); }
+          return [{ generation: String(st.mtimeMs), size: String(st.size) }];
+        },
+        async download() {
+          maybeFail('download', key);
+          let data;
+          try { data = fs.readFileSync(abs); } catch { throw notFound(key); }
+          return [data];
+        },
+        async exists() {
+          maybeFail('exists', key);
+          return [fs.existsSync(abs)];
+        },
+      };
+    },
+  };
+}
+
+// GCS_FAKE_DIR is a test switch: refusing it in production means a stray env
+// var can never silently redirect real archives into a local directory.
+function resolveFakeDir(env = process.env) {
+  const raw = typeof env.GCS_FAKE_DIR === 'string' ? env.GCS_FAKE_DIR.trim() : '';
+  if (!raw) return null;
+  if (env.NODE_ENV === 'production') {
+    throw new Error('GCS_FAKE_DIR is a test-only switch and must never be set with NODE_ENV=production');
+  }
+  return raw;
+}
+
 /**
  * @param {{bucket?: object, bucketName?: string, timeoutMs?: number}} [options]
  *   `bucket` — injected client (tests / alternate backends), the
  *   `bucket.file(key)` shape; `bucketName` — override $GCS_BUCKET;
  *   `timeoutMs` — per-call deadline, 0 disables.
+ *   With no `bucket`, `$GCS_FAKE_DIR` (test-only) swaps in the file-backed
+ *   backend; otherwise the real GCS client is constructed (reads ADC).
  */
 function createSessionBlobStore(options = {}) {
-  const bucketName = options.bucketName || options.bucket?.name || resolveBucketName();
-  const bucket = options.bucket || defaultBucket(bucketName);
+  const fakeDir = options.bucket ? null : resolveFakeDir();
+  const bucketName = options.bucketName || options.bucket?.name || (fakeDir ? 'gcs-fake' : resolveBucketName());
+  const bucket = options.bucket || (fakeDir ? createFileBackedBucket(fakeDir) : defaultBucket(bucketName));
   const timeoutMs = options.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : options.timeoutMs;
 
   async function upload(key, data) {
@@ -230,12 +332,14 @@ function createSessionBlobStore(options = {}) {
 
 module.exports = {
   createSessionBlobStore,
+  createFileBackedBucket,
   sessionKey,
   transcriptKey,
   slugCwd,
   resolveBucketName,
   sha256Hex,
   assertSafeKey,
+  isSafeSegment,
   DEFAULT_BUCKET,
   DEFAULT_TIMEOUT_MS,
 };

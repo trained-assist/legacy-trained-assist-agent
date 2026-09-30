@@ -85,6 +85,15 @@ const RULES = [
 
   // TOOL_ERROR — the agent's own tool call failed, not the model/provider.
   { class: 'TOOL_ERROR', pattern: /tool[_\s-]?(call|use)[^.]{0,20}(failed|error)/i },
+
+  // #1911 — killed by a declared budget. Its own class: backoff + retry at the same
+  // level, never the quality ladder (before this rule the kill text fell to UNKNOWN
+  // and burned a quality attempt / escalated the model).
+  { class: 'TIMEOUT', pattern: /step timeout: \d+s budget exhausted/i },
+  { class: 'TIMEOUT', pattern: /inactivity timeout: no output for/i },
+  { class: 'TIMEOUT', pattern: /claude timed out after \d+s/i },
+  { class: 'TIMEOUT', pattern: /timeout: (?:\d+min|40min) budget/i },
+  { class: 'TIMEOUT', pattern: /Шаг не уложился в бюджет/i },
 ];
 
 // Failure classes CONFIG/USER_STOP are not worth retrying the SAME target — recovery-policy.js
@@ -128,7 +137,7 @@ async function classifyWithLLM(text, { apiKey, timeoutMs = 8000 } = {}) {
     // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
     const obj = await serviceLlm.serviceJson({
       system: 'Classify execution failure text into a fixed enum. Reply only with compact JSON.',
-      user: `Error text from an AI coding agent execution:\n${t.slice(-2000)}\n\nJSON: {"class":"AUTH|QUOTA|RATE_LIMIT|CONTEXT|TRANSIENT|MODEL_ERROR|TOOL_ERROR|CONFIG|UNKNOWN","retryable":bool,"confidence":0..1}`,
+      user: `Error text from an AI coding agent execution:\n${t.slice(-2000)}\n\nJSON: {"class":"AUTH|QUOTA|RATE_LIMIT|CONTEXT|TRANSIENT|MODEL_ERROR|TOOL_ERROR|CONFIG|TIMEOUT|UNKNOWN","retryable":bool,"confidence":0..1}`,
       maxTokens: 40, timeoutMs, apiKey, source: 'failure-classifier',
     });
     if (!LLM_VALID_CLASSES.has(obj?.class)) {

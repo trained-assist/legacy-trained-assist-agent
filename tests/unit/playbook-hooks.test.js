@@ -288,3 +288,58 @@ describe('runDueDurable — hook boundaries', () => {
     expect(delivered).toEqual(['approved by policy']);
   });
 });
+
+// #1909: consent channels the audit found missing — 52/63 notify hooks were skipped
+// with «no explicit consent» because nobody ever passed approve_hooks.
+describe('#1909 hook consent', () => {
+  it('bg-notify opt-in on the profile IS consent for notify hooks (and only those)', async () => {
+    const G = freshGTD();
+    const { writeBgNotify } = require('../../src/bg-notify.js');
+    writeBgNotify('u1', { enabled: true, chatId: 42 });
+    try {
+      const { taskId } = activeTask(G, {
+        itemHooks: { on_complete: [
+          { type: 'notify', text: 'plan event' },
+          { type: 'create_issue', text: 'opens an issue' },
+        ] },
+      });
+      const delivered = [];
+      await G.runDueDurable({
+        secrets: {}, now: Date.now(), isTaskRunning: () => false,
+        hookSinks: {
+          notify: async ({ text }) => { delivered.push(text); },
+          create_issue: async ({ text }) => { delivered.push(`issue:${text}`); },
+        },
+        runTask: okRun,
+      });
+      await drain();
+      expect(delivered).toEqual(['plan event']); // notify даёт consent, create_issue — нет
+      const rows = G.durableStore().listHookExecutions(taskId, 'u1').filter(r => r.event === 'on_complete');
+      expect(rows.find(r => r.hook_type === 'notify').status).toBe('fired');
+      expect(rows.find(r => r.hook_type === 'create_issue').status).toBe('skipped');
+    } finally {
+      writeBgNotify('u1', { enabled: false });
+    }
+  });
+
+  it('without any consent notify stays skipped (behaviour unchanged)', async () => {
+    const G = freshGTD();
+    const { taskId } = activeTask(G, { itemHooks: { on_complete: [{ type: 'notify', text: 'no consent' }] } });
+    const delivered = [];
+    await G.runDueDurable({
+      secrets: {}, now: Date.now(), isTaskRunning: () => false,
+      hookSinks: { notify: async ({ text }) => { delivered.push(text); } }, runTask: okRun,
+    });
+    await drain();
+    expect(delivered).toEqual([]);
+    const row = G.durableStore().listHookExecutions(taskId, 'u1').find(r => r.hook_type === 'notify');
+    expect(row.status).toBe('skipped');
+  });
+
+  it('operatorTarget: falls back to the operator chat, numeric id, default audience', () => {
+    const G = freshGTD();
+    expect(G._operatorTarget({})).toEqual({ chatId: 1714048, audience: 'default', threadId: null });
+    expect(G._operatorTarget({ OPERATOR_CHAT_ID: '-100123' })).toEqual({ chatId: -100123, audience: 'default', threadId: null });
+    expect(G._operatorTarget({ OPERATOR_CHAT_ID: 'not-a-number' })).toBeNull();
+  });
+});

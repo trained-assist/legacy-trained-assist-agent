@@ -583,7 +583,10 @@ async function firstFailureNotice(secrets, store, task, item, detail = '', { sen
 function defaultHookSinks({ secrets = {}, store, task }) {
   return {
     notify: async ({ text }) => {
-      const target = resolveOwnerTarget(store, task);
+      // #1909: owner chat first; without one the operator chat is the last resort —
+      // a plan question/failure from a web-launched plan (no Telegram chat bound)
+      // used to be recorded `failed` and never reached anyone.
+      const target = resolveOwnerTarget(store, task) || operatorTarget(secrets);
       if (!target) throw new Error('no owner chat for notification');
       const routeSecrets = require('./bot-delivery').deliverySecrets(secrets, target.audience);
       const token = routeSecrets?.TELEGRAM_BOT_TOKEN || routeSecrets?.BOT_TOKEN;
@@ -591,6 +594,15 @@ function defaultHookSinks({ secrets = {}, store, task }) {
       await _tgNotify(token, target.chatId, text, target.threadId);
     },
   };
+}
+
+// The operator chat (same fallback server.js uses for operator notices). Chat id
+// is numeric — Telegram ids are, and a string id makes the API reject the send.
+function operatorTarget(secrets = {}) {
+  const raw = secrets.OPERATOR_CHAT_ID || '1714048';
+  const chatId = Number(raw);
+  if (!Number.isFinite(chatId)) return null;
+  return { chatId, audience: 'default', threadId: null };
 }
 
 // Batch notifications (#1752) go to the chat that launched the batch (recorded on
@@ -2352,6 +2364,7 @@ module.exports = {
   _ghToken, _ghFetch,
   durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
   resumeDurableReply, resumeDurableCrash, planWorkspaceLabel, kickDurable, durableBudget, _setKickDeps,
+  _operatorTarget: operatorTarget,
   runWaitTick,
   tickHeartbeat, countOpenLegacy, durableItemCounts, firstFailureNotice, planLabel, bgStepText,
   _bgNotice: bgNotice,

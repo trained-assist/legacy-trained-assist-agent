@@ -16,8 +16,12 @@
 //   sha256  content hash; for a symlink the hash of its target string
 //   size    bytes (lstat size; for a symlink = length of the target string)
 //   action  DELETE | DELETE_FAILED | RESTORED | PURGE (free-form, see recordState)
-//   dest    where the file went: quarantine-relative path, kept even on RESTORED
-//           (a duplicate may survive there until a manual purge), null only when
+//   dest    where the file went, always a SAFE RELATIVE PATH (isSafeRelPath):
+//           a quarantine-relative path for DELETE/MOVE (kept even on RESTORED —
+//           a duplicate may survive there until a manual purge), a blob key for
+//           ARCHIVE (`profiles/<p>/sessions/<id>.json.gz`, built by
+//           src/session-blob-store.js key builders — same contract, so revert
+//           can never resolve outside the bucket namespace), null only when
 //           there is nowhere to look
 //
 // Crash safety (append with fsync + torn-line tolerance):
