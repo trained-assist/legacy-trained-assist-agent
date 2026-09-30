@@ -166,4 +166,7 @@ test('runner wires the loop branch to the automatic free-ladder re-run', () => {
   assert.match(branch, /engine: recovery\.engine/);
   assert.match(branch, /ocProfile: recovery\.ocProfile/);
   assert.match(branch, /engineFallbackDone: true/);
+  // #1899: the re-run inherits the ladder guard too — loop and «ladder exhausted» may each
+  // re-run a run chain once, never both.
+  assert.match(branch, /ladderFallbackDone,/);
 });
