@@ -47,6 +47,10 @@ const { isProfileLocked, waitForProfileUnlocked } = require('../profile-lock');
 const {
   materializeRunSessions, materializeTranscriptForResume, materializeRecentArchivedSessions,
 } = require('../session-materialize');
+// Post-run sweep (issue #1916 PR-D): after a run settles, the session bodies it
+// wrote (and any other local body) leave for GCS. Scheduled, never awaited —
+// see the two call sites in _runTaskInner.
+const { schedulePostRunSweep } = require('../session-sweep');
 const answerRouter = require('../answer-router');
 const closureIntent = require('../closure-intent');
 const promptDomains = require('../prompt-domains');
@@ -1174,6 +1178,17 @@ async function _runTaskInner(opts) {
       const qaSessionId = (opts.webExactSession && opts.sessionId
           && recordWebQuickExchange(opts.user.workDir, opts.sessionId, exchange))
         || recordQuickExchange(opts.user.workDir, exchange);
+      // ── PR-D post-run sweep (#1916): this path never reaches admission.run's
+      // finally below — it returns before the run is even journaled — but it
+      // DOES write a session (the exchange just recorded), so it schedules its
+      // own sweep. Deferred like every other trigger: only a timer is armed
+      // here, the ⚡ answer above is already on its way to the chat.
+      schedulePostRunSweep({
+        profile: opts.user.username,
+        workDir: opts.user.workDir,
+        sessionId: qaSessionId,
+        taskId: opts.taskId,
+      });
       const extra = { reply_markup: { inline_keyboard: escalateRows(qaSessionId) } };
       return (async () => {
         // Disarm the maintenance status from the lock gate above: this answer goes
@@ -1407,6 +1422,24 @@ async function _runTaskInner(opts) {
       const n = (queuedByOwner.get(qKey) || 1) - 1;
       if (n > 0) queuedByOwner.set(qKey, n);
       else { queuedByOwner.delete(qKey); pendingSessionStops.delete(qKey); }
+    }
+    // ── PR-D: post-run session sweep (#1916, epic #1784 M2) ──────────────────
+    // Arm it HERE, after the journal entry above is gone: the sweep's in-flight
+    // guard reads pending-tasks and must not see the run that is scheduling it.
+    // Deferred and never awaited — schedulePostRunSweep only starts a timer, and
+    // its returned promise is deliberately not chained onto the run's, so the
+    // user's final answer never waits for a gzip+upload («отложенно, не в
+    // критическом пути»). Both run paths reach this finally: the engine one
+    // (claude/opencode) and the quick-answer one inside _runTask — a quick
+    // answer writes a session exchange too. A restart keeps its task for resume
+    // and must not half-archive the body it will read again.
+    if (!restartShutdown) {
+      schedulePostRunSweep({
+        profile: opts.user.username,
+        workDir: opts.user.workDir,
+        sessionId: opts.activitySessionId || opts.sessionId || null,
+        taskId: opts.taskId,
+      });
     }
   });
   // Await retries for callers, but never hold their predecessor lane/lease.

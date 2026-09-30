@@ -48,11 +48,16 @@ const { StringDecoder } = require('string_decoder');
 const {
   createSessionBlobStore, sessionKey, transcriptKey, slugCwd, sha256Hex, isSafeSegment,
 } = require('./session-blob-store');
-const { atomicJson } = require('./atomic-json');
+// The index writer (PR-D, #1916): sessions.json is session-store.saveIndex's
+// and only its — see the block comment on session-store.markSessionArchived.
+const sessionStore = require('./session-store');
 
 // = src/session-store.js SESSIONS_FILE / SESSIONS_DIR — the index the runner
-// reads between runs. Kept as literals (not an import) so this module stays a
-// leaf; if either name moves, move it here too.
+// reads between runs. Kept as literals (not an import) for the PATHS, so this
+// module's own file layout does not move with session-store's; the one thing it
+// does import from there is the index WRITER (markSessionArchived): sessions.json
+// has exactly one writer and it is not this module. If either name moves, move it
+// here too.
 const SESSIONS_FILE = 'sessions.json';
 const SESSIONS_DIR = 'sessions';
 const TRANSCRIPTS_DIR = '.agent-home/.claude/projects';
@@ -275,6 +280,28 @@ async function uploadAndConfirm({ blob, key, gz, rawSha256 }) {
   return { key, gzSha256: uploaded.sha256, gzSize: uploaded.size, generation: uploaded.generation };
 }
 
+// The LAST check before a file is gone for good: the bytes about to be deleted
+// must still be the bytes that were gzipped, uploaded and re-downloaded. The
+// upload sits between gzip and unlink, and in the post-run sweep that window
+// overlaps other in-process writers (an append that slipped past the in-flight
+// guard — a quick answer is not journaled). A changed file throws HERE: the blob
+// keeps the confirmed copy, the local file keeps the newer one, the fold lands on
+// `returned`/`pending` and the next sweep re-uploads. `gzipLocalFile`'s `expected`
+// check covers prepare → apply; this one covers apply → unlink, which is the half
+// «ничего не удаляется без подтверждённой загрузки» is about.
+function assertLocalUnchanged(abs, rawSha256, relPath) {
+  let current;
+  try {
+    current = sha256Hex(fs.readFileSync(abs));
+  } catch (e) {
+    if (e.code === 'ENOENT') throw new Error(`${relPath} vanished while it was being uploaded — refusing to report an archive of a file that is no longer there`);
+    throw e;
+  }
+  if (current !== rawSha256) {
+    throw new Error(`${relPath} changed while it was being uploaded — keeping the newer local copy, the next sweep re-archives it`);
+  }
+}
+
 /**
  * Archive one session body: gzip → upload → confirm by re-downloading →
  * mark the index → unlink locally.
@@ -299,6 +326,7 @@ async function archiveSessionBody({ blob, profile, profileRoot, relPath, expecte
 
   const { rawSha256, rawSize, gz } = await gzipLocalFile(abs, expected, relPath);
   const up = await uploadAndConfirm({ blob, key, gz, rawSha256 });
+  assertLocalUnchanged(abs, rawSha256, relPath);
 
   // Marker BEFORE unlink (crash order: a marker without the unlink leaves both
   // copies — verify reports `pending`, the sweep finishes it; the reverse would
@@ -335,30 +363,18 @@ async function archiveTranscript({ blob, profile, profileRoot, relPath, expected
   }
   const { rawSha256, rawSize, gz } = await gzipLocalFile(abs, expected, relPath);
   const up = await uploadAndConfirm({ blob, key, gz, rawSha256 });
+  assertLocalUnchanged(abs, rawSha256, relPath);
   fs.unlinkSync(abs);
   return { key, sha256: up.gzSha256, size: up.gzSize, rawSha256, rawSize, cwd };
 }
 
 // ── the index marker ─────────────────────────────────────────────────────────
-// sessions.json is rewritten through atomic-json exactly like session-store
-// does it, but with a STRICT read: a corrupt index is never silently replaced
-// by `[]` (that would destroy the only reference to every session).
-// Returns {marked:true} / {marked:false, reason} / throws on an unreadable index.
+// Delegates to src/session-store.markSessionArchived — sessions.json has exactly
+// one writer (session-store.saveIndex: recency order, MAX_SESSIONS cap, atomic
+// write) and this module is not it. The strict READ (a corrupt index throws and
+// is never replaced by `[]`) lives over there with the writer it protects.
 function markSessionArchived(profileRoot, sessionId, marker) {
-  const file = path.join(profileRoot, SESSIONS_FILE);
-  if (!fs.existsSync(file)) return { marked: false, reason: 'no index' };
-  let index;
-  try {
-    index = JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch (e) {
-    throw new Error(`${SESSIONS_FILE} is unreadable (${e.message}) — refusing to rewrite the index`);
-  }
-  if (!Array.isArray(index)) throw new Error(`${SESSIONS_FILE} is not a JSON array — refusing to rewrite the index`);
-  const record = index.find((r) => r && r.id === sessionId);
-  if (!record) return { marked: false, reason: `no index record for ${sessionId}` };
-  record.archived = marker;
-  atomicJson(file, index, { space: 2 });
-  return { marked: true };
+  return sessionStore.markSessionArchived(profileRoot, sessionId, marker);
 }
 
 // ── restore (used by --revert) ───────────────────────────────────────────────

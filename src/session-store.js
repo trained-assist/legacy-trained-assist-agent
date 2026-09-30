@@ -233,6 +233,37 @@ function listSessions(workDir, limit = 10, audience = 'default') {
   return filtered.slice(0, limit);
 }
 
+/** Mark a session body as ARCHIVED on its index record (epic #1784 M2,
+ *  issue #1916 PR-D). `marker` = {key, sha256, size, at} — the stored object's
+ *  identity, so a later materialize can integrity-check the download.
+ *
+ *  sessions.json has exactly ONE writer — saveIndex — so the marker goes through
+ *  it like every other index mutation (the body/archive layer must not rewrite
+ *  the index with its own copy of the rules: ordering, the MAX_SESSIONS cap and
+ *  the atomic write all live here).
+ *
+ *  The READ is strict, unlike loadIndex: a corrupt index must throw, never be
+ *  read as `[]` and written back — that would silently destroy every other
+ *  record. Returns {marked:true} / {marked:false, reason} for the non-error
+ *  misses (no index yet, no record for this id). */
+function markSessionArchived(workDir, id, marker) {
+  if (!id || !marker || typeof marker.key !== 'string') return { marked: false, reason: 'no marker' };
+  const p = sessionsPath(workDir);
+  if (!fs.existsSync(p)) return { marked: false, reason: 'no index' };
+  let index;
+  try {
+    index = JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (e) {
+    throw new Error(`${SESSIONS_FILE} is unreadable (${e.message}) — refusing to rewrite the index`);
+  }
+  if (!Array.isArray(index)) throw new Error(`${SESSIONS_FILE} is not a JSON array — refusing to rewrite the index`);
+  const record = index.find(r => r && r.id === id);
+  if (!record) return { marked: false, reason: `no index record for ${id}` };
+  record.archived = marker;
+  saveIndex(workDir, index);
+  return { marked: true };
+}
+
 /** Index record for one session — the CHEAP lookup: no body read, so it answers
  *  "does this session exist / is it archived" even between runs, when the body
  *  itself lives only in GCS (epic #1784 M2). Returns null when the index has no
@@ -518,6 +549,7 @@ function archiveSessions(workDir, sessionIds) {
 module.exports = {
   createSession, promoteSideSession, appendUserMessage, appendReply, listSessions, getSession, getSessionRecord, buildContext,
   getCurrentSessionId, setCurrentSessionId, claimLiveChatId, normThreadId, threadOf, belongsToConversation, resolveChatSession, archiveSessions, setSummary, needsSummary,
+  markSessionArchived,
   getLastOcModel, setLastOcModel, setSessionProject,
   getEngineSessionId, setEngineSessionId,
   // Back-compat alias for the pre-rename name (see PROFILE-RENAME-SPEC.md); remove once no caller uses it.
