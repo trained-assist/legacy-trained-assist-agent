@@ -526,6 +526,12 @@ async function runEngineProcess(opts) {
     proc = spawn(spawnBin, spawnArgv, {
       cwd,
       env: spawnEnv,
+      // Своя группа процессов (spec §2 / SS-01, #1934): ребёнок — лидер группы
+      // (pgid = его pid), все его bash-дети наследуют группу, и «Стоп» бьёт по
+      // ней через engine-stop.groupSignal — внуков достаёт даже когда движок уже
+      // вышел или игнорирует TERM. Под run-as изоляцией основной адрес остаётся
+      // pkill -u <slot>; группа — второй контур и единственный для обычного режима.
+      detached: true,
       // codex exec and opencode run both block on open stdin — close it explicitly.
       // claude doesn't read stdin in --print mode.
       // opencode waits 3s for stdin data before proceeding — use 'pipe' + immediate .end()
@@ -1010,7 +1016,10 @@ async function runEngineProcess(opts) {
   // и убить движок можно только сигналом слоту (см. runner/engine-stop.js).
   // `threadId` нужен taskOwnedBy для топик-скоупа (#255) — без него «стоп» в
   // топике A убивал бы задачу топика B.
-  const sessionState = { killFn: null, killTimer: null, extendCount: 0, proc, userStopped: false, chatId, threadId: runThreadId, sessionId, username: user.username, audience: user.audience || 'default', slot: isolation.runAs || null, slotLease };
+  // pgid процессной группы (детач-спавн выше): Стоп сигналит группу по нему —
+  // см. engine-stop.js. pid валиден, пока процесс не вышел; после выхода
+  // groupSignal получает ESRCH и просто ничего не делает.
+  const sessionState = { killFn: null, killTimer: null, extendCount: 0, proc, pgid: proc.pid, userStopped: false, chatId, threadId: runThreadId, sessionId, username: user.username, audience: user.audience || 'default', slot: isolation.runAs || null, slotLease };
   activeTimers.set(taskId, sessionState);
   // A Stop that arrived before the process existed (queued web Stop) lands now.
   if (consumePendingStop?.()) {

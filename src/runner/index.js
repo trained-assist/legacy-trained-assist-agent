@@ -749,6 +749,138 @@ function countIdleLiveRuns(owner = {}) {
 }
 
 /**
+ * Сколько ранов владельца сейчас С ПРОЦЕССОМ. Пара к countIdleLiveRuns — вместе
+ * они отвечают на вопрос «есть ли что останавливать» для «Дополнить» (SS-08):
+ * ноль и там, и там → задача уже кончилась, шлюз запускает обычное продолжение.
+ * То же правило владельца (#1303), что и у реестра: _liveRunMatches работает и
+ * на записях activeTimers (те же поля).
+ */
+function countLiveProcessRuns(owner = {}) {
+  let n = 0;
+  for (const s of activeTimers.values()) {
+    if (!s?.proc) continue;
+    if (_liveRunMatches(s, owner)) n++;
+  }
+  return n;
+}
+
+/** sessionId текущего (первого найденного) рана владельца — для «та же сессия» (SS-07). */
+function firstLiveRunSession(owner = {}) {
+  for (const s of activeTimers.values()) {
+    if (s?.proc && s.sessionId && _liveRunMatches(s, owner)) return s.sessionId;
+  }
+  for (const m of liveRuns.values()) {
+    if (m.sessionId && _liveRunMatches(m, owner)) return m.sessionId;
+  }
+  return null;
+}
+
+// Один «Дополнить» на диалог в полёте (K7/SS-07 «ровно один ран»): два параллельных
+// supok не должны каждый пойти своей остановкой-перезапуском. Ключ — диалог.
+const supplementInFlight = new Set();
+
+/**
+ * POST /tasks/supplement — «➕ Дополнить» на идущей задаче (spec Core 02 SS-07/08,
+ * issue #1934, §5 PR#4). Вместо гонки «шлюз: stopTask().catch(()=>{}) + runTask» —
+ * серверная атомарная операция:
+ *
+ *   1. остановить текущую цепочку диалога (kill + тумбстоун + GTD) и ДОЖДАТЬСЯ
+ *      подтверждения выхода (SS-01/SS-03);
+ *   2. подтверждено → ровно ОДИН новый ран в той же сессии, текст =
+ *      «[Дополнение к задаче] …», fromUser — гейт Стопа его не блокирует (K1),
+ *      initiatedAt = момент приёма дополнения (D1-якорь);
+ *   3. не останавливать нечего → `already_finished` (SS-08): шлюз запускает
+ *      дополнение обычным /run как продолжение сессии;
+ *   4. подтверждение не пришло → `stop_unconfirmed` и НИЧЕГО не запускаем:
+ *      хуже не запустить (шлюз повторит/покажет «добиваю»), чем получить два
+ *      рана (K7) или дополнить уже остановленную цепочку.
+ *
+ * @param {object} p
+ * @param {string} p.username           профиль (обязателен; валидирует сервер)
+ * @param {number|null} [p.chatId]      адрес диалога TG — одно из chatId/sessionId
+ * @param {string|null} [p.sessionId]   адрес сессии (та же сессия, SS-07)
+ * @param {string} [p.text]             текст дополнения (и/или fileRefs)
+ * @param {object} [deps]               тестовый шов: { run, confirm, now }
+ */
+async function supplementTask({
+  username, audience = null, chatId = null, threadId = null, sessionId = null,
+  workDir = null, text = '', fileRefs = null, initialMsgId = null, pinnedMsgId = null,
+  mode = null, secrets = {}, waitMs = 4500,
+}, { run = runTask, confirm = confirmStopped, now = Date.now } = {}) {
+  if (!username) return { ok: false, status: 'bad_request', error: 'username required' };
+  if (chatId == null && !sessionId) {
+    return { ok: false, status: 'bad_request', error: 'sessionId or chatId required — supplement addresses one dialog' };
+  }
+  const owner = { username, audience: audience || null, chatId: chatId ?? null, threadId, sessionId: sessionId || null };
+  const inFlightKey = `${username}\0${sessionId || ''}\0${chatId ?? ''}`;
+  if (supplementInFlight.has(inFlightKey)) return { ok: true, status: 'in_progress', audience: audience || 'default' };
+  supplementInFlight.add(inFlightKey);
+  try {
+    const idle = countIdleLiveRuns(owner);
+    const withProc = countLiveProcessRuns(owner);
+    if (idle + withProc === 0) {
+      console.log(`[supplement] nothing to stop user=${username} chat=${chatId ?? '-'} session=${sessionId || '-'} → already_finished (SS-08)`);
+      return { ok: true, status: 'already_finished', audience: audience || 'default' };
+    }
+
+    // Тот же состав операций, что POST /tasks/stop: kill → тумбстоун → GTD →
+    // подтверждение. Сессионный адрес (web/бот, приславший sessionId) идёт через
+    // stopSessionTask — точный матч, без чат-скоупа.
+    let killed = 0;
+    if (sessionId && chatId == null) {
+      if (stopSessionTask(username, sessionId)) killed = 1;
+    } else {
+      const scoped = stopUserTask(username, owner.chatId, owner.audience, threadId);
+      if (scoped) killed = 1;
+      else if (owner.chatId == null && killTaskByUsername(username, owner.audience) > 0) killed = 1;
+    }
+    const stoppedTraces = stopTracesFor(owner);
+    let gtdCancelled = 0;
+    if (workDir) {
+      try { gtdCancelled = require('../gtd-controller').closeStoppedGtd(workDir); }
+      catch (e) { console.warn('[supplement] gtd close:', e.message); }
+    }
+    const confirmed = await confirm(owner, waitMs);
+    if (!confirmed) {
+      console.warn(`[stop] stop_unconfirmed (supplement) user=${username} chat=${chatId ?? '-'} session=${sessionId || '-'} waitMs=${waitMs}`);
+      return { ok: true, status: 'stop_unconfirmed', killed, stoppedTraces, gtdCancelled, confirmed: false, audience: audience || 'default' };
+    }
+
+    // SS-07: одна сессия, один ран. Явный sessionId побеждает; иначе — координаты
+    // только что остановленного рана (та же сессия); иначе резолвер runTask сам
+    // возьмёт current-session (история диалога не теряется в любом случае).
+    const resolvedSession = sessionId || firstLiveRunSession(owner) || undefined;
+    const supplementTaskId = `${username}-supp-${now()}`;
+    const completion = run({
+      taskId: supplementTaskId,
+      user: {
+        id: chatId ?? 0, name: username, username, workDir: workDir || undefined,
+        profileId: username, telegramUserId: null, audience: audience || 'default',
+      },
+      task: `[Дополнение к задаче]\n${text || ''}`,
+      context: null,
+      sessionId: resolvedSession,
+      fromUser: true,
+      initiatedAt: now(),
+      secrets,
+      initialMsgId: initialMsgId ?? null,
+      pinnedMsgId: pinnedMsgId ?? null,
+      threadId: threadId ?? null,
+      mode: mode || null,
+      fileRefs: fileRefs || null,
+    });
+    Promise.resolve(completion).catch(err => console.error(`[${supplementTaskId}] supplement run error:`, err.message));
+    console.log(`[supplement] restarted user=${username} session=${resolvedSession || '-'} task=${supplementTaskId} (stoppedTraces=${stoppedTraces}, gtd=${gtdCancelled})`);
+    return {
+      ok: true, status: 'restarted', taskId: supplementTaskId, sessionId: resolvedSession || null,
+      killed, stoppedTraces, gtdCancelled, confirmed: true, audience: audience || 'default',
+    };
+  } finally {
+    supplementInFlight.delete(inFlightKey);
+  }
+}
+
+/**
  * Runs `claude --dangerously-skip-permissions` for a task,
  * streams output to Telegram by editing a "thinking" message.
  * Tasks for the same user are serialised — each waits for the previous to finish.
@@ -2922,9 +3054,12 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   if (sessionState.userStopped) {
     const partial = fullOutput.text.trim();
     const partialDisplay = pickFinalText(null, lastAssistantMsg, partial);
+    // SS-02 (spec Core 02): с тем, что успело сделаться — «Что успел», без
+    // выдуманного прогресса (K8: pickFinalText, не скретч-нарратив); без
+    // связного хода — честное «до начала работы», а не пустая победа.
     const stoppedMsg = partialDisplay
-      ? `⛔ Остановлено\n\n${partialDisplay.slice(-MAX_MSG_LEN)}`
-      : '⛔ Остановлено. Можешь задать новый вопрос.';
+      ? `⛔ Остановлено. Что успел:\n\n${partialDisplay.slice(-MAX_MSG_LEN)}`
+      : '⛔ Остановлено до начала работы.';
     const clearMarkup = { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } };
     if (msgId) {
       await tgEdit(BOT_TOKEN, chatId, msgId, stoppedMsg, clearMarkup).catch(() => tgSend(BOT_TOKEN, chatId, stoppedMsg, threadId));
@@ -3537,7 +3672,7 @@ module.exports = {
   savePendingTask,
   resolveRunSession,
   isTaskRunning, isChatTaskRunning, isSessionRunning, isSessionQueuedFor, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,
-  stopTracesFor, confirmStopped, countIdleLiveRuns,
+  stopTracesFor, confirmStopped, countIdleLiveRuns, supplementTask,
   reconcileSoftContinuations,
   // Exported for intent-coverage tests only
   _intents: { HH_MY_VACANCIES_INTENT, HH_FUNNEL_INTENT, HH_RESPONSES_INTENT, HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT, ENGINE_SWITCH_INTENT },

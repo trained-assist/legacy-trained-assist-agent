@@ -17,6 +17,12 @@
 //
 // Эскалация: SIGTERM → 5с → SIGKILL (spec §2).
 //
+// Второй контур (SS-01, #1934): группа процессов. Слота может не быть вовсе —
+// рабочий режим без AGENT_RUN_AS_USERS, — и тогда pkill -u некому слать, а
+// прямой ребёнок (bash-ребёнок движка) переживал бы и TERM, и KILL. Дети
+// спавнятся detached (claude-runner.js), поэтому TERM/KILL группе достаёт и
+// внуков; см. groupSignal() ниже.
+//
 // «Жив» — это НЕ «жива обёртка». Под изоляцией `proc` — sudo-обёртка: движок мог
 // выйти, а его ребёнок пережить TERM (или держать stdout-pipe — тогда 'close' не
 // придёт и слот не освободится). Поэтому живость рана = жива обёртка ИЛИ слот ещё
@@ -38,9 +44,34 @@ const { isolationConfig } = require('../agent-isolation');
 const STOP_ESCALATE_MS = 5000;
 const SUDO_TIMEOUT_MS = 10_000;
 
+// Дефолт — 5с по спеке (§2). Ленивое чтение env нужно тестам: §4 case 1 гоняет
+// реальное дерево процессов и не хочет ждать 5с в каждом прогоне. Экспорт
+// STOP_ESCALATE_MS остаётся контрактом дефолта (тесты проверяют >= 4000).
+function escalateDelayMs() {
+  const v = Number(process.env.STOP_ESCALATE_MS);
+  return Number.isFinite(v) && v > 0 ? v : STOP_ESCALATE_MS;
+}
+
 // fire-and-forget: ошибку (pkill выходит с 1, когда нечего убивать) глотаем.
 function defaultExec(bin, argv, opts) {
   execFile(bin, argv, opts, () => { /* exit 1 = nothing matched — не ошибка */ });
+}
+
+/**
+ * Сигнал ПРОЦЕССНОЙ ГРУППЕ рана (spec §2/SS-01: «вся группа, включая MCP/bash-детей»).
+ * Ребёнок спавнится detached (claude-runner.js) — pgid = его pid, все его bash-дети
+ * наследуют группу. ESRCH → false (группы нет — мёртвые не сигналятся), EPERM → true
+ * (группа есть, но сигналить её не наш пользователь — слот-режим, там основной
+ * адресом остаётся pkill -u <slot>).
+ *
+ * Второй контур, а не замена слота: под изоляцией прямой ребёнок — sudo-обёртка, и
+ * `pkill -u <slot>` добивает дерево; без изоляции слота нет, и группа — ЕДИНСТВЕННЫЙ
+ * способ достать внуков (внук, игнорирующий TERM, переживал бы Stop до 24ч).
+ */
+function groupSignal(pgid, signal) {
+  if (!Number.isInteger(pgid) || pgid <= 1) return false;
+  try { process.kill(-pgid, signal); return true; }
+  catch (e) { return e.code === 'EPERM'; }
 }
 
 /** Отправить сигнал всем процессам слота. false = нечего/не удалось запустить. */
@@ -96,40 +127,47 @@ async function runAlive(state, { hasProcesses = slotHasProcesses } = {}) {
 }
 
 /**
- * Остановить ран по state из activeTimers: TERM слоту (пока lease наш) + прямому
- * ребёнку, через 5с — KILL тем, кто ещё жив. Ставит `state.userStopped = true`,
- * чтобы хендлер close не ушёл в автопродолжение (R5).
+ * Остановить ран по state из activeTimers: TERM слоту (пока lease наш) + группе
+ * процессов + прямому ребёнку, через 5с — KILL тем, кто ещё жив. Ставит
+ * `state.userStopped = true`, чтобы хендлер close не ушёл в автопродолжение (R5).
  *
- * @param {{proc?:object, slot?:string|null, slotLease?:{slot:string,released:boolean}, userStopped?:boolean}} state
+ * @param {{proc?:object, pgid?:number|null, slot?:string|null, slotLease?:{slot:string,released:boolean}, userStopped?:boolean}} state
  * @param {object} [opts]
  * @param {Function} [opts.exec]  — подмена запуска sudo (тесты)
  * @param {Function} [opts.setTimeout] — подмена таймера эскалации (тесты)
+ * @param {Function} [opts.signalGroup] — подмена сигнала группе (тесты)
  * @returns {boolean} был ли отправлен хоть один сигнал
  */
-function stopEngineProcess(state, { exec = defaultExec, setTimeout: schedule = setTimeout } = {}) {
+function stopEngineProcess(state, { exec = defaultExec, setTimeout: schedule = setTimeout, signalGroup: group = groupSignal } = {}) {
   if (!state || !state.proc) return false;
   state.userStopped = true;
   const slot = leasedSlot(state);
   const procAlive = alive(state.proc);
-  if (!slot && !procAlive) return false; // всё уже вышло, слот отдан — сигналить некому
+  const pgid = Number.isInteger(state.pgid) ? state.pgid : null;
+  const groupAlive = pgid ? group(pgid, 0) : false;
+  if (!slot && !procAlive && !groupAlive) return false; // всё вышло, слот отдан, группы нет — сигналить некому
   if (slot) signalSlot(slot, 'TERM', exec);
+  if (groupAlive) group(pgid, 'SIGTERM');
   if (procAlive) { try { state.proc.kill('SIGTERM'); } catch { /* уже вышел */ } }
   if (state.stopEscalateTimer) return true;
   state.stopEscalateTimer = schedule(() => {
     state.stopEscalateTimer = null;
-    // Перепроверка lease на момент эскалации: слот, отданный за эти 5с, чужой.
+    // Перепроверка lease/группы на момент эскалации: слот, отданный за эти 5с,
+    // чужой; группа, раздавленная до того, как мы её увидели, — не наша (ESRCH).
     const stillLeased = leasedSlot(state);
     const stillAlive = alive(state.proc);
-    if (!stillLeased && !stillAlive) return;
+    const stillGroup = pgid ? group(pgid, 0) : false;
+    if (!stillLeased && !stillAlive && !stillGroup) return;
     if (stillLeased) signalSlot(stillLeased, 'KILL', exec);
+    if (stillGroup) group(pgid, 'SIGKILL');
     if (stillAlive) { try { state.proc.kill('SIGKILL'); } catch { /* уже вышел */ } }
-    console.warn(`[stop] run survived SIGTERM for ${STOP_ESCALATE_MS / 1000}s — escalated to SIGKILL`);
-  }, STOP_ESCALATE_MS);
+    console.warn(`[stop] run survived SIGTERM for ${escalateDelayMs() / 1000}s — escalated to SIGKILL`);
+  }, escalateDelayMs());
   state.stopEscalateTimer?.unref?.();
   return true;
 }
 
 module.exports = {
-  stopEngineProcess, signalSlot, slotHasProcesses, runAlive, leasedSlot, STOP_ESCALATE_MS,
-  _internals: { alive },
+  stopEngineProcess, signalSlot, groupSignal, slotHasProcesses, runAlive, leasedSlot, STOP_ESCALATE_MS,
+  _internals: { alive, escalateDelayMs },
 };
