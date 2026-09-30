@@ -16,17 +16,85 @@ const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'stop-trace-'));
 process.env.AGENT_DATA_DIR = path.join(ROOT, 'data');
 process.env.USERS_DIR = path.join(ROOT, 'users');
 process.env.MIN_FREE_RAM_MB = '0';                 // RAM-watchdog иначе ждёт 60с на macOS
-process.env.TELEGRAM_API_URL = 'http://127.0.0.1:9'; // тест не ходит в api.telegram.org
+process.env.STOP_ESCALATE_MS = '400';              // эскалация TERM→KILL: 5с по спеке, 400мс здесь (экспорт STOP_ESCALATE_MS остаётся дефолтом 5000)
 process.on('exit', () => fs.rmSync(ROOT, { recursive: true, force: true }));
 
-const { test } = require('node:test');
+// ── Среда §4: локальный Telegram-capture + фейковый claude на PATH ────────────
+// Телеграм: send/edit в ветке остановки реально ходят в Bot API — на локальный
+// capture, не на api.telegram.org (иначе ECONNREFUSED оборвал бы userStopped-ветку
+// ДО записи частичного результата — SS-02). Порт фиксирован: TG_API читается из
+// env при require модулей ниже.
+const http = require('node:http');
+const TG_CAPTURE_PORT = 18923;
+process.env.TELEGRAM_API_URL = `http://127.0.0.1:${TG_CAPTURE_PORT}`;
+let tgServer = null;
+const tgReady = new Promise((resolve, reject) => {
+  const srv = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, result: { message_id: 1000 + Math.floor(Math.random() * 8000) } }));
+    });
+  });
+  srv.listen(TG_CAPTURE_PORT, '127.0.0.1', () => { tgServer = srv; resolve(srv); });
+  srv.on('error', reject);
+});
+
+// Фейковый claude: один диспетчер, режим в файле (ok | hang | crash0) — тесты
+// переключают поведение движка, не переписывая бинарь. Каждый спавн пишет строку
+// в spawns.log: «сколько раз реально стартовал движок» и есть наблюдаемая величина
+// вместо sleep-угадайки. hang игнорирует TERM (trap '' — дети наследуют) и висит:
+// Stop обязан добить группу эскалацией.
+const BIN_DIR = path.join(ROOT, 'bin');
+const MODE_DIR = path.join(ROOT, 'mode');
+fs.mkdirSync(BIN_DIR, { recursive: true });
+fs.mkdirSync(MODE_DIR, { recursive: true });
+fs.writeFileSync(path.join(MODE_DIR, 'mode'), 'ok');
+fs.writeFileSync(path.join(BIN_DIR, 'claude'), `#!/bin/sh
+echo x >> "${MODE_DIR}/spawns.log"
+MODE=$(cat "${MODE_DIR}/mode" 2>/dev/null || echo ok)
+case "$MODE" in
+  hang)
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"работаю над отчётом"}],"stop_reason":"end_turn"}}'
+    trap '' TERM
+    sleep 300 &
+    echo $! > "${MODE_DIR}/child.pid"
+    echo $$ > "${MODE_DIR}/parent.pid"
+    wait
+    ;;
+  crash0)
+    exit 0
+    ;;
+  *)
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"готово"}],"stop_reason":"end_turn"}}'
+    echo '{"type":"result","result":"готово","usage":{"input_tokens":5,"output_tokens":5}}'
+    ;;
+esac
+`);
+fs.chmodSync(path.join(BIN_DIR, 'claude'), 0o755);
+process.env.PATH = `${BIN_DIR}${path.delimiter}${process.env.PATH}`;
+// Явный путь, как в tests/runner-e2e.test.js: buildEngineCommand читает CLAUDE_BIN,
+// и без него здесь может найтись настоящий claude — тест тогда уходит в реальный
+// запуск (и виснет на нём), а spawns.log никогда не заполнится.
+process.env.CLAUDE_BIN = path.join(BIN_DIR, 'claude');
+
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const STOP_MSG = '⛔ Остановлено до начала выполнения.';
 const stopTrace = require('../src/stop-trace');
-const { stopEngineProcess, signalSlot, runAlive, leasedSlot, STOP_ESCALATE_MS } = require('../src/runner/engine-stop');
+const { stopEngineProcess, signalSlot, groupSignal, runAlive, leasedSlot, STOP_ESCALATE_MS } = require('../src/runner/engine-stop');
+const { runEngineProcess } = require('../src/runner/claude-runner');
 const gtdCtl = require('../src/gtd-controller');
 const runner = require('../src/runner');
+
+// Capture-сервер держит event loop открытым — закрываем после всех кейсов, иначе
+// node --test не завершится (файл упадёт по таймауту runner'а, а не тестом).
+after(() => new Promise(resolve => {
+  if (!tgServer) return resolve();
+  tgServer.closeAllConnections?.();
+  tgServer.close(() => resolve());
+}));
 
 // У каждого кейса свой диалог/профиль: tombstones живут на диске на весь файл,
 // перекрытие координат сделало бы тесты зависимыми от порядка.
@@ -514,4 +582,256 @@ test('D3: хоп, снятый гейтом в очереди, гасит pendin
   const block = src.slice(at, src.indexOf('return STOP_NOT_STARTED_MSG;', at));
   assert.ok(/consumePendingStop\(opts\.user\.username, opts\.sessionId\);/.test(block),
     'нижний гейт гасит pending-stop сессии');
+});
+
+// ── 8. §4 e2e через реальный вход: kill группы, R1, R2, K14, SS-02 ─────────────
+// Правило §4: вход через реальную точку (runTask / stop-функции / engine-stop),
+// наблюдаем процессы и спавны (spawns.log, kill(pid,0)), без sleep-угадайки:
+// все ожидания — условные (until), таймеры — захваченные руками, где нужно.
+
+async function until(fn, { timeout = 20_000, interval = 25, label = 'condition' } = {}) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    let v = null;
+    try { v = await fn(); } catch { /* keep polling */ }
+    if (v) return v;
+    if (Date.now() > deadline) throw new Error(`timeout waiting for ${label}`);
+    await new Promise(r => setTimeout(r, interval));
+  }
+}
+const spawnCount = () => {
+  try { return fs.readFileSync(path.join(MODE_DIR, 'spawns.log'), 'utf8').split('\n').filter(Boolean).length; }
+  catch { return 0; }
+};
+const resetSpawns = () => { try { fs.rmSync(path.join(MODE_DIR, 'spawns.log'), { force: true }); } catch { /* ok */ } };
+const setMode = m => fs.writeFileSync(path.join(MODE_DIR, 'mode'), m);
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+const withTimeout = (p, ms, label) => Promise.race([
+  p,
+  new Promise((_, reject) => { const t = setTimeout(() => reject(new Error(`timeout: ${label}`)), ms); t.unref?.(); }),
+]);
+const killPid = pid => { try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ } };
+
+test('SS-01: реальное дерево — TERM игнорируется, эскалация KILL убивает группу, дети мертвы', async () => {
+  // Фейковый движок в собственной группе (detached, как claude-runner): trap '' TERM
+  // наследуется детьми — прямой SIGTERM его не берёт, а группа должна упасть от KILL
+  // на эскалации (spec §4 case 1: «все дети мертвы»).
+  const stubborn = path.join(ROOT, 'stubborn-engine.sh');
+  fs.writeFileSync(stubborn, `#!/bin/sh
+trap '' TERM
+sleep 300 &
+echo $! > "${MODE_DIR}/child.pid"
+echo $$ > "${MODE_DIR}/parent.pid"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"работаю"}],"stop_reason":"end_turn"}}'
+wait
+`);
+  fs.chmodSync(stubborn, 0o755);
+  const activeTimers = new Map();
+  const engineDone = runEngineProcess({
+    engine: 'claude', taskId: 'alice-group-1', chatId: '4242', thinkingStart: Date.now(),
+    msgId: null, BOT_TOKEN: null, secrets: {}, user: { username: 'alice', workDir: ROOT, name: 'Alice' },
+    cleanEnv: { PATH: process.env.PATH }, userTokens: {}, sessionFilePath: '',
+    restartShutdown: () => false, activeTimers,
+    tgEdit: async () => ({ ok: true }), tgSend: async () => ({ ok: true }),
+    outputCallback: null, engineBin: stubborn, engineArgs: [], cwd: ROOT,
+  });
+  let parent = null; let child = null;
+  try {
+    const state = await until(
+      () => (fs.existsSync(path.join(MODE_DIR, 'parent.pid')) && [...activeTimers.values()][0]) || null,
+      { label: 'engine spawned' },
+    );
+    parent = Number(fs.readFileSync(path.join(MODE_DIR, 'parent.pid'), 'utf8').trim());
+    child = Number(fs.readFileSync(path.join(MODE_DIR, 'child.pid'), 'utf8').trim());
+    assert.equal(state.pgid, state.proc.pid, 'детач-спавн: pgid = pid ребёнка (своя группа процессов)');
+    assert.ok(alive(parent) && alive(child), 'и движок, и его ребёнок живы до Стопа');
+
+    assert.equal(stopEngineProcess(state), true, 'Стоп отправил сигнал');
+    // TERM оба игнорируют (trap '' / унаследовано) — живы прямо ПОСЛЕ сигнала:
+    // если бы группового KILL не было, они живы были бы и через 5с.
+    assert.ok(alive(parent) && alive(child), 'TERM пережит — эскалация обязательна');
+    const res = await withTimeout(engineDone, 15_000, 'engine exit after escalation');
+    assert.equal(res.sessionState.userStopped, true, 'R5: close не уходит в автопродолжение');
+    await until(() => !alive(parent) && !alive(child), { label: 'group SIGKILL landed' });
+  } finally {
+    killPid(parent); killPid(child);
+    try { fs.rmSync(path.join(MODE_DIR, 'parent.pid'), { force: true }); } catch { /* ok */ }
+    try { fs.rmSync(path.join(MODE_DIR, 'child.pid'), { force: true }); } catch { /* ok */ }
+  }
+});
+
+test('R1: движок упал → retry ждёт backoff → Стоп → таймер стреляет, но спавна нет', async () => {
+  // Настоящие глобальные таймеры подменяются только для backoff-окна (30с в
+  // не-TEST_MODE): уwarn/kill таймеров те же десятки минут, у retry — ровно
+  // getRetryDelayMs(1). Стоп ставится ДО ручного вызова «стрельнувшего» таймера —
+  // ровно как в проде, где он стреляет сам уже после отметки.
+  await tgReady;
+  setMode('crash0'); resetSpawns();
+  const wd = workDir('lena');
+  const realSetTimeout = global.setTimeout;
+  const captured = [];
+  global.setTimeout = (fn, ms, ...args) => {
+    if (Number(ms) >= 25_000 && Number(ms) < 60_000) { captured.push({ fn, ms }); return { unref() {} }; }
+    return realSetTimeout(fn, ms, ...args);
+  };
+  try {
+    const p = runner.runTask({
+      taskId: 'lena-r1-1',
+      user: { id: 6060, name: 'lena', username: 'lena', workDir: wd },
+      task: 'сделай отчёт', context: null,
+      initiatedAt: Date.now() - 1000,
+      engine: 'claude', secrets: {}, initialMsgId: null,
+    });
+    const retryTimer = await until(() => captured.find(c => c.ms === 30_000) || null,
+      { label: 'retry backoff timer scheduled' });
+    assert.equal(spawnCount(), 1, 'один спавн: движок упал без подтверждённого ответа');
+    // Ран в backoff'е виден Стопу как idle (без процесса) — координаты берёт реестр.
+    assert.equal(runner.countIdleLiveRuns({ username: 'lena', chatId: 6060, audience: 'default' }), 1,
+      'R1: backoff-ран без процесса находится через liveRuns');
+    runner.stopTracesFor({ username: 'lena', chatId: 6060, audience: 'default' });
+    retryTimer.fn(); // таймер стреляет ПОСЛЕ Стопа — как он стрельнул бы сам
+    assert.equal(await withTimeout(p, 15_000, 'retry hop settles'), STOP_MSG,
+      'хоп снят гейтом до журнала и до спавна');
+    assert.equal(spawnCount(), 1, 'ретрай не заспавнил новый движок (R1 закрыт)');
+  } finally {
+    global.setTimeout = realSetTimeout;
+    // Оборонительный kill: если до Стопа не дошли — не оставляем движок висеть
+    // (иначе node --test не завершится: warn/kill-таймеры на 38/40 минут).
+    runner.stopUserTask('lena', 6060, 'default', null);
+    setMode('ok'); resetSpawns();
+  }
+});
+
+test('R2: хоп стоит в admission, когда пришёл Стоп → хоп не стартует', async () => {
+  await tgReady;
+  setMode('hang'); resetSpawns();
+  const wd = workDir('mira');
+  const a = runner.runTask({
+    taskId: 'mira-a',
+    user: { id: 7070, name: 'mira', username: 'mira', workDir: wd },
+    task: 'длинная работа', context: null, sessionId: 's-mira-a',
+    initiatedAt: Date.now() - 5000, engine: 'claude', secrets: {}, initialMsgId: null,
+  });
+  let b = null;
+  try {
+    await until(() => spawnCount() >= 1, { label: 'A spawned' });
+    // B той же ленты диалога: верхний гейт проходит (Стопа ещё нет), журнал
+    // пишется ДО очереди — дальше B стоит в admission за A.
+    b = runner.runTask({
+      taskId: 'mira-b',
+      user: { id: 7070, name: 'mira', username: 'mira', workDir: wd },
+      task: 'вторая задача', context: null, sessionId: 's-mira-b',
+      initiatedAt: Date.now() - 3000, engine: 'claude', secrets: {}, initialMsgId: null,
+    });
+    await until(() => runner.getPendingTasks().some(x => x.taskId === 'mira-b'),
+      { label: 'B journaled (upper gate passed)' });
+    // Композиция POST /tasks/stop: kill живого + тумбстоун диалога.
+    runner.stopUserTask('mira', 7070, 'default', null);
+    runner.stopTracesFor({ username: 'mira', chatId: 7070, audience: 'default' });
+
+    assert.equal(await withTimeout(b, 20_000, 'B settles'), STOP_MSG,
+      'хоп, стоявший в admission, снят нижним гейтом (R2)');
+    assert.equal(spawnCount(), 1, 'B не заспавнился — движок стартовал только у A');
+    await withTimeout(a, 20_000, 'A settles');
+  } finally {
+    runner.stopUserTask('mira', 7070, 'default', null);
+    if (b) await Promise.allSettled([Promise.race([a, new Promise(r => setTimeout(r, 3000))]), Promise.race([b, new Promise(r => setTimeout(r, 3000))])]);
+    setMode('ok'); resetSpawns();
+  }
+});
+
+test('K14: рестарт — новый инстанс runner на том же data-dir не поднимает остановленную цепочку', async () => {
+  const wd = workDir('grace');
+  // 1) Стоп ДО «рестарта»: отметка лежит на диске (K14 — тумбстоун переживает рестарт).
+  const t = trace(5551, 'grace');
+  assert.equal(stopTrace.markTraceStopped(t, { username: 'grace', chatId: 5551 }), true);
+  const stoppedAt = stopTrace.traceStoppedAt(t);
+  // 2) Журнал, который resumePendingTasks передал бы в runTask (server.js: resume
+  //    наследует initiatedAt из журнала и зовёт тот же runTask — гейт живёт в нём).
+  const pendingDir = path.join(process.env.AGENT_DATA_DIR, 'pending-tasks');
+  fs.mkdirSync(pendingDir, { recursive: true });
+  const journalFile = path.join(pendingDir, 'grace-resume-1.json');
+  fs.writeFileSync(journalFile, JSON.stringify({
+    taskId: 'grace-resume-1', username: 'grace', userId: 5551, threadId: null,
+    audience: 'default', sessionId: 's-grace', initiatedAt: stoppedAt - 5000,
+    startedAt: Date.now() - 60_000, task: 'прерванная задача', phase: 'running',
+  }));
+  // 3) «Новый процесс»: чистый инстанс runner (модули стёрты из require.cache),
+  //    те же data-dir и тумбстоун на диске — никакого in-memory состояния.
+  for (const key of Object.keys(require.cache)) if (key.includes('/src/runner/')) delete require.cache[key];
+  const fresh = require('../src/runner');
+  try {
+    const p = fresh.runTask({
+      taskId: 'grace-resume-2',
+      user: { id: 5551, name: 'grace', username: 'grace', workDir: wd },
+      task: 'прерванная задача', context: null, sessionId: 's-grace',
+      resumedAfterRestart: true, resumeAttempts: 1,
+      initiatedAt: stoppedAt - 5000, // наследуется из журнала — то, что читает resume
+      secrets: {}, initialMsgId: null,
+    });
+    assert.equal(await withTimeout(p, 15_000, 'fresh-instance resume hop'), STOP_MSG,
+      'после рестарта resume-хоп снимается гейтом по дисковой отметке');
+    assert.ok(!fresh.getPendingTasks().some(x => x.taskId === 'grace-resume-2'),
+      'остановленная цепочка не журналируется — resume не поднимет её в следующий раз');
+  } finally {
+    fs.rmSync(journalFile, { force: true });
+  }
+});
+
+test('SS-02: частичный результат в сессии, статус CANCELLED, ответ «Что успел»', async () => {
+  await tgReady;
+  setMode('hang'); resetSpawns();
+  const wd = workDir('ivan');
+  let out = '';
+  const p = runner.runTask({
+    taskId: 'ivan-ss02-1',
+    user: { id: 9090, name: 'ivan', username: 'ivan', workDir: wd },
+    task: 'сделай отчёт', context: null, sessionId: 's-ivan-02',
+    initiatedAt: Date.now() - 5000, engine: 'claude', secrets: {}, initialMsgId: null,
+    outputCallback: t => { out += t; },
+  });
+  try {
+    await until(() => out.includes('работаю над отчётом'), { label: 'partial output streamed' });
+    // Композиция POST /tasks/stop, что и в проде: kill + тумбстоун диалога.
+    assert.equal(runner.stopUserTask('ivan', 9090, 'default', null), true, 'процесс остановлен');
+    runner.stopTracesFor({ username: 'ivan', chatId: 9090, audience: 'default' });
+
+    const res = await withTimeout(p, 20_000, 'stopped run settles');
+    assert.match(String(res), /^⛔ Остановлено\. Что успел:/,
+      'SS-02: прогресс-сообщение по спеке, а не голое «Остановлено»');
+
+    const sess = JSON.parse(fs.readFileSync(path.join(wd, 'sessions', 's-ivan-02.json'), 'utf8'));
+    const last = sess.messages[sess.messages.length - 1];
+    assert.equal(last.role, 'assistant', 'последняя запись — ответ агента');
+    assert.match(last.content, /^\[остановлено пользователем\]/, 'маркер остановки в истории');
+    assert.ok(last.content.includes('работаю над отчётом'), 'последний связный ход сохранён, файлы/история не откатываются');
+
+    const histDir = path.join(process.env.AGENT_DATA_DIR, 'execution-history');
+    const cancelled = fs.readdirSync(histDir)
+      .map(f => fs.readFileSync(path.join(histDir, f), 'utf8'))
+      .filter(s => s.includes('"CANCELLED"') && s.includes('ivan-ss02-1'));
+    assert.equal(cancelled.length, 1, 'исполнение финализировано как CANCELLED (SS-02)');
+
+    assert.equal(spawnCount(), 1, 'R5: после Стопа нет автопродолжения');
+  } finally {
+    runner.stopUserTask('ivan', 9090, 'default', null);
+    setMode('ok'); resetSpawns();
+  }
+});
+
+test('контракт: SS-01 группа процессов, SS-02 формулировки, SS-03 окно+метрика', () => {
+  const runnerSrc = read('src/runner/claude-runner.js');
+  assert.ok(/detached: true/.test(runnerSrc), 'SS-01: движок спавнится в своей группе процессов');
+  assert.ok(/pgid: proc\.pid/.test(runnerSrc), 'SS-01: pgid группы кладётся в sessionState');
+  const stopSrc = read('src/runner/engine-stop.js');
+  assert.ok(/function groupSignal\(/.test(stopSrc), 'SS-01: kill группы — отдельный примитив');
+  assert.ok(/SIGKILL/.test(stopSrc) && /group\(pgid, 'SIGKILL'\)/.test(stopSrc), 'эскалация бьёт и по группе');
+  const src = read('src/runner/index.js');
+  assert.ok(src.includes('⛔ Остановлено. Что успел:'), 'SS-02: «Что успел» вместо голого «Остановлено»');
+  assert.ok(src.includes('⛔ Остановлено до начала работы.'), 'SS-02: без связного хода — честно «до начала работы»');
+  const server = read('src/server.js');
+  assert.ok((server.match(/stop_unconfirmed/g) || []).length >= 2,
+    'K11: метрика stop_unconfirmed в /tasks/stop и /tasks/supplement');
+  assert.ok(/Math\.min\(Math\.max\(rawWaitMs, 0\), 10000\)/.test(server),
+    'SS-03: окно подтверждения расширено до 10с по спеке (было 4500, спека требует 10с)');
 });
