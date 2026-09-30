@@ -641,6 +641,18 @@ function isSessionRunning(sessionId) {
   return false;
 }
 
+// Ф5 (web visibility): 'running' — a live spawned process owns this session;
+// 'queued' — an accepted run still waits at admission (queuedSessions/queuedByOwner
+// are set at accept, activeTimers only at spawn). isSessionRunning() merges both
+// on purpose (the GTD guard needs the union); the web UI needs the difference to
+// render a visible «⏳ В очереди» instead of a silent spinner.
+function sessionRunPhase(username, sessionId) {
+  if (!sessionId) return null;
+  for (const s of activeTimers.values()) if (s.sessionId === sessionId) return 'running';
+  if (queuedSessions.has(sessionId) || queuedByOwner.get(ownerKey(username, sessionId))) return 'queued';
+  return null;
+}
+
 // Exact-session stop for web/API callers. Deliberately has NO profile-wide
 // fallback: failure to find the requested session must never kill a sibling
 // Telegram/web task that happens to share the same profile.
@@ -1456,9 +1468,17 @@ async function _runTaskInner(opts) {
     // way past the dialog lane. Session writer scope above stays untouched.
     parallel: opts.parallel === true,
   });
-  if (admission.isBusy(admissionScopes)) status.waiting(
-    '↪️ Ожидаю завершения предыдущей работы. В этом диалоге выполняю задачи по очереди. Начну автоматически; повторно отправлять не нужно.'
-  );
+  // Web runs have no progress message to edit (initialMsgId is null → every
+  // status.publish is a no-op) — surface the admission phase over the SSE
+  // progress channel instead, so the submitting tab SEES «waiting» (Ф5).
+  const publishWebPhase = text => {
+    if (!opts.initialMsgId && typeof opts.onProgress === 'function') opts.onProgress(text);
+  };
+  if (admission.isBusy(admissionScopes)) {
+    const waitingText = '↪️ Ожидаю завершения предыдущей работы. В этом диалоге выполняю задачи по очереди. Начну автоматически; повторно отправлять не нужно.';
+    status.waiting(waitingText);
+    publishWebPhase(waitingText);
+  }
 
   // Postmortem diagnostics for issue #1015 ("session hung, no evidence of where
   // the time went"): stamp how long each admission stage actually took. Cheap
@@ -1509,9 +1529,11 @@ async function _runTaskInner(opts) {
         if (consumePendingStop(opts.user.username, opts.sessionId)) {
           console.log(`[${opts.taskId}] stopped before start`);
           await status.finish(STOP_NOT_STARTED_MSG);
+          publishWebPhase(STOP_NOT_STARTED_MSG);
           return STOP_NOT_STARTED_MSG;
         }
         await status.finish('🧠 Начинаю работу…');
+        publishWebPhase('🧠 Начинаю работу…');
         const runT0 = Date.now();
         try {
           return await _runTask(opts);
@@ -3671,7 +3693,7 @@ module.exports = {
   // never persist an absolute workDir, including over a legacy record.
   savePendingTask,
   resolveRunSession,
-  isTaskRunning, isChatTaskRunning, isSessionRunning, isSessionQueuedFor, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,
+  isTaskRunning, isChatTaskRunning, isSessionRunning, isSessionQueuedFor, sessionRunPhase, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,
   stopTracesFor, confirmStopped, countIdleLiveRuns, supplementTask,
   reconcileSoftContinuations,
   // Exported for intent-coverage tests only
