@@ -233,6 +233,23 @@ function listSessions(workDir, limit = 10, audience = 'default') {
   return filtered.slice(0, limit);
 }
 
+/** Index record for one session — the CHEAP lookup: no body read, so it answers
+ *  "does this session exist / is it archived" even between runs, when the body
+ *  itself lives only in GCS (epic #1784 M2). Returns null when the index has no
+ *  such record. Deliberately never falls back to the file: callers use this to
+ *  tell «archived» from «never existed», which is exactly what a body read
+ *  cannot do once the body is gone. */
+function getSessionRecord(workDir, id) {
+  if (!id) return null;
+  try {
+    const sessions = loadIndex(workDir);
+    return sessions.find(s => s && s.id === id) || null;
+  } catch (e) {
+    console.warn('[session-store] getSessionRecord:', e.message);
+    return null;
+  }
+}
+
 /** Get full session with messages */
 function getSession(workDir, id) {
   try {
@@ -499,7 +516,7 @@ function archiveSessions(workDir, sessionIds) {
 }
 
 module.exports = {
-  createSession, promoteSideSession, appendUserMessage, appendReply, listSessions, getSession, buildContext,
+  createSession, promoteSideSession, appendUserMessage, appendReply, listSessions, getSession, getSessionRecord, buildContext,
   getCurrentSessionId, setCurrentSessionId, claimLiveChatId, normThreadId, threadOf, belongsToConversation, resolveChatSession, archiveSessions, setSummary, needsSummary,
   getLastOcModel, setLastOcModel, setSessionProject,
   getEngineSessionId, setEngineSessionId,

@@ -1,7 +1,11 @@
 const path = require('path');
 const { EventEmitter } = require('events');
 const { webAuth } = require('./web-auth');
-const { listSessions, getSession, getCurrentSessionId, createSession } = require('./session-store');
+const { listSessions, getSession, getSessionRecord, getCurrentSessionId, createSession } = require('./session-store');
+// Issue #1916 PR-C: an archived session has no body on the VM between runs. The
+// readers below serve it from GCS IN MEMORY — nothing is written to disk, so
+// reading a session can never leave a body behind (owner contract).
+const { readSessionMaybeArchived, SessionArchiveError } = require('./session-materialize');
 const { isTaskRunning, isSessionRunning, isSessionQueuedFor, runTask, stopSessionTask } = require('./runner');
 const { userWorkDir, SYSTEM_ROOT } = require('./data-paths');
 const { readTrace } = require('./session-trace');
@@ -18,6 +22,18 @@ const REQUEST_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 
 function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
+}
+
+// Issue #1916 PR-C: an archive outage is a 503 with the real reason, never a 404
+// («session not found» would tell the owner their dialog was deleted) and never a
+// silent empty body.
+function archiveErrorJson(res, e) {
+  const code = e && e.code;
+  if (e instanceof SessionArchiveError || code === 'ARCHIVE_UNAVAILABLE' || code === 'ARCHIVE_MISSING') {
+    return json(res, 503, { error: 'session archive unavailable', detail: e.message });
+  }
+  console.warn('[web-routes] session read failed:', e && e.message);
+  return json(res, 500, { error: 'session read failed' });
 }
 
 function webMutationReceiptPath(username, requestId) {
@@ -131,7 +147,7 @@ function listSessionsFor(username, limit = 20) {
   }));
 }
 
-function getSessionFor(username, sessionId) {
+async function getSessionFor(username, sessionId) {
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) return null;
   const workDir = userWorkDir(username);
   // The file on disk is the source of truth, not the 50-entry recency index:
@@ -141,7 +157,10 @@ function getSessionFor(username, sessionId) {
   // profile, and a «📜 Журнал» tap in a recruiter/freelance bot chat links to
   // that bot's session — scoping here 404'd every such link. Only the list stays
   // scoped to the default audience (listSessionsFor).
-  const session = getSession(workDir, sessionId);
+  // Local body first; when it is archived the bytes come back from GCS straight
+  // into this response (throws SessionArchiveError on an outage — the route turns
+  // that into an honest 503, never a 404 that would read as «session deleted»).
+  const session = await readSessionMaybeArchived({ workDir, sessionId });
   if (!session) return null;
   const meta = listSessions(workDir, Infinity, null).find(s => s.id === sessionId) || {};
   return {
@@ -161,10 +180,12 @@ function getSessionFor(username, sessionId) {
 // Read the full working trace for one session (reasoning/tool/steps from the
 // engine's own store — see session-trace.js). Returns { ok:false, error } when
 // the session has no engine trace (claude-only, missing db, etc.).
-function getTraceFor(username, sessionId) {
+async function getTraceFor(username, sessionId) {
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) return { ok: false, error: 'invalid session id' };
   const workDir = userWorkDir(username);
-  const session = getSession(workDir, sessionId);
+  // The engine session id lives in the body, so an archived session needs it
+  // back before readTrace can find its events (same in-memory rule as above).
+  const session = await readSessionMaybeArchived({ workDir, sessionId });
   if (!session) return { ok: false, error: 'session not found' };
   const res = readTrace(workDir, session);
   // Clamp: never expose engine internals the owner didn't ask for.
@@ -180,7 +201,9 @@ function getTraceFor(username, sessionId) {
 function getRunInputFor(username, sessionId, before = null) {
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) return { ok: false, error: 'invalid session id' };
   const workDir = userWorkDir(username);
-  if (!getSession(workDir, sessionId)) return { ok: false, error: 'session not found' };
+  // Existence only: .run-inputs snapshots are local, so an archived body does not
+  // have to come back — the index record proves the session exists (PR-C).
+  if (!getSession(workDir, sessionId) && !getSessionRecord(workDir, sessionId)) return { ok: false, error: 'session not found' };
   const at = before == null || before === '' ? null : Number(before);
   const hit = require('./run-input-store').findForSession(workDir, sessionId, Number.isFinite(at) ? at : null);
   if (!hit) return { ok: false, error: 'no-input' };
@@ -265,7 +288,12 @@ async function handleWebRoute(req, url, res, secrets) {
     const sessionId = p.split('/')[3];
     if (!sessionId || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) return json(res, 400, { error: 'invalid session id' }), true;
 
-    const trace = getTraceFor(username, sessionId);
+    let trace;
+    try {
+      trace = await getTraceFor(username, sessionId);
+    } catch (e) {
+      return archiveErrorJson(res, e), true;
+    }
     if (!trace.ok) {
       // Not an error the UI must scream about — the trace simply may not exist
       // (claude engine, pre-migration session). Signal it distinctly.
@@ -282,7 +310,12 @@ async function handleWebRoute(req, url, res, secrets) {
     const sessionId = p.slice('/web/session/'.length);
     if (!sessionId || !/^[a-zA-Z0-9_-]+$/.test(sessionId)) return json(res, 400, { error: 'invalid session id' }), true;
 
-    const out = getSessionFor(username, sessionId);
+    let out;
+    try {
+      out = await getSessionFor(username, sessionId);
+    } catch (e) {
+      return archiveErrorJson(res, e), true;
+    }
     if (!out) return json(res, 404, { error: 'session not found' }), true;
     return json(res, 200, out), true;
   }
@@ -467,7 +500,11 @@ async function streamWebTask({ req, res, secrets, username, task, sessionId, new
   // МСК). Mint the file HERE, before the 'session' event goes out — as a `pending`
   // shell with no messages, so the runner still records the user turn itself.
   if (webExactSession) {
-    if (sessionId && !getSession(workDir, sessionId)) {
+    // Never mint over an ARCHIVED session (#1916 PR-C): `!getSession` is true
+    // for one when its body sits in GCS, and a pending shell here would overwrite
+    // it (and duplicate its index record). The runner's admission hook brings the
+    // real body back instead; only an id the index does not know either is new.
+    if (sessionId && !getSession(workDir, sessionId) && !getSessionRecord(workDir, sessionId)) {
       try {
         createSession(workDir, { task, id: sessionId, projectId: projectId || null, pending: true });
       } catch (e) {

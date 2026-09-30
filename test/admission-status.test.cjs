@@ -67,6 +67,11 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
     // variables, exactly like the runner's module-level imports.
     isProfileLocked: profileLock.isProfileLocked,
     waitForProfileUnlocked: profileLock.waitForProfileUnlocked,
+    // #1916 PR-C: the admission hook starts a session materialize right after the
+    // lock. This harness isolates admission, not the archive — a stub that always
+    // reports "nothing to bring back" keeps the slice's sync/await shape intact.
+    materializeRunSessions: async () => ({ materialized: [], checked: [] }),
+    archiveUserMessage: e => `⚠️ ${e && e.code}`,
     // Stop-trace gate (spec §2а): the harness exercises admission, not stopping.
     // Stubs keep the gate inert — no tombstone on disk, never blocks.
     traceIdFor: () => 'tg:stub',

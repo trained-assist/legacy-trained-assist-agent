@@ -75,12 +75,12 @@ test('kill mid-run: отданный клиенту id читается с ди�
   if (!ids.length) return; // id не выдавался — фантом невозможен (допустимый фикс)
 
   for (const id of ids) {
-    assert.ok(getSessionFor('web-canary', id),
+    assert.ok(await getSessionFor('web-canary', id),
       `id ${id} отдан клиенту (событие session), но /web/session-get ответит 404 — фантом`);
   }
   const after = simulateRestart(); // новый процесс: память пуста, только диск
   for (const id of ids) {
-    assert.ok(after.getSessionFor('web-canary', id),
+    assert.ok(await after.getSessionFor('web-canary', id),
       `id ${id} потерян после рестарта — ровно прод-инцидент 29.09 (session not found)`);
   }
 });
@@ -94,7 +94,7 @@ test('проглоченный admission (runTask → undefined, ничего н
 
   const after = simulateRestart();
   for (const id of ids) {
-    assert.ok(after.getSessionFor('web-canary', id),
+    assert.ok(await after.getSessionFor('web-canary', id),
       `id ${id} отдан клиенту, но после рестарта /web/reply-bearer даст «session not found»`);
   }
 });
@@ -112,6 +112,6 @@ test('контроль: успешный прогон — id из done чита�
   assert.ok(ids.length, 'успешный run обязан отдать клиенту session id');
   const after = simulateRestart();
   for (const id of ids) {
-    assert.ok(after.getSessionFor('web-canary', id), `успешный id ${id} не читается после рестарта`);
+    assert.ok(await after.getSessionFor('web-canary', id), `успешный id ${id} не читается после рестарта`);
   }
 });

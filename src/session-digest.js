@@ -30,7 +30,6 @@ const path = require('path');
 const crypto = require('crypto');
 const { userWorkDir } = require('./data-paths');
 const { atomicJson } = require('./atomic-json');
-const { getSession } = require('./session-store');
 const { readTrace } = require('./session-trace');
 
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]+$/;
@@ -525,7 +524,16 @@ function writeCache(fp, payload) {
 async function getDigestFor(username, sessionId, { llm } = {}) {
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) return { ok: false, error: 'invalid session id' };
   const workDir = userWorkDir(username);
-  const session = getSession(workDir, sessionId);
+  // #1916 PR-C: an archived session has no local body — bring it back IN MEMORY
+  // (the .digest.json cache itself is regenerable and never archived). An outage
+  // is reported honestly instead of a "session not found" that would look like a
+  // deleted dialog.
+  let session;
+  try {
+    session = await require('./session-materialize').readSessionMaybeArchived({ workDir, sessionId });
+  } catch (e) {
+    return { ok: false, error: `session archive unavailable: ${e.message}` };
+  }
   if (!session) return { ok: false, error: 'session not found' };
 
   const messages = Array.isArray(session.messages) ? session.messages : [];

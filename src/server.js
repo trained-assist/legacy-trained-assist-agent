@@ -28,7 +28,7 @@ const { runTask, generateConnectLink, getQuickAnswer, getPendingTasks, clearPend
 const { runMcpTool } = require('./mcp-action');
 const { isValidProjectId } = require('./valid-project-id');
 const { trackChat, pollDriveChanges } = require('./drive-watcher');
-const { listSessions, getSession: getSessionData, getCurrentSessionId, getEngineSessionId } = require('./session-store');
+const { listSessions, getCurrentSessionId, getEngineSessionId } = require('./session-store');
 const { startGetcourseLogin } = require('./getcourse-login');
 const { createHhNegotiations } = hhLib('hh-negotiations');
 
@@ -850,7 +850,9 @@ async function main() {
       let session = null;
       try {
         const sid = sessionId || getCurrentSessionId(workDir);
-        if (sid) session = await getSessionData(workDir, sid);
+        // #1916 PR-C: an archived session is served from GCS in memory; the whole
+        // block stays best-effort (a bug report must not fail on an archive outage).
+        if (sid) session = await require('./session-materialize').readSessionMaybeArchived({ workDir, sessionId: sid });
       } catch {}
 
       // Load recent sessions list

@@ -7,7 +7,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-test('getSessionFor serves sessions beyond the 50-entry recency index, opens non-default-audience sessions by id', () => {
+// getSessionFor is async since #1916 PR-C: an ARCHIVED session is served from
+// GCS in memory, so the reader can reject as well as return null.
+test('getSessionFor serves sessions beyond the 50-entry recency index, opens non-default-audience sessions by id', async () => {
   const oldHome = process.env.HOME;
   process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-session-'));
   for (const key of Object.keys(require.cache)) {
@@ -22,18 +24,18 @@ test('getSessionFor serves sessions beyond the 50-entry recency index, opens non
     sessions.createSession(workDir, { task: 'old dialog', id: 's-1-1000', chatId: 1 });
     for (let i = 0; i < 60; i++) sessions.createSession(workDir, { task: `newer ${i}`, id: `s-1-${2000 + i}`, chatId: 1 });
     assert.equal(sessions.listSessions(workDir, 100).some(s => s.id === 's-1-1000'), false, 'precondition: evicted from index');
-    const old = getSessionFor('alice', 's-1-1000');
+    const old = await getSessionFor('alice', 's-1-1000');
     assert.equal(old?.id, 's-1-1000');
     assert.equal(old.messages[0].content, 'old dialog');
     // Journal from a freelance/recruiter bot group chat (negative chat id) links to
     // that bot's session — it must open, not 404 (was "Failed to load session").
     sessions.createSession(workDir, { task: 'freelance group', id: 's-1003093394558-9000', chatId: -1003093394558, audience: 'freelance' });
-    const fl = getSessionFor('alice', 's-1003093394558-9000');
+    const fl = await getSessionFor('alice', 's-1003093394558-9000');
     assert.equal(fl?.id, 's-1003093394558-9000');
     assert.equal(fl.audience, 'freelance');
     assert.equal(fl.messages[0].content, 'freelance group');
     assert.equal(sessions.listSessions(workDir, 100).some(s => s.id === 's-1003093394558-9000'), false, 'list stays default-audience');
-    assert.equal(getSessionFor('alice', 's-missing'), null);
+    assert.equal(await getSessionFor('alice', 's-missing'), null);
   } finally { process.env.HOME = oldHome; }
 });
 

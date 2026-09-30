@@ -1,5 +1,11 @@
 const G = require('../src/gtd-controller.js');
 const os = require('os'), fs = require('fs'), path = require('path');
+// #1916 PR-C: тик читает archived-тела через blob-store. Фейковый bucket в
+// temp-каталоге — тест не должен трогать реальный GCS/ADC, а NODE_ENV=production
+// фейк намеренно запрещает (src/session-blob-store.js resolveFakeDir).
+process.env.NODE_ENV = 'test';
+process.env.GCS_FAKE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'gtd-gcs-'));
+process.on('exit', () => { try { fs.rmSync(process.env.GCS_FAKE_DIR, { recursive: true, force: true }); } catch {} });
 let pass = 0, fail = 0;
 function ok(c, m) { c ? (pass++) : (fail++, console.log('FAIL:', m)); }
 
@@ -66,6 +72,43 @@ function ok(c, m) { c ? (pass++) : (fail++, console.log('FAIL:', m)); }
   await G.runDue({secrets:{},baseUsersDir:wd3,now:200,isTaskRunning:()=>false,
     canRunSession:()=>false,getSession:()=>({ownerChatId:'42'}),runTask:async()=>{called=true;}});
   ok(!called && G.readGtd(userDir3,'s-1').iterations===0,'restart session hold blocks GTD without consuming an iteration');
+
+  // 6b. #1916 PR-C: между ранами тела сессии в GCS. Пропавший файл НЕ должен
+  //     читаться как «сессия умерла» — иначе тик молча отменяет свою же проверку.
+  //     Индекс (sessions.json) всегда локален и говорит: запись есть, тело в архиве.
+  const wdArch = fs.mkdtempSync(path.join(os.tmpdir(), 'gtd-arch-'));
+  const userDirArch = path.join(wdArch, 'u');
+  fs.mkdirSync(userDirArch, { recursive: true });
+  fs.writeFileSync(path.join(userDirArch, 'sessions.json'), JSON.stringify([
+    { id: 's-arch', topic: 'из архива', audience: 'default', archived: { key: 'profiles/u/sessions/s-arch.json.gz' } },
+  ]));
+  G.writeGtd(userDirArch, { ...rec, sessionId: 's-arch', dueAt: 100 });
+  let firedArchived = false;
+  await G.runDue({
+    secrets: {}, baseUsersDir: wdArch, now: 200,
+    isTaskRunning: () => false,
+    getSession: () => null, // тела нет — оно в GCS; индекс отвечает за «существует»
+    runTask: async () => { firedArchived = true; return 'проверил, всё в порядке. GTD: continue'; },
+  });
+  const archRec = G.readGtd(userDirArch, 's-arch');
+  ok(firedArchived, 'PR-C: archived-сессия НЕ отменяет свою же GTD-проверку (данные)');
+  ok(archRec && archRec.status === 'open', 'PR-C: запись осталась открытой');
+
+  // Контроль: файла нет И индекса нет ⇒ сессии действительно нет, чистим как раньше.
+  const wdGone = fs.mkdtempSync(path.join(os.tmpdir(), 'gtd-gone-'));
+  const userDirGone = path.join(wdGone, 'u');
+  fs.mkdirSync(userDirGone, { recursive: true });
+  G.writeGtd(userDirGone, { ...rec, sessionId: 's-gone', dueAt: 100 });
+  let firedGone = false;
+  await G.runDue({
+    secrets: {}, baseUsersDir: wdGone, now: 200,
+    isTaskRunning: () => false,
+    getSession: () => null,
+    runTask: async () => { firedGone = true; return 'x'; },
+  });
+  // clearGtd удаляет запись (unlink), а не закрывает — инвариант прежний.
+  ok(!firedGone && G.readGtd(userDirGone, 's-gone') === null,
+    'PR-C: действительно несуществующая сессия по-прежнему чистится');
 
   // 7. checklist.md: readChecklist parses goal + items, checklistSummary lists unchecked
   const projDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gtd-proj-'));
