@@ -171,6 +171,7 @@ function fmtBytes(n) {
 
 function printProfile(r, opts) {
   const head = [`${r.phase}/${r.mode} ${r.profile}:`];
+  const filtered = r.filtered ? `  filtered ${r.filtered} (phase declined)` : '';
   if (r.mode === 'dry-run' || r.mode === 'apply') {
     head.push(`planned ${r.planned} file(s) ${fmtBytes(r.plannedBytes)}`);
     if (r.mode === 'apply') head.push(`applied ${r.applied} failed ${r.failed} pruned ${r.prunedDirs} dir(s)`);
@@ -178,13 +179,14 @@ function printProfile(r, opts) {
     if (r.specialSkipped) head.push(`non-regular skipped ${r.specialSkipped}`);
   } else if (r.mode === 'verify' && r.verify) {
     head.push(`ok ${r.verify.ok} recreated ${r.verify.recreated} pending ${r.verify.pendingCount} failures ${r.verify.failures.length}`);
+    if (r.verify.pendingArchived && r.verify.pendingArchived.length) head.push(`both-copies ${r.verify.pendingArchived.length}`);
     if (r.verify.skippedLines) head.push(`torn lines skipped ${r.verify.skippedLines}`);
   } else if (r.mode === 'revert' && r.revert) {
     head.push(`restored ${r.revert.restored} already ${r.revert.already} skipped ${r.revert.skipped} failures ${r.revert.failures.length}`);
   }
   if (r.lock) head.push(r.lock.refused ? 'LOCK REFUSED' : 'locked');
   if (r.flush) head.push(r.flush.skipped ? 'flush: no server' : r.flush.ok ? `flushed ${r.flush.flushed}` : 'flush FAILED');
-  process.stdout.write(`${head.join('  ')}\n`);
+  process.stdout.write(`${head.join('  ')}${filtered}\n`);
 
   const limit = 10;
   if (r.credentials) {
@@ -202,9 +204,15 @@ function printProfile(r, opts) {
     const failed = r.items.filter(i => i.status === 'failed');
     for (const it of failed.slice(0, limit)) process.stdout.write(`  FAILED ${it.path}: ${it.error}\n`);
     if (failed.length > limit) process.stdout.write(`  … ${failed.length - limit} more failures\n`);
-    if (r.applied) process.stdout.write(`  ledger ${r.ledgerFile}\n  quarantine ${r.quarantineRoot}\n`);
+    if (r.applied) {
+      process.stdout.write(`  ledger ${r.ledgerFile}\n`);
+      if (r.quarantineRoot) process.stdout.write(`  quarantine ${r.quarantineRoot}\n`);
+    }
   } else if (r.mode === 'verify' && r.verify) {
     for (const f of r.verify.failures.slice(0, limit)) process.stdout.write(`  FAIL ${f.path} [${f.state}/${f.status}]: ${f.message}\n`);
+    for (const p of (r.verify.pendingArchived || []).slice(0, limit)) {
+      process.stdout.write(`  BOTH-COPIES ${p.path}: ${p.message}\n`);
+    }
     if (r.verify.pendingCount) {
       process.stdout.write(`  pending ${r.verify.pendingCount} planned file(s) with no ledger record (first ${Math.min(limit, r.verify.pending.length)}):\n`);
       for (const p of r.verify.pending.slice(0, limit)) process.stdout.write(`    ${p.path}\n`);
