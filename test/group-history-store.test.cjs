@@ -10,7 +10,9 @@ const path = require('node:path');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'group-hist-'));
 process.env.USERS_DIR = root;
 const store = require('../src/group-history-store.js');
-const tool = require('../src/mcp-skills/tools/02-chat-history.js').tools.get_group_history;
+const chatTools = require('../src/mcp-skills/tools/02-chat-history.js');
+const tool = chatTools.tools.get_group_history;
+const fileTool = chatTools.tools.get_group_file;
 
 const NOW = Date.now();
 const CHAT = -100500;
@@ -57,4 +59,37 @@ test('get_group_history returns the current chat/topic, filters by since_hours',
   process.env.AGENT_SESSION_FILE = sessionFile(555, null);
   r = await tool.handler({});
   assert.strictEqual(r.total, 0);
+});
+
+test('ambient file handle is kept and get_group_file downloads it with the run bot token', async () => {
+  const doc = { ...e(5095, 4, '[файл pool.xlsx] пул'), file: { kind: 'document', fileId: 'BQAC-1', name: 'pool.xlsx', mime: 'application/xlsx', size: 5 } };
+  store.appendGroupHistory('u3', CHAT, 4668, [e(5087, 1, '[файл old.xlsx] старый'), doc], NOW);
+  process.env.AGENT_USER_ID = 'u3';
+  process.env.AGENT_SESSION_FILE = sessionFile(CHAT, 4668);
+
+  const listed = await tool.handler({});
+  const m = listed.messages.find(x => x.message_id === 5095);
+  assert.strictEqual(m.file.download, 'get_group_file(message_id=5095)');
+
+  // Old entry (recorded before handles were kept) → clear «re-send» answer, not a crash.
+  const old = await fileTool.handler({ message_id: 5087 });
+  assert.match(old.error, /no downloadable file handle/);
+
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes('/getFile')) return { json: async () => ({ ok: true, result: { file_path: 'documents/file_1.xlsx' } }) };
+    return { ok: true, arrayBuffer: async () => Buffer.from('hello') };
+  };
+  const out = await chatTools._test.downloadTelegramFile({ username: 'u3', file: doc.file, token: 'freelance-bot', fetchImpl });
+  assert.ok(out.ok, JSON.stringify(out));
+  assert.strictEqual(fs.readFileSync(out.file_path, 'utf8'), 'hello');
+  assert.ok(out.file_path.startsWith(path.join(root, 'u3', 'media', 'intake') + path.sep));
+  assert.ok(calls[0].includes('/botfreelance-bot/getFile?file_id=BQAC-1'));
+  assert.ok(calls[1].endsWith('/file/botfreelance-bot/documents/file_1.xlsx'));
+
+  const big = await chatTools._test.downloadTelegramFile({ username: 'u3', file: { ...doc.file, size: 30 * 1048576 }, token: 't', fetchImpl });
+  assert.match(big.error, /20 МБ/);
+  const noTok = await chatTools._test.downloadTelegramFile({ username: 'u3', file: doc.file, token: '', fetchImpl });
+  assert.match(noTok.error, /AGENT_BOT_TOKEN/);
 });

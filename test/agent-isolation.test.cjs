@@ -94,6 +94,20 @@ test('bridged MCP config on disk carries no server env; real specs stay in memor
   }
 });
 
+test('MCP tools get the bot token of the run audience, not the classic bot', () => {
+  const workDir = fs.mkdtempSync(path.join(tmpRoot, 'aud-'));
+  const secrets = require('../src/secrets');
+  secrets.setLoadedSecrets({ BOT_TOKEN: 'classic-bot' });
+  try {
+    const { servers } = writeRunMcpConfig(workDir, 'alice', { botToken: 'freelance-bot' }, { bridged: true });
+    assert.equal(servers['trained-skills'].env.AGENT_BOT_TOKEN, 'freelance-bot');
+    const dflt = writeRunMcpConfig(workDir, 'alice', {}, { bridged: true });
+    assert.equal(dflt.servers['trained-skills'].env.AGENT_BOT_TOKEN, 'classic-bot');
+  } finally {
+    secrets.setLoadedSecrets(null);
+  }
+});
+
 test('engineering workspaces + mirrors are inside the profile, handed to MCP by env', () => {
   const workDir = fs.mkdtempSync(path.join(tmpRoot, 'eng-'));
   const { buildMcpConfig } = require('../src/browser');
