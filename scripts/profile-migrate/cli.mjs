@@ -222,6 +222,13 @@ function printProfile(r, opts) {
     if (r.revert.failures.length > limit) process.stdout.write(`  … ${r.revert.failures.length - limit} more failures\n`);
   }
 
+  // EXCLUDE (#1923): counted in classSummary (r.stats) but planned by no phase —
+  // spelled out so a dry-run/apply report cannot be read as "nothing secret here".
+  const excluded = r.stats && r.stats.EXCLUDE;
+  if (excluded && (excluded.files || excluded.bytes)) {
+    process.stdout.write(`  EXCLUDE ${excluded.files} secret file(s) ${fmtBytes(excluded.bytes)} — local only, never in the git image\n`);
+  }
+
   for (const e of r.errors) process.stderr.write(`  error [${r.profile}]: ${e}\n`);
 }
 

@@ -8,9 +8,11 @@
 # classifier.cjs, no YAML library dependency):
 #
 #   version: <int>                    schema version, bumped on incompatible change
+#                                     (v2 = the EXCLUDE action exists, #1923 — a v1
+#                                      classifier rejects this file, fail-loud)
 #   rules:
 #     - pattern: <glob>               relative to the profile root
-#       action: DELETE|ARCHIVE|MOVE|DEDUP|SYSTEM|KEEP
+#       action: DELETE|ARCHIVE|MOVE|DEDUP|SYSTEM|KEEP|EXCLUDE
 #       reason: "<why>"               required, human-readable
 #       when: git-repo                optional precondition (see below)
 #
@@ -25,7 +27,11 @@
 #   * when: git-repo → the rule only applies while inside a working copy
 #     (a directory, at any depth, that contains .git — file or dir).
 #   * FIRST matching rule in file order wins; no match → UNKNOWN.
-#     Put specific rules above general ones.
+#     Put specific rules above general ones. The EXCLUDE (secrets) block is
+#     therefore placed ABOVE every action that takes a file somewhere
+#     (SYSTEM/ARCHIVE/MOVE/KEEP and the `when: git-repo` worktree rule) and
+#     BELOW the DELETE block, so a regenerable subtree (node_modules, caches)
+#     keeps its DELETE semantics for everything inside it.
 #
 # Actions follow the M1 table of epic #1784:
 #   DELETE  regenerable (caches, node_modules, logs, html scrape caches)
@@ -35,6 +41,11 @@
 #           no path rule uses it yet; duplicates are detected by hashing (M5)
 #   SYSTEM  telemetry / durable engine state → system store, not the profile
 #   KEEP    the profile's text image (md/txt/csv/json, persona, contexts, playbooks)
+#   EXCLUDE secrets (#1923, blocker B1 of #1808): the file stays on disk — is
+#           never deleted, archived or moved — but never enters the git image.
+#           Not a phase: no phase declares it, so the runner plans nothing for
+#           it; it is reported as its own class, and M6's .gitignore generator
+#           (scripts/profile-migrate/gitignore.cjs) writes it as an ignore rule.
 #   UNKNOWN everything else — NEVER deleted, only reported (epic principle 2)
 #
 # Provenance is marked per rule: "[M1]" = the epic's table verbatim;
@@ -42,7 +53,9 @@
 # same table category. Anything needing a human judgement call stays UNKNOWN
 # on purpose — grow this list from the report's top-unclassified patterns.
 
-version: 1
+# v2: the EXCLUDE action exists (#1923) — a v1 classifier rejects this file
+# (fail-loud: "action" must be one of DELETE|…|KEEP), so the version bumps.
+version: 2
 
 rules:
   # ── DELETE: regenerable ──────────────────────────────────────────────────
@@ -133,8 +146,10 @@ rules:
   # Chrome user-data-dir caches (~380 MB across 3 profiles, observed 2026-09-28):
   # downloaded model/cert/TTS/hyphenation data and page caches — regenerable.
   # Deliberately NOT covered: `chrome/` itself and `chrome/Default` (Cookies,
-  # Login Data, Account Web Data, Local State) — credential stores stay UNKNOWN
-  # for the C1–C4 token extraction, per epic precondition.
+  # Login Data, Account Web Data, Local State). The cookie DB is EXCLUDE below
+  # (#1923); the password/encryption stores stay UNKNOWN for the C1–C4 token
+  # extraction, per epic precondition — they are not in the KEEP whitelist, so
+  # they never enter the git image either.
   - pattern: chrome/component_crx_cache
     action: DELETE
     reason: "[observed] Chrome extension download cache — regenerable"
@@ -182,6 +197,65 @@ rules:
   - pattern: claude-in-chrome
     action: DELETE
     reason: "[observed] Claude-in-Chrome extension assets — re-downloaded by the extension"
+
+  # ── EXCLUDE: secrets — local only, never in the git image (#1923, B1/#1808) ──
+  # Blocker B1: these files are REWRITTEN inside the profile on every run, and
+  # `*.json → KEEP` below used to put the very first git-push of a profile in
+  # the remote. Here, above SYSTEM/ARCHIVE/MOVE/KEEP and above the
+  # `when: git-repo` worktree rule, so a secret always wins — even the copy
+  # sitting inside a git working copy. Below DELETE on purpose: regenerable
+  # subtrees (node_modules, caches) keep their DELETE semantics.
+  # Concrete paths first, then the generic names (first-match-wins).
+  # Kept on disk: never deleted, never archived, never moved — only absent from
+  # the git image (M6 generator: scripts/profile-migrate/gitignore.cjs).
+
+  - pattern: playwright-storage-state.json
+    action: EXCLUDE
+    reason: "[B1] Playwright storage state — cookies + bearer tokens, rewritten by src/browser.js on every run (86/94 profiles, scan 2026-09-28)"
+
+  - pattern: storage-state.json
+    action: EXCLUDE
+    reason: "[B1] per-site cookie jar (src/user-sites.js saveStorageState, sites/<slug>/storage-state.json)"
+
+  - pattern: creds.json
+    action: EXCLUDE
+    reason: "[B1] per-site credentials (src/user-sites.js saveSiteCreds, sites/<slug>/creds.json)"
+
+  - pattern: .agent-home/**/auth.json
+    action: EXCLUDE
+    reason: "[B1] staged engine auth (src/agent-isolation.js engineStagePlan: .codex + opencode auth.json, syncBack)"
+
+  - pattern: auth.json
+    action: EXCLUDE
+    reason: "[B1] engine OAuth credentials at any depth (incl. legacy .local/share/opencode/auth.json)"
+
+  - pattern: .mcp.json
+    action: EXCLUDE
+    reason: "[B1] MCP config — plaintext AGENT_SECRET in 10/22 profiles (scan 2026-09-28), rewritten by src/browser.js"
+
+  - pattern: .webpasswd
+    action: EXCLUDE
+    reason: "[B1] web UI password (src/web-auth.js PASSWD_FILE)"
+
+  - pattern: "*-creds"
+    action: EXCLUDE
+    reason: "[B1] ZeroCreds credential files (src/user-tokens.js SERVICE_FORM_SCHEMA)"
+
+  - pattern: .cookies
+    action: EXCLUDE
+    reason: "[observed] cookie jar (gc_export/.cookies)"
+
+  - pattern: cookies.json
+    action: EXCLUDE
+    reason: "[observed] cookie jar"
+
+  - pattern: cookies.txt
+    action: EXCLUDE
+    reason: "[observed] Netscape-format cookie jar"
+
+  - pattern: Cookies
+    action: EXCLUDE
+    reason: "[observed] Chrome cookie DB (chrome/Default/Cookies, 3 profiles) — session cookies, local only"
 
   # ── SYSTEM: telemetry / durable engine state → system store ─────────────
   - pattern: usage.json
