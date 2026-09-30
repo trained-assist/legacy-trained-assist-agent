@@ -32,9 +32,10 @@
 //   6. prune the DELETE-class directories the phase emptied — an UNKNOWN
 //      ancestor, even when empty, is never removed.
 //
-// Phases are small self-registering modules (see phases/index.cjs). The first
-// concrete one is `delete` (M1 clean-list DELETE actions); ARCHIVE/MOVE/DEDUP
-// wire in later PRs by dropping a module into phases/.
+// Phases are small self-registering modules (see phases/index.cjs): `delete`
+// (M1 DELETE actions), `archive-sessions` (M2 ARCHIVE → GCS blob store). MOVE /
+// DEDUP wire in later PRs by dropping a module into phases/. All four phase
+// functions may be async — the runner awaits them (an archive is a blob upload).
 //
 // Exit-code mapping lives in cli.mjs: 0 ok · 1 usage · 2 operational failure ·
 // 3 lock refused.
@@ -80,21 +81,36 @@ function pushError(result, msg) {
 // ── planning ─────────────────────────────────────────────────────────────────
 // One walk of the profile through classifier.cjs itself (opts.onEntry): the
 // plan IS the classification, there is no second glob implementation to drift.
-function scanProfile(profileRoot, rules, actions) {
+//
+// `filter(entry)` is the phase's own item selector (phases/index.cjs): the
+// clean-list class alone is not the plan — ARCHIVE is inherited by a whole
+// subtree (pointers, digest caches, git working copies) that the phase must
+// decline itself. Declined entries are counted in `filtered`, never planned.
+//
+// Only DELETE-class directories are prune candidates: the contract (index.cjs)
+// is "prune the DELETE-class directories the phase emptied". An ARCHIVE/MOVE
+// directory survives even when emptied — `sessions/` holds the current-session
+// pointers, a git working copy is M3's to touch.
+function scanProfile(profileRoot, rules, actions, filter = null) {
   const items = [];
   const dirs = new Set();
   const special = [];
+  let filtered = 0;
   const stats = classifier.classifyProfile(profileRoot, {
     rules,
     onEntry(e) {
       if (e.kind === 'dir') {
-        if (actions.includes(e.action)) dirs.add(e.rel);
+        if (e.action === 'DELETE') dirs.add(e.rel);
         return;
       }
       if (!actions.includes(e.action)) return;
       // fifo/socket/device: counted by the classifier, never hashable → report only.
       if (!e.isFile && !e.isSymlink) {
         special.push({ path: e.rel, action: e.action, size: e.size });
+        return;
+      }
+      if (filter && !filter(e)) {
+        filtered++;
         return;
       }
       items.push({
@@ -108,7 +124,12 @@ function scanProfile(profileRoot, rules, actions) {
     },
   });
   items.sort((a, b) => a.path.localeCompare(b.path));
-  return { items, dirs, special, stats };
+  return { items, dirs, special, filtered, stats };
+}
+
+// The phase's item selector bound to its ctx, or null when it has none.
+function phaseFilter(phaseObj, ctx) {
+  return typeof phaseObj.filter === 'function' ? (e) => phaseObj.filter(ctx, e) : null;
 }
 
 function classSummary(stats) {
@@ -275,7 +296,9 @@ async function runPhase(o) {
     ok: false,
     root: path.join(o.usersRoot, profile),
     ledgerFile: ledger.ledgerPath(profile),
-    quarantineRoot: quarantine.quarantineRoot(profile),
+    // null for a phase that never touches quarantine (archive-sessions) — the
+    // report must not print a directory nothing wrote to.
+    quarantineRoot: phaseObj.usesQuarantine === false ? null : quarantine.quarantineRoot(profile),
     lock: null,
     flush: null,
     drain: null,
@@ -283,6 +306,7 @@ async function runPhase(o) {
     unknown: null,
     planned: 0,
     plannedBytes: 0,
+    filtered: 0,
     applied: 0,
     appliedBytes: 0,
     failed: 0,
@@ -302,7 +326,7 @@ async function runPhase(o) {
     return result;
   }
 
-  const ctx = { profile, profileRoot, quarantineRoot: result.quarantineRoot, rules: o.rules, mode, log };
+  const ctx = { profile, profileRoot, quarantineRoot: quarantine.quarantineRoot(profile), rules: o.rules, mode, log };
 
   if (phaseObj.inventory && (mode === 'dry-run' || mode === 'verify')) {
     doInventory(ctx, result, o);
@@ -315,7 +339,7 @@ async function runPhase(o) {
     return result;
   }
   if (mode === 'verify') {
-    doVerify(ctx, result, o);
+    await doVerify(ctx, result, o);
     result.ok = result.errorCount === 0;
     return result;
   }
@@ -371,6 +395,7 @@ function applyScanFields(result, scan) {
   result.unknown = result.stats.UNKNOWN || { files: 0, bytes: 0, pctBytes: 0 };
   result.scanErrors = scan.stats.errors.length;
   result.specialSkipped = scan.special.length;
+  result.filtered = scan.filtered || 0;
   result.planned = scan.items.length;
   result.plannedBytes = scan.items.reduce((s, i) => s + i.size, 0);
   if (scan.stats.errors.length) {
@@ -379,7 +404,7 @@ function applyScanFields(result, scan) {
 }
 
 function doDryRun(ctx, result, o) {
-  const scan = scanProfile(ctx.profileRoot, o.rules, o.phaseObj.actions);
+  const scan = scanProfile(ctx.profileRoot, o.rules, o.phaseObj.actions, phaseFilter(o.phaseObj, ctx));
   applyScanFields(result, scan);
   result.items = scan.items;
 }
@@ -387,7 +412,7 @@ function doDryRun(ctx, result, o) {
 async function doApply(ctx, result, o, renewFn) {
   const phaseObj = o.phaseObj;
   const { log = defaultLog } = o;
-  const scan = scanProfile(ctx.profileRoot, o.rules, phaseObj.actions);
+  const scan = scanProfile(ctx.profileRoot, o.rules, phaseObj.actions, phaseFilter(phaseObj, ctx));
   applyScanFields(result, scan);
   result.items = scan.items.map(i => ({ path: i.path, size: i.size, status: 'planned', reason: i.reason }));
   if (!scan.items.length) {
@@ -396,8 +421,12 @@ async function doApply(ctx, result, o, renewFn) {
   }
 
   // Fail fast on an unwritable quarantine root BEFORE the first record: a
-  // record for an action we cannot perform is noise for verify.
-  fs.mkdirSync(ctx.quarantineRoot, { recursive: true, mode: 0o700 });
+  // record for an action we cannot perform is noise for verify. Phases that do
+  // not use quarantine (archive-sessions: blobs, not quarantine) opt out — an
+  // empty quarantine dir for every archive run is litter.
+  if (phaseObj.usesQuarantine !== false) {
+    fs.mkdirSync(ctx.quarantineRoot, { recursive: true, mode: 0o700 });
+  }
 
   let consecutive = 0;
   let lastRenew = Date.now();
@@ -410,7 +439,8 @@ async function doApply(ctx, result, o, renewFn) {
     let prepared = null;
     let recorded = false;
     try {
-      prepared = phaseObj.prepare(ctx, item);
+      // prepare/apply may be async (a blob upload is), the runner always awaits.
+      prepared = await phaseObj.prepare(ctx, item);
       ledger.appendRecord(ctx.profile, ledger.makeRecord({
         phase: phaseObj.name,
         profile: ctx.profile,
@@ -421,7 +451,7 @@ async function doApply(ctx, result, o, renewFn) {
         dest: prepared.dest,
       }));
       recorded = true;
-      phaseObj.apply(ctx, item, prepared);
+      await phaseObj.apply(ctx, item, prepared);
       result.applied++;
       result.appliedBytes += prepared.size;
       result.items[i] = { path: item.path, size: prepared.size, sha256: prepared.sha256, dest: prepared.dest, status: 'applied' };
@@ -474,7 +504,7 @@ async function doRevert(ctx, result, o, renewFn) {
       try { await renewFn(); lastRenew = Date.now(); } catch (e) { pushError(result, `lock renew: ${e.message}`); return; }
     }
     let r;
-    try { r = phaseObj.revert(ctx, st); } catch (e) { r = { status: 'error', reason: e.message }; }
+    try { r = await phaseObj.revert(ctx, st); } catch (e) { r = { status: 'error', reason: e.message }; }
     if (r.status === 'restored' || r.status === 'already') {
       try {
         ledger.appendRecord(ctx.profile, ledger.makeRecord({
@@ -503,12 +533,12 @@ async function doRevert(ctx, result, o, renewFn) {
   log(`revert ${ctx.profile}: ${rev.restored} restored, ${rev.already} already in place, ${rev.skipped} skipped, ${rev.failures.length} failed`);
 }
 
-function doVerify(ctx, result, o) {
+async function doVerify(ctx, result, o) {
   const phaseObj = o.phaseObj;
   const { log = defaultLog } = o;
   const { records, skipped, missing } = ledger.readLedger(ctx.profile);
   const folded = foldPhaseRecords(records, phaseObj.name);
-  const scan = scanProfile(ctx.profileRoot, o.rules, phaseObj.actions);
+  const scan = scanProfile(ctx.profileRoot, o.rules, phaseObj.actions, phaseFilter(phaseObj, ctx));
   applyScanFields(result, scan);
 
   const v = {
@@ -518,6 +548,10 @@ function doVerify(ctx, result, o) {
     ok: 0,
     recreated: 0,
     failures: [],
+    // ARCHIVE records whose remote copy checks out but whose local copy has not
+    // been removed yet (crash between marker and unlink) — the post-run sweep
+    // (PR-D) finishes those, so they are reported, never failed.
+    pendingArchived: [],
     pendingCount: 0,
     pending: [],
   };
@@ -525,9 +559,10 @@ function doVerify(ctx, result, o) {
   for (const st of folded) {
     seen.add(st.path);
     let r;
-    try { r = phaseObj.verify(ctx, st); } catch (e) { r = { status: 'error', message: e.message }; }
+    try { r = await phaseObj.verify(ctx, st); } catch (e) { r = { status: 'error', message: e.message }; }
     if (r.status === 'ok') v.ok++;
     else if (r.status === 'recreated') v.recreated++;
+    else if (r.status === 'pending') v.pendingArchived.push({ path: st.path, message: r.message || '' });
     else v.failures.push({ path: st.path, state: st.state, status: r.status, message: r.message || '' });
   }
   // Planned right now but never recorded for this phase: files that appeared
@@ -539,7 +574,7 @@ function doVerify(ctx, result, o) {
   result.verify = v;
 
   if (v.failures.length) pushError(result, `${v.failures.length} verification failure(s) for phase "${phaseObj.name}"`);
-  log(`verify ${ctx.profile}: ok=${v.ok} recreated=${v.recreated} pending=${v.pendingCount} failures=${v.failures.length}${skipped ? ` torn-lines=${skipped}` : ''}`);
+  log(`verify ${ctx.profile}: ok=${v.ok} recreated=${v.recreated} archive-pending=${v.pendingArchived.length} pending=${v.pendingCount} failures=${v.failures.length}${skipped ? ` torn-lines=${skipped}` : ''}`);
 }
 
 // Inventory phases (phases/index.cjs): scan → report; apply = ledger the scan
