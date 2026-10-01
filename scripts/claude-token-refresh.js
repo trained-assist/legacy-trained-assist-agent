@@ -26,7 +26,14 @@
  *   node claude-token-refresh.js            # refresh iff within margin, else no-op
  *   node claude-token-refresh.js --force    # refresh now regardless of margin
  *   node claude-token-refresh.js --dry-run  # report state; no network, no write
+ *   node claude-token-refresh.js --resume   # lift a circuit-breaker suspension and try again
  *   node claude-token-refresh.js --margin=10800   # seconds (default 10800 = 3h)
+ *
+ * CIRCUIT BREAKER
+ *   A credential rejected outright (invalid_grant / account_on_hold / revoked) suspends the
+ *   engine instead of being retried: a timer cannot install a new authorization, so the broker
+ *   stops calling the provider and exits 0 until the credentials file is replaced or --resume
+ *   is passed. Transient failures (timeout, 5xx) are NOT suspended and keep retrying.
  *
  * SAFETY
  *   - A failed refresh (bad endpoint / 4xx) does NOT rotate the token server-side
@@ -44,7 +51,7 @@ const crypto = require('crypto');
 // so it owns the long-lived «Claude недоступен» flag the runner's admission gate reads
 // (src/auth-flag.js → authGate). Set it on an auth-class refresh failure, clear it on the next
 // successful refresh = «до следующей авторизации».
-const { setAuthFailedFlag, clearAuthFailedFlag, getAuthFlag } = require('../src/auth-flag');
+const { setAuthFailedFlag, clearAuthFailedFlag, getAuthFlag, suspendAuthFailedFlag, resumeAuthFailedFlag } = require('../src/auth-flag');
 
 // Claude Code public OAuth client id + token endpoint (same values the CLI uses).
 const CLIENT_ID = process.env.CLAUDE_OAUTH_CLIENT_ID || '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
@@ -58,6 +65,7 @@ const BACKUP_DIR = path.join(path.dirname(CRED_PATH), 'credentials-backups');
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const FORCE = args.includes('--force');
+const RESUME = args.includes('--resume');
 const marginArg = args.find((a) => a.startsWith('--margin='));
 const MARGIN_SEC = marginArg ? Number(marginArg.split('=')[1]) : Number(process.env.CLAUDE_REFRESH_MARGIN_SEC) || 10800; // 3h
 
@@ -166,6 +174,50 @@ function raiseAuthFlag(msg) {
   }
 }
 
+// ── Circuit breaker ──────────────────────────────────────────────────────────
+// Live 2026-10-01: this broker runs from cron every 30 minutes, and every one of those runs hit
+// Anthropic's token endpoint and got `invalid_grant / account_on_hold` back — the account needs a
+// NEW authorization, and retrying on a timer cannot fix that. The symptom the owner reported was
+// «опять вызывается Клод, хотя мы отключали»: from the outside every 30 minutes the system still
+// asked Claude for authorization, and each refusal re-armed the flag (failed_at 22:00:01Z,
+// 22:30:01Z) so the runner kept announcing «Авторизация Claude недоступна».
+//
+// The fix is to stop asking. A hard credential rejection SUSPENDS the engine: this broker makes
+// no network call at all until someone installs authorization again (a newer credentials file),
+// or an operator says so explicitly with --resume. A transient failure (timeout, 5xx) keeps using
+// the plain flag and keeps retrying — the breaker is only for «no new authorization will fix this».
+function isSuspended() {
+  try { return !!getAuthFlag('claude').suspended; } catch { return false; }
+}
+
+function suspendedAt() {
+  try {
+    const at = Date.parse((getAuthFlag('claude').suspended_at || '') || '');
+    return Number.isFinite(at) ? at : 0;
+  } catch { return 0; }
+}
+
+// Authorization reinstalled = the credentials file became newer than the suspension. Covers the
+// normal operator flow (run /login, Mac extension pushes a fresh pair) without a manual flag edit.
+function credentialsReinstalledSince() {
+  const at = suspendedAt();
+  if (!at) return false;
+  try { return fs.statSync(CRED_PATH).mtimeMs > at; } catch { return false; }
+}
+
+function suspendOnHardRejection(msg) {
+  try {
+    const wasSuspended = isSuspended();
+    suspendAuthFailedFlag({ reason: 'AUTH_INVALID', error_text: msg, engine: 'claude' });
+    if (!wasSuspended) {
+      log('SUSPENDED — the credential was rejected outright (no new authorization can fix this by retrying).');
+      log('No further attempts until authorization is installed again (newer credentials file) or --resume is passed.');
+    }
+  } catch (e) {
+    log('suspension write failed:', e.message);
+  }
+}
+
 // «Следующая авторизация»: a successful refresh is exactly the event the flag waits for.
 function lowerAuthFlag() {
   try { clearAuthFailedFlag('claude'); } catch (e) { log('auth flag clear failed:', e.message); }
@@ -173,6 +225,19 @@ function lowerAuthFlag() {
 
 async function main() {
   if (!fs.existsSync(CRED_PATH)) { log('no credentials file at', CRED_PATH, '- nothing to do'); return; }
+
+  // Circuit breaker, before ANY network call and before the credentials are even read.
+  // --resume is the operator's explicit answer to a suspension («authorization reinstalled»);
+  // a credentials file newer than the suspension is the same answer, delivered by the re-login
+  // itself. Everything else: quiet exit 0 — a cron job that reports success and does nothing is
+  // the honest signal that the system is deliberately idle, not broken.
+  if (RESUME) {
+    if (isSuspended()) { resumeAuthFailedFlag('claude'); log('--resume: suspension lifted, attempting refresh'); }
+  } else if (isSuspended() && !credentialsReinstalledSince()) {
+    log('SUSPENDED — authorization was rejected outright and has not been reinstalled since. ' +
+        'No network call (install authorization, or run with --resume).');
+    return;
+  }
 
   const raw = fs.readFileSync(CRED_PATH, 'utf8');
   const creds = JSON.parse(raw);
@@ -225,6 +290,14 @@ async function main() {
 
 main().catch((e) => {
   console.error(`[claude-token-refresh ${new Date().toISOString()}] ERROR:`, e.message);
-  raiseAuthFlag(e.message);
-  process.exitCode = 1;
+  // A hard credential rejection suspends (stop asking — see suspendOnHardRejection); everything
+  // transient keeps the plain flag and the retry cadence. Exit 0 for the suspended case: cron must
+  // not report a failure for a state the operator already knows about and already answered.
+  if (AUTH_REFRESH_FAILURE.test(e.message)) {
+    suspendOnHardRejection(e.message);
+    process.exitCode = 0;
+  } else {
+    raiseAuthFlag(e.message);
+    process.exitCode = 1;
+  }
 });

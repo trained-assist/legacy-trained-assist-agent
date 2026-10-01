@@ -316,6 +316,19 @@ function profileCommandsAnswer(task, { userId, workDir, chatId = null, audience 
   if (engineSwitchM && workDir) {
     const raw = (engineSwitchM[1] || engineSwitchM[2] || '').toLowerCase();
     const engine = /^(codex|кодекс)$/.test(raw) ? 'codex' : raw === 'opencode' ? 'opencode' : 'claude';
+    // /switch2klod while Claude may not run would store a preference that every task silently
+    // overrides — «переключил на Claude» followed by an answer from another engine. Same admission
+    // rule as the runner, answered here where the user is actually looking.
+    if (engine === 'claude') {
+      const { claudeAdmission } = require('../../engine-admission');
+      const why = claudeAdmission();
+      if (why.blocked) {
+        const reason = why.reason === 'suspended' || why.reason === 'owner_switch_off'
+          ? 'авторизация Claude не установлена (пока её не установили — Claude не вызывается)'
+          : 'авторизация Claude сейчас не работает';
+        return `⛔ Не переключаю на Claude Code: ${reason}. Работаю на ${profiles.getEngine(workDir, chatId) === 'codex' ? 'Codex CLI' : 'OpenCode'} — задачи выполняются как обычно.`;
+      }
+    }
     profiles.setEngine(workDir, engine, chatId);
     const label = engine === 'codex' ? 'Codex CLI' : engine === 'opencode' ? 'OpenCode' : 'Claude Code';
     return `🔀 Для этого чата переключил движок на ${label}.\nСледующая задача в этом чате пойдёт через него (текущая, если выполняется, — доработает на старом).`;
