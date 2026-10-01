@@ -312,10 +312,21 @@ module.exports = {
         '`until` — validator keys, e.g. {"ci_green": "<PR url>"}, {"merged": "<PR url>"}, ' +
         '{"http_ok": {"url": "https://host/health", "contains": "<sha>"}}, {"credential_present": "github"}, ' +
         '{"command_exit_zero": "journalctl -u svc --since -30min | grep -q \'ERR_X\'"}, {"task_done": "<task id>"}, ' +
-        '{"file_exists": "path"}; `awaiting_user: true` — you asked the user something (send the question ' +
+        '{"file_exists": "path"}; ' +
+        '`awaiting_user: true` — you asked the user something (send the question ' +
         'yourself first); `sleep_sec` — a plain timer (observe for a day, then re-check). ' +
         'For CI or a merge pass `until:{ci_green}` / `{merged}` instead of `sleep_sec` — the wait tick ' +
         're-checks conditions every ~30s, so a sleep would overshoot the event. ' +
+        // #1846: event subjects — the GitHub webhook wakes these in seconds (a push),
+        // while the validator still gives the verdict on the poll. Subject forms:
+        // issue/PR "owner/repo#N", run "owner/repo/actions/runs/<id>",
+        // job "owner/repo/actions/runs/<id>/jobs/<jobId>".
+        'EVENT subjects (a GitHub webhook wakes the step in seconds, the validator still decides): ' +
+        '{"issue_pr_merged": "owner/repo#N"} — PR merged; ' +
+        '{"issue_pr_ci_green": "owner/repo#N"} — CI green on the PR head; ' +
+        '{"workflow_run_completed": "owner/repo/actions/runs/<id>"} — an Actions run finished; ' +
+        '{"workflow_run_green": "owner/repo/actions/runs/<id>"} — that run finished green; ' +
+        '{"workflow_job_completed": "owner/repo/actions/runs/<id>/jobs/<jobId>"} — a single job finished. ' +
         'You set poll_every_sec, timeout_sec and sleep_sec yourself — pick them for what you are waiting on. ' +
         'Waiting does not spend the step\'s attempts.',
       inputSchema: {
