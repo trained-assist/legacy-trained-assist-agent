@@ -10,6 +10,7 @@
 const { chatSessions } = require('./chat-history');
 const { sessionsDirPath } = require('./data-paths');
 const { classifyClosure } = require('./closure-intent');
+const { orHeaders } = require('./or-attribution');
 
 const GATE_MODEL = process.env.INTAKE_GATE_MODEL || 'deepseek/deepseek-chat';
 
@@ -93,10 +94,7 @@ ${trimmed.length <= 6000 ? trimmed : trimmed.slice(0, 3000) + '\n[середин
 
   const res = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${openrouterKey}`,
-    },
+    headers: orHeaders({ apiKey: openrouterKey, app: 'intake-gate' }),
     body: JSON.stringify({
       model: GATE_MODEL,
       max_tokens: 16,

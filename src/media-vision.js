@@ -1,6 +1,11 @@
 'use strict';
 
 const fs = require('fs');
+const { orHeaders } = require('./or-attribution');
+
+// Verified live 01.10.2026 on a real key: this model reads images (1024x768 → 1072 prompt tokens,
+// $0.000304) CHEAPER than 2.5-flash (1297 tokens, $0.000457) and returns the same one-line text.
+const VISION_MODEL = 'google/gemini-3.1-flash-lite-preview';
 
 // Vision OCR/description for image attachments, for engines whose underlying model
 // has no multimodal input (OpenCode's minimax/GigaChat/DeepSeek profiles — unlike
@@ -49,9 +54,9 @@ async function extractImageText({ filePath, mimeType, openrouterKey, fetchImpl =
     try {
       r = await fetchImpl(`${base}/api/v1/chat/completions`, {
         method: 'POST',
-        headers: { authorization: 'Bearer ' + openrouterKey, 'content-type': 'application/json' },
+        headers: orHeaders({ apiKey: openrouterKey, app: 'media-vision' }),
         body: JSON.stringify({
-          model: 'google/gemini-2.5-flash',
+          model: VISION_MODEL,
           // Bounded output (#1844): recognition is a transcription, not prose —
           // a runaway reply only burns latency on the /run accept path.
           max_tokens: 8192,

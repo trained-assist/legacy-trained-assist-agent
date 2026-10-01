@@ -11,21 +11,26 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { readCredentialFile } = require('./credential-store');
+const { orHeaders } = require('./or-attribution');
 
 // ─── OpenRouter (fallback) ────────────────────────────────────────────────────
 
-function llmCall(apiKey, model, messages, maxTokens = 2000, temperature = 0.1) {
+// `app` is the analytics identity of the call (OpenRouter "Application" cut is keyed by the
+// HTTP-Referer URL, see src/or-attribution.js). Without it every request lands in "Unknown"
+// and the spend cannot be attributed to a caller.
+function llmCall(apiKey, model, messages, maxTokens = 2000, temperature = 0.1, { app = 'llm-client', title } = {}) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({ model, messages, temperature, max_tokens: maxTokens });
     const req = https.request({
       hostname: 'openrouter.ai',
       path: '/api/v1/chat/completions',
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body),
-      },
+      headers: orHeaders({
+        apiKey,
+        app,
+        title,
+        extra: { 'Content-Length': Buffer.byteLength(body) },
+      }),
     }, (res) => {
       const chunks = [];
       res.on('data', c => chunks.push(c));

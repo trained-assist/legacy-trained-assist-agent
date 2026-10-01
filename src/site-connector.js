@@ -6,6 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const { tokensRoot } = require('./data-paths');
+const { orHeaders } = require('./or-attribution');
 const {
   slugFor,
   saveSiteConfig,
@@ -366,12 +367,9 @@ ${JSON.stringify(summary, null, 2)}
 
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-      },
+      headers: orHeaders({ apiKey: OPENROUTER_API_KEY, app: 'site-connector' }),
       body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
+        model: 'google/gemini-3.1-flash-lite-preview',
         max_tokens: 1200,
         messages: [{ role: 'user', content: prompt }],
       }),

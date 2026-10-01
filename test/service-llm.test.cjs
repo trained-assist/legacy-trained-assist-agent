@@ -123,7 +123,12 @@ test('ctx → x-ladder-* headers on every entry point; app falls back to source'
   assert.equal(h3['x-ladder-app'], 'custom-app', 'ctx.app wins over source');
 });
 
-test('no ctx → no x-ladder-* headers at all (pre-#1917 call sites unchanged)', async () => {
+// CHANGED REQUIREMENT (owner, 01.10.2026): this test used to pin "no ctx → no x-ladder-* headers
+// at all", which is exactly the behaviour that made 540 of 571 OpenRouter requests show up as
+// «Unknown» — with no app identity there is nothing to count. Replaced by: no ctx → the tool still
+// names itself via x-ladder-app (= source), while trace ids stay absent because a real run is the
+// only thing that has them. The next test ("ctx → x-ladder-*") is unchanged and still passes.
+test('no ctx → x-ladder-app = source, no trace ids (the tool is still identifiable)', async () => {
   const seen = [];
   const fetchImpl = async (url, init) => { seen.push(init.headers); return ok({ choices: [{ message: { content: 'ok' } }] }); };
 
@@ -132,13 +137,18 @@ test('no ctx → no x-ladder-* headers at all (pre-#1917 call sites unchanged)',
   await s.serviceText({ user: 'x', fetchImpl });
 
   assert.equal(seen.length, 3);
+  assert.equal(seen[0]['x-ladder-app'], 'gtd-intent');
+  assert.equal(seen[1]['x-ladder-app'], 'session-summary');
+  assert.equal(seen[2]['x-ladder-app'], 'service-llm', 'default source names the generic caller');
   for (const h of seen) {
-    const ladder = Object.keys(h).filter(k => k.startsWith('x-ladder-'));
-    assert.deepEqual(ladder, [], `no ctx → no x-ladder-* headers, got ${ladder.join(', ')}`);
+    assert.deepEqual(
+      Object.keys(h).filter(k => k.startsWith('x-ladder-')), ['x-ladder-app'],
+      `no ctx → app only, got ${Object.keys(h).filter(k => k.startsWith('x-ladder-')).join(', ')}`,
+    );
     assert.equal(h.Authorization, `Bearer ${process.env.LLM_LADDER_TOKEN}`);
   }
 
-  // A degenerate ctx must not fabricate headers either (only x-ladder-app, from source).
+  // A degenerate ctx must not fabricate trace ids either (only x-ladder-app, from source).
   await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], source: 'answer-format', fetchImpl, ctx: {} });
   const h = seen[seen.length - 1];
   assert.deepEqual(Object.keys(h).filter(k => k.startsWith('x-ladder-')), ['x-ladder-app']);

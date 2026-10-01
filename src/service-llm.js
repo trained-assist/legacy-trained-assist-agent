@@ -57,22 +57,24 @@ function _parseJsonDetailed(content) {
 // x-ladder-app becomes the OpenRouter "Application" slice (for a service call that is the
 // tool's own name: gtd-intent, hh-messages, session-summary, …).
 //
-// Sent ONLY when the caller passes `ctx` — the ~20 pre-#1917 call sites keep their exact
-// header set (backwards compatibility, pinned by test/service-llm.test.cjs). Empty/absent
-// fields are omitted rather than sent as "", so a partial ctx never fabricates a row key.
+// x-ladder-app is sent ALWAYS (owner 01.10.2026: 540 из 571 запросов в аналитике были
+// «Unknown» — считать трафик по инструментам было нечем). Trace ids still require `ctx` —
+// they only exist for a real run; a partial ctx never fabricates a row key, and an absent ctx
+// simply omits them instead of sending "".
 function traceHeadersFor(ctx, source) {
-  if (!ctx || typeof ctx !== 'object') return null;
   const headers = {};
   const put = (name, value) => {
     if (value === undefined || value === null || String(value) === '') return;
     headers[name] = String(value);
   };
-  put('x-ladder-trace', ctx.trace);
-  put('x-ladder-run', ctx.run);
-  put('x-ladder-user', ctx.user);
-  put('x-ladder-session', ctx.session);
-  put('x-ladder-app', ctx.app || source);
-  return headers;
+  if (ctx && typeof ctx === 'object') {
+    put('x-ladder-trace', ctx.trace);
+    put('x-ladder-run', ctx.run);
+    put('x-ladder-user', ctx.user);
+    put('x-ladder-session', ctx.session);
+  }
+  put('x-ladder-app', (ctx && ctx.app) || source);
+  return Object.keys(headers).length ? headers : null;
 }
 
 /**
