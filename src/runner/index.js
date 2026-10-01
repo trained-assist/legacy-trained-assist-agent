@@ -64,6 +64,13 @@ const { buildDevPlaybookSuggestion } = require('../dev-task-playbook-suggestion'
 const { buildProfilePlaybookMenu } = require('../profile-playbook-menu');
 const { buildAwaitingUserNotice } = require('../durable-wait');
 const skillsShadow = require('../skills/shadow');
+// Turn-intent tool mounting (architecture issue #76 L1): estimate which skill sections
+// THIS turn needs (deterministic, no model — src/skills/turn-intent.js), resolve the
+// plan (profile ∩ intent), inject the mount note with the TOOL_ESCALATION net, and
+// measure the resulting prefix (prompt-audit prompt_prefix_tokens).
+const skillsEnforce = require('../skills/enforce');
+const turnIntentMod = require('../skills/turn-intent');
+const { estimateToolTokens } = require('../mcp-tool-tokens');
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
 // tg-stream.js (issue #942 P1.4). The module owns the format/send/edit
 // primitives; runner.js keeps orchestration (queueing, retries around them).
@@ -2214,7 +2221,7 @@ function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task,
     .catch(e => { console.warn('[gtd] schedule:', e.message); return null; });
 }
 
-async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, ladderFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null }) {
+async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, ladderFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null, toolEscalationDone = false }) {
   // Strip @botname suffix from slash commands once at intake so all INTENT regexes match cleanly.
   let task = rawTask ? rawTask.replace(/^(\/\S+?)@\S+/, '$1') : rawTask;
   // Старт рана для claimFreshChecklist (BV-08): initiatedAt — момент запроса у шлюза
@@ -2595,6 +2602,35 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     }
   }
 
+  // ── Turn-intent tool mounting (architecture issue #76 L1) ───────────────────────
+  // Deterministic estimate → which skill sections THIS turn needs (src/skills/
+  // turn-intent.js: a keyword map, no model call — anything unrecognised returns
+  // null). The plan is profile ∩ intent; resolve() fails open to the full profile
+  // set when the intent selects nothing this profile has (intent.applied=false), so
+  // mountActive below is the honest "this run is narrowed" flag. Machine prompts
+  // (internalGtd), wrap_up and an escalation retry always get the full mount —
+  // never narrow on a guess, the risk here is quality, not money.
+  const turnMount = (!internalGtd && !wrapUp && !toolEscalationDone)
+    ? turnIntentMod.estimateTurnIntent(task)
+    : null;
+  const skillsPlan = skillsEnforce.planFor(user.workDir, { intent: turnMount ? turnMount.sections : null });
+  const mountActive = !!(turnMount && skillsPlan && skillsPlan.intent && skillsPlan.intent.applied);
+  const mountInfo = skillsPlan
+    ? {
+      mode: mountActive ? 'narrowed' : (skillsPlan.intent ? 'fallback' : 'profile'),
+      sections: skillsPlan.sections,
+      intent: skillsPlan.intent ? skillsPlan.intent.sections : null,
+    }
+    : { mode: 'full', sections: null, intent: null };
+  if (skillsPlan && skillsPlan.intent) {
+    console.log('[mount] %s: intent=%s %s', taskId,
+      (turnMount ? turnMount.intents.join('+') : '-'),
+      mountActive ? `→ sections=${skillsPlan.sections.join(',')}` : '→ fell open (full profile set)');
+  }
+  // Prompt block with the escalation net (#76 §3): only when the mount is actually
+  // narrowed — telling the model to escalate a full mount would buy a pointless re-run.
+  const mountNoteSection = mountActive ? turnIntentMod.buildMountNote({ sections: skillsPlan.sections }) : '';
+
   // Skills are now available via trained-skills MCP (tools/list → list_skills).
   // No prompt injection needed — Claude discovers and calls tools directly.
   //
@@ -2641,7 +2677,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   const wrapUpSection = wrapUp
     ? '[ФИНАЛИЗАЦИЯ: пользователь сказал, что поиск окончен. Ответь из уже найденного (история ниже, заметки, файлы проекта) — без новых поисков, коротко, за ~2 минуты.]'
     : null;
-  let baseContext = [currentTimeSection(), wrapUp ? wrapUpSection : timeoutSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, playbookSuggestionSection, awaitingUserSection, artifactsSection].filter(Boolean).join('\n\n');
+  let baseContext = [currentTimeSection(), wrapUp ? wrapUpSection : timeoutSection, mountNoteSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, playbookSuggestionSection, awaitingUserSection, artifactsSection].filter(Boolean).join('\n\n');
   if (sessionContext) baseContext = baseContext ? `${baseContext}\n\n${sessionContext}` : sessionContext;
   const currentTask = sessionContext ? `Пользователь: ${task}` : task;
   let prompt = baseContext ? `${baseContext}\n\n${currentTask}` : currentTask;
@@ -2668,6 +2704,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // server specs (with server-side env) stay in memory as bridgedServers.
   const { mcpConfig, servers: bridgedServers } = writeRunMcpConfig(user.workDir, user.username, {
     userName: user.name, userHandle: user.username, botToken: secrets?.BOT_TOKEN,
+    // #76 L1: hand the precomputed plan through (null = legacy, object = as resolved)
+    // and, when the mount is narrowed, route both config files to .mcp-runs/<taskId>.*
+    // so a parallel run of the same profile can't clobber this run's server set.
+    skillsPlan,
+    runId: mountActive ? taskId : null,
   }, { bridged: isolationConfig().envAllowlist });
 
   // Strip ANTHROPIC_API_KEY so Claude uses OAuth from ~/.claude/.credentials.json.
@@ -2725,7 +2766,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // was just exposed above. Observation only — runShadow never throws, changes nothing.
   try {
     skillsShadow.runShadow({ workDir: user.workDir, username: user.username, audience: user.audience,
-      mcpConfigPath: mcpConfig, domainReport });
+      mcpConfigPath: mcpConfig, domainReport,
+      // #76: compare like with like — the shadow resolves with the same turn intent
+      // the mount used, so a narrowed run's diff stays 0 instead of showing drops.
+      intent: turnMount ? turnMount.sections : null });
   } catch { /* never affects the run */ }
 
   // Answer router: вставить блок режима в системный промпт для этого хода.
@@ -2777,6 +2821,24 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   } catch (e) { console.warn('[runner] run-input snapshot:', e.message); }
 
   const opencodeModel = process.env.OPENCODE_MODEL || null;
+
+  // Prompt-prefix metrics (architecture issue #76 §4): what the engine re-reads on
+  // every call = system prompt + this turn's prompt + the mounted tool schemas. The
+  // tools half comes from the static catalogs (src/mcp-tool-tokens.js), the text
+  // half from the same chars/4 heuristic prompt-audit uses everywhere. Recorded as
+  // prompt_prefix_tokens / prompt_tools_tokens in prompt-audit.jsonl — the
+  // before/after metric of the turn-intent mount (target: ≤40k on a typical turn,
+  // was ~112k). Recomputed at each call site so a mid-run retry records its own set.
+  const promptPrefix = () => {
+    let tools = { total: 0, per: {} };
+    try {
+      const cfg = JSON.parse(fs.readFileSync(mcpConfig, 'utf8'));
+      tools = estimateToolTokens(cfg.mcpServers || {}, { plan: skillsPlan });
+    } catch (e) { console.warn('[prompt-audit] tool tokens:', e.message); }
+    const text = promptAudit.estimateTokens((ocSystemPrompt || systemPromptText) + '\n' + prompt);
+    return { prompt_prefix_tokens: text + tools.total, prompt_tools_tokens: tools.total, prompt_text_tokens: text };
+  };
+
   // Resolve the code cwd ONCE and hand the identical value to the argv builder
   // (codex `-C` on the fresh path) and the process spawner (spawn.cwd) — see
   // resolveEngineCwd. This is what keeps `-C` and the actual process cwd from
@@ -2980,6 +3042,64 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     });
     executionHistory.finalizeExecution(executionId, 'FAILED');
     return;
+  }
+
+  // ── tool_escalation net (architecture issue #76 §3) ──────────────────────────
+  // The narrowed mount left the task without a tool it needed. «Молча остаться без
+  // инструмента нельзя» → ONE transition, never a loop: record the event in the
+  // prompt audit (tool_escalation: 1), tell the chat what is happening, and re-run
+  // the SAME task with the full profile set — toolEscalationDone disables both the
+  // narrowing and a second escalation for the rest of this chain.
+  if (mountActive && !toolEscalationDone) {
+    const esc = turnIntentMod.detectEscalation(fullOutput.text, lastAssistantMsg || '');
+    if (esc) {
+      console.warn('[mount] %s tool_escalation via=%s: %s — re-running with the full profile set', taskId, esc.via, esc.reason);
+      try {
+        const escMode = (explicitMode === 'deep' || answerRouter.readMode(user.workDir, activeSessionId)?.mode === 'deep')
+          ? 'deep' : (explicitMode || 'oneshot');
+        promptAudit.recordPromptAudit(user.workDir, {
+          taskId, sessionId: activeSessionId, webExactSession,
+          at: Date.now(), engine,
+          mode: escMode,
+          model: engine === 'opencode' ? (opencodeModel || 'opencode-config') : (claudeModel || process.env.ANTHROPIC_MODEL || 'claude'),
+          input_tokens: engine === 'opencode' ? (opencodeUsage?.input || 0) : (claudeUsage?.input_tokens || 0),
+          output_tokens: engine === 'opencode' ? (opencodeUsage?.output || 0) : (claudeUsage?.output_tokens || 0),
+          cache_read: engine === 'opencode' ? (opencodeUsage?.cacheRead || 0) : (claudeUsage?.cache_read_input_tokens || 0),
+          cache_write: engine === 'opencode' ? (opencodeUsage?.cacheWrite || 0) : (claudeUsage?.cache_creation_input_tokens || 0),
+          cost_usd: engine === 'opencode' ? (opencodeUsage?.cost ?? null) : null,
+          tool_escalation: 1,
+          escalation_via: esc.via,
+          escalation_reason: esc.reason,
+          mount: mountInfo,
+          ...promptPrefix(),
+        });
+      } catch (e) { console.warn('[runner] escalation audit:', e.message); }
+      const escNotice = '🔧 Задаче не хватило инструментов этого хода — доустанавливаю полный набор секций и продолжаю…';
+      if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, escNotice, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, escNotice, threadId));
+      else await tgSend(BOT_TOKEN, chatId, escNotice, threadId);
+      if (activeSessionId) {
+        sessions.appendReply(user.workDir, activeSessionId, escNotice);
+        setCurrentSessionId(user.workDir, activeSessionId, chatId, audience, threadId);
+      }
+      _recordFailureAttempt(executionId, {
+        taskId, projectId, sessionId: activeSessionId, webExactSession, engine,
+        errorText: `tool_escalation (${esc.via}): ${esc.reason}`, action: 'tool_escalation',
+      });
+      const queuedRetry = runTask({
+        initiatedAt, threadId,
+        taskId: `${user.username}-${Date.now()}`,
+        user, task, context,
+        sessionId: activeSessionId, webExactSession,
+        forceClaude, initialMsgId: msgId, pinnedMsgId, secrets,
+        // The user message is already in the session (attempt 1 recorded it).
+        userMessageRecorded: true,
+        continuationCount, retryCount, mode, projectId, internalGtd, engine,
+        incompleteRetryAttempts,
+        executionId,
+        toolEscalationDone: true,
+      });
+      return { queuedRetry };
+    }
   }
 
   // Timeout / inactivity kill → durable partial + auto-continuation.
@@ -3516,6 +3636,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       cache_read: engine === 'opencode' ? (opencodeUsage?.cacheRead || 0) : (claudeUsage?.cache_read_input_tokens || 0),
       cache_write: engine === 'opencode' ? (opencodeUsage?.cacheWrite || 0) : (claudeUsage?.cache_creation_input_tokens || 0),
       cost_usd: engine === 'opencode' ? (opencodeUsage?.cost ?? null) : null,
+      // #76 L1: what was mounted this turn (narrowed|fallback|profile|full) and the
+      // prefix it produced — prompt_prefix_tokens is the before/after metric,
+      // tool_escalation:1 entries are the quality-net hits (see the branch above).
+      mount: toolEscalationDone ? { ...mountInfo, escalation_retry: true } : mountInfo,
+      ...promptPrefix(),
       section_tokens: promptAudit.computeSectionTokens({
         base: systemPromptText,
         oc_capabilities: ocCapBlock,
@@ -3524,6 +3649,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         reqlog: reqLogSection,
         history: sessionContext,
         current_task: currentTask,
+        mount_note: mountNoteSection,
       }),
       adherence: promptAudit.adherenceFlags(result, { mode: effectiveMode }),
     });
