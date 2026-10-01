@@ -56,6 +56,12 @@ module.exports = function migratePlan(db) {
           // Fanout (#1752): batch config + durable state of a fanout step
           // (queue, child task per element, supervisor journal). See src/playbook-fanout.js.
           fanout_json: 'TEXT',
+          // Structured step result (#87 B1.3, ARCHITECTURE §4.4): what the step
+          // itself reports through task_item_result — {status, result, note, at,
+          // attempt}. Settled on this instead of parsing `DURABLE:` out of the
+          // reply text (94% of OpenCode step failures were a missing marker).
+          // Cleared by claimNextRunnable: every attempt starts with a clean result.
+          result_json: 'TEXT',
           // Attempt fencing (prod-plans T6 / red-team B3, epic #87 B1.1): bumped by
           // claimNextRunnable on every claim; every settle write of that attempt carries
           // the generation it claimed, so a stale attempt (45-min orphan grace re-queued a
