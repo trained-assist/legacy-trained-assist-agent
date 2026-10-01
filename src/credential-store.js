@@ -34,10 +34,18 @@ const META_SUFFIX = '.meta';
 const INDEX_FILE = '.index.json';
 
 // Files in the same tree that are NOT credentials and must stay plaintext
-// (routing metadata, audit log, owner marker, cross-user index, caches).
+// (routing metadata, audit log, owner marker, cross-user index, caches,
+// profile flags, call telemetry). encrypt-tokens.mjs skips these, so a reader
+// that legitimately stays raw (it must survive a profile push too) keeps working.
 const PLAINTEXT_FILES = new Set([
   '.chatid', '.secrets_log', '.username', INDEX_FILE,
   'gdrive-seen', 'gdrive-catalog', 'gdrive-catalog.json', 'gdrive-notif-muted',
+  // bg-notify: {enabled, chatId} — same class as .chatid, read/written raw by
+  // src/bg-notify.js (a flag, not a secret; #1939/C1 pre-apply review).
+  'bg-notify.json',
+  // Deepgram call telemetry ring (metadata only, never the transcript), owned by
+  // trained-assist-speech-skill src/deepgram/key-store.js — raw journal writes.
+  'calls.json',
 ]);
 // Directories whose contents are not credentials (research output, backups).
 const PLAINTEXT_DIRS = new Set(['hermes-research']);
