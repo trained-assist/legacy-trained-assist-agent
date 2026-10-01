@@ -224,7 +224,7 @@ module.exports = {
       inputSchema: {
         type: 'object',
         properties: {
-          status: { type: 'string', enum: ['draft', 'active', 'paused', 'blocked', 'done', 'failed', 'cancelled'] },
+          status: { type: 'string', enum: ['draft', 'active', 'awaiting_input', 'paused', 'blocked', 'done', 'failed', 'cancelled'] },
         },
       },
       handler: async ({ status } = {}, ctx) => {
@@ -248,7 +248,10 @@ module.exports = {
         const task = store().getTask(task_id, profileId);
         if (!task) return { error: 'task not found (or not owned by this profile)' };
         const items = store().listTaskItems(task_id, profileId);
-        return withProjection({ task, items, sessions: store().listSessions(task_id, profileId) }, profileId);
+        // The journal (#87 B1.4): status lives in the column, history lives here.
+        let events = [];
+        try { events = store().listTaskEvents(task_id, profileId, { limit: 50 }); } catch { /* journal optional */ }
+        return withProjection({ task, items, sessions: store().listSessions(task_id, profileId), events }, profileId);
       },
     },
 
@@ -265,7 +268,7 @@ module.exports = {
         properties: {
           task_id: { type: 'string' },
           goal: { type: 'string' },
-          status: { type: 'string', enum: ['draft', 'active', 'paused', 'blocked', 'done', 'failed', 'cancelled'] },
+          status: { type: 'string', enum: ['draft', 'active', 'awaiting_input', 'paused', 'blocked', 'done', 'failed', 'cancelled'] },
           project_id: { type: 'string' },
         },
       },
