@@ -20,12 +20,26 @@ const registry = getDefaultRegistry();
 const cmd = (c) => registry.command_exit_zero({ validation: c });
 
 describe('command_exit_zero: unsatisfiable conditions are final', () => {
-  it('marks an unauthenticated gh/curl call final (the prod case)', async () => {
-    const r = await cmd("gh api 'repos/a/b/commits' --jq '.[0].sha'");
+  it('marks an unauthenticated API call final (the prod case)', async () => {
+    // Hermetic, NOT a live `gh api` call: inside GitHub Actions gh IS
+    // authenticated, so a real invocation passes there and the case proves
+    // nothing (it failed CI in PR #1999 for exactly that reason). We emit the
+    // stderr the prod poll captured and exit non-zero.
+    const r = await cmd(
+      'bash -c \'echo "To get started with GitHub CLI, please run:  gh auth login" >&2; '
+      + 'echo "Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token." >&2; exit 4\'');
     expect(r.status).toBe('fail');
     expect(r.evidence.final).toBe(true);
-    expect(r.evidence.unsatisfiable).toMatch(/unauthenticated|command-missing/);
-    expect(r.evidence.hint).toMatch(/issue_pr_merged|ci_green|validator/);
+    expect(r.evidence.unsatisfiable).toBe('unauthenticated');
+    expect(r.evidence.hint).toMatch(/issue_pr_merged|ci_green/);
+  });
+
+  it('does NOT mark an authenticated, working API call final', async () => {
+    // A command that exits 0 is a pass, and a non-zero exit without an
+    // environment signature stays a plain, retryable fail.
+    const r = await cmd('bash -c \'exit 0\'');
+    expect(r.status).toBe('pass');
+    expect(r.evidence.final).toBeUndefined();
   });
 
   it('classifies the exact stderr the prod poll captured', () => {
