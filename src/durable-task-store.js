@@ -12,6 +12,7 @@ const { atomicText } = require('./atomic-json');
 
 const TASK_STATUSES = ['draft', 'paused', 'blocked', 'active', 'done', 'failed', 'cancelled'];
 const ITEM_STATUSES = ['pending', 'running', 'waiting', 'done', 'failed', 'skipped'];
+const ITEM_STATUSES_TERMINAL = ['done', 'failed', 'skipped'];
 const TIERS = ['free', 'standard', 'strong'];
 const TIER_RANK = { free: 0, standard: 1, strong: 2 };
 // P3c: the contract model ladder a step may be escalated through (matches
@@ -19,6 +20,16 @@ const TIER_RANK = { free: 0, standard: 1, strong: 2 };
 const MODEL_LEVELS = ['bachelor', 'master', 'doctor'];
 
 function nowMs() { return Date.now(); }
+
+// A signal's payload as text (task_signals.payload_json holds JSON — a string
+// message today, a structured payload later).
+function signalText(signal) {
+  if (!signal || signal.payload_json == null) return null;
+  try {
+    const v = JSON.parse(signal.payload_json);
+    return typeof v === 'string' ? v : JSON.stringify(v);
+  } catch { return String(signal.payload_json); }
+}
 
 function describeMissing(missing) {
   return missing
@@ -67,6 +78,7 @@ class DurableTaskStore {
         due_at              INTEGER,
         last_execution_id   TEXT,
         last_error          TEXT,
+        claim_generation    INTEGER NOT NULL DEFAULT 0,
         created_at          INTEGER NOT NULL,
         updated_at          INTEGER NOT NULL
       );
@@ -212,6 +224,7 @@ class DurableTaskStore {
       const task = this.getTask(item.task_id, profileId);
       this._prep(`UPDATE task_items SET status = 'skipped', last_error = ?, updated_at = ? WHERE id = ?`)
         .run(`skipped: ${reason.trim()}`.slice(0, 500), nowMs(), itemId);
+      this._prep('DELETE FROM task_signals WHERE task_item_id = ? AND consumed_at IS NULL').run(itemId);
       let validation = {};
       try { validation = item.validation_json ? JSON.parse(item.validation_json) : {}; } catch { /* none */ }
       for (const key of Object.keys(validation)) {
@@ -283,6 +296,8 @@ class DurableTaskStore {
       this._prep(`UPDATE task_items SET status = 'skipped', updated_at = ?
         WHERE task_id = ? AND status IN ('pending','waiting','running')`)
         .run(nowMs(), id);
+      // A closed plan has no step left to deliver a signal to (#87 B1.2).
+      this._prep('DELETE FROM task_signals WHERE task_id = ? AND consumed_at IS NULL').run(id);
       const updated = this.updateTask(id, profileId, { status: finalStatus });
       return updated;
     })();
@@ -382,7 +397,7 @@ class DurableTaskStore {
       ORDER BY i.position`).all(taskId, profileId);
   }
 
-  updateTaskItem(id, patch, profileId) {
+  updateTaskItem(id, patch, profileId, { releaseClaim = false } = {}) {
     if (!this._itemOwnedBy(id, profileId)) return null;
     const allowed = ['title', 'status', 'current_tier', 'delay_after_sec', 'due_at',
                      'wait_deadline_at', 'last_execution_id', 'last_error',
@@ -414,6 +429,14 @@ class DurableTaskStore {
     const res = this.db.transaction(() => {
       const r = this._prep(`UPDATE task_items SET ${sets.join(', ')} WHERE id = ?`).run(...args);
       if (r.changes === 0) return null;
+      // `releaseClaim` (#87 B1.1): the scheduler is putting back a claim it never
+      // turned into an attempt (busy session, slot limit, fanout/stage hold, a
+      // re-claim of the item this same pass already fired). Give the generation
+      // back — otherwise a bookkeeping release would fence off the settle of the
+      // attempt that IS running, and its result would be thrown away.
+      if (releaseClaim) {
+        this._prep('UPDATE task_items SET claim_generation = MAX(0, claim_generation - 1) WHERE id = ?').run(id);
+      }
       const item = this.getTaskItem(id);
       // Defense in depth: ownership was checked before UPDATE.
       const owner = this._prep('SELECT profile_id FROM durable_tasks WHERE id = ?')
@@ -509,7 +532,11 @@ class DurableTaskStore {
         ORDER BY (i.due_at IS NULL) DESC, i.due_at ASC, i.position ASC
         LIMIT 1`).get(now);
       if (!row) return null;
-      this._prep(`UPDATE task_items SET status = 'running', updated_at = ? WHERE id = ?`)
+      // Attempt fencing (epic #87 B1.1, prod-plans T6): every claim opens a new
+      // generation, and the attempt that carries it may only settle while the row still
+      // holds that number — see completeItem/failItem/parkItem's `claimGeneration`.
+      this._prep(`UPDATE task_items SET status = 'running', claim_generation = claim_generation + 1,
+          result_json = NULL, updated_at = ? WHERE id = ?`)
         .run(now, row.id);
       return this.getTaskItem(row.id);
     })();
@@ -537,14 +564,23 @@ class DurableTaskStore {
    * its due time. If it is still waiting beyond that (the run that should have
    * claimed it never did), `expireWaitingDeadlines` fails it instead of letting a
    * stuck waiter defer forever.
+   *
+   * Attempt fencing (#87 B1.1): pass the `claimGeneration` this write's attempt
+   * claimed. The UPDATE then carries `AND claim_generation = ?` and a superseded
+   * attempt gets `null` instead of silently overwriting the newer attempt's step —
+   * and never arms the next sibling.
    */
-  completeItem(id, profileId, { executionId = null } = {}) {
+  completeItem(id, profileId, { executionId = null, claimGeneration = null } = {}) {
     return this.db.transaction(() => {
       const item = this._itemOwnedBy(id, profileId);
       if (!item) return null;
+      const fence = this._claimFence(claimGeneration);
       const now = nowMs();
-      this._prep(`UPDATE task_items SET status = 'done', last_execution_id = ?,
-          updated_at = ? WHERE id = ?`).run(executionId, now, id);
+      const upd = this._prep(`UPDATE task_items SET status = 'done', last_execution_id = ?,
+          updated_at = ? WHERE id = ?${fence.clause}`).run(executionId, now, id, ...fence.args);
+      if (upd.changes === 0) return null;
+      // The step is over: a signal nobody parked for can never be consumed (#87 B1.2).
+      this._prep('DELETE FROM task_signals WHERE task_item_id = ? AND consumed_at IS NULL').run(id);
       const next = this._prep(`SELECT * FROM task_items WHERE task_id = ? AND status = 'pending'
         ORDER BY position LIMIT 1`).get(item.task_id);
       if (next) {
@@ -577,48 +613,150 @@ class DurableTaskStore {
    * wait_deadline_at is cleared: the wait's own deadline lives in wait_json and
    * is enforced by the poll, not by expireWaitingDeadlines.
    */
-  parkItem(id, profileId, { wait, dueAt, refundAttempt = false, lastError = null } = {}) {
+  parkItem(id, profileId, { wait, dueAt, refundAttempt = false, lastError = null, claimGeneration = null } = {}) {
     return this.db.transaction(() => {
       const item = this._itemOwnedBy(id, profileId);
       if (!item) return null;
+      const fence = this._claimFence(claimGeneration);
       const now = nowMs();
-      this._prep(`UPDATE task_items SET status = 'waiting', due_at = ?, wait_deadline_at = NULL,
+      // A buffered early signal (#87 B1.2, prod-plans T4) is applied right here:
+      // the step reaches its wait already woken, due NOW, so the next tick
+      // resolves it as 'woken' — the answer that arrived while the step was still
+      // running is no longer lost.
+      const pending = this._prep(`SELECT * FROM task_signals
+        WHERE task_id = ? AND task_item_id = ? AND consumed_at IS NULL`).get(item.task_id, id);
+      let w = wait;
+      let nextDue = dueAt;
+      if (pending && wait && typeof wait === 'object') {
+        w = {
+          ...wait,
+          woken_at: pending.created_at || now,
+          woken_by: pending.source || 'user',
+          wake_message: signalText(pending),
+        };
+        nextDue = now;
+      }
+      const upd = this._prep(`UPDATE task_items SET status = 'waiting', due_at = ?, wait_deadline_at = NULL,
           wait_json = ?, last_error = ?, updated_at = ?,
           attempt_count = CASE WHEN ? THEN MAX(0, attempt_count - 1) ELSE attempt_count END
-          WHERE id = ?`)
-        .run(dueAt, wait == null ? null : JSON.stringify(wait), lastError, now, refundAttempt ? 1 : 0, id);
+          WHERE id = ?${fence.clause}`)
+        .run(nextDue, w == null ? null : JSON.stringify(w), lastError, now, refundAttempt ? 1 : 0, id, ...fence.args);
+      if (upd.changes === 0) return null;
+      if (pending) {
+        this._prep('UPDATE task_signals SET consumed_at = ? WHERE task_id = ? AND task_item_id = ?')
+          .run(now, item.task_id, id);
+      }
       this._bump(item.task_id);
       return this.getTaskItem(id);
     })();
   }
 
   /** Replace an item's wait state without changing its status (e.g. clear it after a wake). */
-  setItemWait(id, profileId, wait) {
+  setItemWait(id, profileId, wait, { claimGeneration = null } = {}) {
     if (!this._itemOwnedBy(id, profileId)) return null;
-    this._prep('UPDATE task_items SET wait_json = ?, updated_at = ? WHERE id = ?')
-      .run(wait == null ? null : JSON.stringify(wait), nowMs(), id);
+    const fence = this._claimFence(claimGeneration);
+    const res = this._prep(`UPDATE task_items SET wait_json = ?, updated_at = ? WHERE id = ?${fence.clause}`)
+      .run(wait == null ? null : JSON.stringify(wait), nowMs(), id, ...fence.args);
+    if (res.changes === 0) return null;
     return this.getTaskItem(id);
   }
 
   /**
    * Wake a waiting item now (a user answered, or someone knows the condition
    * holds). The next tick re-checks it; for an agent wait the message is handed
-   * to the resumed run. Only a parked item (waiting + wait_json) can be woken.
+   * to the resumed run. Only a parked item (waiting + wait_json) can be woken —
+   * a step that has not reached its wait yet does not error out any more: the
+   * signal is BUFFERED for the park (see task_signals, #87 B1.2).
+   *
+   * Signal identity = (task, step): the first signal wins, a duplicate never
+   * overwrites `wake_message` (prod-plans T5).
    */
   wakeItem(id, profileId, { message = null, by = 'user' } = {}) {
     return this.db.transaction(() => {
       const item = this._itemOwnedBy(id, profileId);
       if (!item) return { error: 'item not found (or not owned by this profile)' };
-      if (item.status !== 'waiting' || !item.wait_json) return { error: `item is not waiting (status=${item.status})` };
+      const now = nowMs();
+      const payload = message == null ? null : String(message).slice(0, 4000);
+      if (item.status !== 'waiting' || !item.wait_json) {
+        // A finished step has nothing to wake (prod-plans T5: «wake после done»)
+        // and gets no signal row.
+        if (ITEM_STATUSES_TERMINAL.includes(item.status)) {
+          return { error: `item is not waiting (status=${item.status})` };
+        }
+        // T4 — the answer arrived BEFORE the step parked (it is still pending or
+        // running). Buffer it: parkItem applies it as soon as the step reaches its
+        // wait, instead of dropping the event (prod-plans T4 FAIL).
+        const { signal, duplicate } = this.postSignal({
+          task_id: item.task_id, task_item_id: id, payload, source: by, now,
+        });
+        return { ok: true, buffered: true, duplicate, item: this.getTaskItem(id) };
+      }
       let wait;
       try { wait = JSON.parse(item.wait_json); } catch { wait = {}; }
-      const now = nowMs();
-      wait = { ...wait, woken_at: now, woken_by: by, wake_message: message == null ? null : String(message).slice(0, 4000) };
+      if (wait.woken_at) {
+        // T5: the FIRST answer wins — a second wake must not overwrite it.
+        return { ok: true, already_woken: true, item: this.getTaskItem(id) };
+      }
+      const { signal, duplicate } = this.postSignal({
+        task_id: item.task_id, task_item_id: id, payload, source: by, now,
+      });
+      const effective = duplicate ? signalText(signal) : payload;
+      wait = { ...wait, woken_at: now, woken_by: by, wake_message: effective == null ? null : String(effective).slice(0, 4000) };
       this._prep('UPDATE task_items SET wait_json = ?, due_at = ?, updated_at = ? WHERE id = ?')
         .run(JSON.stringify(wait), now, now, id);
+      this._prep('UPDATE task_signals SET consumed_at = ? WHERE task_id = ? AND task_item_id = ?')
+        .run(now, item.task_id, id);
       this._bump(item.task_id);
-      return { item: this.getTaskItem(id) };
+      return { item: this.getTaskItem(id), duplicate };
     })();
+  }
+
+  // ── Incoming signals (#87 B1.2, prod-plans T4/T5) ─────────────────────────
+  /**
+   * Record an incoming signal for a plan step. Identity = userTaskId + step, so
+   * two wakes for the same step are ONE signal (a duplicate never overwrites the
+   * first payload); a different step — a different signal.
+   *
+   * An UNCONSUMED row is a signal nobody has applied yet → duplicate.
+   * A CONSUMED row is history of an earlier wait cycle → a new signal for a later
+   * wait of the same step replaces it (that is a new event, not a duplicate).
+   *
+   * @returns {{signal: object, duplicate: boolean}}
+   */
+  postSignal({ task_id, task_item_id, event_type = 'wake', source = null, payload = null, now = null }) {
+    if (!task_id || !task_item_id) throw new Error('task_id and task_item_id are required');
+    const at = now == null ? nowMs() : now;
+    const json = payload == null ? null : JSON.stringify(payload);
+    const select = () => this._prep('SELECT * FROM task_signals WHERE task_id = ? AND task_item_id = ?')
+      .get(task_id, task_item_id);
+    return this.db.transaction(() => {
+      const existing = select();
+      if (existing && existing.consumed_at == null) return { signal: existing, duplicate: true };
+      if (existing) {
+        this._prep(`UPDATE task_signals SET event_type = ?, source = ?, payload_json = ?,
+            created_at = ?, consumed_at = NULL WHERE task_id = ? AND task_item_id = ?`)
+          .run(event_type, source, json, at, task_id, task_item_id);
+        return { signal: select(), duplicate: false };
+      }
+      this._prep(`INSERT INTO task_signals
+          (task_id, task_item_id, event_type, source, payload_json, created_at, consumed_at)
+          VALUES (?, ?, ?, ?, ?, ?, NULL)`)
+        .run(task_id, task_item_id, event_type, source, json, at);
+      return { signal: select(), duplicate: false };
+    })();
+  }
+
+  getSignal(taskId, itemId) {
+    return this._prep('SELECT * FROM task_signals WHERE task_id = ? AND task_item_id = ?')
+      .get(taskId, itemId) || null;
+  }
+
+  /** Signals of a plan, profile-scoped, newest first. */
+  listSignals(taskId, profileId) {
+    return this._prep(`SELECT s.* FROM task_signals s
+      JOIN durable_tasks t ON t.id = s.task_id
+      WHERE s.task_id = ? AND t.profile_id = ?
+      ORDER BY s.created_at DESC, s.rowid DESC`).all(taskId, profileId);
   }
 
   /** Items parked on a user answer, for the chat-context notice. Profile-scoped. */
@@ -628,6 +766,53 @@ class DurableTaskStore {
       WHERE t.profile_id = ? AND t.status = 'active' AND i.status = 'waiting' AND i.wait_json IS NOT NULL
       ORDER BY i.updated_at DESC LIMIT 20`).all(profileId)
       .filter(row => { try { const w = JSON.parse(row.wait_json); return w.awaiting_user === true && !w.woken_at; } catch { return false; } });
+  }
+
+  /**
+   * Every unresolved wait of every active plan, with its owner profile (#1846).
+   * The GitHub webhook is not profile-scoped: one delivery may satisfy a wait of
+   * any profile, so the wake path scans them all. Bounded by active waits, which
+   * is the same small set countActiveWaits() counts.
+   */
+  listActiveWaiters() {
+    return this._prep(`SELECT i.id, i.task_id, t.profile_id, i.wait_json FROM task_items i
+      JOIN durable_tasks t ON t.id = i.task_id
+      WHERE t.status = 'active' AND i.status IN ('pending','waiting')
+        AND i.wait_json IS NOT NULL
+        AND json_extract(i.wait_json, '$.resolved') IS NULL`).all();
+  }
+
+  /**
+   * Bring a waiting item's next poll forward to `now` because an external event
+   * matched its condition (#1846). This is NOT a resolution — the verdict still
+   * comes from the validator on the poll — so `resolved` is never written here.
+   * Idempotent per GitHub delivery: a redelivery with the same `x-github-delivery`
+   * id is recorded and ignored (GitHub retries), so `due_at` never moves backward
+   * and no second wake is armed.
+   * @returns {{item:object|null, changed:boolean, reason?:string}}
+   */
+  accelerateWaitByEvent(id, { deliveryId = null, event = null, key = null, subject = null, now = nowMs() } = {}) {
+    return this.db.transaction(() => {
+      const row = this._prep('SELECT id, task_id, wait_json, due_at FROM task_items WHERE id = ?').get(id);
+      if (!row || !row.wait_json) return { item: null, changed: false, reason: 'no-wait' };
+      let wait;
+      try { wait = JSON.parse(row.wait_json); } catch { return { item: null, changed: false, reason: 'bad-wait' }; }
+      if (wait.resolved) return { item: this.getTaskItem(id), changed: false, reason: 'resolved' };
+      const seen = Array.isArray(wait.event_deliveries) ? wait.event_deliveries : [];
+      if (deliveryId && seen.includes(deliveryId)) return { item: this.getTaskItem(id), changed: false, reason: 'duplicate' };
+      const next = {
+        ...wait,
+        event_woken_at: now,
+        event_woken_by: { event, key, subject },
+        event_deliveries: deliveryId ? [...seen, deliveryId].slice(-20) : seen,
+      };
+      // Only pull the poll forward; never push it later.
+      const dueAt = row.due_at != null && row.due_at < now ? row.due_at : now;
+      this._prep('UPDATE task_items SET due_at = ?, wait_json = ?, updated_at = ? WHERE id = ?')
+        .run(dueAt, JSON.stringify(next), now, id);
+      this._bump(row.task_id);
+      return { item: this.getTaskItem(id), changed: true };
+    })();
   }
 
   expireWaitingDeadlines(now = nowMs()) {
@@ -644,13 +829,15 @@ class DurableTaskStore {
     })();
   }
 
-  failItem(id, profileId, { executionId = null, error = null } = {}) {
+  failItem(id, profileId, { executionId = null, error = null, claimGeneration = null } = {}) {
     return this.db.transaction(() => {
       const item = this._itemOwnedBy(id, profileId);
       if (!item) return null;
-      this._prep(`UPDATE task_items SET status = 'failed', last_execution_id = ?,
-          last_error = ?, updated_at = ? WHERE id = ?`)
-        .run(executionId, error, nowMs(), id);
+      const fence = this._claimFence(claimGeneration);
+      const upd = this._prep(`UPDATE task_items SET status = 'failed', last_execution_id = ?,
+          last_error = ?, updated_at = ? WHERE id = ?${fence.clause}`)
+        .run(executionId, error, nowMs(), id, ...fence.args);
+      if (upd.changes === 0) return null;
       this._bump(item.task_id);
       return this.getTaskItem(id);
     })();
@@ -681,6 +868,54 @@ class DurableTaskStore {
       this._bump(item.task_id);
       return this.getTaskItem(id);
     })();
+  }
+
+  // ── Structured step result (#87 B1.3, ARCHITECTURE §4.4) ──────────────────
+  /**
+   * The step reports its own verdict (task_item_result) instead of making the
+   * server parse `DURABLE:` out of the reply text — 94% of OpenCode step failures
+   * were «no terminal marker» although the work WAS done (#1907 audit).
+   *
+   * Only the attempt that is running on this step may post: `attempt` (the
+   * generation from the prompt) must match `claim_generation`, and the row itself
+   * must be `running`. The marker stays mandatory for the engines that do not call
+   * the tool — this is an added channel, not a replacement.
+   *
+   * @returns {{ok: true, result: object} | {error: string}}
+   */
+  setStructuredResult(itemId, profileId, { status, result = null, note = null, attempt = null } = {}) {
+    if (!['done', 'failed', 'waiting'].includes(status)) {
+      return { error: `invalid status: ${status} (expected done | failed | waiting)` };
+    }
+    return this.db.transaction(() => {
+      const item = this._itemOwnedBy(itemId, profileId);
+      if (!item) return { error: 'item not found (or not owned by this profile)' };
+      if (item.status !== 'running') {
+        return { error: `task_item_result posts the result of the step that is running now (status=${item.status})` };
+      }
+      const current = item.claim_generation ?? 0;
+      if (attempt != null && Number(attempt) !== current) {
+        return { error: `stale attempt: the result is for attempt ${attempt}, the step is on attempt ${current}` };
+      }
+      const payload = {
+        status, result: result ?? null,
+        note: note == null ? null : String(note).slice(0, 2000),
+        at: nowMs(), attempt: current,
+      };
+      this._prep('UPDATE task_items SET result_json = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(payload), nowMs(), itemId);
+      return { ok: true, result: payload };
+    })();
+  }
+
+  /** The step's structured result for its CURRENT attempt, or null. */
+  getStructuredResult(itemId) {
+    const row = this._prep('SELECT result_json FROM task_items WHERE id = ?').get(itemId);
+    if (!row || !row.result_json) return null;
+    try {
+      const r = JSON.parse(row.result_json);
+      return r && typeof r === 'object' && ['done', 'failed', 'waiting'].includes(r.status) ? r : null;
+    } catch { return null; }
   }
 
   // ── Validation results + item evidence (P3d) ───────────────────────────
@@ -726,19 +961,22 @@ class DurableTaskStore {
    * from completeItem: `evidence_json` / `completed_at` are contract-plan fields,
    * while completeItem stays the legacy status transition.
    */
-  setItemEvidence(itemId, profileId, { evidence_json = null, completed_at = null } = {}) {
+  setItemEvidence(itemId, profileId, { evidence_json = null, completed_at = null, claimGeneration = null } = {}) {
     if (!this._itemOwnedBy(itemId, profileId)) return null;
     const sets = ['updated_at = ?'];
     const args = [nowMs()];
     if (evidence_json !== null) { sets.push('evidence_json = ?'); args.push(evidence_json); }
     if (completed_at !== null) { sets.push('completed_at = ?'); args.push(completed_at); }
-    args.push(itemId);
-    this.db.transaction(() => {
-      this._prep(`UPDATE task_items SET ${sets.join(', ')} WHERE id = ?`).run(...args);
+    const fence = this._claimFence(claimGeneration);
+    args.push(itemId, ...fence.args);
+    const changes = this.db.transaction(() => {
+      const r = this._prep(`UPDATE task_items SET ${sets.join(', ')} WHERE id = ?${fence.clause}`).run(...args);
+      if (r.changes === 0) return 0;
       const item = this.getTaskItem(itemId);
       this._bump(item.task_id);
+      return r.changes;
     })();
-    return this.getTaskItem(itemId);
+    return changes ? this.getTaskItem(itemId) : null;
   }
 
   // ── Hook execution log (P4, #1459) ─────────────────────────────────────
@@ -794,6 +1032,19 @@ class DurableTaskStore {
     return this._prep(`SELECT i.* FROM task_items i
       JOIN durable_tasks t ON t.id = i.task_id
       WHERE i.id = ? AND t.profile_id = ?`).get(id, profileId) || null;
+  }
+
+  /**
+   * Attempt-fencing SQL fragment (#87 B1.1). `claimGeneration` is the generation the
+   * writing attempt claimed from claimNextRunnable; null fences nothing (legacy/tick
+   * callers that own the current claim outright). With a fence the UPDATE reports
+   * `changes === 0` when a newer attempt has re-claimed the step — that is a refusal,
+   * not a missing row.
+   */
+  _claimFence(claimGeneration) {
+    return claimGeneration == null
+      ? { clause: '', args: [] }
+      : { clause: ' AND claim_generation = ?', args: [claimGeneration] };
   }
 
   _bump(taskId) {
@@ -947,4 +1198,4 @@ class DurableTaskStore {
   }
 }
 
-module.exports = { DurableTaskStore, TASK_STATUSES, ITEM_STATUSES, TIERS, TIER_RANK };
+module.exports = { DurableTaskStore, TASK_STATUSES, ITEM_STATUSES, TIERS, TIER_RANK, signalText };

@@ -11,7 +11,7 @@ const sessions = require('../session-store');
 const answerActions = require('../answer-actions');
 const { getCurrentSessionId, setCurrentSessionId } = require('../session-store');
 const projects = require('../projects');
-const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag } = require('../auth-flag');
+const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag, authGate, claimRedirectNotice } = require('../auth-flag');
 const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice, loopRecoveryEngine, loopFallbackNotice, chatFallbackEngine, engineLabelOf } = require('../engine-crash-policy');
 const { ladderFallbackTarget, ladderFallbackMessage } = require('../ladder-fallback');
 const ocLadder = require('../opencode-ladder-provider');
@@ -2698,7 +2698,24 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // `-c mcp_servers.*` overrides for codex, OPENCODE_CONFIG for opencode — see buildEngineCommand
   // / runEngineProcess in claude-runner.js). Both still have no separate system-prompt flag —
   // the system prompt is folded into the prompt text instead.
-  const engine = acceptedEngine || profiles.getEngine(user.workDir, chatId);
+  let engine = acceptedEngine || profiles.getEngine(user.workDir, chatId);
+
+  // Long-lived «Claude недоступен» gate (auth-flag.js). The flag is set by the auth branch
+  // below and by the OAuth refresh broker, and cleared only by the NEXT authorization — so
+  // while it holds, don't even spawn claude: it dies on 401 before doing any work and the
+  // generic retry budget just buries that under three «Работа прервана (код 1)» rounds
+  // (live 2026-10-01: 59 such rounds in one day, every one of them 401 account_on_hold).
+  // The run moves laterally instead — codex, or opencode when codex is unusable.
+  if (engine === 'claude') {
+    const gate = authGate('claude');
+    if (gate.blocked) {
+      engine = chatFallbackEngine('claude');
+      console.warn(`[${taskId}] claude auth gate: reason=${gate.reason || 'AUTH'} since=${gate.failedAt || '?'} — running on ${engine}`);
+      if (user.username && claimRedirectNotice('claude', user.username)) {
+        await tgSend(BOT_TOKEN, chatId, `⚠️ Авторизация Claude недоступна с ${gate.failedAt || 'неизвестно'} — выполняю на ${engineLabelOf(engine)}, пока её не восстановят.`, threadId);
+      }
+    }
+  }
 
   // Write per-user MCP config — gives Claude access only to this user's Chrome profile.
   // With isolation on (issue #1649) the file names only the MCP bridge client; the real
@@ -3575,7 +3592,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, retryMsg);
     _recordFailureAttempt(executionId, {
       taskId, projectId, sessionId: activeSessionId, webExactSession, engine, exitCode,
-      errorText: incompleteReason, action: 'generic_incomplete_retry',
+      // The genuine provider error, not the reason string: recording `код 1` here made
+      // execution-history undecodable (classifier saw "код 1" → UNKNOWN, and nobody could
+      // tell an expired OAuth token from a broken MCP config after the fact).
+      errorText: codexErrorMsg || claudeErrorText || incompleteReason, action: 'generic_incomplete_retry',
     });
     const fireRetry = () => runTask({
       initiatedAt, threadId,
@@ -3678,7 +3698,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   if (incomplete) {
     _recordFailureAttempt(executionId, {
       taskId, projectId, sessionId: activeSessionId, engine, exitCode,
-      errorText: incompleteReason || 'incomplete', action: null,
+      errorText: codexErrorMsg || claudeErrorText || incompleteReason || 'incomplete', action: null,
     });
     executionHistory.finalizeExecution(executionId, 'INTERRUPTED');
   } else {

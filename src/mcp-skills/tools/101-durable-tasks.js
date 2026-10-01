@@ -312,10 +312,21 @@ module.exports = {
         '`until` — validator keys, e.g. {"ci_green": "<PR url>"}, {"merged": "<PR url>"}, ' +
         '{"http_ok": {"url": "https://host/health", "contains": "<sha>"}}, {"credential_present": "github"}, ' +
         '{"command_exit_zero": "journalctl -u svc --since -30min | grep -q \'ERR_X\'"}, {"task_done": "<task id>"}, ' +
-        '{"file_exists": "path"}; `awaiting_user: true` — you asked the user something (send the question ' +
+        '{"file_exists": "path"}; ' +
+        '`awaiting_user: true` — you asked the user something (send the question ' +
         'yourself first); `sleep_sec` — a plain timer (observe for a day, then re-check). ' +
         'For CI or a merge pass `until:{ci_green}` / `{merged}` instead of `sleep_sec` — the wait tick ' +
         're-checks conditions every ~30s, so a sleep would overshoot the event. ' +
+        // #1846: event subjects — the GitHub webhook wakes these in seconds (a push),
+        // while the validator still gives the verdict on the poll. Subject forms:
+        // issue/PR "owner/repo#N", run "owner/repo/actions/runs/<id>",
+        // job "owner/repo/actions/runs/<id>/jobs/<jobId>".
+        'EVENT subjects (a GitHub webhook wakes the step in seconds, the validator still decides): ' +
+        '{"issue_pr_merged": "owner/repo#N"} — PR merged; ' +
+        '{"issue_pr_ci_green": "owner/repo#N"} — CI green on the PR head; ' +
+        '{"workflow_run_completed": "owner/repo/actions/runs/<id>"} — an Actions run finished; ' +
+        '{"workflow_run_green": "owner/repo/actions/runs/<id>"} — that run finished green; ' +
+        '{"workflow_job_completed": "owner/repo/actions/runs/<id>/jobs/<jobId>"} — a single job finished. ' +
         'You set poll_every_sec, timeout_sec and sleep_sec yourself — pick them for what you are waiting on. ' +
         'Waiting does not spend the step\'s attempts.',
       inputSchema: {
@@ -357,7 +368,10 @@ module.exports = {
       description:
         'Wake a durable step that is waiting (task_item_wait / a playbook wait). Use it when the user ' +
         'answers the question a waiting step asked, or when you know its condition now holds. The message ' +
-        'is handed to the resumed step. A programmatic wait is simply re-checked now.',
+        'is handed to the resumed step. A programmatic wait is simply re-checked now. ' +
+        'Signals are idempotent per plan step: if the step has not reached its wait yet the answer is ' +
+        'buffered (result {buffered:true}) and applied the moment it parks, and a duplicate signal never ' +
+        'overwrites the first one — {already_woken:true} / {duplicate:true} just confirm delivery.',
       inputSchema: {
         type: 'object',
         required: ['item_id'],
@@ -374,6 +388,32 @@ module.exports = {
         // Best-effort — a missed kick still resolves on the wait tick.
         if (out && !out.error) { try { await require('../../durable-kick').notify('wake'); } catch { /* never fails the wake */ } }
         return out;
+      },
+    },
+
+    task_item_result: {
+      description:
+        'Post the STRUCTURED result of the step you are running now, so the server reads your verdict ' +
+        'directly instead of parsing `DURABLE:` out of your reply text (a forgotten marker used to fail ' +
+        'the attempt even when the work was done). Call it right before finishing the step: status ' +
+        '"done" | "failed" | "waiting", `result` = what the next step and the validators need (urls, ' +
+        'ids, file paths, decisions), `note` = one short line, `attempt` = the `Attempt: N` line from ' +
+        'your prompt (it makes a stale attempt unable to overwrite a newer one). Still end the reply ' +
+        'with the DURABLE marker as well — engines that skip this tool rely on it.',
+      inputSchema: {
+        type: 'object',
+        required: ['item_id', 'status'],
+        properties: {
+          item_id: { type: 'string', description: 'Your Step id from the durable prompt' },
+          status: { type: 'string', enum: ['done', 'failed', 'waiting'] },
+          result: { description: 'Structured outcome (any JSON): urls, ids, file paths, decisions …' },
+          note: { type: 'string', description: 'One short line for the owner and the next step' },
+          attempt: { type: 'integer', description: 'The `Attempt: N` line of your prompt' },
+        },
+      },
+      handler: async ({ item_id, ...payload }, ctx) => {
+        const profileId = requireProfile(ctx);
+        return store().setStructuredResult(item_id, profileId, payload);
       },
     },
 
