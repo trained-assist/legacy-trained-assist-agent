@@ -28,6 +28,17 @@ const AUTH_ERROR_PATTERNS = [
   // fallback (#1227). Callers must also feed only genuine error text (see runner/index.js).
   /usage[_\s-]{0,5}limit/i,
   /rate[_\s-]{0,5}limit[^.]{0,20}(exceed|reached|hit)/i,
+  // Claude Code OAuth failures phrased differently from the table above. Observed live
+  // 2026-10-01 (account_on_hold at Anthropic): "Failed to authenticate. API Error: 401 OAuth
+  // access token has been revoked." matched NONE of the patterns, so isAuthError() was false,
+  // the auth branch never fired — no flag, no engine fallback, 3 blind retries on a process
+  // that dies instantly, then «Работа прервана (код 1)». Deliberately phrase-based, never a
+  // bare \b401\b: answer prose quoting a status code must not raise a flag (#1227).
+  /failed to authenticate/i,
+  /oauth access token has been revoked/i,
+  /invalid[_\s-]?grant/i,
+  /account[_\s-]?on[_\s-]?hold/i,
+  /claude\.ai\/restricted/i,
 ];
 
 function isAuthError(text) {
@@ -91,6 +102,55 @@ function getAllAuthFlags() {
   return Object.fromEntries(ENGINES.map(eng => [eng, all[eng] || { failed: false }]));
 }
 
+// ── Long-lived admission gate ─────────────────────────────────────────────────
+// A credential-invalid flag is not a per-run switch. It stays set until the NEXT
+// authorization — a successful OAuth refresh (scripts/claude-token-refresh.js clears it), a
+// successful run on that engine, or a re-login — and while it holds the runner must not spawn
+// the engine at all: it dies on 401 before doing any work, and the retry budget only hides
+// that behind three «Работа прервана (код N)» rounds. See runner/index.js admission gate.
+//
+// probeAfterMs is the safety valve, not an expiry: a flag nobody can clear (refresh broker
+// broken, credentials unreachable) must not black-hole the engine forever, so after the delay
+// ONE run gets through. Still broken → that run's auth branch re-stamps failed_at and the gate
+// closes again; working → the run succeeds and clears the flag itself.
+const GATE_PROBE_AFTER_MS = Number(process.env.AUTH_GATE_PROBE_AFTER_MS) || 6 * 3600 * 1000;
+
+function authGate(engine, { now = Date.now(), probeAfterMs = GATE_PROBE_AFTER_MS } = {}) {
+  const flag = getAuthFlag(engine);
+  if (!flag || !flag.failed) return { blocked: false, reason: null, failedAt: null };
+  const at = Date.parse(flag.failed_at || '');
+  const stale = !Number.isFinite(at) || now - at > probeAfterMs;
+  return {
+    blocked: !stale,
+    reason: flag.reason || null,
+    failedAt: Number.isFinite(at) ? flag.failed_at : null,
+  };
+}
+
+// One redirect notice per profile per cooldown, not per run: the gate may redirect every task
+// of an outage for hours, and repeating the warning would bury the actual answers.
+const REDIRECT_NOTICE_COOLDOWN_MS = Number(process.env.AUTH_REDIRECT_NOTICE_COOLDOWN_MS) || 6 * 3600 * 1000;
+
+// Returns true exactly once per profile per cooldown — the caller then sends the notice.
+// Fails open: a duplicate warning beats a silent redirect.
+function claimRedirectNotice(engine, profileId, { now = Date.now(), cooldownMs = REDIRECT_NOTICE_COOLDOWN_MS } = {}) {
+  try {
+    const all = _readAll();
+    const eng = normalizeEngine(engine);
+    const cur = all[eng];
+    if (!cur || !cur.failed) return false;
+    const key = String(profileId || 'default');
+    const notified = cur.redirect_notified || {};
+    const last = Date.parse(notified[key] || '');
+    if (Number.isFinite(last) && now - last < cooldownMs) return false;
+    all[eng] = { ...cur, redirect_notified: { ...notified, [key]: new Date(now).toISOString() } };
+    _writeAll(all);
+    return true;
+  } catch {
+    return true;
+  }
+}
+
 function _readAll() {
   try {
     if (!fs.existsSync(FLAG_FILE)) return {};
@@ -111,4 +171,5 @@ function _writeAll(all) {
 
 module.exports = {
   isAuthError, detectReason, setAuthFailedFlag, clearAuthFailedFlag, getAuthFlag, getAllAuthFlags,
+  authGate, claimRedirectNotice, GATE_PROBE_AFTER_MS, REDIRECT_NOTICE_COOLDOWN_MS,
 };

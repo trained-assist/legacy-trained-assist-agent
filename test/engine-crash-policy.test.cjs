@@ -115,3 +115,15 @@ test('codex (and anything else) falls back to opencode — never upward', () => 
 test('fallback notice names the real target engine', () => {
   assert.match(engineFallbackNotice('Claude Code', 'QUOTA', engineLabelOf('codex')), /переключаюсь на Codex/);
 });
+
+// 2026-10-01: a revoked OAuth token on exit 1 used to be handled as a terminal quick crash OR
+// (worse, once the text reached the incomplete path) as a generic «код 1» retry — either way
+// the engine-fallback branch never saw it. The provider-unusable text must fall through.
+const CLAUDE_401 = 'Failed to authenticate. API Error: 401 OAuth access token has been revoked.';
+
+test('claude 401 (revoked token) falls through to the engine-fallback branch', () => {
+  assert.equal(isTerminalQuickCrash({
+    exitCode: 1, timedOut: false, outputLength: 0, hasResult: false,
+    engine: 'claude', engineFallbackDone: false, errorText: CLAUDE_401,
+  }), false);
+});
