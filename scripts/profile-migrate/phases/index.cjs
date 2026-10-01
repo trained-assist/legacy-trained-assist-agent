@@ -16,6 +16,15 @@
 //   usesQuarantine?: false            skip the quarantine-root pre-flight mkdir
 //                                     (a phase that archives to a blob store
 //                                     never needs the dir — see archive-sessions)
+//   plan(ctx, scan) -> {items, filtered?}   OPTIONAL self-planning hook. The
+//                                     classification walk always runs (it is the
+//                                     report), but the phase may replace the
+//                                     ITEM list — that is how a phase whose unit
+//                                     is not a file plans (worktree: group by
+//                                     working copy, ask git for clean/dirty).
+//                                     `filtered` is additive: entries declined
+//                                     after classification. Without this hook
+//                                     the plan IS scan.items.
 //   filter(ctx, entry) -> boolean     OPTIONAL item selector. The clean-list
 //                                     class is inherited by a whole subtree, so
 //                                     class alone is not the plan: ARCHIVE hands
@@ -23,12 +32,16 @@
 //                                     git working copies too, and the phase
 //                                     declines them itself (declined entries are
 //                                     counted `filtered`, never planned).
-//   prepare(ctx, item) -> {sha256, size, dest}   READ-ONLY: hash + reserve the
-//                                     destination. Runs before the ledger
-//                                     append, so a record is never written for
-//                                     a file that cannot be identified. For
-//                                     ARCHIVE `dest` is the relative blob key
-//                                     (isSafeRelPath contract unchanged).
+//   prepare(ctx, item) -> {sha256, size, dest, action?}   READ-ONLY: hash +
+//                                     reserve the destination. Runs before the
+//                                     ledger append, so a record is never
+//                                     written for a file that cannot be
+//                                     identified. For ARCHIVE `dest` is the
+//                                     relative blob key (isSafeRelPath contract
+//                                     unchanged). `action` overrides the
+//                                     phase-level ledger action for THIS item
+//                                     (worktree writes DELETE for a clean copy
+//                                     and ARCHIVE for a bundled one).
 //   apply(ctx, item, prepared)        perform the action (mutates the profile)
 //   verify(ctx, st) -> {status, message?}   post-state check for one FOLDED
 //                                     ledger record (status: ok | recreated |
