@@ -19,6 +19,12 @@
 // каждый *.json как GTD-запись). Ключ записи = sha1(projectDir + goal)[:12] — он же
 // короткий id в callback_data `ocl|do|<id>` / `ocl|no|<id>`.
 //
+// #1813: сам АДРЕС в записи — `projectPath` (относительно корня профиля), legacy
+// `projectDir` (абс) читается и переписывается при следующем сохранении. `id` при
+// этом НЕ пересчитывается (кнопки в старых сообщениях живут), поэтому поиск идёт
+// через _find: по ключу от текущего адреса → по legacy-ключу → скан по адресу
+// (запись, созданная ДО переноса профиля, её ключ — старый абсолютный путь).
+//
 // Анти-спам: одно напоминание на (секция, хэш открытых пунктов), не чаще раза в 24 ч
 // на секцию; после «✖️ Отменить» — никогда. Список /all_forgotten_checklists сам по
 // себе считается показом (напоминание по тем же пунктам больше не придёт).
@@ -26,6 +32,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { atomicJson } = require('./atomic-json');
+// #1813: адрес секции хранится относительно корня профиля (см. gtd-project-ref.js).
+const { relProjectPath, loadProjectRef, storeProjectRef } = require('./gtd-project-ref');
 
 const STORE_FILE = 'gtd-orphans.json';
 const REMIND_AFTER_MS = 30 * 60 * 1000;
@@ -41,20 +49,49 @@ function storePath(workDir) { return path.join(workDir, STORE_FILE); }
 function loadStore(workDir) {
   try {
     const obj = JSON.parse(fs.readFileSync(storePath(workDir), 'utf8'));
-    return obj && typeof obj === 'object' && obj.records ? obj : { records: {} };
+    const store = obj && typeof obj === 'object' && obj.records ? obj : { records: {} };
+    for (const rec of Object.values(store.records)) if (rec) loadProjectRef(workDir, rec);
+    return store;
   } catch { return { records: {} }; }
 }
 
 function saveStore(workDir, store) {
   try {
     fs.mkdirSync(workDir, { recursive: true });
-    atomicJson(storePath(workDir), store, { space: 2 });
+    // Копия с относительными адресами: in-memory записи остаются в легаси-форме.
+    const records = {};
+    for (const [id, rec] of Object.entries(store.records || {})) records[id] = rec ? storeProjectRef(workDir, rec) : rec;
+    atomicJson(storePath(workDir), { ...store, records }, { space: 2 });
     return true;
   } catch (e) { console.error('[orphan-checklists] save:', e.message); return false; }
 }
 
 function sectionId(projectDir, goal) {
   return crypto.createHash('sha1').update(`${projectDir}\0${goal || ''}`).digest('hex').slice(0, 12);
+}
+
+// Адресный ключ записи: относительный внутри профиля, иначе абсолютный —
+// одинаков для legacy- и нового формата, поэтому сравнение адресов сходится.
+function _addrKey(workDir, dir) {
+  if (!dir) return '';
+  const rel = relProjectPath(workDir, dir);
+  return rel !== null ? rel : path.resolve(dir);
+}
+
+// Поиск записи по (адресу, goal): по ключу (та же схема, что sectionId) → скан
+// (запись создана ДО переноса профиля: её ключ — старый абсолютный путь).
+function _find(store, workDir, projectDir, goal) {
+  if (!store || !projectDir) return null;
+  const g = goal || '';
+  const direct = store.records[sectionId(projectDir, g)];
+  if (direct) return direct;
+  const want = _addrKey(workDir, projectDir);
+  if (!want) return null;
+  for (const rec of Object.values(store.records)) {
+    if (!rec || (rec.goal || '') !== g) continue;
+    if (_addrKey(workDir, rec.projectDir) === want) return rec;
+  }
+  return null;
 }
 
 function openItems(checklist) { return (checklist?.items || []).filter(i => !i.done); }
@@ -77,7 +114,7 @@ function labelFor(checklist) {
 }
 
 function findRecord(workDir, projectDir, goal) {
-  return loadStore(workDir).records[sectionId(projectDir, goal)] || null;
+  return _find(loadStore(workDir), workDir, projectDir, goal);
 }
 
 function _running(isSessionRunning, username, sessionId) {
@@ -115,11 +152,14 @@ function _ownerChat(workDir, owner) {
 }
 
 // Upsert записи для осиротевшей секции. Не трогает firstSeenAt у уже известной.
-function _upsert(store, { workDir, projectDir, checklist, username, audience, chatId, threadId, now }) {
-  const id = sectionId(projectDir, checklist.goal);
+// `existing` — уже найденная запись (_find): её id сохраняется как есть, даже если
+// ключ создан по старому (абсолютному) адресу до переноса профиля.
+function _upsert(store, { workDir, projectDir, checklist, username, audience, chatId, threadId, now, existing = null }) {
+  const found = existing || _find(store, workDir, projectDir, checklist.goal);
+  const id = found ? found.id : sectionId(projectDir, checklist.goal);
   const hash = openHash(checklist);
   const open = openItems(checklist);
-  let rec = store.records[id];
+  let rec = found;
   if (rec && rec.doneAt && !rec.cancelledAt) {
     // Та же секция снова открыта (новые пункты после закрытия) — новый эпизод.
     rec = { ...rec, doneAt: null, doingAt: null, firstSeenAt: now };
@@ -155,9 +195,9 @@ function _upsert(store, { workDir, projectDir, checklist, username, audience, ch
 function noteSkipped({ workDir, projectDir, checklist, username, audience, chatId, threadId, isSessionRunning = null, now = Date.now() }) {
   if (!isOrphan({ workDir, username, projectDir, checklist, isSessionRunning })) return null;
   const store = loadStore(workDir);
-  const known = store.records[sectionId(projectDir, checklist.goal)];
+  const known = _find(store, workDir, projectDir, checklist.goal);
   if (known && known.cancelledAt) return known;
-  const rec = _upsert(store, { workDir, projectDir, checklist, username, audience, chatId, threadId, now });
+  const rec = _upsert(store, { workDir, projectDir, checklist, username, audience, chatId, threadId, now, existing: known });
   saveStore(workDir, store);
   return rec;
 }
@@ -222,7 +262,7 @@ async function remindDue({ secrets = {}, baseUsersDir, now = Date.now(), isSessi
       if (!rec.chatId) continue;
       const token = tokenFor(rec.audience);
       if (!token) continue;
-      _upsert(store, { workDir, projectDir: rec.projectDir, checklist: cl, username, audience: rec.audience, now });
+      _upsert(store, { workDir, projectDir: rec.projectDir, checklist: cl, username, audience: rec.audience, now, existing: rec });
       // Отметку пишем ДО отправки: краш после send не должен дать дубль.
       rec.remindedAt = now; rec.remindedHash = hash;
       saveStore(workDir, store);
@@ -258,9 +298,9 @@ function listForgotten({ workDir, username, audience = 'default', chatId = null,
     const cl = G.readChecklist(projectDir);
     if (!cl || !cl.items.length) continue;
     if (!isOrphan({ workDir, username, projectDir, checklist: cl, isSessionRunning })) continue;
-    const known = store.records[sectionId(projectDir, cl.goal)];
+    const known = _find(store, workDir, projectDir, cl.goal);
     if (known && known.cancelledAt) continue;
-    const rec = _upsert(store, { workDir, projectDir, checklist: cl, username, audience, chatId, threadId, now });
+    const rec = _upsert(store, { workDir, projectDir, checklist: cl, username, audience, chatId, threadId, now, existing: known });
     if (markShown) { rec.remindedAt = rec.remindedAt || now; rec.remindedHash = rec.openHash; rec.listedAt = now; }
     out.push({ id: rec.id, label: rec.label, projectName, projectDir, openCount: rec.openCount, firstOpen: rec.firstOpen });
   }
