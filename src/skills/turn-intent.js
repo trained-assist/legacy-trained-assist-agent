@@ -69,6 +69,14 @@ const TURN_INTENTS = [
   { id: 'freelance', sections: ['freelance'],
     sample: 'нужно техническое задание на аутсорс-проект',
     test: /фриланс|аутсорс|техническ[а-яё]* задани|техзадани|freelance_/i },
+  // ТЗ/спецификация: генерация спецификаций живёт в software-engineering
+  // (65-spec-generation.js), контекст проекта — во freelance. Ход «собери ТЗ»
+  // матчит оба интента → секции объединяются, инженерные ТЗ-тулы не прячутся
+  // под фриланс-интентом (регрессия #1963: фриланс-аудитория потеряла
+  // engineering_generate_spec и молча делала клиентское ТЗ из шаблона).
+  { id: 'spec', sections: ['freelance', 'software-engineering'],
+    sample: 'собери ТЗ по проекту visitka',
+    test: /техническ[а-яё]*\s*задани|техзадани|специфик\w*|(?:^|[^а-яё])тз(?![а-яё])/i },
   { id: 'software-engineering', sections: ['software-engineering'],
     sample: 'задеплой ветку с фиксом бага',
     test: /\b(?:pr|commit|merge|deploy|github|git|repo|branch|worktree|npm|node|eslint)\b|engineering_|деплой|задеплой|ишью|репозитори|ветк\w*|коммит|мерж|пулл[- ]?реквест|баг/i },
