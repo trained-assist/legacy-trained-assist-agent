@@ -42,7 +42,10 @@ for (const file of fs.readdirSync(toolsDir).filter(f => f.endsWith('.js')).sort(
 
   for (const [name, tool] of Object.entries(mod.tools || {})) {
     if (!allDefs.some(d => d.name === name)) {
-      allDefs.push({ name, description: tool.description,
+      // `module` (issue #76): which file declared it — lets a consumer of the static
+      // catalog (prompt-audit's prompt_prefix_tokens, mcp-action's section filter)
+      // apply SKILLS_RESOLVED-style module hiding without spawning the child.
+      allDefs.push({ name, description: tool.description, module: file,
         inputSchema: tool.inputSchema || { type: 'object', properties: {} } });
     }
     if (hidden) continue;

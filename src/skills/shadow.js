@@ -40,7 +40,7 @@ function compare(resolved, actual) {
   return out;
 }
 
-function runShadow({ workDir, username, audience, mcpConfigPath, domainReport, catalog, siblingExists, log = console.log } = {}) {
+function runShadow({ workDir, username, audience, mcpConfigPath, domainReport, catalog, siblingExists, intent = null, log = console.log } = {}) {
   try {
     catalog = catalog || loadCatalog();
     let mcpServers = {};
@@ -48,7 +48,9 @@ function runShadow({ workDir, username, audience, mcpConfigPath, domainReport, c
     const report = domainReport || {};
     const readiness = buildReadiness(catalog, { probe: report.probe, siblingExists });
     const profileSkills = readProfileSkills(workDir);
-    const resolved = resolve(catalog, profileSkills, readiness);
+    // intent (#76 L1): the same per-turn filter the mount used, so `diff` compares
+    // like with like and .skills-resolved.json reflects THIS turn's exposure.
+    const resolved = resolve(catalog, profileSkills, readiness, { intent });
     const actual = {
       siblings: Object.keys(mcpServers).filter(id => catalog.servers?.[id]?.kind === 'sibling').sort(),
       promptDomains: Array.isArray(report.picked) ? [...report.picked].sort() : null,
@@ -56,9 +58,11 @@ function runShadow({ workDir, username, audience, mcpConfigPath, domainReport, c
     const diff = compare(resolved, actual);
 
     // Preview: what the audience default (PR-E migration) would hide, legacy profiles only.
+    // Skipped while a turn intent is actually narrowing the mount — then `resolved` is
+    // the turn's subset, not the profile's baseline, and the diff would be meaningless.
     let preview = null;
     const aud = audience && catalog.audienceDefaults?.[audience];
-    if (!profileSkills && aud) {
+    if (!profileSkills && aud && !(resolved.intent && resolved.intent.applied)) {
       const p = resolve(catalog, aud, readiness);
       preview = { audience, skills: aud, hides: {
         siblings: setDiff(resolved.siblings, p.siblings).add,

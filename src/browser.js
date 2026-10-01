@@ -75,8 +75,43 @@ function buildStorageState(tokensDir) {
   return { cookies, origins: [] };
 }
 
+// ── Per-run config files (issue #76 L1, turn-intent mount) ───────────────────
+// A narrowed mount differs per turn, but .mcp.json / .skills-effective.json are ONE
+// pair of files per profile, rewritten by every run (see the NO AGENT_SESSION_FILE
+// note below). Parallel runs of the same profile — several chats share one profile
+// by design — would clobber each other's server set: run A's engine would start with
+// run B's sections. So a run that narrows the mount writes
+// `<workDir>/.mcp-runs/<runId>.*` instead; every consumer takes the PATH it was
+// handed (engine argv, SKILLS_RESOLVED env, buildDomainBlock, shadow), so nothing
+// else changes. Stale files of crashed runs are GC'd on the next write.
+const RUNS_DIR = '.mcp-runs';
+const RUN_FILE_TTL_MS = 6 * 3600 * 1000;
+
+function sanitizeRunId(runId) {
+  return String(runId || '').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100) || null;
+}
+
+function runConfigPaths(workDir, runId) {
+  const id = sanitizeRunId(runId);
+  if (!id) return { mcp: path.join(workDir, '.mcp.json'), effective: null, dir: null, id: null };
+  const dir = path.join(workDir, RUNS_DIR);
+  return { mcp: path.join(dir, `${id}.mcp.json`), effective: path.join(dir, `${id}.skills-effective.json`), dir, id };
+}
+
+function gcRunConfigFiles(dir, keepId) {
+  if (!dir) return;
+  try {
+    const cutoff = Date.now() - RUN_FILE_TTL_MS;
+    for (const name of fs.readdirSync(dir)) {
+      if (keepId && name.startsWith(`${keepId}.`)) continue;
+      const p = path.join(dir, name);
+      try { if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p); } catch { /* raced with a parallel writer */ }
+    }
+  } catch { /* no dir yet */ }
+}
+
 /**
- * Writes per-user .mcp.json with Playwright MCP scoped to this user's Chrome profile.
+ * Writes per-user MCP config with Playwright MCP scoped to this user's Chrome profile.
  * If the user has captured service cookies (via Chrome extension), injects them via --storage-state.
  *
  * `siblingPaths` (optional, test seam): overrides for the sibling checkout entrypoints
@@ -149,7 +184,7 @@ function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, to
   };
 }
 
-function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, extraEnv, toolSecrets, siblings = true } = {}) {
+function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, extraEnv, toolSecrets, siblings = true, skillsPlan: planOverride, runId } = {}) {
   // Note: --user-data-dir creates a persistent context, which is incompatible
   // with --storage-state (Playwright limitation). We rely on --storage-state
   // for both cookie injection and session persistence. Per-user isolation is
@@ -200,11 +235,18 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
     '--storage-state', stateFile,
   ];
 
-  // Profile skills (#1537 PR-B): null unless workDir/skills.json exists and resolves.
-  let skillsPlan = skillsEnforce.planFor(workDir);
-  const skillsFile = skillsPlan ? skillsEnforce.writeEffective(workDir, skillsPlan) : null;
+  // Profile skills (#1537 PR-B) + turn-intent mount (#76 L1): the runner precomputes
+  // the plan (it needs the same numbers for the mount note and prompt audit) and
+  // passes it in — `skillsPlan: undefined` = absent = compute it here as before,
+  // `skillsPlan: null` = legacy (nothing hidden), an object = use as-is.
+  let skillsPlan = planOverride !== undefined ? planOverride : skillsEnforce.planFor(workDir);
+  const run = runConfigPaths(workDir, runId);
+  gcRunConfigFiles(run.dir, run.id);
+  const skillsFile = skillsPlan ? skillsEnforce.writeEffective(workDir, skillsPlan, { file: run.effective }) : null;
   if (skillsPlan && !skillsFile) skillsPlan = null;
-  if (!skillsPlan) { try { fs.rmSync(path.join(workDir, skillsEnforce.EFFECTIVE_FILE), { force: true }); } catch { /* stale file is inert: no env points at it */ } }
+  // No plan, or the plan went to a per-run file: a leftover profile-level effective
+  // file is inert (no env points at it) but misleading — drop it either way.
+  if (!skillsPlan || run.effective) { try { fs.rmSync(path.join(workDir, skillsEnforce.EFFECTIVE_FILE), { force: true }); } catch { /* stale file is inert: no env points at it */ } }
 
   const mcpToolEnv = buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, toolSecrets, extraEnv });
 
@@ -239,7 +281,8 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
   }
 
   if (skillsPlan) {
-    console.log(`[skills] ${path.basename(workDir)}: sections=${skillsPlan.sections.join(',')} hidden sib=${skillsPlan.hidden.siblings.join('|') || '-'} mod=${skillsPlan.hidden.modules.length} dom=${skillsPlan.hidden.domains.length}`);
+    const where = run.dir ? `${RUNS_DIR}/${run.id}` : '.mcp.json';
+    console.log(`[skills] ${path.basename(workDir)}: sections=${skillsPlan.sections.join(',')} via=${where} hidden sib=${skillsPlan.hidden.siblings.join('|') || '-'} mod=${skillsPlan.hidden.modules.length} dom=${skillsPlan.hidden.domains.length}${skillsPlan.intent ? ` intent=${skillsPlan.intent.applied ? skillsPlan.sections.length + ' sections' : 'fell-open'}` : ''}`);
   }
 
   return config;
@@ -247,13 +290,15 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
 
 function writeMcpConfig(workDir, userId, opts = {}) {
   const config = buildMcpConfig(workDir, userId, opts);
-  const configPath = path.join(workDir, '.mcp.json');
   // 0660, not atomicJson's default 0600: the run's claude reads this file as the
   // profile's slot user. A 0600 file gets ACL mask --- and stays unreadable until
   // shareServiceFiles() fixes it before a run — but a parallel run of the same
   // profile rewrites the file in between, and the first run's claude then dies on
   // start with «EACCES … .mcp.json» (exit code 1). The profile gate still keeps
-  // other profiles out.
+  // other profiles out. A runId (narrowed mount, #76) routes to .mcp-runs/<id>.mcp.json
+  // so two parallel runs never share the file at all.
+  const configPath = runConfigPaths(workDir, opts.runId).mcp;
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
   atomicJson(configPath, config, { space: 2, mode: 0o660 });
   return configPath;
 }
@@ -275,7 +320,8 @@ function writeRunMcpConfig(workDir, userId, opts = {}, { bridged = false } = {})
   const { botToken, ...rest } = opts;
   const toolSecrets = { ...require('./secrets').toolPlatformEnv(), ...(botToken ? { [TOOL_BOT_TOKEN_ENV]: String(botToken) } : {}) };
   const real = buildMcpConfig(workDir, userId, { ...rest, toolSecrets });
-  const configPath = path.join(workDir, '.mcp.json');
+  const configPath = runConfigPaths(workDir, rest.runId).mcp;
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
   atomicJson(configPath, bridgedMcpConfig(real), { space: 2 });
   return { mcpConfig: configPath, servers: real.mcpServers };
 }
