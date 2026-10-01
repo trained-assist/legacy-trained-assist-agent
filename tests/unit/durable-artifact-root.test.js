@@ -70,6 +70,27 @@ describe('#1861 artifact root', () => {
     expect(prompts[0]).toContain(artifactRoot);
   });
 
+  // #2013: the executor is only able to retire a stale tail step if it can SEE it,
+  // and only able to retire it in one call if the prompt names that call. Asserted
+  // on the real prompt of a real tick — a unit test of the helper would not prove
+  // the wiring.
+  it('the prompt carries the rest of the plan and the one-call replacement', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { store, task, item } = plan(G);
+    const tail = store.insertPlanItem(task.id, PROFILE, {
+      afterItemId: item.id,
+      item: step({ title: 'Tail step that may go stale', validation: { file_exists: 'prod-check/late.md' } }),
+    });
+    const prompts = [];
+    await tick(G, { runTask: async ({ task: prompt }) => { prompts.push(prompt); return 'ИТОГ ШАГА: ok\nDURABLE: done'; } });
+    await settle();
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('[ОСТАТОК ПЛАНА');
+    expect(prompts[0]).toContain('Tail step that may go stale');
+    expect(prompts[0]).toContain(tail.item.id.slice(0, 8));
+    expect(prompts[0]).toContain('replaces_item_id');
+  });
+
   it('a failing deterministic check on an agent step does not silently complete it', async () => {
     const G = require('../../src/gtd-controller.js');
     const { store, item } = plan(G);
