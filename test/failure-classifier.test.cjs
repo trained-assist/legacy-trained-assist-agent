@@ -219,3 +219,13 @@ test('playbook researcher is not pinned to the Go `research` subscription profil
     assert.equal(r.ocRole, 'explore');
   }
 });
+
+// 2026-10-01: the live Claude OAuth failure classified UNKNOWN — execution-history rows read
+// «код 1», the auth flag never rose and nothing redirected the run off a dead engine.
+test('deterministic: Claude OAuth 401 / account_on_hold classify as AUTH', () => {
+  assert.equal(classifyDeterministic('Failed to authenticate. API Error: 401 OAuth access token has been revoked.').class, 'AUTH');
+  assert.equal(classifyDeterministic('refresh HTTP 400: {"error":"invalid_grant","error_description":"account_on_hold"}').class, 'AUTH');
+  assert.equal(classifyDeterministic('see https://claude.ai/restricted').class, 'AUTH');
+  // A quoted status code inside an ordinary answer is still not an auth failure (#1227).
+  assert.equal(classifyDeterministic('токен из origin URL мёртв (401) — обновил'), null);
+});

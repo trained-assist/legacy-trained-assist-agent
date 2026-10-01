@@ -368,7 +368,10 @@ module.exports = {
       description:
         'Wake a durable step that is waiting (task_item_wait / a playbook wait). Use it when the user ' +
         'answers the question a waiting step asked, or when you know its condition now holds. The message ' +
-        'is handed to the resumed step. A programmatic wait is simply re-checked now.',
+        'is handed to the resumed step. A programmatic wait is simply re-checked now. ' +
+        'Signals are idempotent per plan step: if the step has not reached its wait yet the answer is ' +
+        'buffered (result {buffered:true}) and applied the moment it parks, and a duplicate signal never ' +
+        'overwrites the first one — {already_woken:true} / {duplicate:true} just confirm delivery.',
       inputSchema: {
         type: 'object',
         required: ['item_id'],
