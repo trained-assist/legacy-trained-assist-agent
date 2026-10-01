@@ -439,8 +439,10 @@ async function fileExists(ctx) {
   const validation = ctx.validation;
   const rel = typeof validation === 'string' ? validation : validation && validation.path;
   if (!rel) return inconclusive('no-path');
-  if (!ctx.projectDir) return inconclusive('no-project-dir', { path: rel });
-  const target = path.isAbsolute(rel) ? rel : path.join(ctx.projectDir, rel);
+  // An absolute path needs no project dir — only a relative one does.
+  const absolute = path.isAbsolute(rel);
+  if (!ctx.projectDir && !absolute) return inconclusive('no-project-dir', { path: rel });
+  const target = absolute ? rel : path.join(ctx.projectDir, rel);
   const subject = { path: target, relative: rel };
   try {
     const stat = await fs.promises.stat(target, { signal: AbortSignal.timeout(DEFAULT_STAT_TIMEOUT_MS) });

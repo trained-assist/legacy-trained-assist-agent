@@ -73,3 +73,22 @@ describe('decidePoll: a final fail resolves the wait instead of re-parking', () 
     expect(decidePoll(wait, [{ key: 'command_exit_zero', status: 'pass', evidence: {} }], 5000)).toBe('satisfied');
   });
 });
+
+describe('file_exists: an absolute path needs no project dir', () => {
+  it('passes on an absolute path with projectDir unset', async () => {
+    const r = await registry.file_exists({ validation: '/etc/hostname' });
+    expect(r.status).toBe('pass');
+  });
+
+  it('is inconclusive for a relative path with no project dir (needs one)', async () => {
+    const r = await registry.file_exists({ validation: 'docs/inventory/repo-coverage.md' });
+    expect(r.status).toBe('inconclusive');
+    expect(r.evidence.reason).toBe('no-project-dir');
+  });
+
+  it('fails on a missing absolute path', async () => {
+    const r = await registry.file_exists({ validation: '/etc/__not_a_file__' });
+    expect(r.status).toBe('fail');
+    expect(r.evidence.reason).toBe('missing');
+  });
+});
