@@ -67,6 +67,7 @@ class DurableTaskStore {
         due_at              INTEGER,
         last_execution_id   TEXT,
         last_error          TEXT,
+        claim_generation    INTEGER NOT NULL DEFAULT 0,
         created_at          INTEGER NOT NULL,
         updated_at          INTEGER NOT NULL
       );
@@ -382,7 +383,7 @@ class DurableTaskStore {
       ORDER BY i.position`).all(taskId, profileId);
   }
 
-  updateTaskItem(id, patch, profileId) {
+  updateTaskItem(id, patch, profileId, { releaseClaim = false } = {}) {
     if (!this._itemOwnedBy(id, profileId)) return null;
     const allowed = ['title', 'status', 'current_tier', 'delay_after_sec', 'due_at',
                      'wait_deadline_at', 'last_execution_id', 'last_error',
@@ -414,6 +415,14 @@ class DurableTaskStore {
     const res = this.db.transaction(() => {
       const r = this._prep(`UPDATE task_items SET ${sets.join(', ')} WHERE id = ?`).run(...args);
       if (r.changes === 0) return null;
+      // `releaseClaim` (#87 B1.1): the scheduler is putting back a claim it never
+      // turned into an attempt (busy session, slot limit, fanout/stage hold, a
+      // re-claim of the item this same pass already fired). Give the generation
+      // back — otherwise a bookkeeping release would fence off the settle of the
+      // attempt that IS running, and its result would be thrown away.
+      if (releaseClaim) {
+        this._prep('UPDATE task_items SET claim_generation = MAX(0, claim_generation - 1) WHERE id = ?').run(id);
+      }
       const item = this.getTaskItem(id);
       // Defense in depth: ownership was checked before UPDATE.
       const owner = this._prep('SELECT profile_id FROM durable_tasks WHERE id = ?')
@@ -509,7 +518,11 @@ class DurableTaskStore {
         ORDER BY (i.due_at IS NULL) DESC, i.due_at ASC, i.position ASC
         LIMIT 1`).get(now);
       if (!row) return null;
-      this._prep(`UPDATE task_items SET status = 'running', updated_at = ? WHERE id = ?`)
+      // Attempt fencing (epic #87 B1.1, prod-plans T6): every claim opens a new
+      // generation, and the attempt that carries it may only settle while the row still
+      // holds that number — see completeItem/failItem/parkItem's `claimGeneration`.
+      this._prep(`UPDATE task_items SET status = 'running', claim_generation = claim_generation + 1,
+          updated_at = ? WHERE id = ?`)
         .run(now, row.id);
       return this.getTaskItem(row.id);
     })();
@@ -537,14 +550,21 @@ class DurableTaskStore {
    * its due time. If it is still waiting beyond that (the run that should have
    * claimed it never did), `expireWaitingDeadlines` fails it instead of letting a
    * stuck waiter defer forever.
+   *
+   * Attempt fencing (#87 B1.1): pass the `claimGeneration` this write's attempt
+   * claimed. The UPDATE then carries `AND claim_generation = ?` and a superseded
+   * attempt gets `null` instead of silently overwriting the newer attempt's step —
+   * and never arms the next sibling.
    */
-  completeItem(id, profileId, { executionId = null } = {}) {
+  completeItem(id, profileId, { executionId = null, claimGeneration = null } = {}) {
     return this.db.transaction(() => {
       const item = this._itemOwnedBy(id, profileId);
       if (!item) return null;
+      const fence = this._claimFence(claimGeneration);
       const now = nowMs();
-      this._prep(`UPDATE task_items SET status = 'done', last_execution_id = ?,
-          updated_at = ? WHERE id = ?`).run(executionId, now, id);
+      const upd = this._prep(`UPDATE task_items SET status = 'done', last_execution_id = ?,
+          updated_at = ? WHERE id = ?${fence.clause}`).run(executionId, now, id, ...fence.args);
+      if (upd.changes === 0) return null;
       const next = this._prep(`SELECT * FROM task_items WHERE task_id = ? AND status = 'pending'
         ORDER BY position LIMIT 1`).get(item.task_id);
       if (next) {
@@ -577,26 +597,30 @@ class DurableTaskStore {
    * wait_deadline_at is cleared: the wait's own deadline lives in wait_json and
    * is enforced by the poll, not by expireWaitingDeadlines.
    */
-  parkItem(id, profileId, { wait, dueAt, refundAttempt = false, lastError = null } = {}) {
+  parkItem(id, profileId, { wait, dueAt, refundAttempt = false, lastError = null, claimGeneration = null } = {}) {
     return this.db.transaction(() => {
       const item = this._itemOwnedBy(id, profileId);
       if (!item) return null;
+      const fence = this._claimFence(claimGeneration);
       const now = nowMs();
-      this._prep(`UPDATE task_items SET status = 'waiting', due_at = ?, wait_deadline_at = NULL,
+      const upd = this._prep(`UPDATE task_items SET status = 'waiting', due_at = ?, wait_deadline_at = NULL,
           wait_json = ?, last_error = ?, updated_at = ?,
           attempt_count = CASE WHEN ? THEN MAX(0, attempt_count - 1) ELSE attempt_count END
-          WHERE id = ?`)
-        .run(dueAt, wait == null ? null : JSON.stringify(wait), lastError, now, refundAttempt ? 1 : 0, id);
+          WHERE id = ?${fence.clause}`)
+        .run(dueAt, wait == null ? null : JSON.stringify(wait), lastError, now, refundAttempt ? 1 : 0, id, ...fence.args);
+      if (upd.changes === 0) return null;
       this._bump(item.task_id);
       return this.getTaskItem(id);
     })();
   }
 
   /** Replace an item's wait state without changing its status (e.g. clear it after a wake). */
-  setItemWait(id, profileId, wait) {
+  setItemWait(id, profileId, wait, { claimGeneration = null } = {}) {
     if (!this._itemOwnedBy(id, profileId)) return null;
-    this._prep('UPDATE task_items SET wait_json = ?, updated_at = ? WHERE id = ?')
-      .run(wait == null ? null : JSON.stringify(wait), nowMs(), id);
+    const fence = this._claimFence(claimGeneration);
+    const res = this._prep(`UPDATE task_items SET wait_json = ?, updated_at = ? WHERE id = ?${fence.clause}`)
+      .run(wait == null ? null : JSON.stringify(wait), nowMs(), id, ...fence.args);
+    if (res.changes === 0) return null;
     return this.getTaskItem(id);
   }
 
@@ -644,13 +668,15 @@ class DurableTaskStore {
     })();
   }
 
-  failItem(id, profileId, { executionId = null, error = null } = {}) {
+  failItem(id, profileId, { executionId = null, error = null, claimGeneration = null } = {}) {
     return this.db.transaction(() => {
       const item = this._itemOwnedBy(id, profileId);
       if (!item) return null;
-      this._prep(`UPDATE task_items SET status = 'failed', last_execution_id = ?,
-          last_error = ?, updated_at = ? WHERE id = ?`)
-        .run(executionId, error, nowMs(), id);
+      const fence = this._claimFence(claimGeneration);
+      const upd = this._prep(`UPDATE task_items SET status = 'failed', last_execution_id = ?,
+          last_error = ?, updated_at = ? WHERE id = ?${fence.clause}`)
+        .run(executionId, error, nowMs(), id, ...fence.args);
+      if (upd.changes === 0) return null;
       this._bump(item.task_id);
       return this.getTaskItem(id);
     })();
@@ -726,19 +752,22 @@ class DurableTaskStore {
    * from completeItem: `evidence_json` / `completed_at` are contract-plan fields,
    * while completeItem stays the legacy status transition.
    */
-  setItemEvidence(itemId, profileId, { evidence_json = null, completed_at = null } = {}) {
+  setItemEvidence(itemId, profileId, { evidence_json = null, completed_at = null, claimGeneration = null } = {}) {
     if (!this._itemOwnedBy(itemId, profileId)) return null;
     const sets = ['updated_at = ?'];
     const args = [nowMs()];
     if (evidence_json !== null) { sets.push('evidence_json = ?'); args.push(evidence_json); }
     if (completed_at !== null) { sets.push('completed_at = ?'); args.push(completed_at); }
-    args.push(itemId);
-    this.db.transaction(() => {
-      this._prep(`UPDATE task_items SET ${sets.join(', ')} WHERE id = ?`).run(...args);
+    const fence = this._claimFence(claimGeneration);
+    args.push(itemId, ...fence.args);
+    const changes = this.db.transaction(() => {
+      const r = this._prep(`UPDATE task_items SET ${sets.join(', ')} WHERE id = ?${fence.clause}`).run(...args);
+      if (r.changes === 0) return 0;
       const item = this.getTaskItem(itemId);
       this._bump(item.task_id);
+      return r.changes;
     })();
-    return this.getTaskItem(itemId);
+    return changes ? this.getTaskItem(itemId) : null;
   }
 
   // ── Hook execution log (P4, #1459) ─────────────────────────────────────
@@ -794,6 +823,19 @@ class DurableTaskStore {
     return this._prep(`SELECT i.* FROM task_items i
       JOIN durable_tasks t ON t.id = i.task_id
       WHERE i.id = ? AND t.profile_id = ?`).get(id, profileId) || null;
+  }
+
+  /**
+   * Attempt-fencing SQL fragment (#87 B1.1). `claimGeneration` is the generation the
+   * writing attempt claimed from claimNextRunnable; null fences nothing (legacy/tick
+   * callers that own the current claim outright). With a fence the UPDATE reports
+   * `changes === 0` when a newer attempt has re-claimed the step — that is a refusal,
+   * not a missing row.
+   */
+  _claimFence(claimGeneration) {
+    return claimGeneration == null
+      ? { clause: '', args: [] }
+      : { clause: ' AND claim_generation = ?', args: [claimGeneration] };
   }
 
   _bump(taskId) {
