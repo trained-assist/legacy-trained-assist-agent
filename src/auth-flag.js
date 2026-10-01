@@ -82,12 +82,65 @@ function clearAuthFailedFlag(engine) {
     const all = _readAll();
     const current = all[eng];
     if (!current || !current.failed) return;
-    all[eng] = { ...current, failed: false, repaired_at: new Date().toISOString() };
+    // A suspension outranks a plain failure: whoever installed the authorization again has
+    // answered exactly the question the suspension asked («the credentials are unusable, stop
+    // until someone fixes them»), so the resume is also the flag reset.
+    all[eng] = { ...current, failed: false, suspended: false, suspended_at: null, repaired_at: new Date().toISOString() };
     _writeAll(all);
     console.log(`[auth-flag] flag CLEARED: engine=${eng}`);
   } catch (e) {
     console.error('[auth-flag] clear failed:', e.message);
   }
+}
+
+// ── Suspension: the owner has no usable authorization ────────────────────────
+// A plain failure says «this attempt did not work, try the engine again in a few hours» —
+// that is right for a timeout or a 5xx. It is exactly wrong for a hard credential rejection
+// (invalid_grant / account_on_hold / revoked): nobody is going to install a new authorization
+// on their own, so retrying on a timer only means a call to the provider every few minutes
+// plus a «Авторизация Claude недоступна» notice the owner already answered with «don't call it».
+// Live 2026-10-01: the 30-minute refresh cron re-stamped the flag forever and the gate could
+// never tell «broken» from «switched off».
+//
+// A suspension says: do not attempt, do not probe, do not warn — wait for the NEXT authorization
+// (a fresh credentials file, a manual resume, or a successful run) to lift it. It is what makes
+// «не вызывать Claude, пока авторизация не установлена» an enforced invariant rather than a
+// reminder in chat.
+function suspendAuthFailedFlag({ reason, error_text, engine }) {
+  const eng = normalizeEngine(engine);
+  try {
+    fs.mkdirSync(FLAGS_DIR, { recursive: true });
+    const all = _readAll();
+    const existing = all[eng] || {};
+    all[eng] = {
+      ...existing,
+      failed: true,
+      reason,
+      error_text: (error_text || '').slice(0, 500),
+      vm: VM_NAME,
+      failed_at: existing.failed_at || new Date().toISOString(),
+      suspended: true,
+      suspended_at: new Date().toISOString(),
+      repaired_at: null,
+      repair_attempts: existing.repair_attempts || 0,
+    };
+    _writeAll(all);
+    console.error(`[auth-flag] SUSPENDED: engine=${eng} reason=${reason} — no attempts until the next authorization`);
+    return true;
+  } catch (e) {
+    console.error('[auth-flag] suspend failed:', e.message);
+    return false;
+  }
+}
+
+// The operator answer to a suspension: authorization was installed again. Clears both the
+// failure and the suspension (the same event) — see clearAuthFailedFlag.
+function resumeAuthFailedFlag(engine) {
+  const eng = normalizeEngine(engine);
+  const before = getAuthFlag(eng);
+  clearAuthFailedFlag(eng);
+  console.log(`[auth-flag] RESUME requested: engine=${eng} wasSuspended=${!!before.suspended}`);
+  return true;
 }
 
 // engine omitted → the 'claude' flag, same shape/behavior as before per-engine tracking existed.
@@ -113,6 +166,11 @@ function getAllAuthFlags() {
 // broken, credentials unreachable) must not black-hole the engine forever, so after the delay
 // ONE run gets through. Still broken → that run's auth branch re-stamps failed_at and the gate
 // closes again; working → the run succeeds and clears the flag itself.
+//
+// A SUSPENDED flag ignores the valve entirely (blocked always, forever). The valve exists to
+// recover from an unattended transient failure; a suspension was written by a caller that knows
+// a new authorization is required, so letting one run through would re-spend a doomed attempt
+// (and re-arm the owner's «не вызывай Claude» complaint) every 6 hours.
 const GATE_PROBE_AFTER_MS = Number(process.env.AUTH_GATE_PROBE_AFTER_MS) || 6 * 3600 * 1000;
 
 function authGate(engine, { now = Date.now(), probeAfterMs = GATE_PROBE_AFTER_MS } = {}) {
@@ -120,8 +178,10 @@ function authGate(engine, { now = Date.now(), probeAfterMs = GATE_PROBE_AFTER_MS
   if (!flag || !flag.failed) return { blocked: false, reason: null, failedAt: null };
   const at = Date.parse(flag.failed_at || '');
   const stale = !Number.isFinite(at) || now - at > probeAfterMs;
+  const blocked = flag.suspended ? true : !stale;
   return {
-    blocked: !stale,
+    blocked,
+    suspended: !!flag.suspended,
     reason: flag.reason || null,
     failedAt: Number.isFinite(at) ? flag.failed_at : null,
   };
@@ -171,5 +231,6 @@ function _writeAll(all) {
 
 module.exports = {
   isAuthError, detectReason, setAuthFailedFlag, clearAuthFailedFlag, getAuthFlag, getAllAuthFlags,
+  suspendAuthFailedFlag, resumeAuthFailedFlag,
   authGate, claimRedirectNotice, GATE_PROBE_AFTER_MS, REDIRECT_NOTICE_COOLDOWN_MS,
 };

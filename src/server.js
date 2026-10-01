@@ -33,6 +33,8 @@ const { startGetcourseLogin } = require('./getcourse-login');
 const { createHhNegotiations } = hhLib('hh-negotiations');
 
 const profiles = require('./profiles');
+const { resolveEngine } = require('./engine-admission');
+const { chatFallbackEngine } = require('./engine-crash-policy');
 const dataPaths = require('./data-paths');
 // Encrypted credential store (epic #1789 P0 C4) — every credential read/write below
 // goes through it so plaintext and v2-encrypted files behave identically.
@@ -419,7 +421,6 @@ async function resumePendingTasks(secrets) {
       continue;
     }
 
-    const engine = p.engine || 'claude';
     // The attempt counter is OWNED BY THE RUNNER: it advances only when a resume actually FAILS
     // (runner/index.js retry block). This boot path must NOT advance it — a restart that kills an
     // in-flight resume is not a failure, and counting it as one burned the whole budget on a
@@ -430,13 +431,36 @@ async function resumePendingTasks(secrets) {
     // (epic #1789 P1) — legacy records still resolve through their stored workDir.
     const workDir = resolvePendingWorkDir(p);
 
+    // Engine for the resume — NOT simply the journaled one. This line used to be
+    // `p.engine || 'claude'`, which resurrected Claude from the pending journal after the profile
+    // itself had been switched away from it (live 2026-10-01 21:30 / 22:04 / 22:25:
+    // `[resume] fallback engine=claude` while sibling sessions resumed on opencode, on a host
+    // where Claude has no authorization at all) and hard-coded Claude for every journal record
+    // written before engines existed. The journal still says which engine the INTERRUPTED run
+    // used — that matters for the native session id — but admission decides where it resumes.
+    const journaledEngine = p.engine || null;
+    const admission = resolveEngine({
+      requested: journaledEngine,
+      profileEngine: profiles.getEngine(workDir, p.userId),
+      fallbackChain: [chatFallbackEngine('claude')],
+    });
+    const engine = admission.engine;
+    if (admission.movedFrom) {
+      console.warn(`[resume] engine=${journaledEngine} not admitted (${admission.reason}) — resuming on ${engine} user=${p.username} session=${p.sessionId}`);
+    }
+
     // Native resume (#1234): claude (Sub-2), codex (Sub-3) and opencode (Sub-4) are wired.
     // Source: the pending journal (written mid-run, survives SIGKILL) with the durable session
     // record as fallback. opencode is safe by construction — an id only exists if it previously
     // ran successfully; otherwise nativeResumeId is null and the old path is unchanged.
+    //
+    // p.engineSessionId belongs to the JOURNALED engine. After a lateral move it would be an id
+    // from a different engine's session store — resuming that would ask engine B to continue
+    // engine A's conversation id. Only reuse it when the engine did not change.
     const NATIVE_RESUME_ENGINES = ['claude', 'codex', 'opencode'];
     const nativeResumeId = NATIVE_RESUME_ENGINES.includes(engine)
-      ? (p.engineSessionId || (p.sessionId ? getEngineSessionId(workDir, p.sessionId, engine) : null))
+      ? ((journaledEngine === engine ? p.engineSessionId : null)
+        || (p.sessionId ? getEngineSessionId(workDir, p.sessionId, engine) : null))
       : null;
     // With a native resume the engine already holds the task, so replaying it is redundant (and
     // risks redoing finished steps); send a short "keep going" instead. Same when there is no task

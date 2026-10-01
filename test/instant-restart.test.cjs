@@ -39,11 +39,12 @@ test('SIGTERM handler flags the restart and exits without draining', () => {
 
 const { isTaskResumable, resumeSinkOf, resolvePendingWorkDir } = require('../src/pending-task-resume');
 
-function resumeHarness({ pending, now = Date.now(), retryDelayMs = () => 0, engineSessionIds = {}, secrets = { BOT_TOKEN: 'tok' } }) {
+function resumeHarness({ admission = {}, pending, now = Date.now(), retryDelayMs = () => 0, engineSessionIds = {}, secrets = { BOT_TOKEN: 'tok' } }) {
   const start = serverSrc.indexOf('const RESUME_WINDOW_MS');
   const end = serverSrc.indexOf('async function main()', start);
   const calls = [], runs = [], cleared = [], delays = [], resumeKinds = [], releases = [];
   const sandbox = {
+    ...require('./helpers/resume-admission.cjs')(admission),
     taskDelivery: require('../src/bot-delivery').taskDelivery,
     path, console: { log() {}, error() {}, warn() {} }, Date: class extends Date { static now() { return now; } },
     BASE_USERS_DIR: '/users', AbortSignal, Promise,
@@ -81,7 +82,7 @@ function resumeHarness({ pending, now = Date.now(), retryDelayMs = () => 0, engi
 }
 
 const task = (over = {}) => ({ taskId: 'alice-1', username: 'alice', userId: 42, task: 'work', initialMsgId: 7,
-  startedAt: Date.now() - 30_000, sessionId: 's1', ...over });
+  startedAt: Date.now() - 30_000, sessionId: 's1', engine: 'claude', ...over });
 
 test('interrupted Claude task is re-run silently and its old journal entry is dropped', async () => {
   const h = resumeHarness({ pending: [task()] });
@@ -166,6 +167,7 @@ test('a resumed task that fails to start tells the user', async () => {
   const pending = [task()];
   const calls = [];
   const sandbox = {
+    ...require('./helpers/resume-admission.cjs')(),
     taskDelivery: require('../src/bot-delivery').taskDelivery,
     path, console: { log() {}, error() {}, warn() {} }, BASE_USERS_DIR: '/users', AbortSignal, Promise,
     setTimeout: fn => { fn(); return 0; }, process: { env: {} }, isTaskResumable, resumeSinkOf, resolvePendingWorkDir, MAX_RESUME_ATTEMPTS: 3,
@@ -360,4 +362,35 @@ test('durable plan step resumes in its engine session and its reply settles the 
   assert.equal(h.runs[0].resumeSessionId, 'ses_1', 'same engine session');
   assert.deepEqual([h.runs[0].ocProfile, h.runs[0].ocRole], ['free', 'build'], 'same engine profile/role');
   assert.deepEqual(h.durableReplies.map(d => d.sink), [sink]);
+});
+
+for (const profileEngine of ['opencode', 'codex']) {
+  test(`suspended Claude resumes on ${profileEngine} without reusing the Claude session`, async () => {
+    const h = resumeHarness({
+      admission: { blocked: true, profileEngine },
+      pending: [task({ engine: 'claude', engineSessionId: 'claude-private-id' })],
+      engineSessionIds: { [profileEngine]: 'target-session-id' },
+    });
+    await h.resume();
+    assert.equal(h.runs.length, 1);
+    assert.equal(h.runs[0].engine, profileEngine);
+    assert.equal(h.runs[0].resumeSessionId, 'target-session-id');
+    assert.equal(h.calls.length, 0, 'suspension is silent');
+  });
+}
+
+test('suspended Claude without a target session replays the task instead of a foreign native id', async () => {
+  const h = resumeHarness({ admission: { blocked: true },
+    pending: [task({ engine: 'claude', engineSessionId: 'claude-private-id' })] });
+  await h.resume();
+  assert.equal(h.runs[0].engine, 'opencode');
+  assert.equal(h.runs[0].resumeSessionId, null);
+  assert.equal(h.runs[0].task, 'work');
+});
+
+test('legacy journal without an engine never defaults to Claude', async () => {
+  const h = resumeHarness({ pending: [task({ engine: undefined, engineSessionId: 'unknown-engine-id' })] });
+  await h.resume();
+  assert.equal(h.runs[0].engine, 'opencode');
+  assert.equal(h.runs[0].resumeSessionId, null);
 });
