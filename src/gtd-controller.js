@@ -708,6 +708,39 @@ function priorStepsDigest(store, task, item) {
   return ['[ИТОГИ ПРЕДЫДУЩИХ ШАГОВ ПЛАНА — от последнего к первому]', ...parts].join('\n\n');
 }
 
+// The rest of the plan, for the step being executed (#2013). Without it the
+// executor is blind past its own step: it cannot tell a stale tail step from a
+// still-needed one, so superseded steps pile up and only get cleaned when some
+// later step notices them. Title + short id only — enough to decide "this one
+// is now wrong", small enough to not eat the step's context budget. Ids are
+// included because the two plan-edit tools address steps by id.
+const FUTURE_MAX_STEPS = 20;
+const FUTURE_TOTAL_CHARS = 1600;
+
+function futureStepsOutline(store, task, item) {
+  let rows;
+  try {
+    rows = store.listTaskItems(task.id, task.profile_id)
+      .filter(i => i.position > item.position && !['done', 'skipped'].includes(i.status))
+      .sort((a, b) => a.position - b.position);
+  } catch { return ''; }
+  if (!rows.length) return '';
+  const parts = [];
+  let total = 0;
+  for (const i of rows.slice(0, FUTURE_MAX_STEPS)) {
+    const line = `${i.position + 1}. ${i.title} [${i.id.slice(0, 8)}]`;
+    if (total + line.length > FUTURE_TOTAL_CHARS) break;
+    parts.push(line);
+    total += line.length;
+  }
+  const hidden = rows.length - parts.length;
+  const tail = [
+    'Ты видишь остаток плана — используй его: шаг, который уже не нужен, замени одним вызовом, а не оставляй в плане мусор.',
+    hidden > 0 ? `… и ещё ${hidden} шаг(ов) дальше — task_get(task_id: "${task.id}").` : '',
+  ].filter(Boolean).join(' ');
+  return ['[ОСТАТОК ПЛАНА — что будет после этого шага]', ...parts, tail].join('\n');
+}
+
 // Durable wait poll (src/durable-wait.js). Runs BEFORE an execution is started,
 // so a poll never counts as an attempt or a fire. Returns:
 //   'parked' — still waiting, the item is back to `waiting` with its next due_at;
@@ -1104,12 +1137,14 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     const freshForPrompt = store.getTaskItem(item.id) || item;
     const resumed = resumeNote(parseWait(freshForPrompt), now);
     const digest = task.acceptance_criteria_json ? priorStepsDigest(store, task, item) : '';
+    const future = futureStepsOutline(store, task, item);
     const prompt = [
       '[DURABLE TASK — auto-execution]',
       resumed,
       `Task: ${task.goal}`,
       `Plan id: ${task.id}`,
       digest ? `\n${digest}\n` : '',
+      future ? `\n${future}\n` : '',
       `Step (${item.position + 1}/${store.progressSummary(task.id, task.profile_id).total}): ${item.title}`,
       `Step id: ${item.id}`,
       `Attempt: ${item.claim_generation}`,
@@ -1130,7 +1165,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       'Fast-pass — это ЗАПИСЫВАЕМЫЙ escape hatch, а не тихий обход. Только в режиме "programmatic+llm-fastpass" ты можешь пропустить проверку, если она слишком тяжёлая, ломает работу или нужен срочный фикс — добавь финальной строкой: VALIDATION: fastpass-skip: <причина>. Пропуск попадёт в audit trail с причиной.',
       `Папка артефактов плана (единственный artifact root): ${itemProjectDir}. Относительные пути проверок (file_exists, cwd command_exit_zero) резолвятся ОТ НЕЁ — все артефакты плана (отчёты, prod-check/*, deck/* и т.п.) клади сюда, а не в git-workspace.`,
       `Один план = один git-workspace. Если шагу нужен репозиторий — engineering_spawn_workspace(repository_url, root_task_id: "${planWorkspaceLabel(task)}"): тот же root_task_id на всех шагах плана даёт ТОТ ЖЕ workspace и ветку (при BRANCH_COLLISION — это твой план: engineering_workspace_status с тем же root_task_id). Не придумывай свою метку. Всё, что шаг создал в репо, закоммить в эту ветку до конца шага — незакоммиченное следующий шаг не увидит. Инженерный git-workspace — только для кода репозитория; артефакты плана — в папке выше.`,
-      `План можно легально править по ходу: нужен дополнительный шаг — task_item_add(task_id: "${task.id}", after_item_id: "<Step id>", title, execution_kind, executor_role, minimum_model_level, context_budget, validation, instructions) — он выполнится сразу после этого шага; следующий шаг не имеет смысла для этой задачи — task_item_skip(item_id, reason) с конкретной причиной.`,
+      `План можно легально править по ходу: нужен дополнительный шаг — task_item_add(task_id: "${task.id}", after_item_id: "<Step id>", title, execution_kind, executor_role, minimum_model_level, context_budget, validation, instructions) — он выполнится сразу после этого шага. Шаг из остатка плана стал не нужен — НЕ оставляй его в плане: одним вызовом task_item_add(..., replaces_item_id: "<id старого шага из остатка плана>") добавь замену, и старый шаг отменится автоматически с причиной «заменён шагом …». Шаг просто не применим — task_item_skip(item_id, reason) с конкретной причиной.`,
       'Если пункт чек-листа для этой задачи не применим или ты сделал иначе — не подгоняй: вызови task_item_exception(item_id: "<Step id>", reason: "<почему>") и закрой шаг вызовом task_item_result(status: "done"). Исключение видно владельцу и попадёт в журнал.',
       'Каждый шаг — новый ран без памяти: следующий шаг увидит только твой итог. Перед закрытием шага дай блок «ИТОГ ШАГА» (≤10 строк): что сделано, ссылки (issue/PR/файлы/ветка), принятые решения, что важно следующему шагу.',
       'ЗАКРОЙ ШАГ ВЫЗОВОМ, а не строкой: task_item_result(item_id: "<Step id>", attempt: <Attempt из промпта>, status: "done" | "failed" | "waiting", result: {<ссылки, id, пути, решения — что нужно следующему шагу и проверкам>}, note: "<одна строка>"). Это главный канал закрытия: сервер читает его напрямую, без разбора текста, и по нему же гоняет проверки шага.',
@@ -2638,4 +2673,5 @@ module.exports = {
   planSessionOwnerChat,
   DEFAULT_MAX_ITERATIONS, ETA_MIN_CLAMP,
   CHECKLIST_MAX_ITERATIONS, MAX_FIRES_PER_TICK, FIRE_LEASE_MS,
+  futureStepsOutline,
 };

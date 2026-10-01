@@ -182,8 +182,13 @@ class DurableTaskStore {
    * `afterItemId` (later steps shift down one position), or append when omitted.
    * Contract plans only — the step goes through the same validateItem as createPlan,
    * so it routes by the plan's level map like any compiled step.
+   *
+   * `replacesItemId` (#2013) closes the loop the executor used to do by hand: the
+   * step it supersedes is skipped in the SAME transaction, so a replacement can
+   * never be added while its predecessor stays in the plan (that pair is what made
+   * superseded steps pile up in the tail of a long plan).
    */
-  insertPlanItem(taskId, profileId, { afterItemId = null, item }) {
+  insertPlanItem(taskId, profileId, { afterItemId = null, item, replacesItemId = null }) {
     return this.db.transaction(() => {
       const task = this.getTask(taskId, profileId);
       if (!task) throw new Error('task not found (or not owned by this profile)');
@@ -200,6 +205,9 @@ class DurableTaskStore {
       } else {
         position = this._prep('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM task_items WHERE task_id = ?').get(taskId).p;
       }
+      if (replacesItemId && replacesItemId === afterItemId) {
+        throw new Error('replaces_item_id and after_item_id cannot be the same step');
+      }
       const itemId = crypto.randomUUID();
       this.createTaskItem({ id: itemId, task_id: taskId, title: item.title, position, delay_after_sec: item.delay_after_sec ?? 0 });
       this._prep(`UPDATE task_items SET stage=?, instructions=?, execution_kind=?, executor_role=?,
@@ -210,8 +218,9 @@ class DurableTaskStore {
           item.context_budget ?? null, JSON.stringify(item.validation), item.max_attempts ?? 3,
           item.execution_timeout_seconds ?? 600,
           item.already_done == null ? null : JSON.stringify(item.already_done), itemId);
+      const { replaced, warning } = this.replaceItemInTx(itemId, replacesItemId, profileId);
       this._bump(taskId);
-      return this.getTaskItem(itemId);
+      return { item: this.getTaskItem(itemId), replaced, warning: warning || null };
     })();
   }
 
@@ -223,29 +232,53 @@ class DurableTaskStore {
    */
   skipItem(itemId, profileId, { reason, by = 'agent' }) {
     if (typeof reason !== 'string' || !reason.trim()) throw new Error('reason required');
-    return this.db.transaction(() => {
-      const item = this._itemOwnedBy(itemId, profileId);
-      if (!item) throw new Error('item not found (or not owned by this profile)');
-      if (!['pending', 'waiting'].includes(item.status)) throw new Error(`only a step that has not started can be skipped (status=${item.status})`);
-      const task = this.getTask(item.task_id, profileId);
-      this._prep(`UPDATE task_items SET status = 'skipped', last_error = ?, updated_at = ? WHERE id = ?`)
-        .run(`skipped: ${reason.trim()}`.slice(0, 500), nowMs(), itemId);
-      this.recordEvent({ task_id: item.task_id, task_item_id: itemId, type: 'item_skipped',
-        payload: { reason: reason.trim().slice(0, 300), by } });
-      this._prep('DELETE FROM task_signals WHERE task_item_id = ? AND consumed_at IS NULL').run(itemId);
-      let validation = {};
-      try { validation = item.validation_json ? JSON.parse(item.validation_json) : {}; } catch { /* none */ }
-      for (const key of Object.keys(validation)) {
-        this.recordValidation({
-          task_id: task.id, profile_id: profileId, task_item_id: itemId,
-          criterion_id: criterionIdForItem(task, item, key), contract_revision: task.contract_revision || 1,
-          validator: key, status: 'pass',
-          evidence_json: JSON.stringify({ skipped: true, reason: reason.trim(), by }),
-        });
-      }
-      this._bump(item.task_id);
-      return this.getTaskItem(itemId);
-    })();
+    return this.db.transaction(() => this._skipItemTx(itemId, profileId, reason, by))();
+  }
+
+  /** skipItem's body, callable from inside another transaction (nested = savepoint). */
+  _skipItemTx(itemId, profileId, reason, by = 'agent') {
+    const item = this._itemOwnedBy(itemId, profileId);
+    if (!item) throw new Error('item not found (or not owned by this profile)');
+    if (!['pending', 'waiting'].includes(item.status)) throw new Error(`only a step that has not started can be skipped (status=${item.status})`);
+    const task = this.getTask(item.task_id, profileId);
+    this._prep(`UPDATE task_items SET status = 'skipped', last_error = ?, updated_at = ? WHERE id = ?`)
+      .run(`skipped: ${reason.trim()}`.slice(0, 500), nowMs(), itemId);
+    this.recordEvent({ task_id: item.task_id, task_item_id: itemId, type: 'item_skipped',
+      payload: { reason: reason.trim().slice(0, 300), by } });
+    this._prep('DELETE FROM task_signals WHERE task_item_id = ? AND consumed_at IS NULL').run(itemId);
+    let validation = {};
+    try { validation = item.validation_json ? JSON.parse(item.validation_json) : {}; } catch { /* none */ }
+    for (const key of Object.keys(validation)) {
+      this.recordValidation({
+        task_id: task.id, profile_id: profileId, task_item_id: itemId,
+        criterion_id: criterionIdForItem(task, item, key), contract_revision: task.contract_revision || 1,
+        validator: key, status: 'pass',
+        evidence_json: JSON.stringify({ skipped: true, reason: reason.trim(), by }),
+      });
+    }
+    this._bump(item.task_id);
+    return this.getTaskItem(itemId);
+  }
+
+  /**
+   * Skip the step a new step supersedes (#2013), inside the caller's transaction.
+   * Returns the skipped row, or a `{replaced: null, warning}` — a replacement that
+   * cannot be retired must NOT lose the replacement itself: the executor already
+   * decided the plan is right, and a half-applied edit is worse than a warning.
+   */
+  replaceItemInTx(newItemId, replacesItemId, profileId) {
+    if (!replacesItemId) return { replaced: null };
+    if (replacesItemId === newItemId) throw new Error('replaces_item_id cannot be the new step itself');
+    const old = this._itemOwnedBy(replacesItemId, profileId);
+    if (!old) throw new Error('replaces_item_id is not a step of this profile');
+    const newRow = this._itemOwnedBy(newItemId, profileId);
+    if (!newRow || old.task_id !== newRow.task_id) throw new Error('replaces_item_id is not a step of this plan');
+    if (['done', 'running'].includes(old.status)) {
+      return { replaced: null, warning: `шаг «${old.title}» уже выполняется или выполнен — отмени его вручную, если он больше не нужен` };
+    }
+    const reason = `заменён шагом «${newRow.title}» (${newItemId.slice(0, 8)})`;
+    const replaced = this._skipItemTx(replacesItemId, profileId, reason, 'plan-edit');
+    return { replaced };
   }
 
   /** profile_id is mandatory: every read/write is scoped to the owner profile. */
