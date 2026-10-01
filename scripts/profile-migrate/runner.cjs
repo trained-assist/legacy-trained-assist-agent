@@ -33,7 +33,8 @@
 //      ancestor, even when empty, is never removed.
 //
 // Phases are small self-registering modules (see phases/index.cjs): `delete`
-// (M1 DELETE actions), `archive-sessions` (M2 ARCHIVE → GCS blob store). MOVE /
+// (M1 DELETE actions), `archive-sessions` (M2 ARCHIVE → GCS blob store),
+// `worktree` (M3: clean copy → quarantine, dirty copy → bundle archive). MOVE /
 // DEDUP wire in later PRs by dropping a module into phases/. All four phase
 // functions may be async — the runner awaits them (an archive is a blob upload).
 //
@@ -119,6 +120,9 @@ function scanProfile(profileRoot, rules, actions, filter = null) {
         size: e.size,
         isSymlink: !!e.isSymlink,
         ruleIdx: e.ruleIdx,
+        // Outermost working-copy root (classifier.cjs walk) or null — how the
+        // worktree phase groups a plan by repository (see planFor below).
+        repoRoot: e.repoRoot || null,
         reason: e.ruleIdx >= 0 && rules[e.ruleIdx] ? rules[e.ruleIdx].reason : null,
       });
     },
@@ -130,6 +134,24 @@ function scanProfile(profileRoot, rules, actions, filter = null) {
 // The phase's item selector bound to its ctx, or null when it has none.
 function phaseFilter(phaseObj, ctx) {
   return typeof phaseObj.filter === 'function' ? (e) => phaseObj.filter(ctx, e) : null;
+}
+
+// Plan for one (phase, profile, mode): the classification walk ALWAYS runs (it
+// IS the report — classSummary, UNKNOWN, special files), but a phase that
+// declares `plan(ctx, scan)` replaces the item list with its own. That hook is
+// how phases whose unit is not a file plan: `worktree` (M3) groups the scan by
+// working copy and asks git which copies are clean (quarantine) and which are
+// dirty (bundle archive) — a decision no path-pattern filter can make.
+// plan() returns {items, filtered} (or just items); `filtered` is additive —
+// entries the phase declined after classification (e.g. a working copy whose
+// state git cannot determine is left alone, epic principle 2).
+function planFor(ctx, o) {
+  const scan = scanProfile(ctx.profileRoot, o.rules, o.phaseObj.actions, phaseFilter(o.phaseObj, ctx));
+  if (typeof o.phaseObj.plan !== 'function') return { scan, items: scan.items };
+  const planned = o.phaseObj.plan(ctx, scan);
+  const items = Array.isArray(planned) ? planned : (planned && planned.items) || [];
+  const extra = Array.isArray(planned) ? 0 : (planned && planned.filtered) || 0;
+  return { scan: { ...scan, filtered: (scan.filtered || 0) + extra }, items };
 }
 
 function classSummary(stats) {
@@ -390,32 +412,32 @@ async function runPhase(o) {
   return result;
 }
 
-function applyScanFields(result, scan) {
+function applyScanFields(result, scan, items) {
   result.stats = classSummary(scan.stats);
   result.unknown = result.stats.UNKNOWN || { files: 0, bytes: 0, pctBytes: 0 };
   result.scanErrors = scan.stats.errors.length;
   result.specialSkipped = scan.special.length;
   result.filtered = scan.filtered || 0;
-  result.planned = scan.items.length;
-  result.plannedBytes = scan.items.reduce((s, i) => s + i.size, 0);
+  result.planned = items.length;
+  result.plannedBytes = items.reduce((s, i) => s + i.size, 0);
   if (scan.stats.errors.length) {
     for (const e of scan.stats.errors.slice(0, 5)) pushError(result, `scan: ${e.path}: ${e.code || e.message}`);
   }
 }
 
 function doDryRun(ctx, result, o) {
-  const scan = scanProfile(ctx.profileRoot, o.rules, o.phaseObj.actions, phaseFilter(o.phaseObj, ctx));
-  applyScanFields(result, scan);
-  result.items = scan.items;
+  const { scan, items } = planFor(ctx, o);
+  applyScanFields(result, scan, items);
+  result.items = items;
 }
 
 async function doApply(ctx, result, o, renewFn) {
   const phaseObj = o.phaseObj;
   const { log = defaultLog } = o;
-  const scan = scanProfile(ctx.profileRoot, o.rules, phaseObj.actions, phaseFilter(phaseObj, ctx));
-  applyScanFields(result, scan);
-  result.items = scan.items.map(i => ({ path: i.path, size: i.size, status: 'planned', reason: i.reason }));
-  if (!scan.items.length) {
+  const { scan, items } = planFor(ctx, o);
+  applyScanFields(result, scan, items);
+  result.items = items.map(i => ({ path: i.path, size: i.size, action: i.action, status: 'planned', reason: i.reason }));
+  if (!items.length) {
     if (scan.special.length) log(`apply ${ctx.profile}: ${scan.special.length} non-regular file(s) in the plan — report only`);
     return;
   }
@@ -430,31 +452,36 @@ async function doApply(ctx, result, o, renewFn) {
 
   let consecutive = 0;
   let lastRenew = Date.now();
-  for (let i = 0; i < scan.items.length; i++) {
-    const item = scan.items[i];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
     if (Date.now() - lastRenew >= RENEW_INTERVAL_MS) {
       try { await renewFn(); lastRenew = Date.now(); } catch (e) { pushError(result, `lock renew: ${e.message}`); return; }
     }
     const abs = path.join(ctx.profileRoot, item.path);
     let prepared = null;
     let recorded = false;
+    // What the record says: the phase's action, or the per-item override its
+    // prepare() returned (worktree writes DELETE for a clean copy and ARCHIVE
+    // for a bundled one — epic M3: «clean → DELETE / dirty → ARCHIVE»).
+    let effAction = phaseObj.action;
     try {
       // prepare/apply may be async (a blob upload is), the runner always awaits.
       prepared = await phaseObj.prepare(ctx, item);
+      effAction = (prepared && prepared.action) || phaseObj.action;
       ledger.appendRecord(ctx.profile, ledger.makeRecord({
         phase: phaseObj.name,
         profile: ctx.profile,
         path: item.path,
         sha256: prepared.sha256,
         size: prepared.size,
-        action: phaseObj.action,
+        action: effAction,
         dest: prepared.dest,
       }));
       recorded = true;
       await phaseObj.apply(ctx, item, prepared);
       result.applied++;
       result.appliedBytes += prepared.size;
-      result.items[i] = { path: item.path, size: prepared.size, sha256: prepared.sha256, dest: prepared.dest, status: 'applied' };
+      result.items[i] = { path: item.path, size: prepared.size, sha256: prepared.sha256, dest: prepared.dest, action: effAction, status: 'applied' };
       consecutive = 0;
     } catch (e) {
       result.failed++;
@@ -471,7 +498,7 @@ async function doApply(ctx, result, o, renewFn) {
             path: item.path,
             sha256: prepared ? prepared.sha256 : null,
             size: prepared ? prepared.size : item.size,
-            action: phaseObj.failureAction || `${phaseObj.action}_FAILED`,
+            action: phaseObj.failureAction || `${effAction}_FAILED`,
             dest: prepared ? prepared.dest : null,
           }));
         } catch (e2) {
@@ -479,15 +506,15 @@ async function doApply(ctx, result, o, renewFn) {
         }
       }
       pushError(result, `apply ${item.path}: ${e.message}`);
-      result.items[i] = { path: item.path, size: item.size, status: 'failed', error: e.message };
+      result.items[i] = { path: item.path, size: item.size, action: effAction, status: 'failed', error: e.message };
       if (consecutive >= MAX_CONSECUTIVE_FAILURES) {
-        pushError(result, `${consecutive} consecutive failures — aborting, ${scan.items.length - i - 1} planned item(s) untouched`);
+        pushError(result, `${consecutive} consecutive failures — aborting, ${items.length - i - 1} planned item(s) untouched`);
         break;
       }
     }
   }
   result.prunedDirs = pruneDeleteDirs(ctx.profileRoot, scan.dirs);
-  log(`apply ${ctx.profile}: ${result.applied}/${scan.items.length} applied (${result.appliedBytes} B), ${result.failed} failed, ${result.prunedDirs} emptied dir(s) pruned`);
+  log(`apply ${ctx.profile}: ${result.applied}/${items.length} applied (${result.appliedBytes} B), ${result.failed} failed, ${result.prunedDirs} emptied dir(s) pruned`);
 }
 
 async function doRevert(ctx, result, o, renewFn) {
@@ -538,8 +565,8 @@ async function doVerify(ctx, result, o) {
   const { log = defaultLog } = o;
   const { records, skipped, missing } = ledger.readLedger(ctx.profile);
   const folded = foldPhaseRecords(records, phaseObj.name);
-  const scan = scanProfile(ctx.profileRoot, o.rules, phaseObj.actions, phaseFilter(phaseObj, ctx));
-  applyScanFields(result, scan);
+  const { scan, items } = planFor(ctx, o);
+  applyScanFields(result, scan, items);
 
   const v = {
     records: folded.length,
@@ -568,7 +595,7 @@ async function doVerify(ctx, result, o) {
   // Planned right now but never recorded for this phase: files that appeared
   // after apply (npm ci re-created node_modules) or an apply that never ran.
   // Informational — verify's hard failures are the integrity ones above.
-  const pending = scan.items.filter(i => !seen.has(i.path));
+  const pending = items.filter(i => !seen.has(i.path));
   v.pendingCount = pending.length;
   v.pending = pending.slice(0, 50);
   result.verify = v;
