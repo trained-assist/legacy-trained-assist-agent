@@ -625,6 +625,17 @@ async function main() {
       return json(res, ready ? 200 : 503, { ready, checks, vm: VM_NAME, commit: GIT_COMMIT, uptime: process.uptime() });
     }
 
+    // POST /webhooks/github — event-driven wake for durable waits (#1846). Mounted
+    // BEFORE the Bearer gate (GitHub sends no token); it authenticates itself with
+    // HMAC-SHA256 over the raw body and never decides a verdict, only nudges the
+    // poll. Returns false when the path is not ours.
+    if (url.pathname === '/webhooks/github') {
+      if (await require('./handlers/github-webhook').handleGithubWebhook(req, url, res, {
+        json, secrets, readBodyBuffer, readBody,
+        getGtdTickNow: () => gtdTickNow,
+      }) !== false) return;
+    }
+
     // GET /p/:slug — serve a published page (no auth, public; password-gated
     // pages checked before ANY content incl. ?raw). See src/handlers/pages.js.
     if (req.method === 'GET' && require('./handlers/pages').servePublishedPage(req, url, res, publishPasswordForm)) return;
