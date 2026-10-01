@@ -15,6 +15,7 @@ const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag } = require('../auth
 const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice, loopRecoveryEngine, loopFallbackNotice, chatFallbackEngine, engineLabelOf } = require('../engine-crash-policy');
 const { ladderFallbackTarget, ladderFallbackMessage } = require('../ladder-fallback');
 const ocLadder = require('../opencode-ladder-provider');
+const answerGlyphGuard = require('../answer-glyph-guard');
 const { MAX_RETRIES: MAX_INCOMPLETE_RETRIES, getRetryDelayMs } = require('../retry-policy');
 const { recordUsage } = require('../usage-store');
 const promptAudit = require('../prompt-audit');
@@ -3593,6 +3594,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     return { queuedRetry };
   }
 
+  // Перехват «иероглифов» (см. _applyAnswerGlyphGuard): чистый текст уходит в
+  // Telegram, в историю сессии, в сниппер и в классификаторы кнопок.
+  result = (await _applyAnswerGlyphGuard({ result, user, profileName: ocProfileName, sessionId: activeSessionId, incomplete, internalGtd })).text;
+
   // Record token usage for billing
   if (engine === 'opencode' && opencodeUsage) {
     recordUsage(user.workDir, {
@@ -3843,6 +3848,35 @@ function interruptForRestart() {
   }
 }
 
+// Перехват «иероглифов» в финальном ответе агента (src/answer-glyph-guard.js):
+// движок иногда подмешивает в русский текст иероглифы («серый状态» вместо
+// «серый статус») — для пользователя это читается как поломка бота. Событие
+// редкое, но ловится на живых ответах, поэтому детект+переписывание живут в
+// ядре, а не в заметке или промпте.
+//
+// Правила места вызова (хук перед футерами в _runTask):
+//   • до футеров/кнопок/detectPlan/detectMenu/appendReply — в Telegram, в
+//     историю сессии и в сниппер уходит уже чистый текст, а классификаторы
+//     кнопок не видят мусор;
+//   • internalGtd не трогаем: там ответ читает GTD-контроллер, переписывание
+//     его текста ломает разбор;
+//   • незавершённый ход не трогаем: показывается прогресс, а не ответ;
+//   • любой сбой деградирует в исходный текст — ответ не теряется никогда.
+//
+// Отдельной функцией, а не инлайном: seam «раннер → перехватчик» должен быть
+// проверяем исполняемым тестом, а не вхождением в исходнике.
+async function _applyAnswerGlyphGuard({ result, user, profileName, sessionId = null, incomplete, internalGtd, engineRun }) {
+  if (incomplete || internalGtd || !answerGlyphGuard.needsRewrite(result)) return { text: result, guard: null };
+  try {
+    const guard = await answerGlyphGuard.rewriteAnswer({ text: result, user, profileName, engineRun });
+    console.log(`[glyph-guard] session=${sessionId || '-'} glyphs=${guard.glyphs} action=${guard.action} model=${guard.model || '-'}${guard.error ? ` error=${guard.error}` : ''}`);
+    return { text: guard.text, guard };
+  } catch (e) {
+    console.warn('[glyph-guard] не сработал, ответ как есть:', e.message);
+    return { text: result, guard: null };
+  }
+}
+
 module.exports = {
   interruptForRestart, MAX_RESUME_ATTEMPTS, isProviderFault,
   runTask, getQuickAnswer, runQuickAnswer, shouldAttemptQuickAnswer, generateConnectLink, getPendingTasks, clearPendingTask,
@@ -3855,6 +3889,8 @@ module.exports = {
   reconcileSoftContinuations,
   // Exported for intent-coverage tests only
   _intents: { HH_MY_VACANCIES_INTENT, HH_FUNNEL_INTENT, HH_RESPONSES_INTENT, HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT, ENGINE_SWITCH_INTENT },
+  // Exported for answer-glyph-guard wiring tests only
+  _glyph: { apply: _applyAnswerGlyphGuard },
   // Exported for pin-state tests only
   _pin: { updateContextPin, readPinStore, buildContextCard },
   // Exported for the ladder-classifier tests only — genuine provider error vs answer prose
