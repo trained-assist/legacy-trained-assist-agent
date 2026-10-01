@@ -204,6 +204,14 @@ function resolveStepExecution(item = {}, { defaultEngine = null, levelMap = null
   // level's OWN fallback list — the rungs that map already declares as «if the primary is unusable»
   // — instead of a hard-coded substitute. Applies to a plan's pinned level_map too: «не зови Claude»
   // is an owner-level decision about the machine, not a preference one plan may overrule.
+  //
+  // The number of rungs stays EXACTLY what the level map declares. Two invariants depend on it and
+  // both broke when an extra safety rung was appended here (caught by CI on #2018):
+  //   reviewer@doctor is asserted to be [codex → opencode doctor] and nothing more, and
+  //   durable-recovery treats a step with NO fallbacks as terminal — an unconditional extra rung
+  //   turns every terminal engine failure into an endless re-pend on a fallback engine.
+  // So: substitution only. If every declared rung is inadmissible, the step runs on opencode with
+  // no fallbacks (its pre-existing shape) rather than silently gaining rungs it never had.
   const candidates = [mapped, ...fbList].filter(m => m && m.engine);
   const admissible = candidates.filter(m => m.engine !== 'claude' || claudeAdmissible());
   const primary = admissible[0] || { engine: 'opencode', ocProfile: null };
@@ -214,9 +222,7 @@ function resolveStepExecution(item = {}, { defaultEngine = null, levelMap = null
     engine: primary.engine,
     ocProfile: primary.engine === 'opencode' ? primary.ocProfile : null,
     ocRole: primary.engine === 'opencode' ? (ROLE_TO_OC[role] || 'build') : null,
-    // Always keep one rung below the primary: if the substitute itself fails, the executor still
-    // has somewhere to go instead of dead-ending on a single attempt.
-    fallbacks: [...rest, { engine: 'opencode', ocProfile: 'doctor', ocRole: ROLE_TO_OC[role] || 'build' }],
+    fallbacks: rest,
     // context_budget → skipModels is a no-op until a model→context registry
     // exists (design §4.3). Kept in the contract so P3c can populate it.
     skipModels: [],
