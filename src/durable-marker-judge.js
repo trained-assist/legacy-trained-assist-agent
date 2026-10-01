@@ -119,7 +119,10 @@ async function judgeMarkerlessReply({ said, item, task, timeoutMs = 15000, servi
       source: 'durable-marker-judge',
     });
     if (!r) return { verdict: 'uncertain', reason: 'llm-unavailable' };
-    return normalizeVerdict(r.value, 'llm-no-json');
+    // serviceJson returns the PARSED VALUE already (service-llm.js unwraps `value`
+    // itself). Reading `.value` here asked for `undefined` on every real reply, so
+    // the judge answered `uncertain` forever and the rescue never once fired.
+    return normalizeVerdict(r, 'llm-no-json');
   } catch (e) {
     return { verdict: 'uncertain', reason: `llm-error:${String(e.message).slice(0, 80)}` };
   }
