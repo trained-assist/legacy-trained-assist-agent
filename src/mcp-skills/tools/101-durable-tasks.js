@@ -380,6 +380,32 @@ module.exports = {
       },
     },
 
+    task_item_result: {
+      description:
+        'Post the STRUCTURED result of the step you are running now, so the server reads your verdict ' +
+        'directly instead of parsing `DURABLE:` out of your reply text (a forgotten marker used to fail ' +
+        'the attempt even when the work was done). Call it right before finishing the step: status ' +
+        '"done" | "failed" | "waiting", `result` = what the next step and the validators need (urls, ' +
+        'ids, file paths, decisions), `note` = one short line, `attempt` = the `Attempt: N` line from ' +
+        'your prompt (it makes a stale attempt unable to overwrite a newer one). Still end the reply ' +
+        'with the DURABLE marker as well — engines that skip this tool rely on it.',
+      inputSchema: {
+        type: 'object',
+        required: ['item_id', 'status'],
+        properties: {
+          item_id: { type: 'string', description: 'Your Step id from the durable prompt' },
+          status: { type: 'string', enum: ['done', 'failed', 'waiting'] },
+          result: { description: 'Structured outcome (any JSON): urls, ids, file paths, decisions …' },
+          note: { type: 'string', description: 'One short line for the owner and the next step' },
+          attempt: { type: 'integer', description: 'The `Attempt: N` line of your prompt' },
+        },
+      },
+      handler: async ({ item_id, ...payload }, ctx) => {
+        const profileId = requireProfile(ctx);
+        return store().setStructuredResult(item_id, profileId, payload);
+      },
+    },
+
     task_item_retry: {
       description:
         'Restart a durable step that FAILED terminally (e.g. its deterministic check failed and the attempt ' +
