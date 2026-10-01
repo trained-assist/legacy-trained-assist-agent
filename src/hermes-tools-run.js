@@ -43,6 +43,7 @@ const { buildEngineCommand, runEngineProcess, LADDER_APP } = require('./runner/c
 const { parseLlmJson } = require('./llm-client');
 const { loadUserTokens } = require('./user-tokens');
 const ocLadder = require('./opencode-ladder-provider');
+const { resolveEngine } = require('./engine-admission');
 
 // Inside the profile workspace, not the tokens dir (issue #1649): the engine's cwd
 // must never be a place that holds the profile's credential files.
@@ -161,6 +162,13 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
   const level1 = await prefetchLevel1(task);
   const prompt = buildPrompt(task, context, outputSchema, level1);
   const resolvedEngine = engine || process.env.HERMES_RESEARCH_ENGINE || 'opencode';
+  // This path spawns an engine directly (buildEngineCommand → runEngineProcess), so it never went
+  // through the runner's admission gate: HERMES_RESEARCH_ENGINE=claude would have called an engine
+  // whose credentials were suspended. Same rule, same place as everywhere else.
+  const admitted = resolveEngine({ requested: resolvedEngine, profileEngine: 'opencode' });
+  if (admitted.movedFrom) {
+    console.warn(`[hermes] engine=${resolvedEngine} not admitted (${admitted.reason}) — running on ${admitted.engine}`);
+  }
   const resolvedProfile = ocProfile || (resolvedEngine === 'opencode' ? 'research' : null);
   const ocProfileOverrides = resolvedEngine === 'opencode'
     ? ocLadder.buildOcProfileOverrides(resolvedProfile) : null;
