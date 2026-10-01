@@ -11,6 +11,7 @@ const path  = require('path');
 const https = require('https');
 const http  = require('http');
 const os    = require('os');
+const { orHeaders } = require('../../or-attribution');
 
 const HISTORY_FILE = path.join(os.homedir(), 'agent-data', 'label-history.json');
 
@@ -92,7 +93,7 @@ async function detectPositionsViaVision(imageBuffer, structures, imageDescriptio
 
   const res = await postJson(
     'https://openrouter.ai/api/v1/chat/completions',
-    { 'Authorization': `Bearer ${apiKey}` },
+    orHeaders({ apiKey, app: 'label-vision' }),
     {
       model: 'anthropic/claude-haiku-4-5',
       max_tokens: 1024,

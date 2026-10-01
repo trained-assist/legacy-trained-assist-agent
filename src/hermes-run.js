@@ -7,7 +7,10 @@
 
 const { llmCall, gcCall, parseLlmJson, readGigachatKey, readOrKey } = require('./llm-client');
 
-const DEFAULT_MODEL = 'google/gemini-2.5-flash';
+// Verified against the live key 01.10.2026: response_format json_object works, no thinking tokens
+// under a small max_tokens, and it is cheaper than 2.5-flash ($0.25/$1.50 vs $0.30/$2.50 per Mtok).
+const DEFAULT_MODEL = 'google/gemini-3.1-flash-lite-preview';
+const OR_APP = 'hermes-run';
 const DEFAULT_MAX_TOKENS = 3000;
 const DEFAULT_TEMPERATURE = 0.2;
 
@@ -51,10 +54,10 @@ async function hermesRun({ username, task, context = '', outputSchema, model = D
       raw = await gcCall(gigachatKey, messages, maxTokens, temperature);
     } catch (e) {
       if (!apiKey) throw e;
-      raw = await llmCall(apiKey, model, messages, maxTokens, temperature);
+      raw = await llmCall(apiKey, model, messages, maxTokens, temperature, { app: OR_APP });
     }
   } else {
-    raw = await llmCall(apiKey, model, messages, maxTokens, temperature);
+    raw = await llmCall(apiKey, model, messages, maxTokens, temperature, { app: OR_APP });
   }
 
   return parseLlmJson(raw);
