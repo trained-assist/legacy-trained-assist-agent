@@ -12,9 +12,18 @@
  *   host "bridge" → the name is a key of engineEnv (src/runner/claude-runner.js), which
  *                   the MCP bridge forwards to siblings. engineEnv is not a pure function
  *                   yet, so this one is read from the source.
+ *   host "secrets"→ the name is in the boot secret loader (src/secrets.js REQUIRED/OPTIONAL),
+ *                   which fetches it from Secret Manager / the host env into memory. It never
+ *                   travels as env, so the check is the loader list itself.
  *   R3            → no line in the tools dir (default: core MCP tools + the core token
  *                   readers below) joins os.homedir() with 'agent-tokens'; token paths go
  *                   through src/data-paths.js (AGENT_TOKENS_DIR) / credential-store.
+ *
+ * The direction that one-way checks miss — a consumer the HOST enables whose credential
+ * nobody declared or the loader never fetches (SALES_BOT_TOKEN, 01.10.2026) — is covered
+ * by the host-registry pass below: every enabled bots.registry entry must have its
+ * token_secret_name declared here AND provided. That a *value* really resolves is the
+ * host-side half: scripts/check-bot-secrets.js, run by the pre-deploy gate.
  *
  * Aliases are legacy names the consumer still accepts — the host is not asked for them.
  * Prints names only, never values. Exit 0 ok · 1 violation · 2 usage.
@@ -31,12 +40,26 @@ const DEFAULT_TOOLS_DIR = path.join(ROOT, 'src', 'mcp-skills', 'tools');
 const CORE_TOKEN_READERS = ['src/gtd-controller.js', 'src/site-connector.js'];
 const PROBE = '__credential-contract-probe__';
 
+// Consumers the HOST switches on (infra/env-manifest.json), as opposed to skills the
+// agent spawns. One line per registry; the credential is whatever the entry names.
+const HOST_REGISTRIES = [
+  {
+    id: 'bots.registry',
+    manifest: require(path.join(ROOT, 'infra', 'env-manifest.json')),
+    requiredHost: 'secrets',
+    token: b => b.token_secret_name,
+    consumer: b => `core:bot-${b.botId}`,
+    isOn: b => b.enabled !== false,
+  },
+];
+
 function parseArgs(argv) {
-  const o = { registry: null, toolsDir: null };
+  const o = { registry: null, toolsDir: null, manifest: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--registry') o.registry = argv[++i];
     else if (a === '--tools-dir') o.toolsDir = argv[++i];
+    else if (a === '--manifest') o.manifest = argv[++i];
     else throw new Error(`unknown argument: ${a}`);
   }
   return o;
@@ -68,6 +91,47 @@ function bridgeProvided() {
   return new Set([...block.matchAll(/\b([A-Z][A-Z0-9_]*)\s*:/g)].map(m => m[1]));
 }
 
+// The boot secret loader's own list — the module the agent requires at startup, so the
+// check cannot drift from what actually fetches. Loading it is side-effect free.
+function secretsProvided() {
+  const { REQUIRED, OPTIONAL } = require('../src/secrets.js');
+  return new Set([...REQUIRED, ...OPTIONAL]);
+}
+
+function manifestPath(opts) {
+  return opts.manifest ? path.resolve(opts.manifest) : path.join(ROOT, 'infra', 'env-manifest.json');
+}
+
+// Host-enabled consumer → its credential is declared AND provided. The mirror image of
+// the loop in main(); without it an enabled bot with an undeclared token is invisible.
+function hostRegistryGaps(opts, declared, provided) {
+  const file = manifestPath(opts);
+  const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const out = [];
+  for (const reg of HOST_REGISTRIES) {
+    const list = reg.id.split('.').reduce((o, k) => (o ? o[k] : undefined),
+      opts.manifest ? manifest : reg.manifest);
+    if (!Array.isArray(list)) continue; // registry absent = nothing the host switched on
+    for (const e of list) {
+      if (!reg.isOn(e)) continue;
+      const name = reg.token(e);
+      const who = `${reg.id}: ${reg.consumer(e)} (audience ${e.audience})`;
+      if (!name) { out.push(`${who} is enabled but names no credential`); continue; }
+      const decl = declared.find(d => d.name === name);
+      if (!decl) {
+        out.push(`${who} is enabled but ${name} has no config/credentials.json entry — the host switched a consumer on whose key nobody declared`);
+        continue;
+      }
+      if (decl.host !== reg.requiredHost) {
+        out.push(`${who} needs ${name} from host "${reg.requiredHost}", but the registry declares host "${decl.host}"`);
+        continue;
+      }
+      if (!provided[decl.host].has(decl.name)) out.push(`${who} is enabled but host "${decl.host}" does not provide ${name}`);
+    }
+  }
+  return out;
+}
+
 const HOMEDIR_TOKENS_RE = /os\.homedir\(\)[^\n]*['"]agent-tokens['"]/;
 function homedirViolations(toolsDir) {
   const files = fs.readdirSync(toolsDir).filter(f => f.endsWith('.js')).map(f => path.join(toolsDir, f));
@@ -94,11 +158,17 @@ function main(argv) {
   const provided = {
     mcp: mcpProvided(declared.filter(d => d.host === 'mcp').map(d => d.name)),
     bridge: bridgeProvided(),
+    secrets: secretsProvided(),
   };
   let errors = 0;
   for (const d of declared) {
-    if (provided[d.host].has(d.name)) console.log(`  ✅ ${d.consumer}: ${d.name} ← ${d.host}`);
+    if (provided[d.host]?.has(d.name)) console.log(`  ✅ ${d.consumer}: ${d.name} ← ${d.host}`);
     else { console.error(`  ❌ ${d.consumer}: ${d.name} is declared but host "${d.host}" does not provide it`); errors++; }
+  }
+
+  for (const gap of hostRegistryGaps(opts, declared, provided)) {
+    console.error(`  ❌ ${gap}`);
+    errors++;
   }
 
   const toolsDir = opts.toolsDir ? path.resolve(opts.toolsDir) : DEFAULT_TOOLS_DIR;

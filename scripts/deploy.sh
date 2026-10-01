@@ -95,6 +95,18 @@ echo "==> Building release for $TARGET..."
 release_build "$REPO_DIR" "$TARGET" "$RELEASES_DIR"
 RELEASE_DIR="$(readlink -f "$RELEASES_DIR/$TARGET")"
 
+# Pre-deploy secrets gate (#1885). Before this, a bot enabled in bots.registry whose token
+# the host cannot load only surfaced AFTER deploy.sh had already swapped ~/agent-master and
+# restarted: the deploy job went red with the broken release live (a383f63, 01.10.2026 —
+# SALES_BOT_TOKEN). The gate reads the TARGET release's own manifest + loader, so a new bot
+# is checked in the commit that adds it, and it exits before anything below mutates prod.
+# `exit 1`, not `false`: the ERR trap is not armed yet, and nothing has changed.
+echo "==> Pre-deploy secrets gate (credential contract + bot tokens)..."
+if ! DEPLOY_ENV="$DEPLOY_ENV" node "$RELEASE_DIR/scripts/check-deploy-secrets-gate.js" --release "$RELEASE_DIR" --env "$DEPLOY_ENV"; then
+  echo "❌ Pre-deploy gate closed — refusing to deploy $TARGET; the previous release keeps serving" >&2
+  exit 1
+fi
+
 # Install Playwright Chromium if not already present (idempotent, shared cache).
 if ! ls "$HOME/.cache/ms-playwright/chromium"* 2>/dev/null | grep -q chromium; then
   echo "==> Installing Playwright Chromium..."

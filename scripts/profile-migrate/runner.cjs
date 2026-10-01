@@ -638,6 +638,40 @@ function doInventory(ctx, result, o) {
   log(`verify ${ctx.profile}: ${phaseObj.name} baseline=${folded.length} failures=${failures.length}`);
 }
 
+// Inventory phases (phases/index.cjs): scan → report; apply = ledger the scan
+// as the baseline; verify = scan again and let the phase judge it against the
+// folded baseline; revert = nothing to restore.
+function doInventory(ctx, result, o) {
+  const phaseObj = o.phaseObj;
+  const { log = defaultLog } = o;
+  if (ctx.mode === 'revert') {
+    result.revert = { records: 0, skippedLines: 0, restored: 0, already: 0, skipped: 0, failures: [] };
+    log(`revert ${ctx.profile}: phase "${phaseObj.name}" is read-only — nothing to revert`);
+    return;
+  }
+  const items = phaseObj.scan(ctx);
+  result.items = items;
+  result.planned = items.length;
+  if (phaseObj.resultKey) result[phaseObj.resultKey] = items;
+  if (ctx.mode === 'apply') {
+    phaseObj.record(ctx, items);
+    result.applied = items.length;
+    log(`apply ${ctx.profile}: ${items.length} ${phaseObj.name} record(s) ledgered`);
+    return;
+  }
+  if (ctx.mode !== 'verify') return;
+  const { records, skipped, missing } = ledger.readLedger(ctx.profile);
+  const folded = foldPhaseRecords(records, phaseObj.name);
+  const failures = folded.length ? phaseObj.check(ctx, items, folded) : [];
+  result.verify = {
+    records: folded.length, ledgerMissing: missing, skippedLines: skipped,
+    ok: folded.length - failures.length, recreated: 0, failures, pendingCount: 0, pending: [],
+  };
+  if (!folded.length) pushError(result, `no "${phaseObj.name}" baseline in the ledger — run --apply before the migration`);
+  if (failures.length) pushError(result, `${failures.length} verification failure(s) for phase "${phaseObj.name}": ${failures.map(f => f.path).join(', ')}`);
+  log(`verify ${ctx.profile}: ${phaseObj.name} baseline=${folded.length} failures=${failures.length}`);
+}
+
 // ── batch entry ──────────────────────────────────────────────────────────────
 async function runBatch(o) {
   const phases = loadPhases();
