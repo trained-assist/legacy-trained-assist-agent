@@ -16,6 +16,7 @@
 
 const LEVELS = ['bachelor', 'master', 'doctor'];
 const ROLES = ['researcher', 'developer', 'reviewer', 'verifier'];
+const { claudeAdmissible } = require('./engine-admission');
 
 // level → {engine, ocProfile}. bachelor/master are OpenCode ladder profiles;
 // doctor is the strongest tier and runs on Claude (cross-engine fallback /
@@ -190,16 +191,32 @@ function resolveStepExecution(item = {}, { defaultEngine = null, levelMap = null
   const ocRole = mapped.engine === 'opencode' ? (ROLE_TO_OC[role] || 'build') : null;
   const fbList = Array.isArray(mapped.fallback) ? mapped.fallback
     : (mapped.fallback && typeof mapped.fallback === 'object' ? [mapped.fallback] : []);
+  const toStep = (m) => ({
+    engine: m.engine,
+    ocProfile: m.engine === 'opencode' ? m.ocProfile : null,
+    ocRole: m.engine === 'opencode' ? (ROLE_TO_OC[role] || 'build') : null,
+  });
+
+  // Claude cannot actually run without authorization: it dies on 401 before doing any work and the
+  // step burns one of its three attempts doing so (live 2026-10-01: the doctor rung and the
+  // default-on quality escalation both aimed at a host whose Claude credentials were suspended).
+  // So a claude target is honoured only while admission allows it; otherwise the step takes the
+  // level's OWN fallback list — the rungs that map already declares as «if the primary is unusable»
+  // — instead of a hard-coded substitute. Applies to a plan's pinned level_map too: «не зови Claude»
+  // is an owner-level decision about the machine, not a preference one plan may overrule.
+  const candidates = [mapped, ...fbList].filter(m => m && m.engine);
+  const admissible = candidates.filter(m => m.engine !== 'claude' || claudeAdmissible());
+  const primary = admissible[0] || { engine: 'opencode', ocProfile: null };
+  const rest = admissible.slice(1).map(toStep);
+
   return {
     executionKind,
-    engine: mapped.engine,
-    ocProfile: mapped.engine === 'opencode' ? mapped.ocProfile : null,
-    ocRole,
-    fallbacks: fbList.filter(fb => fb && fb.engine).map(fb => ({
-      engine: fb.engine,
-      ocProfile: fb.engine === 'opencode' ? fb.ocProfile : null,
-      ocRole: fb.engine === 'opencode' ? (ROLE_TO_OC[role] || 'build') : null,
-    })),
+    engine: primary.engine,
+    ocProfile: primary.engine === 'opencode' ? primary.ocProfile : null,
+    ocRole: primary.engine === 'opencode' ? (ROLE_TO_OC[role] || 'build') : null,
+    // Always keep one rung below the primary: if the substitute itself fails, the executor still
+    // has somewhere to go instead of dead-ending on a single attempt.
+    fallbacks: [...rest, { engine: 'opencode', ocProfile: 'doctor', ocRole: ROLE_TO_OC[role] || 'build' }],
     // context_budget → skipModels is a no-op until a model→context registry
     // exists (design §4.3). Kept in the contract so P3c can populate it.
     skipModels: [],

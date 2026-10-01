@@ -12,6 +12,7 @@ const answerActions = require('../answer-actions');
 const { getCurrentSessionId, setCurrentSessionId } = require('../session-store');
 const projects = require('../projects');
 const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag, authGate, claimRedirectNotice } = require('../auth-flag');
+const { resolveEngine } = require('../engine-admission');
 const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice, loopRecoveryEngine, loopFallbackNotice, chatFallbackEngine, engineLabelOf } = require('../engine-crash-policy');
 const { ladderFallbackTarget, ladderFallbackMessage } = require('../ladder-fallback');
 const ocLadder = require('../opencode-ladder-provider');
@@ -2705,16 +2706,34 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // while it holds, don't even spawn claude: it dies on 401 before doing any work and the
   // generic retry budget just buries that under three «Работа прервана (код 1)» rounds
   // (live 2026-10-01: 59 such rounds in one day, every one of them 401 account_on_hold).
-  // The run moves laterally instead — codex, or opencode when codex is unusable.
-  if (engine === 'claude') {
-    const gate = authGate('claude');
-    if (gate.blocked) {
-      engine = chatFallbackEngine('claude');
-      console.warn(`[${taskId}] claude auth gate: reason=${gate.reason || 'AUTH'} since=${gate.failedAt || '?'} — running on ${engine}`);
-      if (user.username && claimRedirectNotice('claude', user.username)) {
-        await tgSend(BOT_TOKEN, chatId, `⚠️ Авторизация Claude недоступна с ${gate.failedAt || 'неизвестно'} — выполняю на ${engineLabelOf(engine)}, пока её не восстановят.`, threadId);
-      }
+  //
+  // engine-admission.resolveEngine is the single place that answers «may this run use claude».
+  // It moved here from an inline check because four paths used to decide this separately (this
+  // runner, the boot-resume in server.js, the durable doctor level, hermes) and they disagreed:
+  // the resume path still resurrected claude from the pending journal (live 2026-10-01:
+  // `[resume] fallback engine=claude` for a profile already switched to OpenCode). The lateral
+  // target is the profile's own engine — it used to be hard-coded codex, so an OpenCode profile
+  // was silently moved to Codex and the notice even announced it.
+  const profileEngine = profiles.getEngine(user.workDir, chatId);
+  const admission = resolveEngine({
+    requested: engine,
+    profileEngine,
+    fallbackChain: [chatFallbackEngine('claude')],
+  });
+  if (admission.movedFrom === 'claude') {
+    engine = admission.engine;
+    console.warn(`[${taskId}] claude not admitted (${admission.reason}) — running on ${engine}`);
+    // Only a real breakage is worth a message. A deliberate switch («не зови Claude, пока не
+    // установлю авторизацию») must be silent: the owner already knows, and a «⚠️ Авторизация
+    // Claude недоступна» every cooldown reads as «мы всё равно его зовём».
+    if (admission.notice && user.username && claimRedirectNotice('claude', user.username)) {
+      const since = admission.reason === 'suspended'
+        ? 'авторизация не установлена'
+        : (authGate('claude').failedAt || 'неизвестно');
+      await tgSend(BOT_TOKEN, chatId, `⚠️ Авторизация Claude недоступна (${admission.reason}) с ${since} — выполняю на ${engineLabelOf(engine)}.`, threadId);
     }
+  } else {
+    engine = admission.engine;
   }
 
   // Write per-user MCP config — gives Claude access only to this user's Chrome profile.
