@@ -39,6 +39,12 @@ const SKILLS = [
     requires: 'ничего — браузер всегда запущен',
   },
   {
+    id: 'web-ops',
+    name: 'Веб-операции (web_*)',
+    description: 'Обычная работа со страницей без возни со снимками: web_open (открыть + прочитать + понять, нужен ли вход), web_find (найти элемент), web_click, web_fill (форма; отправка — только с confirm_submit), web_login (вход по сохранённым ключам, пароль не попадает в переписку), web_state, web_screenshot. Сессия браузера общая с Playwright MCP.',
+    requires: 'Ничего. Если нужен IP виртуалки или капча — browser_session_* (удалённый Chrome).',
+  },
+  {
     id: 'weeek-crm',
     name: 'Weeek CRM',
     description: 'Управление сделками, контактами и воронками в Weeek.net через REST API. Токен не протухает.',
