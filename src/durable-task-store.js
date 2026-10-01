@@ -12,6 +12,7 @@ const { atomicText } = require('./atomic-json');
 
 const TASK_STATUSES = ['draft', 'paused', 'blocked', 'active', 'done', 'failed', 'cancelled'];
 const ITEM_STATUSES = ['pending', 'running', 'waiting', 'done', 'failed', 'skipped'];
+const ITEM_STATUSES_TERMINAL = ['done', 'failed', 'skipped'];
 const TIERS = ['free', 'standard', 'strong'];
 const TIER_RANK = { free: 0, standard: 1, strong: 2 };
 // P3c: the contract model ladder a step may be escalated through (matches
@@ -19,6 +20,16 @@ const TIER_RANK = { free: 0, standard: 1, strong: 2 };
 const MODEL_LEVELS = ['bachelor', 'master', 'doctor'];
 
 function nowMs() { return Date.now(); }
+
+// A signal's payload as text (task_signals.payload_json holds JSON — a string
+// message today, a structured payload later).
+function signalText(signal) {
+  if (!signal || signal.payload_json == null) return null;
+  try {
+    const v = JSON.parse(signal.payload_json);
+    return typeof v === 'string' ? v : JSON.stringify(v);
+  } catch { return String(signal.payload_json); }
+}
 
 function describeMissing(missing) {
   return missing
@@ -213,6 +224,7 @@ class DurableTaskStore {
       const task = this.getTask(item.task_id, profileId);
       this._prep(`UPDATE task_items SET status = 'skipped', last_error = ?, updated_at = ? WHERE id = ?`)
         .run(`skipped: ${reason.trim()}`.slice(0, 500), nowMs(), itemId);
+      this._prep('DELETE FROM task_signals WHERE task_item_id = ? AND consumed_at IS NULL').run(itemId);
       let validation = {};
       try { validation = item.validation_json ? JSON.parse(item.validation_json) : {}; } catch { /* none */ }
       for (const key of Object.keys(validation)) {
@@ -284,6 +296,8 @@ class DurableTaskStore {
       this._prep(`UPDATE task_items SET status = 'skipped', updated_at = ?
         WHERE task_id = ? AND status IN ('pending','waiting','running')`)
         .run(nowMs(), id);
+      // A closed plan has no step left to deliver a signal to (#87 B1.2).
+      this._prep('DELETE FROM task_signals WHERE task_id = ? AND consumed_at IS NULL').run(id);
       const updated = this.updateTask(id, profileId, { status: finalStatus });
       return updated;
     })();
@@ -565,6 +579,8 @@ class DurableTaskStore {
       const upd = this._prep(`UPDATE task_items SET status = 'done', last_execution_id = ?,
           updated_at = ? WHERE id = ?${fence.clause}`).run(executionId, now, id, ...fence.args);
       if (upd.changes === 0) return null;
+      // The step is over: a signal nobody parked for can never be consumed (#87 B1.2).
+      this._prep('DELETE FROM task_signals WHERE task_item_id = ? AND consumed_at IS NULL').run(id);
       const next = this._prep(`SELECT * FROM task_items WHERE task_id = ? AND status = 'pending'
         ORDER BY position LIMIT 1`).get(item.task_id);
       if (next) {
@@ -603,12 +619,33 @@ class DurableTaskStore {
       if (!item) return null;
       const fence = this._claimFence(claimGeneration);
       const now = nowMs();
+      // A buffered early signal (#87 B1.2, prod-plans T4) is applied right here:
+      // the step reaches its wait already woken, due NOW, so the next tick
+      // resolves it as 'woken' — the answer that arrived while the step was still
+      // running is no longer lost.
+      const pending = this._prep(`SELECT * FROM task_signals
+        WHERE task_id = ? AND task_item_id = ? AND consumed_at IS NULL`).get(item.task_id, id);
+      let w = wait;
+      let nextDue = dueAt;
+      if (pending && wait && typeof wait === 'object') {
+        w = {
+          ...wait,
+          woken_at: pending.created_at || now,
+          woken_by: pending.source || 'user',
+          wake_message: signalText(pending),
+        };
+        nextDue = now;
+      }
       const upd = this._prep(`UPDATE task_items SET status = 'waiting', due_at = ?, wait_deadline_at = NULL,
           wait_json = ?, last_error = ?, updated_at = ?,
           attempt_count = CASE WHEN ? THEN MAX(0, attempt_count - 1) ELSE attempt_count END
           WHERE id = ?${fence.clause}`)
-        .run(dueAt, wait == null ? null : JSON.stringify(wait), lastError, now, refundAttempt ? 1 : 0, id, ...fence.args);
+        .run(nextDue, w == null ? null : JSON.stringify(w), lastError, now, refundAttempt ? 1 : 0, id, ...fence.args);
       if (upd.changes === 0) return null;
+      if (pending) {
+        this._prep('UPDATE task_signals SET consumed_at = ? WHERE task_id = ? AND task_item_id = ?')
+          .run(now, item.task_id, id);
+      }
       this._bump(item.task_id);
       return this.getTaskItem(id);
     })();
@@ -627,22 +664,99 @@ class DurableTaskStore {
   /**
    * Wake a waiting item now (a user answered, or someone knows the condition
    * holds). The next tick re-checks it; for an agent wait the message is handed
-   * to the resumed run. Only a parked item (waiting + wait_json) can be woken.
+   * to the resumed run. Only a parked item (waiting + wait_json) can be woken —
+   * a step that has not reached its wait yet does not error out any more: the
+   * signal is BUFFERED for the park (see task_signals, #87 B1.2).
+   *
+   * Signal identity = (task, step): the first signal wins, a duplicate never
+   * overwrites `wake_message` (prod-plans T5).
    */
   wakeItem(id, profileId, { message = null, by = 'user' } = {}) {
     return this.db.transaction(() => {
       const item = this._itemOwnedBy(id, profileId);
       if (!item) return { error: 'item not found (or not owned by this profile)' };
-      if (item.status !== 'waiting' || !item.wait_json) return { error: `item is not waiting (status=${item.status})` };
+      const now = nowMs();
+      const payload = message == null ? null : String(message).slice(0, 4000);
+      if (item.status !== 'waiting' || !item.wait_json) {
+        // A finished step has nothing to wake (prod-plans T5: «wake после done»)
+        // and gets no signal row.
+        if (ITEM_STATUSES_TERMINAL.includes(item.status)) {
+          return { error: `item is not waiting (status=${item.status})` };
+        }
+        // T4 — the answer arrived BEFORE the step parked (it is still pending or
+        // running). Buffer it: parkItem applies it as soon as the step reaches its
+        // wait, instead of dropping the event (prod-plans T4 FAIL).
+        const { signal, duplicate } = this.postSignal({
+          task_id: item.task_id, task_item_id: id, payload, source: by, now,
+        });
+        return { ok: true, buffered: true, duplicate, item: this.getTaskItem(id) };
+      }
       let wait;
       try { wait = JSON.parse(item.wait_json); } catch { wait = {}; }
-      const now = nowMs();
-      wait = { ...wait, woken_at: now, woken_by: by, wake_message: message == null ? null : String(message).slice(0, 4000) };
+      if (wait.woken_at) {
+        // T5: the FIRST answer wins — a second wake must not overwrite it.
+        return { ok: true, already_woken: true, item: this.getTaskItem(id) };
+      }
+      const { signal, duplicate } = this.postSignal({
+        task_id: item.task_id, task_item_id: id, payload, source: by, now,
+      });
+      const effective = duplicate ? signalText(signal) : payload;
+      wait = { ...wait, woken_at: now, woken_by: by, wake_message: effective == null ? null : String(effective).slice(0, 4000) };
       this._prep('UPDATE task_items SET wait_json = ?, due_at = ?, updated_at = ? WHERE id = ?')
         .run(JSON.stringify(wait), now, now, id);
+      this._prep('UPDATE task_signals SET consumed_at = ? WHERE task_id = ? AND task_item_id = ?')
+        .run(now, item.task_id, id);
       this._bump(item.task_id);
-      return { item: this.getTaskItem(id) };
+      return { item: this.getTaskItem(id), duplicate };
     })();
+  }
+
+  // ── Incoming signals (#87 B1.2, prod-plans T4/T5) ─────────────────────────
+  /**
+   * Record an incoming signal for a plan step. Identity = userTaskId + step, so
+   * two wakes for the same step are ONE signal (a duplicate never overwrites the
+   * first payload); a different step — a different signal.
+   *
+   * An UNCONSUMED row is a signal nobody has applied yet → duplicate.
+   * A CONSUMED row is history of an earlier wait cycle → a new signal for a later
+   * wait of the same step replaces it (that is a new event, not a duplicate).
+   *
+   * @returns {{signal: object, duplicate: boolean}}
+   */
+  postSignal({ task_id, task_item_id, event_type = 'wake', source = null, payload = null, now = null }) {
+    if (!task_id || !task_item_id) throw new Error('task_id and task_item_id are required');
+    const at = now == null ? nowMs() : now;
+    const json = payload == null ? null : JSON.stringify(payload);
+    const select = () => this._prep('SELECT * FROM task_signals WHERE task_id = ? AND task_item_id = ?')
+      .get(task_id, task_item_id);
+    return this.db.transaction(() => {
+      const existing = select();
+      if (existing && existing.consumed_at == null) return { signal: existing, duplicate: true };
+      if (existing) {
+        this._prep(`UPDATE task_signals SET event_type = ?, source = ?, payload_json = ?,
+            created_at = ?, consumed_at = NULL WHERE task_id = ? AND task_item_id = ?`)
+          .run(event_type, source, json, at, task_id, task_item_id);
+        return { signal: select(), duplicate: false };
+      }
+      this._prep(`INSERT INTO task_signals
+          (task_id, task_item_id, event_type, source, payload_json, created_at, consumed_at)
+          VALUES (?, ?, ?, ?, ?, ?, NULL)`)
+        .run(task_id, task_item_id, event_type, source, json, at);
+      return { signal: select(), duplicate: false };
+    })();
+  }
+
+  getSignal(taskId, itemId) {
+    return this._prep('SELECT * FROM task_signals WHERE task_id = ? AND task_item_id = ?')
+      .get(taskId, itemId) || null;
+  }
+
+  /** Signals of a plan, profile-scoped, newest first. */
+  listSignals(taskId, profileId) {
+    return this._prep(`SELECT s.* FROM task_signals s
+      JOIN durable_tasks t ON t.id = s.task_id
+      WHERE s.task_id = ? AND t.profile_id = ?
+      ORDER BY s.created_at DESC, s.rowid DESC`).all(taskId, profileId);
   }
 
   /** Items parked on a user answer, for the chat-context notice. Profile-scoped. */
@@ -989,4 +1103,4 @@ class DurableTaskStore {
   }
 }
 
-module.exports = { DurableTaskStore, TASK_STATUSES, ITEM_STATUSES, TIERS, TIER_RANK };
+module.exports = { DurableTaskStore, TASK_STATUSES, ITEM_STATUSES, TIERS, TIER_RANK, signalText };
