@@ -49,6 +49,7 @@ const {
   HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT, HH_WHERE_PROMPT_INTENT, HH_SHOW_ATS_CONFIG_INTENT,
   HH_STYLE_INTENT, HH_EVALUATE_INTENT, HH_SEND_INTENT, HH_SEND_CONFIRM_INTENT, HH_SEND_CANCEL_INTENT,
   HH_REJECT_INTENT, HH_REJECT_CONFIRM_INTENT, HH_REJECT_CANCEL_INTENT, HH_SCAN_INTENT, HH_DISCONNECT_INTENT,
+  HH_PORTRAIT_INTENT,
 } = hhIntentRegexes;
 
 // ── Quick answers — bypass Claude for known setup/secrets patterns ───────────
@@ -970,7 +971,8 @@ async function runQuickAnswerUnchecked(task, userId, workDir, openrouterKey = nu
       HH_RESPONSES_INTENT, HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT,
       HH_WHERE_PROMPT_INTENT, HH_SHOW_ATS_CONFIG_INTENT, HH_STYLE_INTENT,
       HH_EVALUATE_INTENT, HH_SEND_INTENT, HH_SEND_CONFIRM_INTENT, HH_SEND_CANCEL_INTENT,
-      HH_REJECT_INTENT, HH_REJECT_CONFIRM_INTENT, HH_REJECT_CANCEL_INTENT, HH_SCAN_INTENT];
+      HH_REJECT_INTENT, HH_REJECT_CONFIRM_INTENT, HH_REJECT_CANCEL_INTENT, HH_SCAN_INTENT,
+      HH_PORTRAIT_INTENT];
     if (hhIntents.some(intent => intent.test(task)) && !task.trim().startsWith('/') &&
         !await verifyQuickAnswerIntent(task, 'Быстрый ответ HeadHunter: вакансии, статистика, ссылки на ревью кандидатов или настройки рекрутинга', openrouterKey)) return null;
     // HH logic lives in trained-assist-hh-skill (epic #1470 P1.3): each intent is
@@ -989,6 +991,8 @@ async function runQuickAnswerUnchecked(task, userId, workDir, openrouterKey = nu
     if (HH_WHERE_PROMPT_INTENT.test(task) && (r = await orNull(quick('where_prompt')))) return r;
     if (HH_SHOW_ATS_CONFIG_INTENT.test(task) && (r = await orNull(quick('show_ats_config')))) return r;
     if (HH_STYLE_INTENT.test(task) && (r = await orNull(quick('style_page')))) return r;
+    // Портрет вакансии (hh-skill #86): gauge-таблица — локальный quick, без HH API.
+    if (HH_PORTRAIT_INTENT.test(task) && (r = await orNull(quick('portrait_gauge')))) return r;
     // Action intents — order matters: confirm/cancel BEFORE the bare intent.
     // Confirm = outbound HH effect: longer deadline, and a timeout must not invite
     // a blind retry (the send may have gone through).
