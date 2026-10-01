@@ -36,13 +36,13 @@
     "recruiting/hh": {
       "title": "HeadHunter",
       "siblings": ["hh-skills"],
-      "modules": ["hh-skills/90-hh.js", "hh-skills/91-hh-discovery.js", "hh-skills/91b-hh-outreach.js", "hh-skills/91c-hh-sync.js", "hh-skills/92-hh-proactive.js", "hh-skills/93-hh-quick.js", "hh-skills/94-calltips.js", "hh-skills/95-recruiter-tools.js", "hh-skills/96-applylink.js"],
+      "modules": ["hh-skills/90-hh.js", "hh-skills/90b-hh-portrait.js", "hh-skills/91-hh-discovery.js", "hh-skills/91b-hh-outreach.js", "hh-skills/91c-hh-sync.js", "hh-skills/92-hh-proactive.js", "hh-skills/93-hh-quick.js", "hh-skills/94-calltips.js", "hh-skills/95-recruiter-tools.js", "hh-skills/96-applylink.js"],
       "promptDomains": ["hh", "hh.setup", "hh-notify"]
     },
     "recruiting/interview": {
       "title": "Интервью и видео",
       "siblings": ["speech-skills"],
-      "modules": ["hh-skills/99-interview-analysis.js", "95-video-analysis.js"]
+      "modules": ["hh-skills/98b-interview.js", "hh-skills/99-interview-analysis.js", "hh-skills/99b-interview-portrait.js", "95-video-analysis.js"]
     },
     "recruiting/company": {
       "title": "Компании (ИНН, DaData, Checko)",
