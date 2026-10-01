@@ -221,6 +221,30 @@ function ocLadderTokenEnv() {
   return token ? { [TOKEN_ENV]: token } : {};
 }
 
+// One OpenCode Go key per run, drawn from the box's rotation list.
+//
+// The built-in `opencode-go` provider reads OPENCODE_API_KEY and passes it to the
+// upstream verbatim — so the VALUE must be exactly one `oc_sk_…`. Verified on the prod
+// VM 2026-09-28 with a clean HOME/OPENCODE_CONFIG_DIR (isolating the run from the stored
+// account credential that made an earlier, dirtier probe report success for everything):
+//   one valid key → OK · two keys comma-joined → FAIL · garbage → FAIL · garbage+valid → FAIL
+// and the raw API rejects the comma pair outright (401 "Invalid credential").
+// So OPENCODE_GO_API_KEYS (distinct `oc_sk_…` keys, infra/env-manifest.json) can never be
+// forwarded as-is. Picking ONE key per run still delivers the rotation the list is for:
+// when a key hits its weekly allowance, the next run draws the other.
+// An explicitly-set OPENCODE_API_KEY always wins (ops override).
+//
+// NOTE for opencode: its stored credential (.agent-home/…/opencode/auth.json) takes
+// precedence over this env var when present — src/runner/engine-isolation.js rewrites
+// that file with the drawn key so the rotation actually reaches the engine.
+function goApiKey(env = {}) {
+  if (env.OPENCODE_API_KEY) return env.OPENCODE_API_KEY;
+  const list = String(env.OPENCODE_GO_API_KEYS || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  if (list.length) return list[Math.floor(Math.random() * list.length)];
+  return env.OPENCODE_GO_API_KEY || '';
+}
+
 // Reads opencode.json and returns agent-name -> shortened model-id map (for footer breakdown).
 // ocProfileOverrides (optional): the per-invocation {model, agent} this run actually got via
 // OPENCODE_CONFIG. It wins over the global opencode.json — without it every step/error log line
@@ -478,23 +502,13 @@ async function runEngineProcess(opts) {
       ...(engine === 'opencode' && (mcpConfig || ocProfileOverrides) ? { OPENCODE_CONFIG: writeOpencodeMcpConfig(user.workDir || os.tmpdir(), mcpConfig, ocProfileOverrides) } : {}),
       // Engine credential for the `ladder` provider (src/opencode-ladder-provider.js, #1687).
       ...(engine === 'opencode' ? ocLadderTokenEnv() : {}),
-      // OpenCode Go subscription keys for the built-in `opencode-go` provider (the research
-      // profile runs opencode-go/mimo-v2.6-flash). That provider reads OPENCODE_API_KEY,
-      // while the box ships the rotation list as OPENCODE_GO_API_KEYS (two `oc_sk_…` keys,
-      // infra/env-manifest.json) plus a singular OPENCODE_GO_API_KEY — so pass the LIST,
-      // not one key, and rename nothing. Verified live 2026-09-28: a single key works, and
-      // the comma-joined pair is accepted by `opencode run` too. Read off cleanEnv (the env
-      // this run actually carries); empty when absent: buildAgentEnv skips an empty
-      // engineCredentialNames value.
-      ...(engine === 'opencode'
-        ? {
-            OPENCODE_API_KEY:
-              cleanEnv.OPENCODE_API_KEY
-              || cleanEnv.OPENCODE_GO_API_KEYS
-              || cleanEnv.OPENCODE_GO_API_KEY
-              || '',
-          }
-        : {}),
+      // OpenCode Go subscription key for the built-in `opencode-go` provider (used when a
+      // run is explicitly pointed at `opencode-go/…`; the profiles themselves all go
+      // through the `ladder` provider). Exactly one key, drawn per run from the rotation
+      // list — see goApiKey for why the list itself must never be forwarded. Read off
+      // cleanEnv (the env this run actually carries); empty when absent, and
+      // buildAgentEnv then skips the empty engineCredentialNames value.
+      ...(engine === 'opencode' ? { OPENCODE_API_KEY: goApiKey(cleanEnv) } : {}),
       // OpenCode ships a built-in `websearch` tool, but registers it ONLY when the model's
       // provider is `opencode`/`opencode-go` or one of these flags is set — never for our
       // `openrouter`/`ladder` providers (verified in opencode 1.18.31: the registry gate is
@@ -1167,6 +1181,8 @@ module.exports = {
   codexMcpArgs,
   withCodexMcpEnvForwarding,
   writeOpencodeMcpConfig,
+  // exposed for tests — OpenCode Go key rotation (one key per run, never the comma list)
+  goApiKey,
   // exposed for tests — ⛔/➕ button delivery gate (issue: flag used to flip
   // before confirming the edit landed, permanently hiding buttons after one
   // 429/coalesce drop)

@@ -137,11 +137,12 @@ function buildAgentEnv(fullEnv, { userTokenNames = [], extra = {}, engineCredent
 
 // Env names an engine reads its model-provider credentials from.
 // opencode: the built-in OpenRouter provider reads OPENROUTER_API_KEY; the built-in
-// OpenCode Go / Zen providers read OPENCODE_API_KEY (research runs on
-// opencode-go/mimo-v2.6-flash — the box stores it as OPENCODE_GO_API_KEY, mapped in
-// runEngineProcess); and custom providers in its config files reference env vars as
-// {env:NAME} or ${NAME} (e.g. gigachat → ${GIGACHAT_TOKEN}); every such reference is
-// followed.
+// OpenCode Go / Zen providers read OPENCODE_API_KEY (every profile routes through the
+// worker ladder now — this remains the credential for an explicit `opencode-go/…` model;
+// the box stores it as OPENCODE_GO_API_KEY[S], one key drawn per run in
+// runEngineProcess → goApiKey); and custom providers in its config files reference env
+// vars as {env:NAME} or ${NAME} (e.g. gigachat → ${GIGACHAT_TOKEN}); every such reference
+// is followed.
 // codex: OPENAI_API_KEY when it runs on an API key. claude: OAuth, nothing from env.
 const ENV_REF_RE = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 function engineCredentialNames(engine, { configFiles = [] } = {}) {

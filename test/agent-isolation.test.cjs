@@ -16,7 +16,8 @@ process.env.AGENT_MCP_BRIDGE_DIR = path.join(tmpRoot, 'bridge');
 const iso = require('../src/agent-isolation');
 const tokens = require('../src/agent-run-tokens');
 const bridge = require('../src/agent-mcp-bridge');
-const { runEngineProcess } = require('../src/runner/claude-runner');
+const { runEngineProcess, goApiKey } = require('../src/runner/claude-runner');
+const { syncOpencodeGoAuth } = require('../src/runner/engine-isolation');
 const { writeRunMcpConfig } = require('../src/browser');
 
 const SERVER_ENV = {
@@ -213,10 +214,12 @@ test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + Op
     assert.equal(r.exitCode, 0);
     const env = parseEnvFile(path.join(outDir, 'engine.env'));
     assert.equal(env.OPENROUTER_API_KEY, 'srv-openrouter', 'opencode needs its OpenRouter key');
-    // OpenCode Go: the box ships a two-key rotation list as OPENCODE_GO_API_KEYS, while the
-    // built-in opencode-go provider reads OPENCODE_API_KEY — runEngineProcess maps the LIST
-    // (both keys, so rotation survives), not just the singular entry.
-    assert.equal(env.OPENCODE_API_KEY, 'oc-k1,oc-k2', 'the whole Go key list reaches the engine under the name its provider reads');
+    // OpenCode Go: the box ships a rotation list as OPENCODE_GO_API_KEYS, while the
+    // built-in opencode-go provider reads OPENCODE_API_KEY and forwards it verbatim — so the
+    // engine must get EXACTLY ONE key from the list, never the comma-joined pair (upstream
+    // answers 401 to that) and never the box-side names.
+    assert.ok(['oc-k1', 'oc-k2'].includes(env.OPENCODE_API_KEY), `one key drawn from the rotation list (got ${env.OPENCODE_API_KEY})`);
+    assert.ok(!env.OPENCODE_API_KEY.includes(','), 'a comma-joined value would be rejected upstream');
     assert.ok(!('OPENCODE_GO_API_KEY' in env) && !('OPENCODE_GO_API_KEYS' in env), 'the box names are not needed by the engine');
     assert.ok(iso.engineCredentialNames('opencode').includes('OPENCODE_API_KEY'), 'Go key is an engine credential, not a server-only secret');
     assert.deepEqual(iso.engineCredentialNames('codex'), ['OPENAI_API_KEY'], 'codex credential set is unchanged');
@@ -229,6 +232,52 @@ test('allowlist keeps the engine\'s own provider keys (opencode: OPENROUTER + Op
     delete process.env.AGENT_ENV_ALLOWLIST;
     delete process.env.AGENT_SERVICE_HOME;
   }
+});
+
+// OpenCode Go key rotation: the provider forwards OPENCODE_API_KEY verbatim, so the value
+// must always be exactly one oc_sk_… — never the comma list the box ships it as.
+test('goApiKey: one key per run, drawn from the rotation list, never a comma', () => {
+  assert.equal(goApiKey({}), '', 'nothing configured → empty (engineCredentialNames then drops it)');
+  assert.equal(goApiKey({ OPENCODE_GO_API_KEY: 'oc-single' }), 'oc-single', 'singular entry is the fallback');
+  assert.equal(goApiKey({ OPENCODE_GO_API_KEYS: 'oc-only' }), 'oc-only', 'a one-entry list passes through');
+  assert.equal(goApiKey({ OPENCODE_GO_API_KEY: 'oc-single', OPENCODE_GO_API_KEYS: 'oc-only-list' }), 'oc-only-list',
+    'the list wins over the singular entry — that is where the rotation lives');
+  // An explicit override always wins (ops pinning a key).
+  assert.equal(goApiKey({ OPENCODE_API_KEY: 'oc-explicit', OPENCODE_GO_API_KEYS: 'oc-a,oc-b' }), 'oc-explicit');
+  // Whitespace / empty entries are dropped, and every draw is a real single key.
+  const list = { OPENCODE_GO_API_KEYS: ' oc-a , ,, oc-b ,' };
+  const draws = new Set(Array.from({ length: 60 }, () => goApiKey(list)));
+  assert.deepEqual([...draws].sort(), ['oc-a', 'oc-b'], 'only clean single keys are ever drawn');
+  for (const d of draws) assert.ok(!d.includes(',') && !d.includes(' '), `drawn key is clean: ${d}`);
+  // Both keys must be reachable, or "rotation" is a lie.
+  assert.equal(draws.size, 2, 'both rotation keys are reachable over repeated runs');
+});
+
+// opencode's STORED credential shadows OPENCODE_API_KEY (prod 2026-10-01: a valid env key
+// + a stale auth.json → 401), so the staged auth.json must carry the drawn per-run key —
+// otherwise goApiKey's rotation never reaches the engine.
+test('syncOpencodeGoAuth: rewrites the staged opencode-go key, keeps everything else, never creates', () => {
+  const home = fs.mkdtempSync(path.join(tmpRoot, 'oc-auth-'));
+  const authPath = path.join(home, '.local', 'share', 'opencode', 'auth.json');
+  const write = (obj) => { fs.mkdirSync(path.dirname(authPath), { recursive: true }); fs.writeFileSync(authPath, JSON.stringify(obj)); };
+
+  assert.equal(syncOpencodeGoAuth({ home, key: 'oc-new' }), false, 'no staged file → nothing to sync (env stays the credential)');
+  assert.ok(!fs.existsSync(authPath), 'a missing auth.json is not created');
+
+  assert.equal(syncOpencodeGoAuth({ home, key: '' }), false, 'no drawn key → the stored credential is left alone');
+  assert.ok(!fs.existsSync(authPath), 'still nothing to sync without a key');
+
+  write({ 'opencode-go': { type: 'api', key: 'oc-stale' }, other: { type: 'oauth', token: 'keep-me' } });
+  fs.chmodSync(authPath, 0o660);
+  assert.equal(syncOpencodeGoAuth({ home, key: 'oc-drawn' }), true, 'staged file exists → synced');
+  const after = JSON.parse(fs.readFileSync(authPath, 'utf8'));
+  assert.equal(after['opencode-go'].key, 'oc-drawn', 'the drawn key wins');
+  assert.equal(after['opencode-go'].type, 'api', 'the entry shape opencode wrote is kept');
+  assert.equal(after.other.token, 'keep-me', 'other stored credentials survive');
+  assert.equal(fs.statSync(authPath).mode & 0o777, 0o660, 'mode is untouched (the slot reads it via group/ACL)');
+
+  assert.equal(syncOpencodeGoAuth({ home: null, key: 'oc-x' }), false, 'no home → no-op');
+  assert.equal(syncOpencodeGoAuth({ home, key: null }), false, 'null key → no-op');
 });
 
 function bridgeHandshake(socketPath, token, server) {

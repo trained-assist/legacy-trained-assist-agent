@@ -223,6 +223,24 @@ function isProviderFault(text) {
   const workerFailure = ocLadder.classifyWorkerFailure(t);
   return !!workerFailure && workerFailure !== 'context';
 }
+
+// Genuine provider-error text for the ladder classifier — NEVER answer prose.
+//
+// codexErrorMsg is set only on an error/turn.failed event and claudeErrorText only on an
+// is_error result: both are real provider errors. fullOutput.text is consulted only when
+// the run never confirmed completion (an error printed as plain output, no event).
+// A CONFIRMED run's answer used to be scanned too (`codexErrorMsg || claudeResult ||
+// fullOutput.text || result`), and an answer that merely mentioned «401» (e.g. «токен из
+// origin URL мёртв (401)») classified as worker_unreachable — the runner then threw the
+// COMPLETED step away and answered ⛔ llm-ladder недоступен. execution-history still holds
+// those rows: errorText = a full step report ending in `DURABLE: done` (2026-09-30/10-01).
+// Research is affected most: from this PR its model is `ladder/research:*`, so the
+// classifier applies to it for the first time (a `opencode-go/…` model never matched).
+function providerErrorText({ codexErrorMsg, claudeErrorText, terminalSuccess, outputText, result } = {}) {
+  if (codexErrorMsg) return codexErrorMsg;
+  if (claudeErrorText) return claudeErrorText;
+  return terminalSuccess ? '' : String(outputText || result || '');
+}
 const MAX_RESUME_ATTEMPTS = 3; // cap on auto-retries for a task resumed after a server restart — a
 // restart is our fault, not the user's, so it's worth retrying automatically, but bounded: without
 // this, a task whose resume keeps crashing (e.g. a genuinely broken session) would retry forever
@@ -3275,12 +3293,16 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   //                                                                                        п.2), else BLOCKED
   //   context            — the prompt did not fit the model; ask to split the task     → FAILED
   // Checked before isAuthError below, which would otherwise treat "401"/"rate limit" text as a
-  // total engine auth loss. codexErrorMsg (the error event's own message) is the most reliable
-  // source of the real provider error text.
-  const preLadderText = codexErrorMsg || claudeResult || fullOutput.text || result;
+  // total engine auth loss. Only GENUINE error text is classified (providerErrorText) — a
+  // confirmed answer is never scanned for error patterns.
+  const preLadderText = providerErrorText({
+    codexErrorMsg, claudeErrorText, terminalSuccess, outputText: fullOutput.text, result,
+  });
 
-  // Call log for every failed OpenCode run, before any branch below can return early.
-  if (engine === 'opencode' && ocProfileName && ocActiveModel) {
+  // Call log for a failed OpenCode run, before any branch below can return early. Gated on
+  // actual error text: logging it unconditionally made EVERY successful run write an error
+  // row first and an ok row 50ms later (error→ok pairs in calls.jsonl), polluting the ladder log.
+  if (engine === 'opencode' && ocProfileName && ocActiveModel && preLadderText) {
     _logOcLadderCall(ocProfileName, ocRole, ocActiveModel, 'error', preLadderText);
   }
   const workerFailure = engine === 'opencode' && ocActiveModel?.startsWith(`${ocLadder.PROVIDER_ID}/`)
@@ -3709,6 +3731,8 @@ module.exports = {
   _intents: { HH_MY_VACANCIES_INTENT, HH_FUNNEL_INTENT, HH_RESPONSES_INTENT, HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT, ENGINE_SWITCH_INTENT },
   // Exported for pin-state tests only
   _pin: { updateContextPin, readPinStore, buildContextCard },
+  // Exported for the ladder-classifier tests only — genuine provider error vs answer prose
+  providerErrorText,
   // Exported for time-context tests only
   _time: { currentTimeSection },
   // Exported for final-text-selection tests only
