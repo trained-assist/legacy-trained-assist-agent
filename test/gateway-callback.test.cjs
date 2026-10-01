@@ -185,9 +185,37 @@ test('unknown audience is never pushed to another bot\'s gateway', async () => {
   assert.equal(fetched.length, 0);
 });
 
-test('every non-default registry bot declares an https gateway_url', () => {
-  const { BOTS } = require('../src/bot-registry');
+test('every non-default registry bot has its own https gateway_url OR declares why it has none', () => {
+  // The invariant is NOT "every bot has a gateway" — an external worker that only
+  // calls POST /run owns no busy-hold and no /internal/run-finished, so there is
+  // nothing to call. The invariant is that the absence is DECLARED: a silently
+  // empty gateway_url is how a bot ends up with an unknown callback target, which
+  // is the exact bug the run-finished push was built to kill.
+  const { BOTS, botsMissingGatewayDeclaration } = require('../src/bot-registry');
+  assert.deepEqual(botsMissingGatewayDeclaration(BOTS).map(b => b.audience), []);
+  // The declaration must not become a loophole: a bot that has a gateway still has
+  // to spell the URL out as https, and a bogus one is not accepted.
   for (const b of BOTS.filter(x => x.audience !== 'default' && x.enabled !== false)) {
-    assert.match(String(b.gateway_url || ''), /^https:\/\/[^/]+$/, `${b.audience} has no gateway_url`);
+    if (b.gateway_url) assert.match(String(b.gateway_url), /^https:\/\/[^/]+$/, `${b.audience} has a malformed gateway_url`);
   }
+  // A bot with neither URL nor reason must be reported, whatever the URL looks like.
+  const bad = [{ botId: 'x', audience: 'x', token_secret_name: 'X', enabled: true, gateway_url: 'http://insecure.example' }];
+  assert.deepEqual(botsMissingGatewayDeclaration(bad).map(b => b.audience), ['x']);
+  assert.deepEqual(botsMissingGatewayDeclaration([{ ...bad[0], gateway_absence_reason: 'внешний воркер, шлюза нет' }]), []);
+});
+
+test('the sales bot (@cmr_management_bot) answers as itself and declares it has no gateway', () => {
+  const { BOTS, hasOwnGateway, gatewayUrl } = require('../src/bot-registry');
+  const sales = BOTS.find(b => b.audience === 'sales');
+  assert.ok(sales, 'sales audience must be registered');
+  assert.equal(sales.token_secret_name, 'SALES_BOT_TOKEN');
+  assert.ok(String(sales.gateway_absence_reason || '').trim(), 'no-gateway must be a stated reason');
+  // No gateway of our tg-bot family → callbacks are skipped, which callers already
+  // treat as a clean no-op (gateway-callback returns false, live-inbox explains).
+  assert.equal(hasOwnGateway(sales), false);
+  assert.equal(gatewayUrl('sales'), null);
+  // And it must never inherit another bot's gateway (the 45-min «busy» bug).
+  const env = { MEDIA_GATEWAY_URL: 'https://classic-gw.example' };
+  assert.equal(gatewayUrl('sales', { env }), null);
+  assert.equal(gatewayUrl('default', { env }), 'https://classic-gw.example');
 });
