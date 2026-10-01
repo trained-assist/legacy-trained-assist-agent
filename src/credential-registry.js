@@ -36,7 +36,7 @@ function validate(obj, where = 'credentials registry') {
     seen.add(c.consumer);
     const env = c.env || [];
     const files = c.files || [];
-    if (env.length && !c.host) throw new Error(`${at}: ${env.join(", ")} declared without "host" (mcp | bridge) — nothing is bound to provide it`);
+    if (env.length && !c.host) throw new Error(`${at}: ${env.join(", ")} declared without "host" (mcp | bridge | secrets) — nothing is bound to provide it`);
     if ((c.aliases || []).length && env.length !== 1) throw new Error(`${at}: aliases are for a single canonical env name`);
     if (c.scope === 'platform' && files.length) throw new Error(`${at}: platform credentials have no files (use scope "profile")`);
     if (c.scope === 'profile' && !files.length) throw new Error(`${at}: profile credentials need files[]`);

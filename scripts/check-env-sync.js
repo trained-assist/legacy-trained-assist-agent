@@ -159,6 +159,27 @@ if (reqMatch && optMatch) {
   }
 }
 
+// Validate the gcp_secret_manager_only promise (#1885). That section says "available on the
+// GCP VM via Secret Manager" — i.e. the HOST hands this name to the agent. The only thing
+// that actually fetches it is the boot loader (src/secrets.js REQUIRED/OPTIONAL), so a name
+// declared there but absent from the loader is a promise nobody keeps: the deploy stays
+// green, the boot log stays quiet, and the value never arrives. This is the section-level
+// twin of the SALES_BOT_TOKEN incident (01.10.2026), and the reason the bots.registry check
+// below could not catch it on its own (it only walks the bot tokens).
+console.log('\n[gcp_secret_manager_only ⊆ secrets.js loader]');
+if (reqMatch && optMatch) {
+  const loaderNames = new Set([reqMatch[1], optMatch[1]].join(',').match(/'([^']+)'/g)?.map(s => s.replace(/'/g, '')) || []);
+  const promised = manifest.gcp_secret_manager_only.secrets.map(s => s.name);
+  const neverFetched = promised.filter(n => !loaderNames.has(n));
+  if (neverFetched.length === 0) {
+    ok(`All ${promised.length} Secret-Manager-declared secrets are actually fetched by the boot loader`);
+  } else {
+    fail(`Declared in gcp_secret_manager_only but never fetched by src/secrets.js: ${neverFetched.join(', ')} — add to OPTIONAL or drop the declaration`);
+  }
+} else {
+  fail('could not parse REQUIRED/OPTIONAL from src/secrets.js');
+}
+
 // Validate the bot registry (epic #1342): every bot's token must be loaded by
 // secrets.js AND documented in a Secret-Manager-backed manifest section — a bot
 // token that lives nowhere checkable is exactly how RECRUITER_BOT_TOKEN vanished

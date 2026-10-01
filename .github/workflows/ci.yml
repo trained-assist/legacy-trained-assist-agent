@@ -317,9 +317,12 @@ jobs:
             chmod 600 /home/vova/secrets.env
             node "$DEPLOY_TMP/scripts/register-hook.js"
             DEPLOY_ENV=gcp REPO_DIR=/home/vova/trained-assist-agent bash "$DEPLOY_TMP/scripts/deploy.sh"
-            # Epic #1342: a bot whose token vanished from Secret Manager turns this deploy red
-            # instead of freezing that bot's users silently (2026-09-24 RECRUITER_BOT_TOKEN).
-            node /home/vova/agent-master/scripts/check-bot-secrets.js
+            # Epic #1342/#1885: the bot-token probe used to run HERE — after deploy.sh had
+            # already swapped ~/agent-master and restarted. A bot whose token cannot be
+            # loaded therefore went live first and only turned the job red afterwards
+            # (a383f63, 01.10.2026: SALES_BOT_TOKEN). The check moved INTO deploy.sh, which
+            # runs scripts/check-deploy-secrets-gate.js before the release is activated, so a
+            # red guard now leaves the previous release serving. One place, not two.
             rm -rf "$DEPLOY_TMP"
 
   deploy-ru:

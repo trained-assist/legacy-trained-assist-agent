@@ -32,6 +32,12 @@
 //                   source = alias-имя.
 //   C8  US-CRED-05  dadata: env нет, USERS_DIR/<u>/.inn-config.json есть → reachable=true.
 //   C9  spec        сценарий docs/user-scenarios/engineering/03-credential-reachability.md есть.
+//   C10 US-CRED-06  регресс 01.10.2026: токены всех ботов объявлены; контракт ловит
+//                   ВКЛЮЧЁННОГО потребителя, чей ключ не объявлен (обратное направление) и
+//                   имя, которое загрузчик секретов не возит.
+//   C11 US-CRED-07  pre-deploy гард scripts/check-deploy-secrets-gate.js: сломанный токен →
+//                   exit 1 с именем бота И симлинк прод-релиза остался на прошлом коммите
+//                   (стенд: агент-master → <rel>/aaaaaaaaaaa, кандидат bbbbbbbbbbb).
 //
 // Контракты, которые песочница пинит для реализации (срезы S1–S8):
 //   • src/credential-registry.js: load(file?) → {version, credentials[]}; validate(obj) кидает.
@@ -238,6 +244,77 @@ check('C8', 'US-CRED-05 dadata: env нет, .inn-config.json есть → reacha
 
 check('C9', 'spec: docs/user-scenarios/engineering/03-credential-reachability.md', () => {
   need(fs.existsSync(rel('docs', 'user-scenarios', 'engineering', '03-credential-reachability.md')), 'нет файла сценария');
+});
+
+// ── C10–C11: бот-токены и pre-deploy гард (01.10.2026, класс «потребитель без ключа») ──
+// Наблюдение после релиза нашло: sales-бот включён в bots.registry, а SALES_BOT_TOKEN не
+// грузится. Односторонний контракт (объявлено ⊆ предоставлено) этот класс по построению
+// не видит. C10 пинит обратное направление, C11 — что красный гард не даёт релиз уехать.
+const GATE = rel('scripts', 'check-deploy-secrets-gate.js');
+const BOTS = ['TELEGRAM_BOT_TOKEN', 'RECRUITER_BOT_TOKEN', 'FREELANCE_BOT_TOKEN', 'SALES_BOT_TOKEN'];
+const botEnv = (skip) => Object.fromEntries(
+  BOTS.filter(n => n !== skip).map(n => [n, `sbx-${n.toLowerCase()}-VALUE-3c8b`]));
+
+check('C10', 'регресс 01.10: токены ботов объявлены, контракт ловит включённого потребителя без ключа', () => {
+  const reg = require(rel('src', 'credential-registry.js')).load(rel('config', 'credentials.json'));
+  const declared = new Set(reg.credentials.flatMap(c => c.env || []));
+  for (const n of BOTS) need(declared.has(n), `${n} не объявлен в config/credentials.json`);
+  const bots = require(rel('src', 'bot-registry.js')).BOTS;
+  const enabled = bots.filter(b => b.enabled !== false).map(b => b.token_secret_name);
+  need(enabled.includes('SALES_BOT_TOKEN'), 'sales-бот выключен — песочница не проверяет его контракт');
+
+  // На дереве — зелёное, включая обратное направление.
+  const ok = run([CONTRACT]);
+  need(ok.code === 0, `на дереве exit ${ok.code}: ${tail(ok.out)}`);
+
+  // Выкинули токен включённого бота из реестра → exit 1 с именем (старое слепое место).
+  const raw = JSON.parse(fs.readFileSync(rel('config', 'credentials.json'), 'utf8'));
+  for (const c of raw.credentials) {
+    if (c.consumer === 'core:bot-tokens') c.env = c.env.filter(n => n !== 'SALES_BOT_TOKEN');
+  }
+  const noSales = path.join(SBX, 'no-sales-registry.json');
+  fs.writeFileSync(noSales, JSON.stringify(raw));
+  const bad = run([CONTRACT, '--registry', noSales]);
+  need(bad.code === 1, `токен включённого бота не объявлен: ожидали exit 1, получили ${bad.code}`);
+  need(bad.out.includes('SALES_BOT_TOKEN'), 'в выводе нет имени бота без ключа');
+  need(/bots\.registry/.test(bad.out), 'в выводе нет указания, какой реестр хоста включил потребителя');
+
+  // Объявили, но загрузчик его не возит → тоже красное (обещание манифеста без поставки).
+  const orphan = { version: 1, credentials: [
+    { consumer: 'sbx', scope: 'platform', host: 'secrets', env: ['SBX_LOADER_NEVER_FETCHES'], source: 'sbx', reader: 'sbx' },
+  ] };
+  const orphanReg = path.join(SBX, 'orphan-registry.json');
+  fs.writeFileSync(orphanReg, JSON.stringify(orphan));
+  const orphanRun = run([CONTRACT, '--registry', orphanReg]);
+  need(orphanRun.code === 1, `имя вне загрузчика: ожидали exit 1, получили ${orphanRun.code}`);
+  need(orphanRun.out.includes('SBX_LOADER_NEVER_FETCHES'), 'в выводе нет имени, которое загрузчик не возит');
+});
+
+check('C11', 'pre-deploy гард: сломанный токен → красный И прод-релиз остался на прошлом коммите', () => {
+  need(fs.existsSync(GATE), 'нет scripts/check-deploy-secrets-gate.js');
+  // Стенд: «текущий» релиз (куда указывает симлинк) + кандидат, который хотим активировать.
+  const live = path.join(SBX, 'agent-releases', 'aaaaaaaaaaa');
+  const cand = path.join(SBX, 'agent-releases', 'bbbbbbbbbbb');
+  for (const d of [live, cand]) { fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'index.js'), '// release\n'); }
+  const link = path.join(SBX, 'agent-master');
+  fs.symlinkSync(live, link);
+
+  const gate = (skip) => run([GATE, '--release', CORE, '--env', 'gcp'],
+    { SECRETS_SOURCE: 'env', ...botEnv(skip) });
+  const clean = gate();
+  need(clean.code === 0, `все токены на месте: ожидали exit 0, получили ${clean.code}: ${tail(clean.out)}`);
+
+  const broken = gate('SALES_BOT_TOKEN');
+  need(broken.code === 1, `SALES_BOT_TOKEN отсутствует: ожидали exit 1, получили ${broken.code}`);
+  need(broken.out.includes('SALES_BOT_TOKEN'), 'в выводе гарда нет имени бота без токена');
+  need(broken.out.includes('sales'), 'в выводе гарда нет botId');
+  // Стенд-инвариант D1: красный гард не переводит симлинк — релиз не активируется.
+  need(fs.readlinkSync(link) === live, `гард сдвинул agent-master на ${fs.readlinkSync(link)}`);
+  need(fs.existsSync(path.join(live, 'index.js')), 'прод-релиз пропал — стенд не должен трогать прошлое');
+  // Стенд: активация (то, что делает deploy.sh ПОСЛЕ гарда) по-прежнему работает.
+  fs.unlinkSync(link);
+  fs.symlinkSync(cand, link);
+  need(fs.readlinkSync(link) === cand, 'стенд активации не сработал — проверка бессмысленна');
 });
 
 // ── итог ─────────────────────────────────────────────────────────────────────
