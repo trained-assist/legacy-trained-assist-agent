@@ -11,6 +11,16 @@ module.exports = function migratePlan(db) {
         db.exec(schema.replace('durable_tasks', 'durable_tasks_new').replace("'active','done','failed','cancelled'", "'draft','active','paused','blocked','done','failed','cancelled'"));
         db.exec('INSERT INTO durable_tasks_new SELECT * FROM durable_tasks; DROP TABLE durable_tasks; ALTER TABLE durable_tasks_new RENAME TO durable_tasks;');
       }
+      // #87 B1.4: a plan that is waiting for the owner says so in the STATUS column.
+      // Same additive rebuild as above, for databases created before this change
+      // (the column list has to grow: SQLite cannot alter a CHECK in place).
+      const awaitSchema = db.prepare("SELECT sql FROM sqlite_master WHERE name='durable_tasks'").get().sql;
+      if (!awaitSchema.includes("'awaiting_input'")) {
+        db.exec(awaitSchema.replace('durable_tasks', 'durable_tasks_new')
+          .replace(/CHECK \(status IN \([^)]*\)\)/,
+            "CHECK (status IN ('draft','active','awaiting_input','paused','blocked','done','failed','cancelled'))"));
+        db.exec('INSERT INTO durable_tasks_new SELECT * FROM durable_tasks; DROP TABLE durable_tasks; ALTER TABLE durable_tasks_new RENAME TO durable_tasks;');
+      }
       const additions = {
         durable_tasks: {
           playbook_id: 'TEXT', playbook_version: 'INTEGER', user_value: 'TEXT',
@@ -115,7 +125,20 @@ module.exports = function migratePlan(db) {
           PRIMARY KEY (task_id, task_item_id)
         );
         CREATE INDEX IF NOT EXISTS idx_task_signals_pending
-          ON task_signals(task_id, consumed_at);`);
+          ON task_signals(task_id, consumed_at);
+        CREATE TABLE IF NOT EXISTS task_events (
+          -- Append-only journal of the transitions the columns keep overwriting
+          -- (#87 B1.4, «история — таблица событий»): when a step parked, when the
+          -- owner answered, how a wait resolved, every task-status change.
+          -- Written in the SAME transaction as the change it describes.
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id      TEXT NOT NULL REFERENCES durable_tasks(id) ON DELETE CASCADE,
+          task_item_id TEXT,
+          type         TEXT NOT NULL,
+          payload_json TEXT,
+          created_at   INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id);`);
       if (db.pragma('foreign_key_check').length) throw new Error('plan migration foreign key check failed');
     })();
   } finally { db.pragma('foreign_keys = ON'); }

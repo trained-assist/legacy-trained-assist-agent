@@ -200,7 +200,8 @@ function retryChildStep(store, childId, profileId, failedItemId) {
       current_model_level = minimum_model_level, last_error = NULL, updated_at = ? WHERE id = ? AND task_id = ?`)
     .run(now, now, failedItemId, childId);
   const t = store.getTask(childId, profileId);
-  if (t && t.status !== 'active') store.updateTask(childId, profileId, { status: 'active' });
+  // `awaiting_input` is alive (#87 B1.4) — a retry must not clobber it.
+  if (t && !['active', 'awaiting_input'].includes(t.status)) store.updateTask(childId, profileId, { status: 'active' });
 }
 
 function setChildPaused(store, childId, profileId, paused) {
@@ -209,7 +210,7 @@ function setChildPaused(store, childId, profileId, paused) {
   let policy = {};
   try { policy = t.execution_policy_json ? JSON.parse(t.execution_policy_json) : {}; } catch { policy = {}; }
   const writePolicy = p => store.db.prepare('UPDATE durable_tasks SET execution_policy_json = ? WHERE id = ?').run(JSON.stringify(p), childId);
-  if (paused && t.status === 'active') {
+  if (paused && ['active', 'awaiting_input'].includes(t.status)) {
     writePolicy({ ...policy, paused_by_batch: true });
     store.updateTask(childId, profileId, { status: 'paused' });
   }
@@ -570,7 +571,7 @@ function stageLockedBySibling(store, task, item) {
   const stages = state?.config?.exclusive_stages || [];
   if (!stages.includes(item.stage)) return false;
   const row = store.db.prepare(`SELECT t.id FROM durable_tasks t
-    WHERE t.parent_task_id = ? AND t.id != ? AND t.status = 'active'
+    WHERE t.parent_task_id = ? AND t.id != ? AND t.status IN ('active','awaiting_input')
       AND EXISTS (SELECT 1 FROM task_items i WHERE i.task_id = t.id AND i.stage = ? AND i.status IN ('running','done','failed'))
       AND EXISTS (SELECT 1 FROM task_items i WHERE i.task_id = t.id AND i.stage = ? AND i.status NOT IN ('done','skipped'))
     LIMIT 1`).get(task.parent_task_id, task.id, item.stage, item.stage);
@@ -585,7 +586,7 @@ function awaitsOwner(item) {
 // notice, so one owner reply resumes the whole batch instead of waking N children one by one.
 function listBatchesAwaitingOwner(store, profileId) {
   const rows = store.db.prepare(`SELECT t.id AS task_id, i.fanout_json FROM durable_tasks t JOIN task_items i ON i.task_id = t.id
-    WHERE t.profile_id = ? AND t.status = 'active' AND i.fanout_json IS NOT NULL AND i.status NOT IN ('done','skipped')`).all(String(profileId));
+    WHERE t.profile_id = ? AND t.status IN ('active','awaiting_input') AND i.fanout_json IS NOT NULL AND i.status NOT IN ('done','skipped')`).all(String(profileId));
   const out = [];
   for (const r of rows) {
     const state = parseFanout(r);

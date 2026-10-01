@@ -204,7 +204,7 @@ function reconcileOrphanedRunning(store = durableStore(), { now = Date.now(), gr
   const rows = store.db.prepare(`SELECT i.id, i.updated_at, i.title, t.profile_id, t.goal
     FROM task_items i
     JOIN durable_tasks t ON t.id = i.task_id
-    WHERE i.status = 'running' AND t.status = 'active'`).all();
+    WHERE i.status = 'running' AND t.status IN ('active','awaiting_input')`).all();
   const cutoff = now - graceMs;
   const except = exceptItemIds instanceof Set ? exceptItemIds : new Set(exceptItemIds || []);
   for (const row of rows) {
@@ -808,6 +808,14 @@ function refuseStaleAttempt(ctx, where) {
   try { cur = ctx.store.getTaskItem(ctx.itemSnap.id); } catch { /* unreadable */ }
   console.warn(`[gtd-durable] fencing: stale attempt refused (${where}) item=${ctx.itemSnap.id.slice(0, 8)}` +
     ` gen=${ctx.claimGeneration} current=${cur ? cur.claim_generation : 'gone'} exec=${ctx.executionId || '-'}`);
+  // The journal keeps what the columns cannot (#87 B1.4): a refused settle is a
+  // real event an operator has to be able to see after the fact.
+  try {
+    ctx.store.recordEvent({
+      task_id: ctx.task.id, task_item_id: ctx.itemSnap.id, type: 'fence_refused',
+      payload: { where, attempt: ctx.claimGeneration, current: cur ? cur.claim_generation : null, execution_id: ctx.executionId || null },
+    });
+  } catch { /* the refusal never fails on the journal */ }
   if (ctx.executionId) {
     try {
       ctx.store.finishExecution(ctx.executionId, {
