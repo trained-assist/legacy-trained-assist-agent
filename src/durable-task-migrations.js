@@ -56,6 +56,11 @@ module.exports = function migratePlan(db) {
           // Fanout (#1752): batch config + durable state of a fanout step
           // (queue, child task per element, supervisor journal). See src/playbook-fanout.js.
           fanout_json: 'TEXT',
+          // Attempt fencing (prod-plans T6 / red-team B3, epic #87 B1.1): bumped by
+          // claimNextRunnable on every claim; every settle write of that attempt carries
+          // the generation it claimed, so a stale attempt (45-min orphan grace re-queued a
+          // run that was still alive) can no longer overwrite the step a newer attempt owns.
+          claim_generation: 'INTEGER NOT NULL DEFAULT 0',
         },
         executions: { executor_role: 'TEXT', model_level: 'TEXT', context_budget: 'TEXT', profile: 'TEXT', provider: 'TEXT', attempt_number: 'INTEGER', result_json: 'TEXT' },
       };
