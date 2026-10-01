@@ -1166,14 +1166,13 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       `Папка артефактов плана (единственный artifact root): ${itemProjectDir}. Относительные пути проверок (file_exists, cwd command_exit_zero) резолвятся ОТ НЕЁ — все артефакты плана (отчёты, prod-check/*, deck/* и т.п.) клади сюда, а не в git-workspace.`,
       `Один план = один git-workspace. Если шагу нужен репозиторий — engineering_spawn_workspace(repository_url, root_task_id: "${planWorkspaceLabel(task)}"): тот же root_task_id на всех шагах плана даёт ТОТ ЖЕ workspace и ветку (при BRANCH_COLLISION — это твой план: engineering_workspace_status с тем же root_task_id). Не придумывай свою метку. Всё, что шаг создал в репо, закоммить в эту ветку до конца шага — незакоммиченное следующий шаг не увидит. Инженерный git-workspace — только для кода репозитория; артефакты плана — в папке выше.`,
       `План можно легально править по ходу: нужен дополнительный шаг — task_item_add(task_id: "${task.id}", after_item_id: "<Step id>", title, execution_kind, executor_role, minimum_model_level, context_budget, validation, instructions) — он выполнится сразу после этого шага. Шаг из остатка плана стал не нужен — НЕ оставляй его в плане: одним вызовом task_item_add(..., replaces_item_id: "<id старого шага из остатка плана>") добавь замену, и старый шаг отменится автоматически с причиной «заменён шагом …». Шаг просто не применим — task_item_skip(item_id, reason) с конкретной причиной.`,
-      'Если пункт чек-листа для этой задачи не применим или ты сделал иначе — не подгоняй: вызови task_item_exception(item_id: "<Step id>", reason: "<почему>") и заверши DURABLE: done. Исключение видно владельцу и попадёт в журнал.',
-      'Каждый шаг — новый ран без памяти: следующий шаг увидит только твой итог. Перед финальной строкой DURABLE дай блок «ИТОГ ШАГА» (≤10 строк): что сделано, ссылки (issue/PR/файлы/ветка), принятые решения, что важно следующему шагу.',
-      'Выполни этот шаг. Если шаг выполнен и проверка прошла — ответь финальной строкой: DURABLE: done.',
-      'Если шаг не удался — опиши ошибку и ответь финальной строкой: DURABLE: failed: <причина>.',
-      'Маркер (done/failed/waiting) — обязательно САМАЯ ПОСЛЕДНЯЯ строка твоего ответа: после него не пиши НИЧЕГО (ни списков, ни вопросов, ни примечаний). Без маркера шаг не засчитается, даже если работа сделана.',
-      'Результат шага дублируй структурно: task_item_result(item_id: "<Step id>", attempt: <Attempt из промпта>, status: "done" | "failed" | "waiting", result: {<ссылки, id, пути, решения — что нужно следующему шагу и проверкам>}, note: "<одна строка>") — сервер прочитает его напрямую, без разбора текста. Маркер это не заменяет и не отменяется: делай и то, и другое.',
+      'Если пункт чек-листа для этой задачи не применим или ты сделал иначе — не подгоняй: вызови task_item_exception(item_id: "<Step id>", reason: "<почему>") и закрой шаг вызовом task_item_result(status: "done"). Исключение видно владельцу и попадёт в журнал.',
+      'Каждый шаг — новый ран без памяти: следующий шаг увидит только твой итог. Перед закрытием шага дай блок «ИТОГ ШАГА» (≤10 строк): что сделано, ссылки (issue/PR/файлы/ветка), принятые решения, что важно следующему шагу.',
+      'ЗАКРОЙ ШАГ ВЫЗОВОМ, а не строкой: task_item_result(item_id: "<Step id>", attempt: <Attempt из промпта>, status: "done" | "failed" | "waiting", result: {<ссылки, id, пути, решения — что нужно следующему шагу и проверкам>}, note: "<одна строка>"). Это главный канал закрытия: сервер читает его напрямую, без разбора текста, и по нему же гоняет проверки шага.',
+      'Строка-маркер — ТОЛЬКО запасной путь, на случай если вызов в этом ране сделать не удалось (инструмент недоступен). Тогда напиши её САМОЙ ПОСЛЕДНЕЙ строкой ответа и больше ничего после неё: DURABLE: done | DURABLE: failed: <причина> | DURABLE: waiting. Обычно не нужна: одного вызова достаточно.',
+
       'Если шагу нужно ДОЖДАТЬСЯ чего-то внешнего (деплой, CI, креды/ответ пользователя, повтор ошибки в логах, другой план, просто время) — НЕ жди внутри рана и не проваливай шаг:',
-      'вызови task_item_wait(item_id: "<Step id>", until: {<validator>: <значение>} | awaiting_user: true | sleep_sec: N, timeout_sec, reason) и ответь финальной строкой: DURABLE: waiting.',
+      'вызови task_item_wait(item_id: "<Step id>", until: {<validator>: <значение>} | awaiting_user: true | sleep_sec: N, timeout_sec, reason) и закрой шаг вызовом task_item_result(status: "waiting").',
       'План уснёт; сервер сам дёшево проверяет условие каждые poll_every_sec и перезапустит этот же шаг, когда оно выполнится, пользователь ответит или истечёт таймаут.',
     ].filter(Boolean).join('\n');
 
@@ -1272,6 +1271,18 @@ async function settleDone(ctx, said, { judged = null, structured = null } = {}) 
       // verdict so the step is failed with the check's own key/path.
       const bad = results.find(r => r.status === 'fail' && isBlockingCheck(r.key));
       if (bad) gate = bad;
+      // A step the MARKER JUDGE closed (no marker, no structured result) must be
+      // backed by at least one declared check that actually passed. Without this the
+      // only evidence would be a cheap model's word on a free rung — exactly the
+      // "loud failure becomes a silent lie" trade. Items whose declared checks are
+      // all inconclusive (the 601 steps carrying invented validator names) now fail
+      // LOUDLY into the normal recovery path instead of being closed on the model's
+      // say-so; they must be re-authored (unknown key = compile error), not judged.
+      else if (judged && !structured && results.length
+               && !results.some(r => r.status === 'pass')) {
+        gate = { key: 'marker-judge:no-passing-check',
+                 subject: results.slice(0, 8).map(r => `${r.key}=${r.status}`).join(', ') || null };
+      }
     }
     store.setItemEvidence(itemSnap.id, task.profile_id, {
       evidence_json: JSON.stringify(gate

@@ -9,7 +9,7 @@
 //      SAME validated path as a marked reply (deterministic checks still gate it);
 //   3. judge 'uncertain' → retry at the SAME model level, never escalate to doctor.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { createRequire } from 'module';
@@ -25,6 +25,10 @@ let root; const saved = {};
 beforeEach(() => {
   for (const k of KEYS) saved[k] = process.env[k];
   root = mkdtempSync(join(tmpdir(), 'marker-judge-'));
+  // The profile work dir IS the step's cwd for command_exit_zero — without it every
+  // command check fails with ENOENT, which used to hide behind a validator name the
+  // engine does not know (`command`), so the step "passed" without running anything.
+  mkdirSync(join(root, 'u', PROFILE), { recursive: true });
   process.env.USERS_DIR = join(root, 'u'); process.env.AGENT_DATA_DIR = join(root, 'd');
   process.env.AGENT_TOKENS_DIR = join(root, 't'); process.env.AGENT_TOKENS_ROOT = join(root, 't');
   for (const m of MODS) { try { delete require.cache[require.resolve(m)]; } catch { /* not loaded */ } }
@@ -48,7 +52,7 @@ function plan(G, over = {}) {
     items: [{
       title: 'step one', execution_kind: 'agent', executor_role: 'developer',
       minimum_model_level: 'bachelor', context_budget: 'small',
-      validation: { command: 'true' }, max_attempts: 3, ...(over.item || {}),
+      validation: { command_exit_zero: 'true' }, max_attempts: 3, ...(over.item || {}),
     }],
   });
   store.updateTask(r.task.id, PROFILE, { status: 'active' });
@@ -56,7 +60,7 @@ function plan(G, over = {}) {
 }
 
 describe('#1907 marker judge', () => {
-  it("judge 'done' completes the step through the validated path (evidence keeps the verdict)", async () => {
+  it("judge 'done' completes the step and evidence keeps the verdict", async () => {
     const G = require('../../src/gtd-controller.js');
     const { store, task, item } = plan(G);
     await tick(G, {
@@ -69,6 +73,24 @@ describe('#1907 marker judge', () => {
     const ev = JSON.parse(after.evidence_json);
     expect(ev.marker_judge).toEqual({ verdict: 'done', reason: 'итог и PR на месте' });
     expect(store.getTask(task.id, PROFILE).status).toBe('done');
+  });
+
+  it("judge 'done' does NOT close a step whose declared checks are all inconclusive", async () => {
+    // The guard that keeps a free-rung model from closing a step on its word alone:
+    // an item that DECLARED checks must have at least one of them pass. A step
+    // carrying invented validator names (601 of them in the live plans) resolves
+    // every check to `inconclusive` — so it fails loudly into normal recovery
+    // instead of being silently marked done.
+    const G = require('../../src/gtd-controller.js');
+    const { store, item } = plan(G, { item: { validation: { coverage_table_committed: '' } } });
+    await tick(G, {
+      runTask: async () => 'ИТОГ ШАГА: сделал, всё хорошо\nбез маркера в конце',
+      markerJudge: async () => ({ verdict: 'done', reason: 'модель решила, что сделано' }),
+    });
+    await drain();
+    const after = store.getTaskItem(item.id);
+    expect(after.status).not.toBe('done');
+    expect(String(after.last_error || '')).toContain('marker-judge:no-passing-check');
   });
 
   it("judge 'done' does NOT bypass a failing deterministic check (#1861 gate)", async () => {
@@ -209,12 +231,12 @@ describe('durable-marker-judge unit', () => {
     const said = 'ИТОГ ШАГА: '.padEnd(300, 'x');
     const good = await judgeMarkerlessReply({
       said, item: {}, task: {},
-      serviceLlm: { available: () => true, serviceJson: async () => ({ value: { verdict: 'done', reason: 'ок' } }) },
+      serviceLlm: { available: () => true, serviceJson: async () => ({ verdict: 'done', reason: 'ок' }) },
     });
     expect(good).toEqual({ verdict: 'done', reason: 'ок' });
     const bad = await judgeMarkerlessReply({
       said, item: {}, task: {},
-      serviceLlm: { available: () => true, serviceJson: async () => ({ value: { verdict: 'yes' } }) },
+      serviceLlm: { available: () => true, serviceJson: async () => ({ verdict: 'yes' }) },
     });
     expect(bad.verdict).toBe('uncertain');
   });
