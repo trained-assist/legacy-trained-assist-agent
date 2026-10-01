@@ -143,13 +143,14 @@ class DurableTaskStore {
           delay_after_sec: item.delay_after_sec ?? 0 });
         this._prep(`UPDATE task_items SET stage=?, instructions=?, execution_kind=?, executor_role=?,
           minimum_model_level=?, current_model_level=?, context_budget=?, validation_json=?,
-          max_attempts=?, execution_timeout_seconds=?, hooks_json=?, wait_json=? WHERE id=?`)
+          max_attempts=?, execution_timeout_seconds=?, hooks_json=?, wait_json=?, already_done_json=? WHERE id=?`)
           .run(item.stage ?? null, item.instructions ?? null, item.execution_kind,
             item.executor_role ?? null, item.minimum_model_level ?? null, item.minimum_model_level ?? null,
             item.context_budget ?? null, JSON.stringify(item.validation), item.max_attempts ?? 3,
             item.execution_timeout_seconds ?? 600,
             item.hooks == null ? null : JSON.stringify(item.hooks),
-            item.wait == null ? null : JSON.stringify({ then: 'complete', ...item.wait }), itemId);
+            item.wait == null ? null : JSON.stringify({ then: 'complete', ...item.wait }),
+            item.already_done == null ? null : JSON.stringify(item.already_done), itemId);
       });
       // #1886: session_id is the plan's owner chat (origin_session_id), not an
       // attachment — task_sessions allows one active task per session, so a second
@@ -185,11 +186,12 @@ class DurableTaskStore {
       this.createTaskItem({ id: itemId, task_id: taskId, title: item.title, position, delay_after_sec: item.delay_after_sec ?? 0 });
       this._prep(`UPDATE task_items SET stage=?, instructions=?, execution_kind=?, executor_role=?,
         minimum_model_level=?, current_model_level=?, context_budget=?, validation_json=?,
-        max_attempts=?, execution_timeout_seconds=? WHERE id=?`)
+        max_attempts=?, execution_timeout_seconds=?, already_done_json=? WHERE id=?`)
         .run(item.stage ?? null, item.instructions ?? null, item.execution_kind,
           item.executor_role ?? null, item.minimum_model_level ?? null, item.minimum_model_level ?? null,
           item.context_budget ?? null, JSON.stringify(item.validation), item.max_attempts ?? 3,
-          item.execution_timeout_seconds ?? 600, itemId);
+          item.execution_timeout_seconds ?? 600,
+          item.already_done == null ? null : JSON.stringify(item.already_done), itemId);
       this._bump(taskId);
       return this.getTaskItem(itemId);
     })();

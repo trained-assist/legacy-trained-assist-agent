@@ -170,6 +170,44 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     }, 30_000);
   }
 
+  it('already_done: a step whose pre-check passes is closed with ZERO model runs (#1959)', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const V = require('../../src/playbook-validators.js');
+    const store = G.durableStore();
+    const { task } = store.createPlan({
+      profile_id: PROFILE, goal: 'already_done smoke', user_value: 'v',
+      acceptance_criteria: [{ id: 'c', description: 'v', validations: [{ step: 'CI зелёный', validation: { ci_green: true } }] }],
+      items: [
+        { title: 'CI зелёный', instructions: `PR: ${PR_URL}`, execution_kind: 'agent', executor_role: 'developer', minimum_model_level: 'master', context_budget: 'small', validation: { ci_green: true }, already_done: { ci_green: true } },
+        { title: 'Реализация', execution_kind: 'agent', executor_role: 'developer', minimum_model_level: 'master', context_budget: 'small', validation: { implementation_complete_and_sandbox_green: true } },
+      ],
+    });
+    store.updateTask(task.id, PROFILE, { status: 'active' });
+    // CI is already green → the already_done pre-check passes on the first poll.
+    const registry = V.createDefaultRegistry({
+      ghToken: () => 'tok',
+      ghFetch: async url => {
+        if (/\/pulls\/\d+$/.test(url)) return { head: { sha: 'abc123' }, state: 'open', html_url: PR_URL };
+        if (url.includes('/check-runs')) return { check_runs: [{ name: 'CI', status: 'completed', conclusion: 'success' }] };
+        return null;
+      },
+      gitInfo: () => null,
+    });
+    const calls = [];
+    const t = await drive(G, task.id, { runTask: scriptedEngine({ calls }), registry });
+
+    const rows = store.listTaskItems(task.id, PROFILE);
+    const ci = rows.find(r => /^CI зел/.test(r.title));
+    expect(ci.status).toBe('done');
+    // the pre-checked step never spawned an engine; the next step still did
+    expect(calls.some(c => /^CI зел/.test(c.title))).toBe(false);
+    expect(calls.some(c => /^Реализация/.test(c.title))).toBe(true);
+    // the skip is audited as already_done, so the finalization gate is satisfied
+    const v = store.db.prepare("SELECT evidence_json FROM task_validation_results WHERE task_id = ? AND validator = 'ci_green'").get(task.id);
+    expect(JSON.parse(v.evidence_json).already_done).toBe(true);
+    expect(t.status).toBe('done');
+  }, 30_000);
+
   it('the agent may legally add a step after the current one and skip a later one', async () => {
     const G = require('../../src/gtd-controller.js');
     const { store, task } = startPlan(G, 'feature');

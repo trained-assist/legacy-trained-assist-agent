@@ -102,7 +102,7 @@ const {
   parseValidation, FASTPASS_SKIP_MODE, parseFastpassSkip, checkRunsGreen,
 } = require('./playbook-validators');
 const {
-  parseWait, isActiveWait, startWait, decidePoll, nextDueAt, summarizeResults, resumeNote,
+  parseWait, isActiveWait, startWait, decidePoll, nextDueAt, escalateTimeout, summarizeResults, resumeNote,
 } = require('./durable-wait');
 
 // ── Разумные дефолты (небольшие, но осмысленные) ────────────────────────────
@@ -711,7 +711,7 @@ function priorStepsDigest(store, task, item) {
 //   'proceed' — the wait resolved; fall through to the normal step execution
 //               (a programmatic step re-checks + completes, an agent step re-runs
 //               with a resume note built from the resolved wait).
-async function pollDurableWait(store, { task, item, wait, now, registry, projectDir, planText }) {
+async function pollDurableWait(store, { task, item, wait, now, registry, projectDir, planText, notifyOwner = null }) {
   const w = startWait(wait, now);
   let results = null;
   const condition = w.then === 'complete' ? parseValidation(item.validation_json) : w.until;
@@ -739,10 +739,30 @@ async function pollDurableWait(store, { task, item, wait, now, registry, project
   }
   if (w.then === 'complete') {
     // satisfied → the normal programmatic path re-checks and completes the step
-    // (the wait stays active, so a flake there simply resumes waiting on retry);
-    // timeout / final fail → mark resolved so the failure path runs: recovery
-    // budget, then on_fail/task_failed hooks tell the owner.
-    if (decision === 'timeout' || decision === 'failed') {
+    // (the wait stays active, so a flake there simply resumes waiting on retry).
+    if (decision === 'timeout') {
+      // #1959: a declared wait hitting its deadline is not the step failing — the
+      // external thing simply has not happened (a PR nobody merged). Escalate to
+      // the owner and KEEP waiting (still polling the condition, waking on the
+      // answer); never spend the step's attempts on an event the plan does not
+      // control. The old behaviour resolved to 'timeout' → step failed.
+      const escalated = escalateTimeout(w, now, { until: condition });
+      store.parkItem(item.id, task.profile_id, { wait: escalated, dueAt: nextDueAt(escalated, now), lastError: 'waiting: escalated to owner' });
+      console.log(`[gtd-durable] wait escalated to owner ${item.id.slice(0, 8)}`);
+      if (typeof notifyOwner === 'function') {
+        const hours = Math.max(1, Math.round((now - (w.started_at || now)) / 3600000));
+        const goal = String(task.goal || '').replace(/\s+/g, ' ').slice(0, 120);
+        const title = String(item.title || '').replace(/\s+/g, ' ').slice(0, 80);
+        try {
+          await notifyOwner(`⏳ План «${goal}»: шаг «${title}» ждёт внешнего условия уже ${hours} ч. Если это про мерж PR — смержи его (авто-мерж есть не во всех репозиториях) или ответь, и план продолжится.`);
+        } catch (e) { console.warn('[gtd] wait-escalation notice:', e.message); }
+      }
+      return 'parked';
+    }
+    // final fail (e.g. the PR was closed without merging) → mark resolved so the
+    // failure path runs: the step wakes at once, recovery budget applies, and
+    // on_fail/task_failed hooks tell the owner.
+    if (decision === 'failed') {
       store.setItemWait(item.id, task.profile_id, { ...w, resolved: decision, resolved_at: now, resolve_evidence: results ? summarizeResults(results) : null });
       console.log(`[gtd-durable] wait ${decision} ${item.id.slice(0, 8)}`);
     }
@@ -837,8 +857,60 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     if (isActiveWait(activeWait)) {
       const verdict = await pollDurableWait(store, {
         task, item, wait: activeWait, now, registry: validators, projectDir: pollProjectDir, planText,
+        notifyOwner: ownerNotifier(store, task, secrets, null),
       });
       if (verdict === 'parked') continue;
+    }
+
+    // already_done (#1959): a deterministic pre-check evaluated at claim time,
+    // BEFORE any model run. All checks pass → the step's outcome already holds, so
+    // it is closed with an audit row (evidence {already_done:true}) and the next
+    // step is taken in this same pass — zero model runs. Not pass → fall through to
+    // the normal run (the agent does the work). Placed after the wait block (a step
+    // never has both) and before any engine slot is taken.
+    const alreadyDone = parseValidation(item.already_done_json);
+    if (alreadyDone && Object.keys(alreadyDone).length) {
+      let pre = null;
+      try {
+        pre = await evaluateItemValidations({ validation: alreadyDone, title: item.title, instructions: item.instructions, evidence_json: item.evidence_json },
+          { task, profileId: task.profile_id, projectDir: pollProjectDir, registry: validators, planText });
+      } catch (e) {
+        pre = [{ key: '*', status: 'inconclusive', evidence: { reason: 'evaluator-error', error: e.message } }];
+      }
+      if (pre.length && pre.every(r => r.status === 'pass')) {
+        const evidence = { already_done: true, checks: summarizeResults(pre) };
+        const stepValidation = parseValidation(item.validation_json);
+        for (const key of Object.keys(stepValidation).length ? Object.keys(stepValidation) : Object.keys(alreadyDone)) {
+          try {
+            store.recordValidation({
+              task_id: task.id, profile_id: task.profile_id, task_item_id: item.id,
+              criterion_id: criterionIdForItem(task, item, key), contract_revision: task.contract_revision || 1,
+              validator: key, status: 'pass',
+              subject_json: JSON.stringify({ key }),
+              evidence_json: JSON.stringify(evidence),
+            });
+          } catch (e) { console.error(`[gtd-durable] already_done recordValidation ${item.id.slice(0, 8)} ${key}:`, e.message); }
+        }
+        store.setItemEvidence(item.id, task.profile_id, {
+          evidence_json: JSON.stringify({ already_done: true, checks: summarizeResults(pre) }),
+          completed_at: Date.now(),
+        });
+        store.completeItem(item.id, task.profile_id, {});
+        console.log(`[gtd-durable] already_done item done (0 model runs): ${item.id.slice(0, 8)}`);
+        void bgStep(secrets, task, item, '✅ Шаг уже выполнен — пропущен без запуска модели');
+        await fireItemHooks(store, task, item, 'on_complete', hookVars(), sinks, hooksApproved);
+        await fireItemHooks(store, task, item, 'stage_exit', hookVars(), sinks, hooksApproved);
+        const settled = settleTaskCompletion(store, task);
+        if (settled === 'done') {
+          void bgTask(secrets, task, '🏁 Задача готова');
+          await fireTaskHooks(store, task, 'task_done', hookVars(), sinks, hooksApproved);
+        } else if (settled === 'blocked') {
+          const fresh = store.getTask(task.id, task.profile_id) || task;
+          void bgTask(secrets, task, '⛔ Задача не завершена — проверки не пройдены', fresh.blocker_reason || 'finalization blocked');
+          await fireTaskHooks(store, task, 'task_failed', hookVars({ error: fresh.blocker_reason || 'finalization blocked' }), sinks, hooksApproved);
+        }
+        continue;
+      }
     }
 
     fired += 1;

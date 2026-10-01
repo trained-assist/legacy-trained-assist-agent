@@ -186,7 +186,17 @@ function makeMergedValidator({ ghToken, ghFetch, deployed = false }) {
     if (!pr) return inconclusive('pr-not-found', { pr: ref.url });
     const merged = pr.merged === true;
     const subject = { pr: ref.url, merged };
-    if (!merged) return { status: 'fail', subject, evidence: { state: pr.state || null, merged_at: pr.merged_at || null } };
+    if (!merged) {
+      // A closed-but-unmerged PR will never merge, so waiting longer is pointless:
+      // mark it final so the durable wait wakes at once (issue #1959) instead of
+      // polling for the full timeout and then failing the step. A still-open PR is
+      // a plain fail — the wait keeps polling.
+      const final = pr.state === 'closed';
+      return {
+        status: 'fail', subject,
+        evidence: { state: pr.state || null, merged_at: pr.merged_at || null, ...(final ? { final: true, reason: 'pr-closed-unmerged' } : {}) },
+      };
+    }
     const evidence = { merged_at: pr.merged_at || null, merge_commit_sha: pr.merge_commit_sha || null };
     if (deployed) return { status: 'inconclusive', subject, evidence: { ...evidence, reason: 'deploy-unverified' } };
     return { status: 'pass', subject, evidence };
@@ -274,6 +284,12 @@ function makePrOpenedValidator({ ghToken, ghFetch, gitInfo = defaultGitInfo }) {
       try { pr = await ghFetch(`https://api.github.com/repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`, token); }
       catch (e) { return inconclusive('github-unreachable', { error: e.message, pr: ref.url }); }
       if (!pr) return inconclusive('pr-not-found', { pr: ref.url });
+      // A closed-and-unmerged PR is not "a PR is open": as an already_done pre-check
+      // it must fail so the step runs and opens a new one (issue #1959). A MERGED PR
+      // (state closed, merged true) still passes — the PR was opened successfully.
+      if (pr.state === 'closed' && pr.merged !== true) {
+        return { status: 'fail', subject: { pr: ref.url, number: ref.number, repo: `${ref.owner}/${ref.repo}` }, evidence: { reason: 'pr-closed', state: 'closed' } };
+      }
       return {
         status: 'pass',
         subject: { pr: ref.url, number: ref.number, repo: `${ref.owner}/${ref.repo}` },

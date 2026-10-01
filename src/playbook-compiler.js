@@ -162,6 +162,16 @@ function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null
         }
         item.wait = { poll_every_sec: step.wait.poll_every_sec, timeout_sec: step.wait.timeout_sec };
       }
+      if (step.already_done) {
+        // already_done is evaluated by the registry at claim time — a key with no
+        // validator could never pass, so reject it now (like wait), not silently.
+        const unknown = Object.keys(step.already_done).filter(k => !waitableKeys().includes(k));
+        if (unknown.length) {
+          throw playbookError('COMPILE_INVALID',
+            `шаг «${item.title}»: already_done требует детерминированных валидаторов, неизвестно: ${unknown.join(', ')}`);
+        }
+        item.already_done = step.already_done;
+      }
       try {
         validateItem(item);
       } catch (error) {

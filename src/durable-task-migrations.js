@@ -48,6 +48,11 @@ module.exports = function migratePlan(db) {
           // started_at, deadline_at, reason, awaiting_user, wake_message, ...}.
           // NULL = the step does not wait. See src/durable-wait.js.
           wait_json: 'TEXT',
+          // already_done (#1959): deterministic pre-check evaluated when the step is
+          // claimed, BEFORE any model run. All pass → the step is closed with an
+          // audit row and the next step is taken; not pass → the normal run. NULL =
+          // no pre-check. Keys are registry validators, same shape as validation_json.
+          already_done_json: 'TEXT',
           // Fanout (#1752): batch config + durable state of a fanout step
           // (queue, child task per element, supervisor journal). See src/playbook-fanout.js.
           fanout_json: 'TEXT',
