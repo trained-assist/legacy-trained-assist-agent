@@ -13,6 +13,7 @@ const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag } = require('../auth
 const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice } = require('../engine-crash-policy');
 const opencodeLadder = require('../opencode-ladder');
 const opencodeGoToggle = require('../opencode-go-toggle');
+const answerGlyphGuard = require('../answer-glyph-guard');
 const { MAX_RETRIES: MAX_INCOMPLETE_RETRIES, getRetryDelayMs, isTestMode } = require('../retry-policy');
 const { recordUsage } = require('../usage-store');
 const { classifyDeterministic: classifyFailureDeterministic } = require('../failure-classifier');
@@ -1325,6 +1326,33 @@ function buildOcCapabilitiesBlock(secrets) {
 // rung yet" — the caller passes false for the first attempts of a transient per-rung fault
 // ("Bad Request") so the SAME model is retried up to MAX_INCOMPLETE_RETRIES times before the
 // alternative is tried (owner 2026-09-26: "три ретрая не сработали → соседняя модель").
+// Перехват «иероглифов» в финальном ответе агента (src/answer-glyph-guard.js):
+// движок иногда подмешивает в русский текст иероглифы («серый状态») — для
+// пользователя это выглядит как поломка бота. Редко, но ловится на живых
+// ответах, поэтому детект+переписывание живёт в ядре, а не в заметке.
+//
+// Правила места вызова (см. хук перед футерами в _runTask):
+//   • до футеров/кнопок/detectPlan/appendReply — в Telegram, в историю и в
+//     сниппер уходит уже чистый текст;
+//   • internalGtd не трогаем: там ответ читает GTD-контроллер, переписывание
+//     его текста ломает разбор;
+//   • незавершённый ход не трогаем: показывается прогресс, а не ответ;
+//   • любой сбой деградирует в исходный текст — ответ не теряется никогда.
+//
+// Отдельной функцией, а не инлайном, чтобы seam «раннер → перехватчик» был
+// проверяем исполняемым тестом, а не вхождением в исходнике.
+async function _applyAnswerGlyphGuard({ result, user, profileName, sessionId = null, incomplete, internalGtd, engineRun }) {
+  if (incomplete || internalGtd || !answerGlyphGuard.needsRewrite(result)) return { text: result, guard: null };
+  try {
+    const guard = await answerGlyphGuard.rewriteAnswer({ text: result, user, profileName, engineRun });
+    console.log(`[glyph-guard] session=${sessionId || '-'} glyphs=${guard.glyphs} action=${guard.action} model=${guard.model || '-'}${guard.error ? ` error=${guard.error}` : ''}`);
+    return { text: guard.text, guard };
+  } catch (e) {
+    console.warn('[glyph-guard] не сработал, ответ как есть:', e.message);
+    return { text: result, guard: null };
+  }
+}
+
 function forceOpencodeAlternation({ engine, ocProfileName, ocProfileOverrides, ocProfileIsDeepseek, ocRole = 'build', escalate = true }) {
   if (!escalate || engine !== 'opencode' || !ocProfileName) return null;
   // Both deepseek-gateway profiles carry a real ladder now (2026-09-26) — advance to the next
@@ -2649,7 +2677,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     return { queuedRetry };
   }
 
-  // Record token usage for billing
+  // Перехват «иероглифов» (см. _applyAnswerGlyphGuard): чистый текст уходит в
+  // Telegram, в историю сессии, в сниппер и в классификаторы кнопок.
+  result = (await _applyAnswerGlyphGuard({ result, user, profileName: ocProfileName, sessionId: activeSessionId, incomplete, internalGtd })).text;
+
+// Record token usage for billing
   if (engine === 'opencode' && opencodeUsage) {
     recordUsage(user.workDir, {
       taskId, sessionId: activeSessionId, webExactSession,
@@ -2868,6 +2900,8 @@ module.exports = {
   _queuedSessions: queuedSessions, _queuedByOwner: queuedByOwner, _consumePendingStop: consumePendingStop, _ownerKey: ownerKey,
   // Exported for provider-alternation wiring tests only (unified crash-retry, issue #1132 follow-up)
   _forceOpencodeAlternation: forceOpencodeAlternation,
+  // Exported for answer-glyph-guard wiring tests only
+  _glyph: { apply: _applyAnswerGlyphGuard },
   // Exported for failure-brain wiring tests only (issue #1175, PR #1179 follow-up)
   _recordFailureAttempt,
   // Exported for GTD scheduling-hook wiring tests only (regression: inline hook
