@@ -160,7 +160,7 @@ test('readCredentials: читает обе формы файла, наружу �
 test('инструменты web_* зарегистрированы и описаны (контракт tools/24-web-ops.js)', () => {
   const mod = require('../src/mcp-skills/tools/24-web-ops');
   const names = Object.keys(mod.tools).sort();
-  assert.deepEqual(names, ['web_click', 'web_fill', 'web_find', 'web_login', 'web_open', 'web_screenshot', 'web_state']);
+  assert.deepEqual(names, ['web_click', 'web_fill', 'web_find', 'web_login', 'web_open', 'web_screenshot', 'web_state', 'web_text']);
   for (const [name, tool] of Object.entries(mod.tools)) {
     assert.ok(tool.description && tool.description.length > 40, `${name}: описание должно объяснять, когда применять`);
     assert.equal(typeof tool.handler, 'function', name);
@@ -170,6 +170,99 @@ test('инструменты web_* зарегистрированы и опис�
   const def = registry.listAllTools().find(d => d.name === 'web_open');
   assert.ok(def, 'web_open не попал в статический каталог');
   assert.equal(def.module, '24-web-ops.js');
+});
+
+test('sliceWindow: окно, а не префикс — длинную страницу можно дочитать', () => {
+  const text = 'абвгдеёжзийклмноп'.repeat(100); // 1300 символов
+  const first = ops.sliceWindow(text, { maxChars: 100 });
+  assert.equal(first.offset, 0);
+  assert.equal(first.nextOffset, 100);
+  assert.equal(first.truncated, true);
+  assert.equal(first.totalChars, text.length);
+
+  const second = ops.sliceWindow(text, { offset: first.nextOffset, maxChars: 100 });
+  assert.equal(second.offset, 100);
+  assert.ok(second.text !== first.text, 'второе окно — не повтор первого');
+  assert.equal(second.text, text.slice(100, 200), 'окно продолжает документ, а не начинает заново');
+
+  const last = ops.sliceWindow(text, { offset: text.length - 10, maxChars: 100 });
+  assert.equal(last.truncated, false);
+  assert.equal(last.nextOffset, null, 'дочитал до конца — дальше идти некуда');
+
+  assert.equal(ops.sliceWindow('коротко', { maxChars: 100 }).truncated, false);
+  assert.equal(ops.sliceWindow('коротко', { maxChars: 0 }).text, 'коротко', 'maxChars:0 — это «не задано», дефолт; пустой ответ недопустим');
+  assert.equal(ops.sliceWindow('коротко', { offset: -10 }).offset, 0, 'отрицательное смещение — в ноль, а не ошибка');
+  assert.equal(ops.sliceWindow('коротко', { offset: 'мусор' }).offset, 0);
+});
+
+test('cleanText: смещение доходит до хвоста документа и говорит, где читать дальше', () => {
+  const long = 'я'.repeat(800);
+  const head = ops.cleanText(long, 100);
+  assert.equal(head.offset, 0);
+  assert.equal(head.nextOffset, 100);
+  assert.ok(head.text.includes('всего 800 символов'));
+
+  const tail = ops.cleanText(long, 100, 400);
+  assert.equal(tail.text.startsWith('я'.repeat(100)), true, 'окно отдаёт символы с 400-го, а не первые 100');
+  assert.equal(tail.offset, 400);
+  assert.equal(tail.truncated, true);
+  assert.ok(tail.text.includes('всего 800 символов'));
+  assert.ok(tail.text.includes('web_text'), 'подсказка называет способ дочитать, а не просто «обрезано»');
+
+  const end = ops.cleanText(long, 100, 700);
+  assert.equal(end.truncated, false, 'окно, дошедшее до конца, не объявляет обрезку');
+  assert.equal(end.nextOffset, null);
+  assert.equal(end.text.length, 100, 'последнее окно отдаёт остаток целиком');
+});
+
+test('normalizePressKey: Enter и синонимы — да, произвольные сочетания — нет', () => {
+  assert.equal(ops.normalizePressKey('Enter').key, 'Enter');
+  assert.equal(ops.normalizePressKey('enter').key, 'Enter');
+  assert.equal(ops.normalizePressKey(' return ').key, 'Enter');
+  assert.equal(ops.normalizePressKey('esc').key, 'Escape');
+  assert.equal(ops.normalizePressKey('СтрелкаВниз').key, 'ArrowDown');
+  assert.equal(ops.normalizePressKey('PageDown').key, 'PageDown');
+
+  assert.equal(ops.normalizePressKey('Control+a').ok, false, 'слой не должен быть способом вводить произвольные сочетания');
+  assert.equal(ops.normalizePressKey('F13').ok, false);
+  assert.equal(ops.normalizePressKey('').reason, 'empty_key');
+  assert.equal(ops.normalizePressKey(null).ok, false);
+  assert.ok(ops.PRESS_KEYS.includes('Enter') && ops.PRESS_KEYS.includes('Tab'));
+});
+
+test('readTextWindow: без открытой страницы — понятный отказ, а не пустой текст', async () => {
+  ops._reset();
+  const out = await ops.readTextWindow({ offset: 4000, maxChars: 100 });
+  assert.equal(out.ok, false);
+  assert.equal(out.error, 'no_page');
+  assert.ok(out.hint.includes('web_open'), 'подсказка говорит, что делать');
+});
+
+test('fillFields: press и submit — разные действия, ключ проверяется до браузера', async () => {
+  ops._reset();
+  const badKey = await ops.fillFields({ fields: [{ target: 'q', value: 'x' }], press: 'Control+s' });
+  assert.equal(badKey.ok, false);
+  assert.equal(badKey.error, 'key_not_allowed: Control+s');
+
+  const both = await ops.fillFields({ fields: [{ target: 'q', value: 'x' }], press: 'Enter', submit: true });
+  assert.equal(both.ok, false);
+  assert.equal(both.error, 'press_and_submit_conflict');
+
+  const noFields = await ops.fillFields({ press: 'Enter' });
+  assert.equal(noFields.error, 'no_fields', 'пустая форма — отказ до проверки клавиши');
+});
+
+test('контракт модуля: web_text есть, слой экспортирует окно и список клавиш', () => {
+  const tools = require('../src/mcp-skills/tools/24-web-ops').tools;
+  for (const name of ['web_open', 'web_text', 'web_find', 'web_click', 'web_fill', 'web_login', 'web_state', 'web_screenshot']) {
+    assert.ok(tools[name], `метод ${name} должен существовать`);
+  }
+  assert.ok(tools.web_text.inputSchema.properties.offset, 'у web_text есть смещение');
+  assert.ok(tools.web_text.inputSchema.properties.max_chars);
+  assert.ok(tools.web_fill.inputSchema.properties.press, 'у web_fill есть press');
+  assert.equal(typeof ops.readTextWindow, 'function');
+  assert.equal(typeof ops.normalizePressKey, 'function');
+  assert.equal(typeof ops.sliceWindow, 'function');
 });
 
 test('живой Chromium — только по WEBOPS_LIVE=1 (в CI не запускается)', async (t) => {

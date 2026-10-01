@@ -38,6 +38,27 @@ const tools = {
     },
   },
 
+  web_text: {
+    description:
+      'Прочитать ПРОДОЛЖЕНИЕ уже открытой страницы: вернуть кусок её текста по смещению, ' +
+      'без повторной загрузки. Нужен, когда web_open сказал truncated:totalChars — дальше ' +
+      'читается от nextOffset этим методом. Не открывает и не перезагружает страницу: ' +
+      'смещения стабильны, потому что текст берётся из той же открытой страницы. ' +
+      'Страница не открыта — сначала web_open.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        offset: { type: 'number', description: 'С какого символа читать (по умолчанию 0).' },
+        max_chars: { type: 'number', description: 'Сколько символов вернуть (по умолчанию 4000).' },
+      },
+    },
+    handler: async ({ offset, max_chars } = {}) => {
+      try {
+        return await ops.readTextWindow({ offset: Number(offset) || 0, maxChars: Number(max_chars) || undefined });
+      } catch (e) { return fail('web_text', e); }
+    },
+  },
+
   web_find: {
     description:
       'Найти элементы на открытой странице по тексту/названию и вернуть их как список с handle. ' +
@@ -95,7 +116,9 @@ const tools = {
       'или {name:"email"} / {placeholder:"Телефон"}. ' +
       'Отправка — отдельное действие наружу: с submit:true форма сначала заполняется и возвращает ' +
       'confirm_submit_required; повтори с confirm_submit:true, только если отправка действительно нужна. ' +
-      'Чекбоксы: value true/false, select: значение опции.',
+      'Чекбоксы: value true/false, select: значение опции. ' +
+      'press:"Enter" — нажать клавишу на последнем заполненном поле (для «набери запрос и жми Enter»); ' +
+      'нельзя одновременно с submit. Enter внутри формы отправляет её — делай только по просьбе пользователя.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -112,16 +135,18 @@ const tools = {
           },
         },
         submit: { type: 'boolean', description: 'Нужно ли отправить форму после заполнения.' },
+        press: { type: 'string', description: 'Клавиша после заполнения, напр. "Enter". Несовместимо с submit.' },
         confirm_submit: { type: 'boolean', description: 'Подтверждение отправки. Без него submit не выполняется.' },
       },
       required: ['fields'],
     },
-    handler: async ({ fields, submit, confirm_submit } = {}) => {
+    handler: async ({ fields, submit, confirm_submit, press } = {}) => {
       try {
         return await ops.fillFields({
           fields: Array.isArray(fields) ? fields : [],
           submit: Boolean(submit),
           confirmSubmit: Boolean(confirm_submit),
+          press: press === undefined ? null : press,
         });
       } catch (e) { return fail('web_fill', e); }
     },
