@@ -7,7 +7,8 @@
 // a model per poll, and across days. Invariants pinned here:
 //   1. playbook wait: a programmatic step polls its own validation, parks between
 //      polls (no execution row, no attempt), completes when it passes;
-//   2. playbook wait timeout → the step fails through the normal failure path;
+//   2. playbook wait timeout → escalates to the owner and keeps waiting (never
+//      fails the step); a FINAL fail wakes it at once (#1959);
 //   3. agent wait on a condition: task_item_wait + `DURABLE: waiting` parks the
 //      step, refunds the attempt, polls deterministically, re-runs the SAME step
 //      with a resume note once the condition holds;
@@ -87,7 +88,9 @@ const passAll = { command_exit_zero: async () => ({ status: 'pass', subject: {},
     ok(store.getTask(taskId, 'u1').status === 'done', 'plan finalizes after the wait');
   }
 
-  // 2. playbook wait timeout → normal failure path, wait marked resolved=timeout
+  // 2. playbook wait timeout → escalate to the owner and KEEP waiting; never fail
+  //    the step (issue #1959). An external event the plan does not control (a PR
+  //    nobody merged) must not spend the step's attempt budget.
   {
     const { G, store } = fresh('2');
     const taskId = activePlan(store, [{
@@ -96,11 +99,34 @@ const passAll = { command_exit_zero: async () => ({ status: 'pass', subject: {},
     }]);
     const registry = { merged: async () => ({ status: 'fail', subject: {}, evidence: {} }) };
     const t0 = Date.now();
-    await G.runDueDurable({ secrets: {}, now: t0, isTaskRunning: () => false, registry, runTask: async () => 'x' });
-    await G.runDueDurable({ secrets: {}, now: t0 + 121_000, isTaskRunning: () => false, registry, runTask: async () => 'x' });
+    await G.runDueDurable({ secrets: {}, now: t0, isTaskRunning: () => false, registry, runTask: async () => 'x', hookSinks: { notify: async () => {} } });
+    await G.runDueDurable({ secrets: {}, now: t0 + 121_000, isTaskRunning: () => false, registry, runTask: async () => 'x', hookSinks: { notify: async () => {} } });
     const item = store.listTaskItems(taskId, 'u1')[0];
-    ok(JSON.parse(item.wait_json).resolved === 'timeout', 'deadline resolves the wait as timeout');
-    ok(item.status === 'failed', `timed-out wait fails the step once its budget is spent (got ${item.status})`);
+    const w = JSON.parse(item.wait_json);
+    ok(w.escalated_at != null, 'deadline escalates the wait to the owner');
+    ok(w.awaiting_user === true && w.until && w.until.merged === true,
+      'the escalated wait still polls the condition AND wakes on the owner answer');
+    ok(w.resolved == null, 'the wait is NOT resolved as timeout — it keeps waiting');
+    ok(item.status === 'waiting', `a wait timeout keeps the step waiting, it does not fail (got ${item.status})`);
+    ok(item.attempt_count === 0, `a wait timeout spends no attempt (got ${item.attempt_count})`);
+    ok(store.getTask(taskId, 'u1').status !== 'failed', 'the plan is not failed by a wait timeout');
+  }
+
+  // 2b. a FINAL fail (e.g. a PR closed without merging) still wakes the step at
+  //     once — the wait must not poll to its deadline for something that will
+  //     never happen (#1959).
+  {
+    const { G, store } = fresh('2b');
+    const taskId = activePlan(store, [{
+      title: 'Wait for merge', execution_kind: 'programmatic', validation: { merged: true },
+      wait: { poll_every_sec: 60, timeout_sec: 86400 }, max_attempts: 1,
+    }]);
+    const registry = { merged: async () => ({ status: 'fail', subject: {}, evidence: { final: true, reason: 'pr-closed-unmerged' } }) };
+    const t0 = Date.now();
+    await G.runDueDurable({ secrets: {}, now: t0, isTaskRunning: () => false, registry, runTask: async () => 'x', hookSinks: { notify: async () => {} } });
+    const item = store.listTaskItems(taskId, 'u1')[0];
+    ok(JSON.parse(item.wait_json).resolved === 'failed', 'a final fail resolves the wait immediately, not at the deadline');
+    ok(item.status === 'failed', `the step wakes and fails through the normal path (got ${item.status})`);
   }
 
   // 3. agent wait on a condition: park, refund, poll without a model, re-run with resume note

@@ -113,6 +113,30 @@ function decidePoll(wait, results, now) {
   return 'keep';
 }
 
+// A declared (then:'complete') wait that hits its deadline is NOT a step failure:
+// the external thing simply has not happened yet (a PR nobody merged, a deploy
+// still pending). Instead of resolving to 'timeout' and letting the step fail —
+// which spends the attempt budget on something the plan does not control
+// (issue #1959) — convert it into an owner wait that still polls the original
+// condition AND wakes on the owner's answer. `until` carries the original
+// condition, so a merge/deploy by the owner still completes the step without a
+// reply; the step stays parked (no attempts spent) and the owner is nudged.
+function escalateTimeout(wait, now, { until = null, timeoutSec = null } = {}) {
+  const sec = clampInt(timeoutSec ?? wait.timeout_sec, MIN_POLL_SEC, MAX_TIMEOUT_SEC, DEFAULT_TIMEOUT_SEC);
+  return {
+    then: 'rerun',
+    until: until && Object.keys(until).length ? until : (wait.until || null),
+    awaiting_user: true,
+    reason: wait.reason || 'внешнее условие не выполнено к сроку — нужно твоё действие',
+    poll_every_sec: clampInt(wait.poll_every_sec, MIN_POLL_SEC, MAX_TIMEOUT_SEC, DEFAULT_POLL_SEC),
+    timeout_sec: sec,
+    started_at: now,
+    deadline_at: now + sec * 1000,
+    escalated_at: now,
+    escalations: (Number(wait.escalations) || 0) + 1,
+  };
+}
+
 // When to look again: the next poll for a condition, otherwise the deadline
 // (a pure timer / user wait has nothing to poll — a wake moves due_at to now).
 function nextDueAt(wait, now) {
@@ -166,7 +190,7 @@ function resumeNote(wait, now = Date.now()) {
 module.exports = {
   DEFAULT_POLL_SEC, MIN_POLL_SEC, DEFAULT_TIMEOUT_SEC, MAX_TIMEOUT_SEC,
   parseWait, isActiveWait, startWait, normalizeAgentWait, decidePoll, nextDueAt,
-  summarizeResults, resumeNote,
+  escalateTimeout, summarizeResults, resumeNote,
 };
 
 // Chat-context notice: durable steps of this profile parked on a user answer.
