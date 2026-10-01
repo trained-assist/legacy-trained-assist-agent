@@ -93,7 +93,23 @@ module.exports = function migratePlan(db) {
           detail TEXT,
           boundary_key TEXT NOT NULL UNIQUE,
           created_at INTEGER NOT NULL
-        );`);
+        );
+        CREATE TABLE IF NOT EXISTS task_signals (
+          -- Identity of an incoming signal = userTaskId + step (epic #87 B1.2):
+          -- one signal per plan step, so a second wake for the same step can never
+          -- overwrite the first (prod-plans T5: «второй wake перезаписывает
+          -- wake_message»). Rows survive consumption as the audit trail.
+          task_id      TEXT NOT NULL REFERENCES durable_tasks(id) ON DELETE CASCADE,
+          task_item_id TEXT NOT NULL REFERENCES task_items(id) ON DELETE CASCADE,
+          event_type   TEXT NOT NULL DEFAULT 'wake',
+          source       TEXT,
+          payload_json TEXT,
+          created_at   INTEGER NOT NULL,
+          consumed_at  INTEGER,
+          PRIMARY KEY (task_id, task_item_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_signals_pending
+          ON task_signals(task_id, consumed_at);`);
       if (db.pragma('foreign_key_check').length) throw new Error('plan migration foreign key check failed');
     })();
   } finally { db.pragma('foreign_keys = ON'); }
