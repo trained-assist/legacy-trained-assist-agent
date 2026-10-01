@@ -630,6 +630,53 @@ class DurableTaskStore {
       .filter(row => { try { const w = JSON.parse(row.wait_json); return w.awaiting_user === true && !w.woken_at; } catch { return false; } });
   }
 
+  /**
+   * Every unresolved wait of every active plan, with its owner profile (#1846).
+   * The GitHub webhook is not profile-scoped: one delivery may satisfy a wait of
+   * any profile, so the wake path scans them all. Bounded by active waits, which
+   * is the same small set countActiveWaits() counts.
+   */
+  listActiveWaiters() {
+    return this._prep(`SELECT i.id, i.task_id, t.profile_id, i.wait_json FROM task_items i
+      JOIN durable_tasks t ON t.id = i.task_id
+      WHERE t.status = 'active' AND i.status IN ('pending','waiting')
+        AND i.wait_json IS NOT NULL
+        AND json_extract(i.wait_json, '$.resolved') IS NULL`).all();
+  }
+
+  /**
+   * Bring a waiting item's next poll forward to `now` because an external event
+   * matched its condition (#1846). This is NOT a resolution — the verdict still
+   * comes from the validator on the poll — so `resolved` is never written here.
+   * Idempotent per GitHub delivery: a redelivery with the same `x-github-delivery`
+   * id is recorded and ignored (GitHub retries), so `due_at` never moves backward
+   * and no second wake is armed.
+   * @returns {{item:object|null, changed:boolean, reason?:string}}
+   */
+  accelerateWaitByEvent(id, { deliveryId = null, event = null, key = null, subject = null, now = nowMs() } = {}) {
+    return this.db.transaction(() => {
+      const row = this._prep('SELECT id, task_id, wait_json, due_at FROM task_items WHERE id = ?').get(id);
+      if (!row || !row.wait_json) return { item: null, changed: false, reason: 'no-wait' };
+      let wait;
+      try { wait = JSON.parse(row.wait_json); } catch { return { item: null, changed: false, reason: 'bad-wait' }; }
+      if (wait.resolved) return { item: this.getTaskItem(id), changed: false, reason: 'resolved' };
+      const seen = Array.isArray(wait.event_deliveries) ? wait.event_deliveries : [];
+      if (deliveryId && seen.includes(deliveryId)) return { item: this.getTaskItem(id), changed: false, reason: 'duplicate' };
+      const next = {
+        ...wait,
+        event_woken_at: now,
+        event_woken_by: { event, key, subject },
+        event_deliveries: deliveryId ? [...seen, deliveryId].slice(-20) : seen,
+      };
+      // Only pull the poll forward; never push it later.
+      const dueAt = row.due_at != null && row.due_at < now ? row.due_at : now;
+      this._prep('UPDATE task_items SET due_at = ?, wait_json = ?, updated_at = ? WHERE id = ?')
+        .run(dueAt, JSON.stringify(next), now, id);
+      this._bump(row.task_id);
+      return { item: this.getTaskItem(id), changed: true };
+    })();
+  }
+
   expireWaitingDeadlines(now = nowMs()) {
     return this.db.transaction(() => {
       const rows = this._prep(`SELECT id, task_id FROM task_items
