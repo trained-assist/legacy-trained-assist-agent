@@ -9,7 +9,9 @@ const assert = require('node:assert');
 
 const {
   MIN_GLYPHS,
+  MIN_REPLACEMENTS,
   countGlyphs,
+  countReplacements,
   needsRewrite,
   resolveRung,
   rewriteAnswer,
@@ -18,6 +20,11 @@ const {
 const USER = { username: 'tester', id: 'tester', workDir: '/tmp/glyph-guard-test' };
 const DIRTY = 'Добавлю кнопку: после отправки она станет серый状态 на 15 секунд, чтобы не отправлять повторно.';
 const CLEAN = 'Добавлю кнопку: после отправки она станет серой на 15 секунд, чтобы не отправлять повторно.';
+// Живой случай владельца 2026-10-01: «резерв��ением» вместо «резервацией».
+// Это U+FFFD REPLACEMENT CHARACTER, а не иероглиф: старый GLYPH_RE его не видел
+// (полноширинные формы кончаются на U+FFEF) и ответ уходил пользователю как есть.
+const BROKEN = 'Сделаю резерва��ию по счёту на 15 минут, чтобы не списалось дважды.';
+const BROKEN_FIXED = 'Сделаю резервацию по счёту на 15 минут, чтобы не списалось дважды.';
 
 test('countGlyphs: кириллица, эмодзи и пунктуация — чисто', () => {
   assert.equal(countGlyphs(CLEAN), 0);
@@ -33,6 +40,29 @@ test('needsRewrite: срабатывает от двух символов, не 
   assert.equal(needsRewrite('один символ 状'), false);
   assert.equal(needsRewrite(''), false);
   assert.equal(needsRewrite(null), false);
+});
+
+test('знак замены U+FFFD: живой случай «резерв��ением» теперь ловится', () => {
+  // Раньше: countGlyphs=0, needsRewrite=false — мусор уходил пользователю.
+  assert.equal(countReplacements(BROKEN), 2);
+  assert.equal(needsRewrite(BROKEN), true);
+  // Порог 1, а не 2: одиночный U+FFFD в обычном тексте — тоже мусор декодирования
+  // (в отличие от иероглифа, который может быть цитатой).
+  assert.equal(countReplacements('резерв�ацией'), 1);
+  assert.equal(needsRewrite('резерв�ацией'), true);
+  assert.equal(MIN_REPLACEMENTS, 1);
+  // Кириллица/эмодзи по-прежнему чистые.
+  assert.equal(countReplacements(CLEAN), 0);
+  assert.equal(countReplacements('Готово 🎉✅ — 15 сек'), 0);
+});
+
+test('кодовые блоки и `скобки` из детекта вырезаны: иллюстрация не дёргает переписывание', () => {
+  // Разбор про сам «значок вопроса в ромбике» не должен переписывать себя.
+  assert.equal(needsRewrite('Символ � означает битые байты.'), true, 'в прозе — мусор');
+  assert.equal(needsRewrite('Символ `�` означает битые байты.'), false, 'в `скобках` — иллюстрация');
+  assert.equal(needsRewrite('Пример:\n```\nрезерв��ия\n```\nконец'), false, 'в кодовом блоке — пример');
+  assert.equal(needsRewrite('японская строка `状態` в примере'), false, 'CJK в `скобках` — тоже пример');
+  assert.equal(needsRewrite('японская строка 状態 в прозе'), true, 'CJK в прозе — мусор');
 });
 
 test('чистый ответ не вызывает движок и возвращается как есть', async () => {
@@ -70,6 +100,68 @@ test('адрес переписывания — роль general стандар�
   // Неизвестный профиль не даёт «лестницу не найдена»: worker сам уводит в дефолт.
   assert.equal(resolveRung('no-such-profile'), 'ladder/deepseek:general');
   assert.equal(resolveRung(''), 'ladder/deepseek:general');
+});
+
+test('знак замены: ответ переписывается, промпт просит восстановить слово', async () => {
+  const calls = [];
+  const res = await rewriteAnswer({
+    text: BROKEN,
+    user: USER,
+    profileName: 'deepseek',
+    engineRun: async ({ prompt, model }) => {
+      calls.push({ model, prompt });
+      return { claudeResult: BROKEN_FIXED };
+    },
+  });
+  assert.equal(res.action, 'rewritten');
+  assert.equal(res.text, BROKEN_FIXED);
+  assert.equal(res.glyphs, 0);
+  assert.equal(res.replacements, 2);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, 'ladder/deepseek:general');
+  assert.ok(calls[0].prompt.includes(BROKEN), 'в промпт уходит исходный текст');
+  assert.ok(calls[0].prompt.includes('U+FFFD'), 'промпт объясняет модели, что это знак замены');
+  assert.ok(/восстанов/i.test(calls[0].prompt), 'промпт требует восстановить слово по контексту');
+});
+
+test('модель оставила U+FFFD → исходник, без второй попытки', async () => {
+  const seen = [];
+  const res = await rewriteAnswer({
+    text: BROKEN,
+    user: USER,
+    profileName: 'deepseek',
+    engineRun: async ({ model }) => {
+      seen.push(model);
+      return { claudeResult: 'Сделаю резерв��ию по счёту.' };
+    },
+  });
+  assert.equal(res.action, 'failed');
+  assert.equal(res.error, 'still-replacements');
+  assert.equal(res.text, BROKEN, 'исходник возвращается без изменений');
+  assert.equal(seen.length, 1);
+});
+
+test('модель вычистила U+FFFD, но оставила иероглиф → тоже исходник', async () => {
+  const res = await rewriteAnswer({
+    text: BROKEN,
+    user: USER,
+    profileName: 'deepseek',
+    engineRun: async () => ({ claudeResult: 'Сделаю 状態 по счёту на 15 минут.' }),
+  });
+  assert.equal(res.action, 'failed');
+  assert.equal(res.error, 'still-glyphs');
+  assert.equal(res.text, BROKEN);
+});
+
+test('чистый текст со знаком замены внутри `скобок` движок не вызывает', async () => {
+  const text = 'Символ `�` — это U+FFFD, он означает битые байты.';
+  const res = await rewriteAnswer({
+    text,
+    user: USER,
+    engineRun: async () => { throw new Error('движок не должен запускаться'); },
+  });
+  assert.equal(res.action, 'clean');
+  assert.equal(res.text, text);
 });
 
 test('fenced-ответ движка разворачивается (в Telegram ``` лишние)', async () => {
@@ -212,4 +304,15 @@ test('wiring: internalGtd и незавершённый ход не трогае
   const partial = await runner._glyph.apply({ result: DIRTY, user: USER, incomplete: true, internalGtd: false, engineRun: boom });
   assert.equal(partial.text, DIRTY);
   assert.equal(partial.guard, null);
+});
+
+test('wiring: «резерв��ением» доходит до переписывания через раннер (живой случай)', async () => {
+  const runner = freshRunner();
+  const out = await runner._glyph.apply({
+    result: BROKEN, user: USER, profileName: 'deepseek', incomplete: false, internalGtd: false,
+    engineRun: async () => ({ claudeResult: BROKEN_FIXED }),
+  });
+  assert.equal(out.text, BROKEN_FIXED);
+  assert.equal(out.guard.action, 'rewritten');
+  assert.equal(out.guard.replacements, 2);
 });

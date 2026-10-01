@@ -7,10 +7,22 @@
 // пользователя это выглядит как поломка бота. Редко (1 ответ примерно на
 // сотни), но репутационно — правим.
 //
+// Второй симптом того же класса (владелец, 2026-10-01, позже в тот же день):
+// «резерв��цией» вместо «резервацией». Это НЕ иероглиф, а U+FFFD REPLACEMENT
+// CHARACTER — «значок вопроса в ромбике», которым декодер помечает байты,
+// которые не собрались в корректный UTF-8 (обычно движок режет поток по
+// границе многобайтового символа). Старый GLYPH_RE его не ловил: полноширинные
+// формы кончаются на U+FFEF, а U+FFFD живёт выше — «резерв��цией» давал
+// countGlyphs=0 и уходил пользователю как есть. Ловим отдельным счётчиком.
+//
 // Что делает модуль:
-//   1) ДЕТЕКТ — чистая функция countGlyphs/needsRewrite (без I/O, без сети):
-//      ловим CJK-иероглифы, хирагану/кана, CJK- punctuation, полноширинные
-//      формы. Эмодзи ( surrogate-пары > U+1F000) и кириллица не трогаются.
+//   1) ДЕТЕКТ — чистые функции countGlyphs/countReplacements/needsRewrite
+//      (без I/O, без сети): ловим CJK-иероглифы, хирагану/кана,
+//      CJK- punctuation, полноширинные формы и знаки замены U+FFFD. Эмодзи
+//      (surrogate-пары > U+1F000) и кириллица не трогаются. Кодовые блоки и
+//      `` `скобки` `` из подсчёта вырезаны: там посторонний символ — законная
+//      иллюстрация (см. stripCodeSpans), иначе любой разбор про кодировки
+//      заставлял бы переписывать сам себя.
 //   2) REWRITE — один headless-вызов движка по СТАНДАРТНОЙ ЛЕСТНИЦЕ:
 //      `ladder/<лестница>:general` от src/opencode-ladder-provider.js — тот же
 //      путь, что у hermes_research, токен подставляет runEngineProcess. Вся
@@ -43,6 +55,22 @@ const MIN_GLYPHS = 2;
 // Эмодзи (U+1F300–U+1FAFF) намеренно НЕ входят — они легитимны.
 const GLYPH_RE = /[\u1100-\u11FF\u2E80-\u2FFF\u3000-\u303F\u3040-\u30FF\u3130-\u318F\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uA960-\uA97F\uAC00-\uD7FF\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFFEF]/g;
 
+// Знак замены U+FFFD: байты не сложились в корректный UTF-8 → «резерв��ением».
+// Отдельный счётчик, потому что правило другое: иероглиф в русском тексте
+// может быть цитатой (порог 2), а U+FFFD вне кодового блока в нормальном
+// тексте — всегда мусор декодирования, даже в единственном экземпляре.
+// Поэтому порог здесь 1, а не 2. U+FFFE/U+FFFF — тоже noncharacters, но из
+// декодера они не приходят, поэтому в правило не входят.
+const REPLACEMENT_RE = /�/g;
+const MIN_REPLACEMENTS = 1;
+
+// Кодовые блоки и `скобки` вырезаются перед подсчётом: посторонний символ
+// там — законная иллюстрация (разбор про «значок вопроса в ромбике», японская
+// строка в примере). Fenced-блок требует пары; незакрытый бэктик под шаблон
+// не подходит и остаётся в тексте — считаем (fail-open в сторону детекта,
+// а не в сторону тихого пропуска).
+const CODE_SPAN_RE = /(```[\s\S]*?```|`[^`\n]*`)/g;
+
 // Ответ агента в Telegram обрезается до 3500 символов (MAX_MSG_LEN в
 // runner/index.js), так что 8000 — заведомый потолок; выше него лучше
 // оставить текст как есть, чем рискнуть переписать простыню вслепую.
@@ -53,14 +81,25 @@ const MAX_INPUT_CHARS = 8000;
 const MIN_OUTPUT_RATIO = 0.4;
 
 
+function stripCodeSpans(text) {
+  if (!text || typeof text !== 'string') return '';
+  return text.replace(CODE_SPAN_RE, ' ');
+}
+
 function countGlyphs(text) {
   if (!text || typeof text !== 'string') return 0;
-  const hits = text.match(GLYPH_RE);
+  const hits = stripCodeSpans(text).match(GLYPH_RE);
+  return hits ? hits.length : 0;
+}
+
+function countReplacements(text) {
+  if (!text || typeof text !== 'string') return 0;
+  const hits = stripCodeSpans(text).match(REPLACEMENT_RE);
   return hits ? hits.length : 0;
 }
 
 function needsRewrite(text) {
-  return countGlyphs(text) >= MIN_GLYPHS;
+  return countGlyphs(text) >= MIN_GLYPHS || countReplacements(text) >= MIN_REPLACEMENTS;
 }
 
 function disabled() {
@@ -85,13 +124,19 @@ function resolveRung(profileName, role = DEFAULT_ROLE) {
 
 function buildPrompt(text) {
   return [
-    'Ты — фильтр вывода агента. В текст ответа попали иероглифы (китайские/японские/корейские)',
-    'и прочие посторонние символы — для пользователя это выглядит как поломка.',
+    'Ты — фильтр вывода агента. В текст ответа попали посторонние символы:',
+    'а) иероглифы (китайские/японские/корейские), б) знаки замены U+FFFD —',
+    '«значок вопроса в ромбике», которым помечены байты, не собравшиеся в корректный',
+    'UTF-8 (��). Для пользователя это выглядит как поломка.',
     '',
     'Перепиши текст на ТОМ ЖЕ языке, сохранив: смысл, структуру и форматирование (markdown,',
     'списки, таблицы, эмодзи), все факты, цифры, имена, ссылки и форматирование кода.',
-    'Иероглифы и посторонние символы замени по смыслу контекста или убери — в тексте их',
-    'остаться не должно совсем.',
+    'Иероглифы замени по смыслу контекста или убери.',
+    'Знак замены U+FFFD — это НЕ буква, а испорченный символ: буквы, которые он закрывал,',
+    'уже нет. Восстанови САМО СЛОВО целиком по контексту и русскому языку',
+    '(например «резерв��ением» → «резервацией», а не «резервением» и не «резервением» с',
+    'прочерком). Не заменяй его на заглушку, не оставляй ни одного U+FFFD в тексте.',
+    'Сами кодовые блоки и примеры в `обратных кавычках` оставь как есть, если они там.',
     '',
     'Верни ТОЛЬКО итоговый текст ответа: без пояснений, без комментариев, без обрамляющих',
     'кавычек и без ```-блоков вокруг всего текста.',
@@ -146,7 +191,7 @@ async function defaultEngineRun({ prompt, model, user }) {
 
 /**
  * rewriteAnswer — точка входа для раннера.
- * @returns {{text: string, action: 'clean'|'too-long'|'off'|'rewritten'|'failed', glyphs: number, model: string|null, error: string|null}}
+ * @returns {{text: string, action: 'clean'|'too-long'|'off'|'rewritten'|'failed', glyphs: number, replacements: number, model: string|null, error: string|null}}
  *          action 'rewritten'/'failed' => text всегда непустой (исходник в fallback).
  */
 async function rewriteAnswer({
@@ -156,8 +201,10 @@ async function rewriteAnswer({
   engineRun = defaultEngineRun,
 } = {}) {
   const glyphs = countGlyphs(text);
-  const base = { glyphs };
-  if (!text || !text.trim() || glyphs < MIN_GLYPHS) return { text: text || '', action: 'clean', model: null, error: null, ...base };
+  const replacements = countReplacements(text);
+  const base = { glyphs, replacements };
+  const dirty = glyphs >= MIN_GLYPHS || replacements >= MIN_REPLACEMENTS;
+  if (!text || !text.trim() || !dirty) return { text: text || '', action: 'clean', model: null, error: null, ...base };
   if (disabled()) return { text, action: 'off', model: null, error: null, ...base };
   if (text.length > MAX_INPUT_CHARS) return { text, action: 'too-long', model: null, error: null, ...base };
 
@@ -175,6 +222,9 @@ async function rewriteAnswer({
     // его же ответ без изменений: хуже «иероглифы в тексте», чем «пропал ответ».
     if (!out) return { text, action: 'failed', model, error: 'empty', ...base };
     if (countGlyphs(out) >= MIN_GLYPHS) return { text, action: 'failed', model, error: 'still-glyphs', ...base };
+    // Проверяем оба вида мусора: модель могла вычистить иероглифы, но оставить
+    // U+FFFD (или наоборот) — такой ответ пользователю не показываем.
+    if (countReplacements(out) >= MIN_REPLACEMENTS) return { text, action: 'failed', model, error: 'still-replacements', ...base };
     if (out.length < Math.floor(text.length * MIN_OUTPUT_RATIO)) return { text, action: 'failed', model, error: 'lost-content', ...base };
     return { text: out, action: 'rewritten', model, error: null, ...base };
   } catch (e) {
@@ -184,7 +234,10 @@ async function rewriteAnswer({
 
 module.exports = {
   MIN_GLYPHS,
+  MIN_REPLACEMENTS,
   countGlyphs,
+  countReplacements,
+  stripCodeSpans,
   needsRewrite,
   resolveRung,
   buildPrompt,

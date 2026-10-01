@@ -3869,7 +3869,7 @@ async function _applyAnswerGlyphGuard({ result, user, profileName, sessionId = n
   if (incomplete || internalGtd || !answerGlyphGuard.needsRewrite(result)) return { text: result, guard: null };
   try {
     const guard = await answerGlyphGuard.rewriteAnswer({ text: result, user, profileName, engineRun });
-    console.log(`[glyph-guard] session=${sessionId || '-'} glyphs=${guard.glyphs} action=${guard.action} model=${guard.model || '-'}${guard.error ? ` error=${guard.error}` : ''}`);
+    console.log(`[glyph-guard] session=${sessionId || '-'} glyphs=${guard.glyphs} repl=${guard.replacements ?? 0} action=${guard.action} model=${guard.model || '-'}${guard.error ? ` error=${guard.error}` : ''}`);
     return { text: guard.text, guard };
   } catch (e) {
     console.warn('[glyph-guard] не сработал, ответ как есть:', e.message);
