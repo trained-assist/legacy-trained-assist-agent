@@ -92,6 +92,24 @@ test('estimateTurnIntent: a turn matching several intents unions their sections,
   assert.strictEqual(new Set(r.sections).size, r.sections.length, 'sections are deduped');
 });
 
+test('a «собери ТЗ» turn keeps software-engineering mounted (regression #1963)', () => {
+  // The exact turn that lost engineering_generate_spec in production: the freelance
+  // intent matched («фриланс»/«техническое задание») and narrowed the mount to the
+  // freelance section alone, so 65-spec-generation.js was hidden and the bot
+  // silently produced a client-template ТЗ with no sandbox block.
+  const turn = estimateTurnIntent('Создай фриланс-проект "Тест С8 ТЗ генерация" с описанием: нужен личный сайт-визитка. Затем собери по нему ТЗ.');
+  assert.ok(turn.intents.includes('freelance') && turn.intents.includes('spec'));
+  assert.ok(turn.sections.includes('freelance'));
+  assert.ok(turn.sections.includes('software-engineering'), 'ТЗ tools live in software-engineering');
+  // …and the resolve layer actually exposes the spec module for that mount.
+  const r = resolve(catalog, null, readiness(), { intent: turn.sections });
+  assert.ok(r.siblings.includes('engineering-skills'), 'engineering-skills server mounted');
+  assert.ok(r.modules.includes('engineering-skills/65-spec-generation.js'));
+  // A bare «собери ТЗ» (no фриланс word) still gets both sections via the spec intent.
+  const bare = estimateTurnIntent('собери ТЗ по проекту visitka');
+  assert.deepStrictEqual(bare.sections, ['freelance', 'software-engineering']);
+});
+
 test('estimateTurnIntent never matches an intent whose sample-only words are too broad', () => {
   // «тест кандидата» must NOT drag in software-engineering (bare тест/код excluded);
   // «чек-лист» must NOT drag in nalog (negative lookahead on чек).
