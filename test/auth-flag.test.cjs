@@ -91,3 +91,62 @@ test('isAuthError ignores ordinary prose that merely mentions rate limits', () =
   assert.equal(mod.isAuthError('quota exceeded'), true);
 });
 
+
+// ── Long-lived «Claude недоступен» gate ───────────────────────────────────────
+// Regression (2026-10-01, GCP): the account went on hold at Anthropic, the refresh broker
+// answered `invalid_grant / account_on_hold` every 30m, the access token expired — and every
+// `claude` run died instantly with "Failed to authenticate. API Error: 401 OAuth access token
+// has been revoked." None of the patterns matched it, so isAuthError() was false: no auth
+// branch, no flag, no engine fallback, 3 blind retries, «Работа прервана (код 1)».
+const CLAUDE_401 = 'Failed to authenticate. API Error: 401 OAuth access token has been revoked.';
+const ACCOUNT_ON_HOLD = 'refresh HTTP 400: {"error": "invalid_grant", "error_description": "account_on_hold", "error_uri": "https://claude.ai/restricted"}';
+
+test('isAuthError recognizes the live 401 / account_on_hold texts', () => {
+  const { mod } = freshModule();
+  for (const t of [CLAUDE_401, ACCOUNT_ON_HOLD, 'Error: Failed to authenticate', 'refresh HTTP 400: invalid_grant']) {
+    assert.equal(mod.isAuthError(t), true, `should match: ${t}`);
+  }
+  // A bare status code in ordinary prose stays out — the phrase is the signal, not the number (#1227).
+  assert.equal(mod.isAuthError('ответ сервера был 401, но это деталь описания'), false);
+  assert.equal(mod.isAuthError('nothing wrong here'), false);
+});
+
+test('authGate blocks the engine while the flag is up, opens on the next authorization', () => {
+  const { mod } = freshModule();
+  assert.equal(mod.authGate('claude').blocked, false, 'no flag → engine usable');
+
+  mod.setAuthFailedFlag({ reason: 'AUTH_INVALID', error_text: CLAUDE_401, engine: 'claude' });
+  const gate = mod.authGate('claude');
+  assert.equal(gate.blocked, true);
+  assert.equal(gate.reason, 'AUTH_INVALID');
+  assert.ok(gate.failedAt);
+  assert.equal(mod.authGate('codex').blocked, false, 'the gate is per engine, not global');
+
+  // «До следующей авторизации»: a successful refresh / run clears it and the gate opens.
+  mod.clearAuthFailedFlag('claude');
+  assert.equal(mod.authGate('claude').blocked, false);
+});
+
+test('authGate re-probes a flag nobody cleared instead of black-holing the engine forever', () => {
+  const { mod } = freshModule();
+  mod.setAuthFailedFlag({ reason: 'AUTH_INVALID', error_text: CLAUDE_401, engine: 'claude' });
+  const now = Date.now();
+  assert.equal(mod.authGate('claude', { now: now + 5 * 3600e3 }).blocked, true, 'still blocked inside the probe window');
+  assert.equal(mod.authGate('claude', { now: now + 7 * 3600e3 }).blocked, false, 'stale → exactly one run gets through to re-stamp or clear the flag');
+});
+
+test('claimRedirectNotice fires once per profile per cooldown', () => {
+  const { mod } = freshModule();
+  mod.setAuthFailedFlag({ reason: 'AUTH_INVALID', error_text: CLAUDE_401, engine: 'claude' });
+
+  assert.equal(mod.claimRedirectNotice('claude', 'alice'), true, 'first redirect is announced');
+  assert.equal(mod.claimRedirectNotice('claude', 'alice'), false, 'not again for the same profile inside the cooldown');
+  assert.equal(mod.claimRedirectNotice('claude', 'bob'), true, 'another profile announces its own first redirect');
+
+  // A NEW failure re-stamps the flag → a new outage is announced again.
+  mod.setAuthFailedFlag({ reason: 'AUTH_INVALID', error_text: CLAUDE_401, engine: 'claude' });
+  assert.equal(mod.claimRedirectNotice('claude', 'alice'), true);
+
+  mod.clearAuthFailedFlag('claude');
+  assert.equal(mod.claimRedirectNotice('claude', 'alice'), false, 'flag down → nothing to claim');
+});
