@@ -40,6 +40,12 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 
+// The broker is the only place that KNOWS the credentials are dead before any run tries them,
+// so it owns the long-lived «Claude недоступен» flag the runner's admission gate reads
+// (src/auth-flag.js → authGate). Set it on an auth-class refresh failure, clear it on the next
+// successful refresh = «до следующей авторизации».
+const { setAuthFailedFlag, clearAuthFailedFlag, getAuthFlag } = require('../src/auth-flag');
+
 // Claude Code public OAuth client id + token endpoint (same values the CLI uses).
 const CLIENT_ID = process.env.CLAUDE_OAUTH_CLIENT_ID || '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const TOKEN_URL = process.env.CLAUDE_OAUTH_TOKEN_URL || 'https://console.anthropic.com/v1/oauth/token';
@@ -139,6 +145,32 @@ async function refresh(refreshToken) {
   return data;
 }
 
+// Auth-class refresh failure only — a timeout, DNS miss or 5xx must NOT block the engine for
+// hours; those are transient and the next run may well succeed. Live 2026-09-30/10-01:
+// {"error":"invalid_grant","error_description":"account_on_hold"} every 30m while the access
+// token had already expired → every `claude` run died instantly with 401 («код 1»).
+const AUTH_REFRESH_FAILURE = /invalid[_\s-]?grant|account[_\s-]?on[_\s-]?hold|revoked|no refresh token|credentials are partial|\b401\b|unauthorized|invalid[_\s-]?token/i;
+
+// Raises the long-lived flag the runner's admission gate reads (auth-flag.js authGate).
+// Returns true when the flag was down and is now up, so the caller can say so once.
+function raiseAuthFlag(msg) {
+  if (!AUTH_REFRESH_FAILURE.test(msg)) return false;
+  try {
+    const wasUp = !!getAuthFlag('claude').failed;
+    setAuthFailedFlag({ reason: 'AUTH_INVALID', error_text: msg, engine: 'claude' });
+    if (!wasUp) log('auth flag SET — claude is redirected to codex/opencode until the next successful refresh');
+    return !wasUp;
+  } catch (e) {
+    log('auth flag write failed:', e.message);
+    return false;
+  }
+}
+
+// «Следующая авторизация»: a successful refresh is exactly the event the flag waits for.
+function lowerAuthFlag() {
+  try { clearAuthFailedFlag('claude'); } catch (e) { log('auth flag clear failed:', e.message); }
+}
+
 async function main() {
   if (!fs.existsSync(CRED_PATH)) { log('no credentials file at', CRED_PATH, '- nothing to do'); return; }
 
@@ -185,9 +217,14 @@ async function main() {
     if (oauth2.expires_at !== undefined) oauth2.expires_at = oauth2.expiresAt; // keep snake mirror if present
     atomicWrite(creds2);
     log(`refreshed OK — new expiry ${new Date(oauth2.expiresAt).toISOString()} (${((oauth2.expiresAt - Date.now()) / 3600000).toFixed(2)}h)`);
+    lowerAuthFlag();
   } finally {
     releaseLock();
   }
 }
 
-main().catch((e) => { console.error(`[claude-token-refresh ${new Date().toISOString()}] ERROR:`, e.message); process.exitCode = 1; });
+main().catch((e) => {
+  console.error(`[claude-token-refresh ${new Date().toISOString()}] ERROR:`, e.message);
+  raiseAuthFlag(e.message);
+  process.exitCode = 1;
+});

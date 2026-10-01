@@ -37,6 +37,9 @@ const { atomicText } = require('./atomic-json');
 const { logDefect } = require('./playbook-defects-log');
 const { resolveStepExecution, planLevelMap } = require('./playbook-executor');
 const { traceIdFor, traceStoppedAt, isUserStoppedReply } = require('./stop-trace');
+// #1813: адрес checklist.md в записях хранится относительно корня профиля
+// (см. шапку gtd-project-ref.js) — читаем через loadProjectRef, пишем через storeProjectRef.
+const { gtdProjectDir, loadProjectRef, storeProjectRef } = require('./gtd-project-ref');
 
 // Engines this step already failed on with credentials/config — retrying them is
 // pointless, the fallback ladder skips them.
@@ -1551,14 +1554,14 @@ function readGtd(workDir, sessionId) {
   try {
     const fp = _file(workDir, sessionId);
     if (!fs.existsSync(fp)) return null;
-    return JSON.parse(fs.readFileSync(fp, 'utf8'));
+    return loadProjectRef(workDir, JSON.parse(fs.readFileSync(fp, 'utf8')));
   } catch (e) { console.warn('[gtd] read:', e.message); return null; }
 }
 
 function writeGtd(workDir, rec) {
   try {
     fs.mkdirSync(_dir(workDir), { recursive: true });
-    atomicText(_file(workDir, rec.sessionId), JSON.stringify(rec, null, 2));
+    atomicText(_file(workDir, rec.sessionId), JSON.stringify(storeProjectRef(workDir, rec), null, 2));
     return true;
   } catch (e) { console.error('[gtd] write:', e.message); return false; }
 }
@@ -1571,7 +1574,7 @@ function listGtd(workDir) {
   try {
     return fs.readdirSync(_dir(workDir))
       .filter(f => f.endsWith('.json') && !f.endsWith('.tmp'))
-      .map(f => { try { return JSON.parse(fs.readFileSync(path.join(_dir(workDir), f), 'utf8')); } catch { return null; } })
+      .map(f => { try { return loadProjectRef(workDir, JSON.parse(fs.readFileSync(path.join(_dir(workDir), f), 'utf8'))); } catch { return null; } })
       .filter(Boolean);
   } catch { return []; }
 }
@@ -1703,6 +1706,7 @@ function markChecklistCancelled(projectDir, { now = Date.now() } = {}) {
 // числится осиротевшей раньше старта рана (legacy-секция, а не свежая).
 function claimFreshChecklist({ workDir, projectDir, sessionId, since }) {
   if (!workDir || !projectDir || !sessionId || !Number.isFinite(since)) return false;
+  projectDir = path.resolve(projectDir); // нормализация к виду loadProjectRef (dedup-сравнения)
   let mtime;
   try { mtime = fs.statSync(path.join(projectDir, CHECKLIST_FILE)).mtimeMs; } catch { return false; }
   if (mtime < since) return false;
@@ -1849,6 +1853,7 @@ async function maybeSchedule({ workDir, sessionId, chatId, username, task, apiKe
 // (src/orphan-checklists.js): одно напоминание через 30 мин с «▶️ Делать»/«✖️ Отменить».
 async function scheduleFromChecklist({ workDir, sessionId, chatId, username, projectDir, audience, threadId = null, isSessionRunning = null }) {
   if (!workDir || !sessionId || !projectDir) return null;
+  projectDir = path.resolve(projectDir); // нормализация к виду loadProjectRef (dedup-сравнения)
   const checklist = readChecklist(projectDir);
   if (!checklist || !checklist.items.length || !checklist.items.some(i => !i.done)) return null;
   if (checklist.cancelled) return null; // «✖️ Отменить» — секция закрыта человеком
@@ -2551,6 +2556,7 @@ module.exports = {
   detectIntent, maybeSchedule, scheduleFromChecklist, runDue, buildReopenMessage,
   readGtd, writeGtd, clearGtd, clearGtdForChat, clearAllGtd, closeStoppedGtd, isGtdStopped, listGtd, settleResumedGtd,
   readChecklist, trackedChecklist, checklistSummary, computeMaxIterations,
+  gtdProjectDir,
   _parseChecklistSections, _activeSection,
   setChecklistOwner, markChecklistCancelled, claimFreshChecklist, _tgNotify,
   checklistCheapPrecheck, writeChecklistDone, mirrorGtdChecklist, CHECKLIST_API_BASE, checklistAutologinUrl,
