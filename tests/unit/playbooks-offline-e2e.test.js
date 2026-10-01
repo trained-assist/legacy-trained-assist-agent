@@ -165,8 +165,21 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
       // every step runs in the plan's OWN exact session — never the profile's chat session
       expect([...new Set(calls.map(c => `${c.sessionId}|${c.webExactSession}`))]).toEqual([`s-plan-${task.id.slice(0, 8)}|true`]);
 
-      // the CI step parked on a durable wait and was re-run after CI went green
-      expect(calls.filter(c => /^CI зел/.test(c.title)).length).toBe(2);
+      // The CI step parked on a durable wait while CI was red — that is unchanged (#1408).
+      // What changed with #1959 is the RESUME: on the second claim the deterministic
+      // `already_done: { ci_green: true }` pre-check finds the condition already true and
+      // closes the step with ZERO model runs instead of paying for a second call that would
+      // only re-confirm what the registry already knows. So exactly ONE model run for the step.
+      const ciCalls = calls.filter(c => /^CI зел/.test(c.title));
+      expect(ciCalls.length).toBe(1);
+      // ...and it closed deterministically, not silently: the skip is audited with evidence.
+      const ciStep = store.listTaskItems(task.id, PROFILE).find(r => /^CI зел/.test(r.title));
+      const ciEvidence = store.db.prepare(
+        "SELECT evidence_json FROM task_validation_results WHERE task_id = ? AND validator = 'ci_green'"
+      ).get(task.id);
+      expect(ciStep.status, 'ci-green step must reach done').toBe('done');
+      expect(JSON.parse(ciEvidence.evidence_json).already_done,
+        'resume must be closed by the already_done pre-check, not by a second model run').toBe(true);
     }, 30_000);
   }
 
