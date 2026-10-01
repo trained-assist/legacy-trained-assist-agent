@@ -31,6 +31,7 @@
       { "botId": "default",   "audience": "default",   "token_secret_name": "TELEGRAM_BOT_TOKEN",  "enabled": true, "commands_profile": "classic",   "media_profile": "full", "gateway_env": "trained-assist-tg-bot" },
       { "botId": "recruiter", "audience": "recruiter", "token_secret_name": "RECRUITER_BOT_TOKEN", "enabled": true, "commands_profile": "recruiter", "media_profile": "full", "gateway_env": "trained-assist-tg-bot-recruiter", "gateway_url": "https://trained-assist-tg-bot-recruiter.skillset-apply.workers.dev" },
       { "botId": "freelance", "audience": "freelance", "token_secret_name": "FREELANCE_BOT_TOKEN", "enabled": true, "commands_profile": "freelance", "media_profile": "full", "gateway_env": "trained-assist-tg-bot-freelance", "gateway_url": "https://tg-freelance.trainedassist.store" }
+      , { "botId": "sales", "audience": "sales", "token_secret_name": "SALES_BOT_TOKEN", "enabled": true, "commands_profile": "classic", "media_profile": "full", "gateway_env": null, "gateway_url": null, "_doc": "Внешний сейлс-бот @cmr_management_bot (Cloudflare Worker flexi-telegram-deal-bot, не tg-bot-шлюз). Регистрируется, потому что воркер зовёт агента POST /run и ждёт ответа В ЭТОМ чате: без своей аудитории агент отвечает токеном классического бота, которого в группе может не быть — тишина без ошибки (202 → sendMessage 403). Воркер обязан передавать audience: sales. gateway_url пуст: tg-bot-шлюза у этого бота нет, колбэки не шлём." }
     ]
   },
 
@@ -75,6 +76,7 @@
     "secrets": [
       { "name": "RECRUITER_BOT_TOKEN", "description": "Optional recruiter reply credential; Secret Manager or host env fallback. Never use classic bot as fallback." },
       { "name": "FREELANCE_BOT_TOKEN", "description": "Optional freelance-bot reply credential (issue #1302 PR-A1); Secret Manager or host env fallback. Never use classic bot as fallback. Not written to RU (ru-edge has no runner/bot-delivery)." },
+      { "name": "SALES_BOT_TOKEN", "description": "Optional sales-bot (@cmr_management_bot) reply credential for the external flexi-telegram-deal-bot worker; Secret Manager or host env fallback. Never use classic bot as fallback — it is not a member of the sales groups." },
       { "name": "CF_API_TOKEN",             "description": "Cloudflare API token" },
       { "name": "OPERATOR_CHAT_ID",         "description": "Telegram chat ID for operator notifications" },
       { "name": "GOOGLE_OAUTH_CLIENT_ID",   "description": "Google OAuth2 client ID (GDrive/GetCourse)" },
