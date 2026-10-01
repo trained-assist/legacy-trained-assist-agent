@@ -48,6 +48,36 @@ const LOGIN_TEXT_RE = /(войти|вход|авторизац|выйти|log ?i
 const SUBMIT_TEXT_RE = /(войти|вход|submit|log ?in|sign ?in|продолжит|отправ|далее|save|сохрани|войти)/i;
 const LOGIN_FIELD_RE = /(user|login|email|e-?mail|почт|логин|телефон|phone|account|никнейм|username)/i;
 
+// Keys a form may need after it is filled: the common tail of «type a query and hit
+// enter», plus the keys that walk a dropdown or close a dialog. An allowlist, not free
+// text — the layer must not become a way to type arbitrary key chords into a page.
+const PRESS_KEYS = [
+  'Enter', 'Tab', 'Escape', 'Backspace', 'Delete',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'Home', 'End', 'PageUp', 'PageDown',
+];
+const PRESS_KEY_ALIASES = {
+  'enter': 'Enter', 'return': 'Enter', 'ок': 'Enter',
+  'tab': 'Tab', 'escape': 'Escape', 'esc': 'Escape',
+  'backspace': 'Backspace', 'delete': 'Delete', 'del': 'Delete',
+  'arrowup': 'ArrowUp', 'up': 'ArrowUp', 'стрелкавверх': 'ArrowUp',
+  'arrowdown': 'ArrowDown', 'down': 'ArrowDown', 'стрелкавниз': 'ArrowDown',
+  'arrowleft': 'ArrowLeft', 'left': 'ArrowLeft',
+  'arrowright': 'ArrowRight', 'right': 'ArrowRight',
+  'home': 'Home', 'end': 'End', 'pageup': 'PageUp', 'page down': 'PageDown', 'pagedown': 'PageDown',
+};
+
+function normalizePressKey(raw) {
+  const key = String(raw == null ? '' : raw).trim();
+  if (!key) return { ok: false, reason: 'empty_key' };
+  const lowered = key.toLowerCase();
+  const canonical = PRESS_KEY_ALIASES[lowered]
+    || PRESS_KEYS.find(k => k.toLowerCase() === lowered)
+    || null;
+  if (!canonical) return { ok: false, reason: `key_not_allowed: ${key}` };
+  return { ok: true, key: canonical };
+}
+
 // ---------------------------------------------------------------- pure helpers
 
 function checkUrl(raw) {
@@ -60,19 +90,47 @@ function checkUrl(raw) {
   return { ok: true, url: parsed.toString() };
 }
 
-function cleanText(raw, maxChars = DEFAULT_TEXT_CHARS) {
-  const text = String(raw == null ? '' : raw)
+function cleanRaw(raw) {
+  return String(raw == null ? '' : raw)
     .replace(/\r/g, '')
     .split('\n')
-    .map(line => line.replace(/[ \t ]+/g, ' ').trim())
+    .map(line => line.replace(/[ \t ]+/g, ' ').trim())
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-  if (text.length <= maxChars) return { text, truncated: false, totalChars: text.length };
+}
+
+// A window of a text, not a prefix of it. `web_open` used to hand over the head of the
+// page and nothing else, so a 27k-char document was unreadable past the first 4k — the
+// only way on was a bigger max_chars, which burns the context, and re-opening is not a
+// continuation at all: the page is re-fetched and its text has moved.
+function sliceWindow(text, { offset = 0, maxChars = DEFAULT_TEXT_CHARS } = {}) {
+  const full = String(text == null ? '' : text);
+  const start = Math.max(0, Math.floor(Number(offset) || 0));
+  const size = Math.max(1, Math.floor(Number(maxChars) || DEFAULT_TEXT_CHARS));
+  const end = start + size;
+  const chunk = full.slice(start, end);
+  const truncated = end < full.length;
   return {
-    text: `${text.slice(0, maxChars)}\n… [обрезано, всего ${text.length} символов]`,
+    text: chunk,
+    offset: start,
+    nextOffset: truncated ? end : null,
+    truncated,
+    totalChars: full.length,
+  };
+}
+
+function cleanText(raw, maxChars = DEFAULT_TEXT_CHARS, offset = 0) {
+  const win = sliceWindow(cleanRaw(raw), { offset, maxChars });
+  if (!win.truncated) {
+    return { text: win.text, truncated: false, totalChars: win.totalChars, offset: win.offset, nextOffset: null };
+  }
+  return {
+    text: `${win.text}\n… [обрезано, всего ${win.totalChars} символов, дальше читать с web_text от ${win.nextOffset}]`,
     truncated: true,
-    totalChars: text.length,
+    totalChars: win.totalChars,
+    offset: win.offset,
+    nextOffset: win.nextOffset,
   };
 }
 
@@ -296,21 +354,25 @@ async function collectItems(page) {
   }, INTERACTIVE_SELECTOR);
 }
 
-async function readPage(page, maxChars = DEFAULT_TEXT_CHARS) {
+async function readPage(page, maxChars = DEFAULT_TEXT_CHARS, offset = 0) {
   // eslint-disable-next-line no-undef -- runs in the page
   const raw = await page.evaluate(() => (document.body && document.body.innerText) || '');
   const items = await collectItems(page);
   const password = pickPasswordField(items);
-  const clean = cleanText(raw, maxChars);
+  const clean = cleanText(raw, maxChars, offset);
+  // The login check reads the head of the page, not the window: a window deep inside a
+  // long document must not turn a login wall into «вход не нужен».
   const login = detectLoginRequired({
     hasPasswordField: Boolean(password),
     url: page.url(),
-    text: clean.text,
+    text: String(raw || '').slice(0, 2000),
   });
   return {
     url: page.url(),
     title: await page.title().catch(() => ''),
     text: clean.text,
+    offset: clean.offset,
+    nextOffset: clean.nextOffset === undefined ? null : clean.nextOffset,
     truncated: clean.truncated,
     totalChars: clean.totalChars,
     loginRequired: login.loginRequired,
@@ -318,6 +380,36 @@ async function readPage(page, maxChars = DEFAULT_TEXT_CHARS) {
     controls: items.filter(i => i.visible).length,
     forms: items.filter(i => i.tag === 'form' || i.type === 'submit').length,
   };
+}
+
+// Read more of the page that is already open — no navigation, no re-fetch. This is the
+// only honest way to continue: re-opening the URL returns the page as it is NOW, and on
+// a live page with changing blocks that is a different document, not the next page.
+async function readTextWindow({ offset = 0, maxChars = DEFAULT_TEXT_CHARS } = {}) {
+  return serialize(async () => {
+    if (!session || session.page.isClosed()) {
+      return {
+        ok: false, error: 'no_page',
+        hint: 'Страница не открыта — сначала web_open, потом web_text для продолжения чтения.',
+      };
+    }
+    const view = await readPage(session.page, maxChars, offset);
+    return {
+      ok: true,
+      navigated: false,
+      url: view.url,
+      title: view.title,
+      text: view.text,
+      offset: view.offset,
+      nextOffset: view.nextOffset,
+      truncated: view.truncated,
+      totalChars: view.totalChars,
+      loginRequired: view.loginRequired,
+      loginEvidence: view.loginEvidence,
+      controls: view.controls,
+      forms: view.forms,
+    };
+  });
 }
 
 async function openUrl(url, { maxChars = DEFAULT_TEXT_CHARS } = {}) {
@@ -409,13 +501,28 @@ async function clickTarget(target) {
   });
 }
 
-async function fillFields({ fields = [], submit = false, confirmSubmit = false }) {
+async function fillFields({ fields = [], submit = false, confirmSubmit = false, press = null }) {
+  const wantsPress = press !== null && press !== undefined && press !== false && press !== '';
+  const pressKey = wantsPress ? normalizePressKey(press) : null;
+  if (wantsPress && !pressKey.ok) {
+    return {
+      ok: false, error: pressKey.reason, submitted: false,
+      hint: `Нажимать можно только: ${PRESS_KEYS.join(', ')}.`,
+    };
+  }
+  if (wantsPress && submit) {
+    return {
+      ok: false, error: 'press_and_submit_conflict', submitted: false,
+      hint: 'press и submit — разные действия. Выбери одно: submit отправляет форму, press просто жмёт клавишу.',
+    };
+  }
   if (!Array.isArray(fields) || !fields.length) {
     return { ok: false, error: 'no_fields', hint: 'Передай fields: [{ target, value }].' };
   }
   return serialize(async () => {
     const page = await currentPage();
     const filled = [];
+    let lastFilled = null;
     for (const field of fields) {
       const target = typeof field.target === 'string' ? { text: field.target } : (field.target || {});
       const resolved = await resolveTarget(page, target);
@@ -430,11 +537,41 @@ async function fillFields({ fields = [], submit = false, confirmSubmit = false }
           await locator.fill(String(field.value == null ? '' : field.value), { timeout: ACTION_TIMEOUT_MS });
         }
         filled.push({ target: field.target, status: 'filled', tag: resolved.item.tag, name: resolved.item.name });
+        lastFilled = { index: resolved.index, item: resolved.item };
       } catch (e) {
         filled.push({ target: field.target, status: 'failed', error: String(e.message || e).slice(0, 160) });
       }
     }
     const incomplete = filled.filter(f => f.status !== 'filled');
+    // Enter is a submit by another name: pressing it on a half-filled form sends wrong
+    // data out, so the same guard that guards an explicit submit guards this.
+    if (wantsPress && incomplete.length) {
+      return {
+        ok: false, error: 'fields_incomplete', filled, submitted: false,
+        hint: 'Есть незаполненные поля — клавиша не нажата. Уточни target (web_find) и повтори.',
+        url: page.url(), title: await page.title().catch(() => ''),
+      };
+    }
+    if (wantsPress) {
+      try {
+        await page.locator(INTERACTIVE_SELECTOR).nth(lastFilled.index).press(pressKey.key, { timeout: ACTION_TIMEOUT_MS });
+      } catch (e) {
+        return {
+          ok: false, error: `press_failed: ${String(e.message || e).slice(0, 160)}`, filled, submitted: false,
+          url: page.url(), title: await page.title().catch(() => ''),
+        };
+      }
+      await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(600);
+      const view = await readPage(page, 1500);
+      return {
+        ok: true, filled,
+        pressed: { key: pressKey.key, on: { tag: lastFilled.item.tag, name: lastFilled.item.name, text: lastFilled.item.text } },
+        submitted: false,
+        url: view.url, title: view.title, loginRequired: view.loginRequired, text: view.text,
+        hint: 'Страница показана после нажатия — проверь, не отправилась ли форма: если поле было внутри формы, Enter её отправил.',
+      };
+    }
     if (!submit) {
       return { ok: incomplete.length === 0, filled, submitted: false, url: page.url(), title: await page.title().catch(() => '') };
     }
@@ -616,8 +753,13 @@ module.exports = {
   readCredentials,
   credentialsFile,
   credentialCandidates,
+  PRESS_KEYS,
+  normalizePressKey,
+  cleanRaw,
+  sliceWindow,
   collectItems,
   readPage,
+  readTextWindow,
   openUrl,
   findOnPage,
   clickTarget,
