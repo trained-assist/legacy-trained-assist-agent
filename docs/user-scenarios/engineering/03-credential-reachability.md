@@ -3,7 +3,7 @@
 **Домен:** Инженерная платформа (ядро `trained-assist-agent` + доменные скилы)
 **Issue:** #1891 (эпик #1885) · предусловие для переезда профилей в Google Storage (#1789/#1808) и включения шифрования
 **Уровень проверки:** S3 — всё проверяется автоматически (CI + тесткит), человек в контуре не нужен
-**Песочница:** `npm run sandbox:cred-reachability` (`scripts/sandbox/credential-reachability.mjs`, C1–C9)
+**Песочница:** `npm run sandbox:cred-reachability` (`scripts/sandbox/credential-reachability.mjs`, C1–C11)
 
 ## Зачем
 
@@ -22,6 +22,8 @@ hh-скилу, DaData в `USERS_DIR/<u>/.inn-config.json`.
 | Env MCP-скилов как чистая функция (проверяется реальный объект, не grep) | `buildMcpToolEnv` в `src/browser.js` |
 | Инвариант миграции «было доступно → доступно» | фаза `credentials-reachability` в `scripts/profile-migrate/` |
 | Проверка реестра у доменного скила | `checkCredentials` в `packages/mcp-skill-testkit` (конформ) |
+| Манифест бота/секрета не может обещать имя, которое никто не возит | `scripts/check-env-sync.js`: `infra/env-manifest.json → gcp_secret_manager_only ⊆ src/secrets.js` (`REQUIRED`/`OPTIONAL`) и ⊆ загрузчик реестра ботов |
+| Предпродажный гард: красный контракт кредов не выпускает релиз в прод | `scripts/check-deploy-secrets-gate.js`, вызов из `scripts/deploy.sh` до переключения `~/agent-master` |
 
 Формат записи реестра:
 
@@ -101,7 +103,9 @@ node scripts/check-deploy-secrets-gate.js [--release <dir>] [--env gcp|ru]
 ## Как добавить ключ
 
 1. Запись в `config/credentials.json` своего репозитория (скил) или ядра (core-потребители).
-2. Если `host: mcp` — имя должно передаваться в `buildMcpToolEnv`; если `bridge` — в `engineEnv`.
+2. Если `host: mcp` — имя должно передаваться в `buildMcpToolEnv`; если `bridge` — в `engineEnv`;
+   если `secrets` (токен бота) — имя обязано быть в `src/secrets.js` и в
+   `infra/env-manifest.json → bots.registry.<bot>.token_secret_name` (иначе красный `check-env-sync`).
 3. `node scripts/check-credential-reachability.js` (ядро) / `mcp-skill-conformance` (скил) — зелёные.
 
 ## Роллаут по скилам (отдельные PR)
