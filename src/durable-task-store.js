@@ -536,7 +536,7 @@ class DurableTaskStore {
       // generation, and the attempt that carries it may only settle while the row still
       // holds that number — see completeItem/failItem/parkItem's `claimGeneration`.
       this._prep(`UPDATE task_items SET status = 'running', claim_generation = claim_generation + 1,
-          updated_at = ? WHERE id = ?`)
+          result_json = NULL, updated_at = ? WHERE id = ?`)
         .run(now, row.id);
       return this.getTaskItem(row.id);
     })();
@@ -868,6 +868,54 @@ class DurableTaskStore {
       this._bump(item.task_id);
       return this.getTaskItem(id);
     })();
+  }
+
+  // ── Structured step result (#87 B1.3, ARCHITECTURE §4.4) ──────────────────
+  /**
+   * The step reports its own verdict (task_item_result) instead of making the
+   * server parse `DURABLE:` out of the reply text — 94% of OpenCode step failures
+   * were «no terminal marker» although the work WAS done (#1907 audit).
+   *
+   * Only the attempt that is running on this step may post: `attempt` (the
+   * generation from the prompt) must match `claim_generation`, and the row itself
+   * must be `running`. The marker stays mandatory for the engines that do not call
+   * the tool — this is an added channel, not a replacement.
+   *
+   * @returns {{ok: true, result: object} | {error: string}}
+   */
+  setStructuredResult(itemId, profileId, { status, result = null, note = null, attempt = null } = {}) {
+    if (!['done', 'failed', 'waiting'].includes(status)) {
+      return { error: `invalid status: ${status} (expected done | failed | waiting)` };
+    }
+    return this.db.transaction(() => {
+      const item = this._itemOwnedBy(itemId, profileId);
+      if (!item) return { error: 'item not found (or not owned by this profile)' };
+      if (item.status !== 'running') {
+        return { error: `task_item_result posts the result of the step that is running now (status=${item.status})` };
+      }
+      const current = item.claim_generation ?? 0;
+      if (attempt != null && Number(attempt) !== current) {
+        return { error: `stale attempt: the result is for attempt ${attempt}, the step is on attempt ${current}` };
+      }
+      const payload = {
+        status, result: result ?? null,
+        note: note == null ? null : String(note).slice(0, 2000),
+        at: nowMs(), attempt: current,
+      };
+      this._prep('UPDATE task_items SET result_json = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(payload), nowMs(), itemId);
+      return { ok: true, result: payload };
+    })();
+  }
+
+  /** The step's structured result for its CURRENT attempt, or null. */
+  getStructuredResult(itemId) {
+    const row = this._prep('SELECT result_json FROM task_items WHERE id = ?').get(itemId);
+    if (!row || !row.result_json) return null;
+    try {
+      const r = JSON.parse(row.result_json);
+      return r && typeof r === 'object' && ['done', 'failed', 'waiting'].includes(r.status) ? r : null;
+    } catch { return null; }
   }
 
   // ── Validation results + item evidence (P3d) ───────────────────────────

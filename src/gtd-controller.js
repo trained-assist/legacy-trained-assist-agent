@@ -827,6 +827,36 @@ function fencedWrite(ctx, result, where) {
   return true;
 }
 
+// ── Structured step result (#87 B1.3, ARCHITECTURE §4.4) ─────────────────────
+// The step can post its own verdict through MCP `task_item_result` instead of
+// making the server parse `DURABLE:` out of the reply text: 94% of OpenCode step
+// failures (#1907 audit) were «no terminal marker» while the work WAS done — one
+// protocol miss bought an attempt, a retry and often a doctor escalation.
+// Precedence: structured result (explicit API) → text marker → marker judge.
+// The marker itself stays fully functional — engines that never call the tool
+// keep the exact current behaviour.
+function readStructuredResult(ctx) {
+  let raw = null;
+  try { raw = ctx.store.getTaskItem(ctx.itemSnap.id).result_json; } catch { return null; }
+  if (!raw) return null;
+  try {
+    const r = JSON.parse(raw);
+    if (!r || !['done', 'failed', 'waiting'].includes(r.status)) return null;
+    // The row is cleared at claim, so a result left by an earlier attempt never
+    // settles a newer one (belt and braces on top of that clear).
+    if (r.attempt != null && ctx.claimGeneration != null && r.attempt !== ctx.claimGeneration) return null;
+    return r;
+  } catch { return null; }
+}
+
+// Why a structured result says the step failed — for `last_error`, recovery and hooks.
+function structuredFailReason(structured, fallback) {
+  const reason = structured.note
+    || (structured.result == null ? null : JSON.stringify(structured.result))
+    || fallback;
+  return String(reason).slice(0, 500);
+}
+
 // `waitsOnly` (design §2.1): claim ONLY steps carrying an unresolved wait — the
 // 30s wait tick runs this mode so a plain due step still waits for the 5-min
 // GTD tick. A wait that resolves inside this pass falls through to a normal
@@ -1074,6 +1104,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       digest ? `\n${digest}\n` : '',
       `Step (${item.position + 1}/${store.progressSummary(task.id, task.profile_id).total}): ${item.title}`,
       `Step id: ${item.id}`,
+      `Attempt: ${item.claim_generation}`,
       ...(() => {
         const fails = priorFailures(store, item);
         if (!fails.length) return [];
@@ -1097,6 +1128,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       'Выполни этот шаг. Если шаг выполнен и проверка прошла — ответь финальной строкой: DURABLE: done.',
       'Если шаг не удался — опиши ошибку и ответь финальной строкой: DURABLE: failed: <причина>.',
       'Маркер (done/failed/waiting) — обязательно САМАЯ ПОСЛЕДНЯЯ строка твоего ответа: после него не пиши НИЧЕГО (ни списков, ни вопросов, ни примечаний). Без маркера шаг не засчитается, даже если работа сделана.',
+      'Результат шага дублируй структурно: task_item_result(item_id: "<Step id>", attempt: <Attempt из промпта>, status: "done" | "failed" | "waiting", result: {<ссылки, id, пути, решения — что нужно следующему шагу и проверкам>}, note: "<одна строка>") — сервер прочитает его напрямую, без разбора текста. Маркер это не заменяет и не отменяется: делай и то, и другое.',
       'Если шагу нужно ДОЖДАТЬСЯ чего-то внешнего (деплой, CI, креды/ответ пользователя, повтор ошибки в логах, другой план, просто время) — НЕ жди внутри рана и не проваливай шаг:',
       'вызови task_item_wait(item_id: "<Step id>", until: {<validator>: <значение>} | awaiting_user: true | sleep_sec: N, timeout_sec, reason) и ответь финальной строкой: DURABLE: waiting.',
       'План уснёт; сервер сам дёшево проверяет условие каждые poll_every_sec и перезапустит этот же шаг, когда оно выполнится, пользователь ответит или истечёт таймаут.',
@@ -1152,7 +1184,7 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
 // `settleDone` is the DURABLE: done branch, also reused when the marker judge
 // (#1907) decides a markerless reply actually completed the step: validations,
 // the #1861 blocking gate, evidence and hooks are identical either way.
-async function settleDone(ctx, said, { judged = null } = {}) {
+async function settleDone(ctx, said, { judged = null, structured = null } = {}) {
   const { store, task, itemSnap, executionId, validators, itemProjectDir, llmValidate, planText, sinks, hooksApproved, hookVars, classifier, secrets } = ctx;
   // P3d-1: record the step's validations (registered → verdict, self-reported
   // → inconclusive) + the reply as evidence BEFORE completing the item, so a
@@ -1182,10 +1214,14 @@ async function settleDone(ctx, said, { judged = null } = {}) {
       console.log(`[gtd-durable] fastpass skip ${itemSnap.id.slice(0, 8)}: ${skipReason}`);
     } else {
       // The reply joins the plan text: a step that just opened a PR is
-      // validated (pr_opened / ci_green) against the URL it printed.
+      // validated (pr_opened / ci_green) against the URL it printed. A structured
+      // result joins it too — that is where the step puts its urls/ids now.
+      const replyText = structured
+        ? `${said}\nRESULT: ${JSON.stringify(structured.result ?? null)}${structured.note ? `\nNOTE: ${structured.note}` : ''}`
+        : said;
       const results = await recordItemValidations(store, {
         task, item: itemSnap, executionId, registry: validators, projectDir: itemProjectDir,
-        validationMode: mode, llmValidate, planText: `${planText}\n${said}`, reply: said,
+        validationMode: mode, llmValidate, planText: `${planText}\n${replyText}`, reply: replyText,
       });
       // #1861 Fix B: a FAILED registered (deterministic) check must not be
       // swallowed by `DURABLE: done`. registered → isBlockingCheck; semantic /
@@ -1196,8 +1232,8 @@ async function settleDone(ctx, said, { judged = null } = {}) {
     }
     store.setItemEvidence(itemSnap.id, task.profile_id, {
       evidence_json: JSON.stringify(gate
-        ? { reply: said.slice(0, 4000), failed_validation: gate.key, subject: gate.subject ?? null, ...(judged ? { marker_judge: judged } : {}) }
-        : { reply: said.slice(0, 4000), ...(judged ? { marker_judge: judged } : {}) }),
+        ? { reply: said.slice(0, 4000), failed_validation: gate.key, subject: gate.subject ?? null, ...(structured ? { step_result: structured.result ?? null, step_note: structured.note ?? null } : {}), ...(judged ? { marker_judge: judged } : {}) }
+        : { reply: said.slice(0, 4000), ...(structured ? { step_result: structured.result ?? null, step_note: structured.note ?? null } : {}), ...(judged ? { marker_judge: judged } : {}) }),
       completed_at: gate ? null : Date.now(),
       claimGeneration: ctx.claimGeneration,
     });
@@ -1254,7 +1290,15 @@ async function _settleDurableReply(ctx, reply) {
     console.log(`[gtd-durable] item ${itemSnap.id.slice(0, 8)}: user stop — terminal, no retry`);
     return;
   }
-  if (lastDurableMarker(said) === 'waiting') {
+  // Structured step result first (#87 B1.3): the tool's explicit verdict beats
+  // parsing the marker out of the text. Without one the text marker decides
+  // exactly as before — the marker semantics of prod are untouched.
+  const structured = readStructuredResult(ctx);
+  const wantWaiting = structured ? structured.status === 'waiting' : lastDurableMarker(said) === 'waiting';
+  const wantDone = structured ? structured.status === 'done' : /DURABLE:\s*done/i.test(said);
+  const wantFailed = structured ? structured.status === 'failed' : /DURABLE:\s*failed/i.test(said);
+  if (structured) console.log(`[gtd-durable] structured result ${itemSnap.id.slice(0, 8)}: ${structured.status}${structured.note ? ` (${structured.note})` : ''}`);
+  if (wantWaiting) {
     // The agent parked the step on a durable wait (task_item_wait during the
     // run). Not a failure: the attempt is refunded and nothing is completed.
     const fresh = store.getTaskItem(itemSnap.id) || itemSnap;
@@ -1275,7 +1319,9 @@ async function _settleDurableReply(ctx, reply) {
       return;
     }
     // "waiting" without a registered wait is a protocol error — bounded like a failure.
-    const errText = 'DURABLE: waiting without task_item_wait (no wait registered)';
+    const errText = structured
+      ? 'task_item_result(status: "waiting") without task_item_wait (no wait registered)'
+      : 'DURABLE: waiting without task_item_wait (no wait registered)';
     const failed = store.failItem(itemSnap.id, task.profile_id, { executionId, error: errText, claimGeneration: ctx.claimGeneration });
     if (fencedWrite(ctx, failed, 'waiting-protocol')) return;
     const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: errText, classifier });
@@ -1286,24 +1332,27 @@ async function _settleDurableReply(ctx, reply) {
     }
     return;
   }
-  if (/DURABLE:\s*done/i.test(said)) {
-    await settleDone(ctx, said);
-  } else if (/DURABLE:\s*failed/i.test(said)) {
-    const failed = store.failItem(itemSnap.id, task.profile_id, { executionId, error: said.slice(0, 500), claimGeneration: ctx.claimGeneration });
+  if (wantDone) {
+    await settleDone(ctx, said, { structured });
+  } else if (wantFailed) {
+    const failText = structured ? structuredFailReason(structured, said) : said;
+    const failed = store.failItem(itemSnap.id, task.profile_id, { executionId, error: failText.slice(0, 500), claimGeneration: ctx.claimGeneration });
     if (fencedWrite(ctx, failed, 'failed')) return;
-    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: said, classifier, quality: true });
+    const rec = await recoverDurableItem({ store, task, itemId: itemSnap.id, errorText: failText, classifier, quality: true });
     store.finishExecution(executionId, {
       status: 'failed', error_class: rec.failureClass,
-      error_text: `${rec.action || 'terminal'}: ${said}`.slice(0, 500),
+      error_text: `${rec.action || 'terminal'}: ${failText}`.slice(0, 500),
     });
     if (rec.recovered) console.log(`[gtd-durable] recovery ${itemSnap.id.slice(0, 8)} ${rec.failureClass}→${rec.action} (${rec.attempts}/${rec.maxAttempts})`);
     else {
       console.log(`[gtd-durable] item failed, ${rec.reason} (${rec.attempts}/${rec.maxAttempts}) class=${rec.failureClass}: ${itemSnap.id.slice(0, 8)}`);
-      await fireItemHooks(store, task, itemSnap, 'on_fail', hookVars({ error: said.slice(0, 500) }), sinks, hooksApproved);
-      await fireTaskHooks(store, task, 'task_failed', hookVars({ error: said.slice(0, 500) }), sinks, hooksApproved);
+      await fireItemHooks(store, task, itemSnap, 'on_fail', hookVars({ error: failText.slice(0, 500) }), sinks, hooksApproved);
+      await fireTaskHooks(store, task, 'task_failed', hookVars({ error: failText.slice(0, 500) }), sinks, hooksApproved);
     }
   } else {
-    // No terminal marker (#1907/#1908). Two very different cases hide here:
+    // No terminal marker (#1907/#1908) — reachable only when there is no
+    // structured result either (one of them always decides). Two very different
+    // cases hide here:
     //  1. an engine/infra failure the runner returned AS the reply (crash text,
     //     dead llm-ladder, auth loss) — recover like a crash: class from the
     //     classifier, NO quality escalation, backoff — the model never had a say;
