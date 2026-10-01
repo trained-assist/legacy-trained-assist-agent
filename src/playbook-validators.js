@@ -241,6 +241,115 @@ function makeCiRunGreenValidator({ ghToken, ghFetch }) {
   };
 }
 
+// ── Event subjects (#1846) ──────────────────────────────────────────────────
+// Five keys that name an EXTERNAL GitHub object and are meant to be paired with
+// the webhook wake path (src/handlers/github-webhook.js): the webhook wakes the
+// step in seconds, and THESE validators still give the verdict on the poll — a
+// lost webhook only costs latency, never correctness. Subject grammar lives in
+// src/github-event-subjects.js (single source, also used by the matcher).
+// Same REST surface as the other GitHub validators (ghToken/ghFetch), so a fake
+// ghFetch drives them in tests and the real token drives them in prod.
+
+/** PR by issue subject "owner/repo#N" (or {repo, number}). */
+function makeIssuePrMergedValidator({ ghToken, ghFetch }) {
+  return async function issuePrMerged(ctx) {
+    const { parseIssueSubject, issueKey } = require('./github-event-subjects');
+    const s = parseIssueSubject(ctx.validation);
+    if (!s) return inconclusive('no-issue-subject', { validation: ctx.validation });
+    const token = ghToken(ctx.profileId);
+    if (!token) return inconclusive('no-github-token', { subject: issueKey(s) });
+    let pr;
+    try { pr = await ghFetch(`https://api.github.com/repos/${s.owner}/${s.repo}/pulls/${s.number}`, token); }
+    catch (e) { return inconclusive('github-unreachable', { error: e.message, subject: issueKey(s) }); }
+    if (!pr) return inconclusive('pr-not-found', { subject: issueKey(s) });
+    const subject = { issue: issueKey(s), merged: pr.merged === true };
+    if (pr.merged === true) return { status: 'pass', subject, evidence: { merged_at: pr.merged_at || null, merge_commit_sha: pr.merge_commit_sha || null } };
+    // Closed-unmerged will never merge — final, so the wait wakes at once instead
+    // of polling to its deadline (same rule as makeMergedValidator).
+    const final = pr.state === 'closed';
+    return { status: 'fail', subject, evidence: { state: pr.state || null, ...(final ? { final: true, reason: 'pr-closed-unmerged' } : {}) } };
+  };
+}
+
+/** CI on the PR head of issue subject "owner/repo#N". */
+function makeIssuePrCiGreenValidator({ ghToken, ghFetch }) {
+  return async function issuePrCiGreen(ctx) {
+    const { parseIssueSubject, issueKey } = require('./github-event-subjects');
+    const s = parseIssueSubject(ctx.validation);
+    if (!s) return inconclusive('no-issue-subject', { validation: ctx.validation });
+    const token = ghToken(ctx.profileId);
+    if (!token) return inconclusive('no-github-token', { subject: issueKey(s) });
+    let pr;
+    try { pr = await ghFetch(`https://api.github.com/repos/${s.owner}/${s.repo}/pulls/${s.number}`, token); }
+    catch (e) { return inconclusive('github-unreachable', { error: e.message, subject: issueKey(s) }); }
+    if (!pr || !pr.head || !pr.head.sha) return inconclusive('no-head-sha', { subject: issueKey(s) });
+    const subject = { issue: issueKey(s), sha: pr.head.sha };
+    let checks;
+    try { checks = await ghFetch(`https://api.github.com/repos/${s.owner}/${s.repo}/commits/${pr.head.sha}/check-runs`, token); }
+    catch (e) { return inconclusive('github-unreachable', { error: e.message, subject: issueKey(s) }); }
+    let runs = (checks && checks.check_runs) || [];
+    let source = 'check-runs';
+    if (!runs.length) {
+      let actions = null;
+      try { actions = await ghFetch(`https://api.github.com/repos/${s.owner}/${s.repo}/actions/runs?head_sha=${pr.head.sha}&per_page=50`, token); }
+      catch { /* keep the check-runs verdict */ }
+      runs = ((actions && actions.workflow_runs) || []).map(r => ({ name: r.name, status: r.status, conclusion: r.conclusion }));
+      source = 'actions-runs';
+    }
+    if (!runs.length) return inconclusive('no-check-runs', { subject: issueKey(s), sha: pr.head.sha });
+    const green = checkRunsGreen(runs);
+    const evidence = { source, checks: runs.map(r => ({ name: r.name, status: r.status, conclusion: r.conclusion })) };
+    if (green === true) return { status: 'pass', subject, evidence };
+    if (green === false) {
+      const anyRunning = runs.some(r => r.status !== 'completed');
+      return { status: 'fail', subject, evidence: { ...evidence, ...(anyRunning ? {} : { final: true }) } };
+    }
+    return inconclusive('no-green-evidence', { subject: issueKey(s), ...evidence });
+  };
+}
+
+/** A workflow run by run subject "owner/repo/actions/runs/<id>" (or {repo, run_id}). */
+function makeWorkflowRunCompletedValidator({ ghToken, ghFetch, green = false }) {
+  return async function workflowRunValidator(ctx) {
+    const { parseRunSubject, runKey } = require('./github-event-subjects');
+    const s = parseRunSubject(ctx.validation);
+    if (!s) return inconclusive('no-run-subject', { validation: ctx.validation });
+    if (!s.owner || !s.repo) return inconclusive('no-repo-in-subject', { run_id: s.runId });
+    const token = ghToken(ctx.profileId);
+    if (!token) return inconclusive('no-github-token', { run_id: s.runId });
+    let run;
+    try { run = await ghFetch(`https://api.github.com/repos/${s.owner}/${s.repo}/actions/runs/${s.runId}`, token); }
+    catch (e) { return inconclusive('github-unreachable', { error: e.message, run_id: s.runId }); }
+    if (!run) return inconclusive('run-not-found', { run_id: s.runId });
+    const subject = { run: runKey(s), url: run.html_url || null };
+    const evidence = { status: run.status || null, conclusion: run.conclusion || null };
+    if (run.status !== 'completed') return inconclusive('run-not-finished', { ...subject, ...evidence });
+    if (!green) return { status: 'pass', subject, evidence };
+    if (run.conclusion === 'success') return { status: 'pass', subject, evidence };
+    return { status: 'fail', subject, evidence: { ...evidence, final: true } };
+  };
+}
+
+/** A workflow job by job subject "…/actions/runs/<id>/jobs/<jobId>". */
+function makeWorkflowJobCompletedValidator({ ghToken, ghFetch }) {
+  return async function workflowJobValidator(ctx) {
+    const { parseJobSubject, jobKey } = require('./github-event-subjects');
+    const s = parseJobSubject(ctx.validation);
+    if (!s) return inconclusive('no-job-subject', { validation: ctx.validation });
+    if (!s.owner || !s.repo) return inconclusive('no-repo-in-subject', { job_id: s.jobId });
+    const token = ghToken(ctx.profileId);
+    if (!token) return inconclusive('no-github-token', { job_id: s.jobId });
+    let job;
+    try { job = await ghFetch(`https://api.github.com/repos/${s.owner}/${s.repo}/actions/jobs/${s.jobId}`, token); }
+    catch (e) { return inconclusive('github-unreachable', { error: e.message, job_id: s.jobId }); }
+    if (!job) return inconclusive('job-not-found', { job_id: s.jobId });
+    const subject = { job: s.runId ? jobKey({ ...s, runId: s.runId }) : `${s.owner}/${s.repo}/actions/jobs/${s.jobId}`, url: job.html_url || null };
+    const evidence = { status: job.status || null, conclusion: job.conclusion || null };
+    if (job.status !== 'completed') return inconclusive('job-not-finished', { ...subject, ...evidence });
+    return { status: 'pass', subject, evidence };
+  };
+}
+
 // ── pr_opened (P3d follow-up, #1449) ────────────────────────────────────────
 // Deterministic "a PR exists" check, so the engineering playbook's "Open PR"
 // step no longer needs an LLM. Resolution, in order:
@@ -692,6 +801,12 @@ const VALIDATOR_NOTES = {
   http_ok: 'URL отвечает 2xx (и содержит подстроку, если задана)',
   task_done: 'другой durable-план завершён',
   fanout_joined: 'все элементы пачки завершены или пропущены',
+  // #1846 — событийные ожидания (тема = внешний GitHub-объект).
+  issue_pr_merged: 'PR по issues-субъекту «owner/repo#N» смержен',
+  issue_pr_ci_green: 'CI по PR «owner/repo#N» зелёный',
+  workflow_run_completed: 'прогон Actions «owner/repo/actions/runs/<id>» завершён',
+  workflow_run_green: 'прогон Actions «owner/repo/actions/runs/<id>» зелёный',
+  workflow_job_completed: 'job «…/actions/runs/<id>/jobs/<jobId>» завершён',
 };
 
 /**
@@ -726,6 +841,13 @@ function createDefaultRegistry({ ghToken = defaultGhToken, ghFetch = defaultGhFe
     task_done: makeTaskDoneValidator({ getTask }),
     // #1752: a fanout step is joined — every element of the batch done or skipped.
     fanout_joined: require('./playbook-fanout').makeFanoutJoinedValidator(),
+    // #1846: event subjects — paired with the GitHub webhook wake path; the
+    // validator is still the verdict (poll is the fallback when a hook is lost).
+    issue_pr_merged: makeIssuePrMergedValidator({ ghToken, ghFetch }),
+    issue_pr_ci_green: makeIssuePrCiGreenValidator({ ghToken, ghFetch }),
+    workflow_run_completed: makeWorkflowRunCompletedValidator({ ghToken, ghFetch }),
+    workflow_run_green: makeWorkflowRunCompletedValidator({ ghToken, ghFetch, green: true }),
+    workflow_job_completed: makeWorkflowJobCompletedValidator({ ghToken, ghFetch }),
   };
 }
 
@@ -810,6 +932,8 @@ module.exports = {
   evaluateItemValidationsModeAware, resolveValidationMode,
   parseValidation, collectDocExcerpts, buildLlmValidatorPrompt, makeLlmValidate, getDefaultLlmValidate,
   makePrOpenedValidator, defaultGitInfo, gitRemoteRepo, extractPrRef, checkRunsGreen,
+  makeIssuePrMergedValidator, makeIssuePrCiGreenValidator,
+  makeWorkflowRunCompletedValidator, makeWorkflowJobCompletedValidator,
   credentialPresent, makeHttpOkValidator, makeTaskDoneValidator,
   VALIDATOR_NOTES, listValidatorCatalog,
   PR_REF_RE, DEFAULT_COMMAND_TIMEOUT_MS,
