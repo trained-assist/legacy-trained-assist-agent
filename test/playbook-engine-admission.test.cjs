@@ -41,7 +41,25 @@ test('a suspended Claude degrades doctor to the level map fallback, never to a d
   const r = exec.resolveStepExecution(ITEM, { levelMap: DEFAULT_LEVEL_MAP });
   assert.notEqual(r.engine, 'claude', 'doctor still targets a suspended engine');
   assert.equal(r.engine, 'codex', 'expected the level map first fallback');
-  assert.ok(Array.isArray(r.fallbacks) && r.fallbacks.length > 0, 'the substitute needs a rung below it');
+  // The rung COUNT stays exactly what the level map declares — durable-recovery treats «no
+  // fallbacks» as terminal, and reviewer@doctor is asserted as [codex → opencode doctor] exactly.
+  const declared = DEFAULT_LEVEL_MAP.doctor.fallback;
+  assert.equal(r.fallbacks.length, declared.length - 1, 'the promoted rung left the list — count must not grow');
+  assert.deepEqual(r.fallbacks, declared.slice(1).map((fb) => ({
+    engine: fb.engine,
+    ocProfile: fb.engine === 'opencode' ? fb.ocProfile : null,
+    ocRole: fb.engine === 'opencode' ? 'build' : null,
+  })));
+});
+
+test('a level whose every rung is inadmissible keeps its original shape: no fallbacks', () => {
+  const { flag, exec } = fresh();
+  flag.suspendAuthFailedFlag({ reason: 'AUTH_INVALID', error_text: 'x', engine: 'claude' });
+  const onlyClaude = { doctor: { engine: 'claude' } };
+  const r = exec.resolveStepExecution(ITEM, { levelMap: onlyClaude });
+  assert.equal(r.engine, 'opencode');
+  // Adding a rung here would turn every terminal engine failure into an endless re-pend.
+  assert.deepEqual(r.fallbacks, []);
 });
 
 test('every rung below stays free of claude while it is suspended', () => {
