@@ -143,7 +143,13 @@ module.exports = {
         'acceptance_criteria) this is a legal self-edit of the plan: pass the full step contract ' +
         '(execution_kind, executor_role, minimum_model_level, context_budget, validation, instructions) and ' +
         'after_item_id = the step that should precede it (usually your own Step id) — it then runs right after ' +
-        'that step and routes by the plan level map like any compiled step. Legacy tasks: title + tier only.',
+        'that step and routes by the plan level map like any compiled step. ' +
+        '`already_done` = a FAST SKIP: deterministic validator keys checked BEFORE any model run; if they all ' +
+        'pass the step is closed as already satisfied (evidence {already_done:true}, 0 model runs) and the plan ' +
+        'moves on. Use it when a continuation step ("продолжение", "остаток") would otherwise re-derive work ' +
+        'that already holds — e.g. {already_done: {merged: "<PR url>"}}, {file_exists: "path"}, ' +
+        '{credential_present: "<service>"}, {http_ok: {"url": …}}, {ci_green: "<PR url>"}, ' +
+        '{task_done: "<task id>"}. Legacy tasks: title + tier only.',
       inputSchema: {
         type: 'object',
         required: ['task_id', 'title'],
@@ -156,6 +162,7 @@ module.exports = {
           minimum_model_level: { type: 'string', enum: ['bachelor', 'master', 'doctor'] },
           context_budget: { type: 'string', enum: ['small', 'medium', 'large'] },
           validation: { type: 'object', description: 'Contract plan: non-empty validation of the new step' },
+          already_done: { type: 'object', description: 'Fast skip: deterministic validator keys; all pass → step closed as already done, 0 model runs' },
           instructions: { type: 'string' },
           stage: { type: 'string' },
           position: { type: 'number', description: 'Legacy: order among siblings (default: append)' },
@@ -167,6 +174,15 @@ module.exports = {
         const profileId = requireProfile(ctx);
         const task = store().getTask(task_id, profileId);
         if (!task) return { error: 'task not found (or not owned by this profile)' };
+        // A key with no deterministic validator could never pass, so the step
+        // would run a model and then fail its own pre-check forever — reject it
+        // now, at authoring (same rule the playbook compiler applies).
+        if (contract.already_done != null) {
+          const unknown = Object.keys(contract.already_done).filter(k => !Object.keys(require('../../playbook-validators').getDefaultRegistry()).includes(k));
+          if (unknown.length) {
+            return { error: `already_done needs deterministic validators, unknown: ${unknown.join(', ')}. Known: ${Object.keys(require('../../playbook-validators').getDefaultRegistry()).join(', ')}` };
+          }
+        }
         if (task.acceptance_criteria_json) {
           try {
             const item = store().insertPlanItem(task_id, profileId, {
@@ -176,6 +192,7 @@ module.exports = {
                 execution_kind: contract.execution_kind || 'agent', executor_role: contract.executor_role ?? null,
                 minimum_model_level: contract.minimum_model_level ?? null, context_budget: contract.context_budget ?? null,
                 validation: contract.validation, delay_after_sec: delay_after_sec || 0,
+                already_done: contract.already_done ?? null,
               },
             });
             return { item };
@@ -355,9 +372,28 @@ module.exports = {
           return { error: `task_item_wait parks the step that is running now (status=${item.status})` };
         }
         const { normalizeAgentWait } = require('../../durable-wait');
-        const { getDefaultRegistry } = require('../../playbook-validators');
+        const { getDefaultRegistry, evaluateItemValidations } = require('../../playbook-validators');
         const { wait, error } = normalizeAgentWait(req, { now: Date.now(), registryKeys: Object.keys(getDefaultRegistry()) });
         if (error) return { error };
+        // Preflight the condition ONCE before parking. A condition the wait
+        // environment can never satisfy (gh/curl/git without credentials, a
+        // command that does not exist) would otherwise park silently and
+        // re-park until the deadline, stalling the step and every parent
+        // waiting on it. Refuse the park and say what to use instead.
+        if (wait.until && Object.keys(wait.until).length) {
+          let preflight = null;
+          try {
+            preflight = await evaluateItemValidations({ validation: wait.until, title: item.title }, { task, profileId });
+          } catch { preflight = null; }
+          const fatal = (preflight || []).find(r => r.status === 'fail' && r.evidence && r.evidence.final === true);
+          if (fatal) {
+            return {
+              error: `until.${fatal.key} is not satisfiable in the wait environment — parking on it would hang the step forever: ${fatal.evidence.hint}`,
+              evidence: fatal.evidence,
+              fix: 'use a validator the engine runs with its own credentials (issue_pr_merged / issue_pr_ci_green / merged / ci_green / workflow_run_*), or awaiting_user: true.',
+            };
+          }
+        }
         s.setItemWait(item_id, profileId, wait);
         return {
           ok: true,
