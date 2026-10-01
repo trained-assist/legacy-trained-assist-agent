@@ -18,12 +18,13 @@ const task = (over = {}) => ({ taskId: `t-${over.username || 'alice'}-1`, userna
 // A harness whose setTimeout is DEFERRED (queued, not run) so tests can control exactly when a
 // backoff delay "elapses" relative to a second simulated restart — the real bug this guards
 // against only shows up when the delayed resume hasn't fired yet and another restart happens.
-function deferredHarness({ pending, now = Date.now(), retryDelayMs = () => 50, startError = null }) {
+function deferredHarness({ admission = {}, pending, now = Date.now(), retryDelayMs = () => 50, startError = null }) {
   const start = serverSrc.indexOf('const RESUME_WINDOW_MS');
   const end = serverSrc.indexOf('async function main()', start);
   const calls = [], runs = [], cleared = [], timers = [];
   const journal = pending.slice(); // mutable — mirrors the on-disk pending-tasks file
   const sandbox = {
+    ...require('./helpers/resume-admission.cjs')(admission),
     taskDelivery: require('../src/bot-delivery').taskDelivery,
     path, console: { log() {}, error() {}, warn() {} }, Date: class extends Date { static now() { return now; } },
     BASE_USERS_DIR: '/users', AbortSignal, Promise,
