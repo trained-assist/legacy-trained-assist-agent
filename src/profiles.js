@@ -53,7 +53,7 @@ function setEngine(workDir, engine, chatId) {
   return clean;
 }
 
-// Which OpenCode model profile (deepseek|doctor|free|max|value|russian — each mapped to an
+// Which OpenCode model profile (deepseek|doctor|free|max|value|russian|research — each mapped to an
 // llm-ladder worker ladder, see src/opencode-ladder-provider.js, issue #1687) this profile's
 // opencode tasks use. Profile-scoped only
 // (no per-chat level, unlike getEngine) — simplest fix that still satisfies "never shared across

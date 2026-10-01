@@ -105,6 +105,33 @@ if (!ruActual) {
   }
 }
 
+// Validate the manual-deploy workflow against ci.yml: both write /home/vova/secrets.env on
+// the same VMs, so a printf that drifted there silently DELETES keys on every Manual Deploy.
+// Incident 2026-10-01: deploy-manual.yml still had the pre-#1695 key list — a Manual Deploy
+// dropped CHECKLIST_API_KEY and both OPENCODE_GO_API_KEY(S) from prod while CI stayed green.
+console.log('\n[deploy-manual.yml vs ci.yml]');
+const manualYmlPath = path.join(ROOT, '.github/workflows/deploy-manual.yml');
+if (!fs.existsSync(manualYmlPath)) {
+  ok('no deploy-manual.yml — nothing to drift');
+} else {
+  const manualYml = fs.readFileSync(manualYmlPath, 'utf8');
+  const pairs = [['GCP VM secrets.env', 'Deploy to GCP VM'], ['RU VM secrets.env', 'Deploy to RU VM']];
+  for (const [label, marker] of pairs) {
+    const manual = extractPrintfKeys(manualYml, marker);
+    const ci = extractPrintfKeys(ciYml, marker);
+    if (!manual) { fail(`Could not find "${marker}" block in deploy-manual.yml`); continue; }
+    if (!ci) continue; // already reported above
+    const missing = ci.filter(k => !manual.includes(k));
+    const extra = manual.filter(k => !ci.includes(k));
+    if (missing.length === 0 && extra.length === 0) {
+      ok(`${label} printf matches ci.yml (${manual.length} keys)`);
+    } else {
+      if (missing.length) fail(`Keys in ci.yml but missing from deploy-manual.yml ${label} printf: ${missing.join(', ')}`);
+      if (extra.length)   fail(`Keys in deploy-manual.yml ${label} printf but not in ci.yml: ${extra.join(', ')}`);
+    }
+  }
+}
+
 // Validate secrets.js alignment:
 // Every key in secrets.js REQUIRED+OPTIONAL must appear in manifest (either github_actions_secrets or gcp_secret_manager_only).
 // The manifest may have extra keys that bypass secrets.js (INN_* vars) — that is expected and not flagged.

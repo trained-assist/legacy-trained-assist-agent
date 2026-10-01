@@ -26,7 +26,7 @@ If the worker is unreachable, the run fails with `worker_unreachable`; if every 
 | `max` | `doctor` | the old "strongest Go models" ladder |
 | `value` | `deepseek` | the old cheap OpenRouter/GigaChat ladder |
 | `russian` | `deepseek` | GigaChat ladder dropped; keeps its strict Russian reviewer prompt |
-| `research` | — | `hermes_research`: pinned `opencode-go/mimo-v2.6-flash` (Go subscription, no ladder, no fallback — the `search` ladder is the last item on checklist.md) |
+| `research` | `research` | `hermes_research`: worker ladder, Go-first + paid tail (llm-ladder #28); was a flat `opencode-go` pin until the 2026-10-01 weekly-cap incident |
 
 Switch: `/oc_<profile>` in Telegram (per profile, `src/runner/intent-engine.js`), or
 `./infra/opencode-switch-profile.sh <profile>` / `OPENCODE_PROFILE` for the machine baseline.
