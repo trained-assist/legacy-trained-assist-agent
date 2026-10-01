@@ -10,7 +10,10 @@ const crypto = require('crypto');
 const { validateItem, declaredValidations, criterionIdForItem } = require('./durable-task-plan');
 const { atomicText } = require('./atomic-json');
 
-const TASK_STATUSES = ['draft', 'paused', 'blocked', 'active', 'done', 'failed', 'cancelled'];
+const TASK_STATUSES = ['draft', 'paused', 'blocked', 'active', 'awaiting_input', 'done', 'failed', 'cancelled'];
+// Alive = the plan still runs (claimable / visible in notices). `awaiting_input`
+// is alive too — it only says a step of it is parked on the owner (#87 B1.4).
+const TASK_STATUSES_ALIVE = ['active', 'awaiting_input'];
 const ITEM_STATUSES = ['pending', 'running', 'waiting', 'done', 'failed', 'skipped'];
 const ITEM_STATUSES_TERMINAL = ['done', 'failed', 'skipped'];
 const TIERS = ['free', 'standard', 'strong'];
@@ -57,7 +60,7 @@ class DurableTaskStore {
         project_id  TEXT,
         goal        TEXT NOT NULL,
         status      TEXT NOT NULL DEFAULT 'active'
-                    CHECK (status IN ('active','done','failed','cancelled')),
+                    CHECK (status IN ('draft','active','awaiting_input','paused','blocked','done','failed','cancelled')),
         created_at  INTEGER NOT NULL,
         updated_at  INTEGER NOT NULL,
         revision    INTEGER NOT NULL DEFAULT 0
@@ -125,11 +128,14 @@ class DurableTaskStore {
     if (!profile_id) throw new Error('profile_id is required (ownership/isolation)');
     if (!goal) throw new Error('goal is required');
     const ts = nowMs();
-    this._prep(`INSERT INTO durable_tasks
-        (id, profile_id, project_id, goal, status, created_at, updated_at, revision)
-        VALUES (?, ?, ?, ?, 'active', ?, ?, 0)`)
-      .run(id, profile_id, project_id, goal, ts, ts);
-    return this.getTask(id, profile_id);
+    return this.db.transaction(() => {
+      this._prep(`INSERT INTO durable_tasks
+          (id, profile_id, project_id, goal, status, created_at, updated_at, revision)
+          VALUES (?, ?, ?, ?, 'active', ?, ?, 0)`)
+        .run(id, profile_id, project_id, goal, ts, ts);
+      this.recordEvent({ task_id: id, type: 'task_created', payload: { goal: String(goal).slice(0, 200) } });
+      return this.getTask(id, profile_id);
+    })();
   }
 
   /** Persist the complete planner contract in one transaction. No execution. */
@@ -224,6 +230,8 @@ class DurableTaskStore {
       const task = this.getTask(item.task_id, profileId);
       this._prep(`UPDATE task_items SET status = 'skipped', last_error = ?, updated_at = ? WHERE id = ?`)
         .run(`skipped: ${reason.trim()}`.slice(0, 500), nowMs(), itemId);
+      this.recordEvent({ task_id: item.task_id, task_item_id: itemId, type: 'item_skipped',
+        payload: { reason: reason.trim().slice(0, 300), by } });
       this._prep('DELETE FROM task_signals WHERE task_item_id = ? AND consumed_at IS NULL').run(itemId);
       let validation = {};
       try { validation = item.validation_json ? JSON.parse(item.validation_json) : {}; } catch { /* none */ }
@@ -249,7 +257,8 @@ class DurableTaskStore {
   listTasks(profileId, { status } = {}) {
     let sql = 'SELECT * FROM durable_tasks WHERE profile_id = ?';
     const args = [profileId];
-    if (status) { sql += ' AND status = ?'; args.push(status); }
+    if (Array.isArray(status)) { sql += ` AND status IN (${status.map(() => '?').join(',')})`; args.push(...status); }
+    else if (status) { sql += ' AND status = ?'; args.push(status); }
     sql += ' ORDER BY created_at DESC';
     return this._prep(sql).all(...args);
   }
@@ -282,9 +291,21 @@ class DurableTaskStore {
     if (!sets.length) return this.getTask(id, profileId);
     sets.push('updated_at = ?', 'revision = revision + 1');
     args.push(nowMs(), id, profileId);
-    const res = this._prep(`UPDATE durable_tasks SET ${sets.join(', ')}
-      WHERE id = ? AND profile_id = ?`).run(...args);
-    if (res.changes === 0) return null;
+    const changedStatus = 'status' in patch && patch.status !== task.status;
+    const from = task.status;
+    const res = this.db.transaction(() => {
+      const r = this._prep(`UPDATE durable_tasks SET ${sets.join(', ')}
+        WHERE id = ? AND profile_id = ?`).run(...args);
+      if (r.changes === 0) return null;
+      if (changedStatus) {
+        this.recordEvent({ task_id: id, type: 'task_status', payload: { from, to: patch.status, by: 'api' } });
+      }
+      return r;
+    })();
+    if (res == null) return null;
+    // A status set through the API must land in the right await state too
+    // (unpausing a plan whose step is still parked on the owner).
+    if (changedStatus && TASK_STATUSES_ALIVE.includes(patch.status)) this._refreshAwaitState(id);
     return this.getTask(id, profileId);
   }
 
@@ -348,6 +369,9 @@ class DurableTaskStore {
     this.db.transaction(() => {
       this._prep(`UPDATE durable_tasks SET status = 'done', updated_at = ?, revision = revision + 1
         WHERE id = ? AND profile_id = ?`).run(nowMs(), taskId, profileId);
+      // the one write path that bypasses updateTask — journal it like any other
+      // status change (#87 B1.4)
+      this.recordEvent({ task_id: taskId, type: 'task_status', payload: { from: task.status, to: 'done', by: 'finalize' } });
     })();
     return unconfirmed.length ? { finalized: true, unconfirmed } : { finalized: true };
   }
@@ -521,7 +545,7 @@ class DurableTaskStore {
     return this.db.transaction(() => {
       const row = this._prep(`SELECT i.* FROM task_items i
         JOIN durable_tasks t ON t.id = i.task_id
-        WHERE i.status IN ('pending','waiting') AND t.status = 'active'
+        WHERE i.status IN ('pending','waiting') AND t.status IN ('active','awaiting_input')
           AND (i.due_at IS NULL OR i.due_at <= ?)
           ${waitFilter}
           AND NOT EXISTS (
@@ -551,7 +575,7 @@ class DurableTaskStore {
   countActiveWaits() {
     const row = this._prep(`SELECT COUNT(*) AS n FROM task_items i
       JOIN durable_tasks t ON t.id = i.task_id
-      WHERE t.status = 'active' AND i.status IN ('pending','waiting')
+      WHERE t.status IN ('active','awaiting_input') AND i.status IN ('pending','waiting')
         AND i.wait_json IS NOT NULL
         AND json_extract(i.wait_json, '$.resolved') IS NULL`).get();
     return row ? row.n : 0;
@@ -579,6 +603,7 @@ class DurableTaskStore {
       const upd = this._prep(`UPDATE task_items SET status = 'done', last_execution_id = ?,
           updated_at = ? WHERE id = ?${fence.clause}`).run(executionId, now, id, ...fence.args);
       if (upd.changes === 0) return null;
+      this.recordEvent({ task_id: item.task_id, task_item_id: id, type: 'item_done', payload: { execution_id: executionId } });
       // The step is over: a signal nobody parked for can never be consumed (#87 B1.2).
       this._prep('DELETE FROM task_signals WHERE task_item_id = ? AND consumed_at IS NULL').run(id);
       const next = this._prep(`SELECT * FROM task_items WHERE task_id = ? AND status = 'pending'
@@ -646,6 +671,11 @@ class DurableTaskStore {
         this._prep('UPDATE task_signals SET consumed_at = ? WHERE task_id = ? AND task_item_id = ?')
           .run(now, item.task_id, id);
       }
+      // wait_json overwrites its own history (parked → woken → resolved), so the
+      // journal is the only place the parked state survives (#87 B1.4).
+      this.recordEvent({ task_id: item.task_id, task_item_id: id, type: 'item_parked',
+        payload: { awaiting_user: !!(w && w.awaiting_user), reason: (w && w.reason) || null,
+          due_at: nextDue, woken: !!(w && w.woken_at), by_signal: !!pending } });
       this._bump(item.task_id);
       return this.getTaskItem(id);
     })();
@@ -653,11 +683,20 @@ class DurableTaskStore {
 
   /** Replace an item's wait state without changing its status (e.g. clear it after a wake). */
   setItemWait(id, profileId, wait, { claimGeneration = null } = {}) {
-    if (!this._itemOwnedBy(id, profileId)) return null;
+    const owned = this._itemOwnedBy(id, profileId);
+    if (!owned) return null;
     const fence = this._claimFence(claimGeneration);
+    let hadResolved = null;
+    try { const prev = owned.wait_json ? JSON.parse(owned.wait_json) : null; hadResolved = prev ? prev.resolved : null; } catch { hadResolved = null; }
     const res = this._prep(`UPDATE task_items SET wait_json = ?, updated_at = ? WHERE id = ?${fence.clause}`)
       .run(wait == null ? null : JSON.stringify(wait), nowMs(), id, ...fence.args);
     if (res.changes === 0) return null;
+    // A resolution is exactly what wait_json used to erase without a trace (#87 B1.4).
+    if (wait && wait.resolved && !hadResolved) {
+      this.recordEvent({ task_id: owned.task_id, task_item_id: id, type: 'wait_resolved',
+        payload: { resolved: wait.resolved, reason: wait.reason || null } });
+    }
+    this._refreshAwaitState(owned.task_id);
     return this.getTaskItem(id);
   }
 
@@ -689,12 +728,16 @@ class DurableTaskStore {
         const { signal, duplicate } = this.postSignal({
           task_id: item.task_id, task_item_id: id, payload, source: by, now,
         });
+        this.recordEvent({ task_id: item.task_id, task_item_id: id, type: 'item_woken',
+          payload: { by, buffered: true, duplicate, message: payload } });
         return { ok: true, buffered: true, duplicate, item: this.getTaskItem(id) };
       }
       let wait;
       try { wait = JSON.parse(item.wait_json); } catch { wait = {}; }
       if (wait.woken_at) {
         // T5: the FIRST answer wins — a second wake must not overwrite it.
+        this.recordEvent({ task_id: item.task_id, task_item_id: id, type: 'item_woken',
+          payload: { by, already_woken: true, message: payload } });
         return { ok: true, already_woken: true, item: this.getTaskItem(id) };
       }
       const { signal, duplicate } = this.postSignal({
@@ -706,6 +749,8 @@ class DurableTaskStore {
         .run(JSON.stringify(wait), now, now, id);
       this._prep('UPDATE task_signals SET consumed_at = ? WHERE task_id = ? AND task_item_id = ?')
         .run(now, item.task_id, id);
+      this.recordEvent({ task_id: item.task_id, task_item_id: id, type: 'item_woken',
+        payload: { by, buffered: false, duplicate, message: effective } });
       this._bump(item.task_id);
       return { item: this.getTaskItem(id), duplicate };
     })();
@@ -763,7 +808,7 @@ class DurableTaskStore {
   listItemsAwaitingUser(profileId) {
     return this._prep(`SELECT i.id, i.title, i.wait_json, t.goal, t.id AS task_id FROM task_items i
       JOIN durable_tasks t ON t.id = i.task_id
-      WHERE t.profile_id = ? AND t.status = 'active' AND i.status = 'waiting' AND i.wait_json IS NOT NULL
+      WHERE t.profile_id = ? AND t.status IN ('active','awaiting_input') AND i.status = 'waiting' AND i.wait_json IS NOT NULL
       ORDER BY i.updated_at DESC LIMIT 20`).all(profileId)
       .filter(row => { try { const w = JSON.parse(row.wait_json); return w.awaiting_user === true && !w.woken_at; } catch { return false; } });
   }
@@ -838,6 +883,8 @@ class DurableTaskStore {
           last_error = ?, updated_at = ? WHERE id = ?${fence.clause}`)
         .run(executionId, error, nowMs(), id, ...fence.args);
       if (upd.changes === 0) return null;
+      this.recordEvent({ task_id: item.task_id, task_item_id: id, type: 'item_failed',
+        payload: { execution_id: executionId, error: error == null ? null : String(error).slice(0, 300) } });
       this._bump(item.task_id);
       return this.getTaskItem(id);
     })();
@@ -864,6 +911,8 @@ class DurableTaskStore {
       if (task && (task.status === 'blocked' || task.status === 'failed')) {
         this._prep(`UPDATE durable_tasks SET status = 'active', updated_at = ?,
             revision = revision + 1 WHERE id = ?`).run(now, item.task_id);
+        this.recordEvent({ task_id: item.task_id, type: 'task_status',
+          payload: { from: task.status, to: 'active', by: 'retry' } });
       }
       this._bump(item.task_id);
       return this.getTaskItem(id);
@@ -904,6 +953,8 @@ class DurableTaskStore {
       };
       this._prep('UPDATE task_items SET result_json = ?, updated_at = ? WHERE id = ?')
         .run(JSON.stringify(payload), nowMs(), itemId);
+      this.recordEvent({ task_id: item.task_id, task_item_id: itemId, type: 'step_result',
+        payload: { status, note: payload.note, attempt: current } });
       return { ok: true, result: payload };
     })();
   }
@@ -1050,6 +1101,33 @@ class DurableTaskStore {
   _bump(taskId) {
     this._prep(`UPDATE durable_tasks SET revision = revision + 1, updated_at = ?
       WHERE id = ?`).run(nowMs(), taskId);
+    this._refreshAwaitState(taskId);
+  }
+
+  /**
+   * The task is `awaiting_input` while one of its steps is parked on the OWNER
+   * (an unresolved `awaiting_user` wait that nobody has woken yet) and `active`
+   * otherwise (#87 B1.4 — «статус должен стать явным состоянием»). Recomputed on
+   * every item mutation through `_bump`, the single choke point every store write
+   * already goes through, plus `setItemWait` (which does not bump).
+   * Never touches a non-alive status (draft/paused/blocked/terminal).
+   */
+  _refreshAwaitState(taskId) {
+    const t = this._prep('SELECT status FROM durable_tasks WHERE id = ?').get(taskId);
+    if (!t || !TASK_STATUSES_ALIVE.includes(t.status)) return;
+    const row = this._prep(`SELECT EXISTS(
+        SELECT 1 FROM task_items
+        WHERE task_id = ? AND status = 'waiting' AND wait_json IS NOT NULL
+          AND json_extract(wait_json, '$.awaiting_user') = 1
+          AND json_extract(wait_json, '$.resolved') IS NULL
+          AND json_extract(wait_json, '$.woken_at') IS NULL) AS awaiting`).get(taskId);
+    const want = row.awaiting ? 'awaiting_input' : 'active';
+    if (want === t.status) return;
+    this.db.transaction(() => {
+      this._prep(`UPDATE durable_tasks SET status = ?, updated_at = ?, revision = revision + 1
+        WHERE id = ? AND status IN ('active','awaiting_input')`).run(want, nowMs(), taskId);
+      this.recordEvent({ task_id: taskId, type: 'task_status', payload: { from: t.status, to: want } });
+    })();
   }
 
   // ── Sessions (many-to-many) ────────────────────────────────────────────
@@ -1081,10 +1159,10 @@ class DurableTaskStore {
   activeTaskForSession(profileId, sessionId) {
     return this._prep(`SELECT t.* FROM task_sessions s
       JOIN durable_tasks t ON t.id = s.task_id
-      WHERE s.profile_id = ? AND s.session_id = ? AND s.active = 1 AND t.status = 'active'
+      WHERE s.profile_id = ? AND s.session_id = ? AND s.active = 1 AND t.status IN ('active','awaiting_input')
       LIMIT 1`).get(profileId, sessionId)
       || this._prep(`SELECT * FROM durable_tasks
-      WHERE profile_id = ? AND origin_session_id = ? AND status = 'active'
+      WHERE profile_id = ? AND origin_session_id = ? AND status IN ('active','awaiting_input')
       ORDER BY created_at DESC LIMIT 1`).get(profileId, sessionId)
       || null;
   }
@@ -1152,6 +1230,31 @@ class DurableTaskStore {
     return this._prep('SELECT * FROM executions WHERE id = ?').get(id) || null;
   }
 
+  // ── Event journal (#87 B1.4) ──────────────────────────────────────────────
+  /**
+   * Append one journal row. Append-only — nothing ever rewrites a row (only the
+   * plan's ON DELETE CASCADE removes one) — and always inside the SAME
+   * transaction as the change it describes, so «status = колонка, history =
+   * события» can never disagree.
+   */
+  recordEvent({ task_id, task_item_id = null, type, payload = null }) {
+    if (!task_id) throw new Error('task_id is required');
+    if (!type) throw new Error('type is required');
+    this._prep(`INSERT INTO task_events (task_id, task_item_id, type, payload_json, created_at)
+        VALUES (?, ?, ?, ?, ?)`)
+      .run(task_id, task_item_id, type, payload == null ? null : JSON.stringify(payload), nowMs());
+    return true;
+  }
+
+  /** Journal of one plan, profile-scoped, newest first. */
+  listTaskEvents(taskId, profileId, { limit = 50 } = {}) {
+    const n = Math.max(1, Math.min(500, Number(limit) || 50));
+    return this._prep(`SELECT e.* FROM task_events e
+      JOIN durable_tasks t ON t.id = e.task_id
+      WHERE e.task_id = ? AND t.profile_id = ?
+      ORDER BY e.rowid DESC LIMIT ?`).all(taskId, profileId, n);
+  }
+
   // ── File projection ────────────────────────────────────────────────────
   /**
    * checklist.md is generated FROM the DB. Deleting the file never deletes the
@@ -1186,7 +1289,7 @@ class DurableTaskStore {
   /** Rebuild projections for all active tasks (startup catch-up). */
   rebuildProjections(projectDir, profileId) {
     const out = [];
-    for (const t of this.listTasks(profileId, { status: 'active' })) {
+    for (const t of this.listTasks(profileId, { status: TASK_STATUSES_ALIVE })) {
       const f = this.writeProjection(t.id, profileId, projectDir);
       if (f) out.push(f);
     }
@@ -1198,4 +1301,4 @@ class DurableTaskStore {
   }
 }
 
-module.exports = { DurableTaskStore, TASK_STATUSES, ITEM_STATUSES, TIERS, TIER_RANK, signalText };
+module.exports = { DurableTaskStore, TASK_STATUSES, TASK_STATUSES_ALIVE, ITEM_STATUSES, TIERS, TIER_RANK, signalText };
