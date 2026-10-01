@@ -156,15 +156,25 @@ test('простыня длиннее лимита не переписывает
 });
 
 // ── Wiring: сам шов «раннер → перехватчик» (module-level функция раннера) ─────
+// Каталог данных — ОДИН на файл и убирается в after(). Раньше тут был
+// mkdtempSync в os.tmpdir() на каждый вызов: боевой агент периодически обходит
+// свой tmp и находил эти каталоги (живой случай 2026-10-01 — «Permission denied»
+// в логе прод-сервиса от чужого теста). Не повторять: тестовые каталоги либо
+// не в tmp агента, либо удаляются за собой.
+const { mkdtempSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const PATH = require('node:path');
+
+const dataDir = mkdtempSync(PATH.join(tmpdir(), 'glyph-guard-data-'));
+
 function freshRunner() {
-  const os = require('node:os');
-  const fs = require('node:fs');
-  const path = require('node:path');
-  process.env.AGENT_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'glyph-wiring-'));
+  process.env.AGENT_DATA_DIR = dataDir;
   delete require.cache[require.resolve('../src/runner/index.js')];
   delete require.cache[require.resolve('../src/runner')];
   return require('../src/runner');
 }
+
+test.after(() => { try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* нечего убирать */ } });
 
 test('wiring: чистый ответ не трогаем вообще', async () => {
   const runner = freshRunner();
