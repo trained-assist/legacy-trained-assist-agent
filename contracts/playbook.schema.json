@@ -69,10 +69,15 @@
         "minimum_model_level": { "type": ["string", "null"], "enum": ["bachelor", "master", "doctor", null] },
         "context_budget": { "type": ["string", "null"], "enum": ["small", "medium", "large", null] },
         "validation": { "type": "object", "minProperties": 1 },
+        "already_done": {
+          "type": "object",
+          "minProperties": 1,
+          "description": "Deterministic pre-check (issue #1959): the engine evaluates these registry validators when the step is claimed, BEFORE any model run. All pass → the step is closed with an audit row (evidence {already_done:true}) and the next step is taken with zero model runs; not pass → the normal run. Keys are the same registry validators as `validation` (pr_opened, ci_green, file_exists, …)."
+        },
         "delay_after_sec": { "type": "integer", "minimum": 0 },
         "wait": {
           "type": "object",
-          "description": "Durable wait (programmatic steps only): poll this step's own validation every poll_every_sec, without spending attempts, until it passes or timeout_sec expires (then the step fails and on_fail/task_failed fire).",
+          "description": "Durable wait (programmatic steps only): poll this step's own validation every poll_every_sec, without spending attempts, until it passes. On timeout_sec the step does NOT fail — it escalates to the owner and keeps waiting (issue #1959); a validator may mark a fail as final to wake at once (e.g. a closed-unmerged PR).",
           "additionalProperties": false,
           "required": ["poll_every_sec", "timeout_sec"],
           "properties": {

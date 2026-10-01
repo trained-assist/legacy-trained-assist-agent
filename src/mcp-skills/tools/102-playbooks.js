@@ -16,6 +16,9 @@ const { createPlaybookAuthoring } = require('../../playbook-authoring');
 const { compilePlaybook } = require('../../playbook-compiler');
 const { suggestPlaybookForAudience } = require('../../audience-default-playbook');
 
+const fs = require('fs');
+const path = require('path');
+
 const authoring = createPlaybookAuthoring();
 
 let _batchStore = null;
@@ -101,6 +104,79 @@ const STEPS_HINT = 'steps — все шаги плана с enabled. Шаги, �
   'enabled:false, reason}], для уже созданного плана — task_item_skip(item_id, reason). protected=true (CI/staging/' +
   'мерж) не выключаются. Ожидания (wait) настраиваются в шаге: poll_every_sec/timeout_sec.';
 
+// ── Guide mode (#1887 п.1, #1894) ──────────────────────────────────────────
+// Which run mode applies — decided here, deterministically (owner decision 29.09), not by
+// a prompt rule. The open-guide scan and the session-plan lookup only run when they can
+// matter (no explicit mode, interactive Telegram).
+function chooseRunMode({ profileId, mode, activate, project_id }) {
+  const guide = require('../../playbook-guide');
+  const { currentRunIdentity } = require('../../run-identity');
+  const { userWorkDir } = require('../../data-paths');
+  const env = process.env;
+  const identity = currentRunIdentity(env);
+  const profileRoot = userWorkDir(profileId);
+  const probe = !mode && identity.interactive;
+  const openGuide = probe ? guide.findOpenGuide({ profileRoot, chatId: identity.chatId }) : null;
+  let sessionPlan = null;
+  if (probe && !openGuide) {
+    try { sessionPlan = batchStore().activeTaskForSession(profileId, identity.sessionId); } catch { /* fail-open */ }
+  }
+  let chosen;
+  try {
+    chosen = guide.resolveMode({
+      mode, activate, interactive: identity.interactive, guideDefault: guide.guideDefaultOn(env), openGuide, sessionPlan,
+    });
+  } catch (e) { throw playbookError(e.code || 'MODE_INVALID', e.message); }
+  if (openGuide && chosen.reason === 'foreground_busy') chosen.busy = { goal: openGuide.goal, checklist_path: openGuide.checklist_path };
+  if (chosen.mode !== 'guide') return chosen;
+  // The section lands in the project the session works in (runner cwd = projectDir, which
+  // GTD reads after the run). Never outside the profile: no project dir → background.
+  // Only a project folder (projects/<id>/project.json) or the profile root itself — a code
+  // worktree cwd (engineering-workspaces/…) must never get a checklist.md.
+  const dir = project_id ? path.join(profileRoot, 'projects', String(project_id)) : process.cwd();
+  const rel = path.relative(profileRoot, dir);
+  const parts = rel.split(path.sep);
+  const isProject = parts.length === 2 && parts[0] === 'projects' && fs.existsSync(path.join(dir, 'project.json'));
+  if (!(rel === '' || isProject)) {
+    if (chosen.reason === 'explicit') throw playbookError('GUIDE_NO_PROJECT', 'гайд пишет шаги в checklist.md проекта, а сессия не в папке проекта профиля — укажи project_id или mode:"background"');
+    return { mode: 'background', reason: 'no_project_dir' };
+  }
+  return { ...chosen, dir };
+}
+
+function runGuide({ profileId, playbook, compiled, off, chosen }) {
+  const guide = require('../../playbook-guide');
+  const { currentRunIdentity } = require('../../run-identity');
+  const identity = currentRunIdentity();
+  const file = path.join(chosen.dir, 'checklist.md');
+  const section = guide.renderGuideSection({
+    goal: compiled.goal, items: compiled.items, off, isProtected: isProtectedStep,
+    sessionId: identity.sessionId || 'unknown', chatId: identity.chatId || '0', playbook,
+  });
+  guide.appendGuideSection(file, section);
+  if (off.size) {
+    const { logDefect } = require('../../playbook-defects-log');
+    for (const [idx, reason] of off) {
+      logDefect({ profile_id: profileId, playbook: playbook.id, kind: 'skip', mode: 'guide',
+        step: compiled.items[idx].title, stage: compiled.items[idx].stage, reason });
+    }
+  }
+  return {
+    mode: 'guide',
+    mode_reason: chosen.reason,
+    playbook: { id: playbook.id, version: playbook.version, scope: playbook.scope, source: playbook.source },
+    summary: { stages: playbook.stages.length, items: compiled.items.length },
+    steps: compiled.items.map((it, i) => ({
+      n: i + 1, step: it.title, enabled: !off.has(i), validation: it.validation,
+      ...(isProtectedStep(it) ? { protected: true } : {}),
+    })),
+    steps_hint: STEPS_HINT,
+    checklist_path: file,
+    checklist_md: section,
+    guide_hint: guide.GUIDE_HINT,
+  };
+}
+
 module.exports = {
   tools: {
 
@@ -142,9 +218,10 @@ module.exports = {
         properties: {
           id: { type: 'string', description: 'Playbook id; omit to check all playbooks visible to the profile' },
           audience: { type: 'string', description: 'Also check that the id is the default for this audience' },
+          verbose: { type: 'boolean', description: 'Return every gate row (default: only non-pass rows + passed count)' },
         },
       },
-      handler: safe(async ({ id, audience } = {}, ctx) => {
+      handler: safe(async ({ id, audience, verbose } = {}, ctx) => {
         const profileId = requireUser(ctx);
         const { checkPlaybookReachability } = require('../../playbook-reachability');
         const resolved = readResolvedSkills(profileId);
@@ -155,7 +232,16 @@ module.exports = {
         return {
           ok: reports.every(r => r.ok),
           exposure_source: resolved ? `.skills-resolved.json (${resolved.at})` : 'computed from skills.json (no run record yet)',
-          reports: reports.map(r => ({ id: r.id, ok: r.ok, rows: r.rows })),
+          // Only the non-pass rows by default: a full 11-row report per playbook was
+          // collapsed by the input compressor («... 8 more items») — exactly hiding
+          // the failing gates. verbose=true returns every row.
+          reports: reports.map(r => ({
+            id: r.id, ok: r.ok,
+            ...(verbose ? { rows: r.rows } : {
+              passed: r.rows.filter(x => x.status === 'pass').length,
+              issues: r.rows.filter(x => x.status !== 'pass'),
+            }),
+          })),
         };
       }),
     },
@@ -253,7 +339,11 @@ module.exports = {
         'By default the result is a DRAFT plan — stored, not executed. Pass activate=true when the user has ALREADY agreed ' +
         'to do this task (asked for it, said «делай», pressed an action button): that agreement is the activation consent, ' +
         'so the plan is created and set active in one call — do not ask again. Editing the playbook later never mutates a ' +
-        'plan already pinned to its version. Repo/draft playbooks must be saved first (resolution sees saved playbooks only).',
+        'plan already pinned to its version. Repo/draft playbooks must be saved first (resolution sees saved playbooks only). ' +
+        'In a Telegram chat the DEFAULT is mode «guide» (#1887): no durable plan — the tool appends the steps as a ' +
+        'checklist.md section (Goal/Owner-session/Owner-chat/Mode: guide) and returns checklist_md; walk the steps in this ' +
+        'dialog and tick [x] as they are done, gates only on a green check. The response always carries mode/mode_reason: ' +
+        'background → the plan runs by itself, just tell the user it started.',
       inputSchema: {
         type: 'object',
         required: ['playbook_id', 'goal'],
@@ -274,11 +364,25 @@ module.exports = {
             description: 'Explicit consent to run external-effect hooks (notify/create_issue/publish) for this run. ' +
               'Without it those hooks are recorded as skipped and never fail the task.',
           },
+          escalate_to_doctor: {
+            type: 'boolean',
+            description: 'Quality escalation onto the doctor level (Claude): a cheap-model step that failed twice on ' +
+              'quality gets its third attempt on Claude. ON by default (owner 2026-10-01); pass false to keep a plan ' +
+              'on OpenCode only. Quota/provider exhaustion never falls back to Claude either way (#1899).',
+          },
           activate: {
             type: 'boolean',
             description: 'Create the plan already active (status=active) so the durable executor starts it. Use when the ' +
               'user has already agreed to the task; omit to leave a draft for the user to approve. Does NOT approve ' +
               'external-effect hooks — that stays approve_hooks.',
+          },
+          mode: {
+            type: 'string', enum: ['guide', 'background'],
+            description: 'Omit in the normal case — code decides. Telegram chat: «гайд» by default (no durable plan; the ' +
+              'steps are appended as a checklist.md section of this project and you walk them HERE, in this dialog), or ' +
+              'background if this chat already has an open guide. "background" only when the user explicitly asked «в фоне / ' +
+              'параллельно / сам доделай». Web and plan steps are always background. mode:"guide" with activate:true is a ' +
+              'MODE_CONFLICT error.',
           },
           project_id: { type: 'string', description: 'Optional project to bind the plan (and its checklist.md projection) to' },
           session_id: { type: 'string', description: 'Optional session to attach the plan to' },
@@ -299,12 +403,18 @@ module.exports = {
           },
         },
       },
-      handler: safe(async ({ playbook_id, goal, version, user_value, acceptance_criteria, vars, project_id, session_id, approve_hooks, activate, steps }, ctx) => {
+      handler: safe(async ({ playbook_id, goal, version, user_value, acceptance_criteria, vars, project_id, session_id, approve_hooks, escalate_to_doctor, activate, steps, mode }, ctx) => {
         const profileId = requireUser(ctx);
         const playbook = new PlaybookStore({ profileId }).get(playbook_id, version);
         if (!playbook) throw playbookError('PLAYBOOK_NOT_FOUND', `плейбук «${playbook_id}» не найден`);
         const compiled = compilePlaybook(playbook, { goal, vars, acceptance_criteria, user_value });
         const off = resolveStepToggles(compiled.items, steps);
+        const chosen = chooseRunMode({ profileId, mode, activate, project_id });
+        if (chosen.mode === 'guide') return runGuide({ profileId, playbook, compiled, off, chosen });
+        // A background plan started while this chat already runs something in the
+        // foreground must not attach to the live session: GTD skips a session with an
+        // active durable plan (#1719), which would silently stop driving the guide.
+        const detached = chosen.reason === 'foreground_busy' || chosen.reason === 'session_has_plan';
         // Persist through task_create so reference checks, the atomic SQLite
         // transaction and the checklist projection stay in one place.
         const { task_create } = require('./101-durable-tasks').tools;
@@ -314,11 +424,16 @@ module.exports = {
           acceptance_criteria: compiled.acceptance_criteria,
           items: compiled.items,
           hooks: compiled.hooks,
-          execution_policy: approve_hooks ? { hooks_approved: true } : undefined,
+          // Escalation is on by default (durable-recovery treats a missing flag as on);
+          // an explicit true/false is still recorded so the plan shows its choice.
+          execution_policy: (approve_hooks || typeof escalate_to_doctor === 'boolean') ? {
+            ...(approve_hooks ? { hooks_approved: true } : {}),
+            ...(typeof escalate_to_doctor === 'boolean' ? { quality_escalation_to_doctor: escalate_to_doctor } : {}),
+          } : undefined,
           playbook_id: playbook.id,
           playbook_version: playbook.version,
           project_id: project_id || undefined,
-          session_id: session_id || undefined,
+          session_id: (!detached && session_id) || undefined,
         }, ctx);
         // Activation goes through task_update — the same single write path the
         // user-driven «запускай» step uses — so no status write bypasses the store.
@@ -344,6 +459,9 @@ module.exports = {
         }
         const ordered = [...(items || [])].sort((a, b) => a.position - b.position);
         return {
+          mode: 'background',
+          mode_reason: chosen.reason,
+          ...(chosen.busy ? { busy: chosen.busy } : {}),
           task,
           items,
           steps: ordered.map((i, n) => ({
@@ -410,15 +528,12 @@ module.exports = {
         if (args.project_id && !projects.getProject(userWorkDir(profileId), args.project_id)) {
           throw playbookError('PROJECT_NOT_FOUND', `проект «${args.project_id}» не найден`);
         }
-        let owner = null;
-        const sid = args.session_id || process.env.AGENT_SESSION_ID || null;
-        if (sid) {
-          const sess = require('../../session-store').getSession(userWorkDir(profileId), sid);
-          const chatId = sess ? (sess.liveChatId ?? sess.ownerChatId) : null;
-          if (chatId != null) owner = { chatId, audience: sess.audience || 'default', threadId: sess.threadId || null };
-        }
+        // #1886: the batch (and every child) belongs to the launching session's chat.
+        const origin = require('./101-durable-tasks')._planOrigin(profileId, args.session_id);
+        const owner = origin.origin_chat;
         const res = fanout.createBatch(batchStore(), {
           profileId, playbook, elements, title: args.title || null, projectId: args.project_id || null, owner,
+          originSessionId: origin.session_id,
           skipStages: args.skip_stages || [], exclusiveStages: args.exclusive_stages || [],
           projectType: args.project_type || 'generic', projectMode: args.project_mode || 'per_item',
           concurrency: args.concurrency ?? null,

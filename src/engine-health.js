@@ -43,6 +43,31 @@ function unavailableAfter() {
   return Number.isFinite(n) && n >= 1 ? n : 3;
 }
 
+// Half-open circuit breaker. `unavailable` used to be terminal until a SUCCESSFUL call — but
+// every router (durable fallback ladder, chat fallback) skips an unavailable engine, so that
+// success never came: codex hit QUOTA on 2026-09-26 and stayed `unavailable` for days after its
+// quota had long reset, silently dropping the doctor ladder to claude → opencode. Now the
+// unavailable verdict EXPIRES: once the last failure is older than the cooldown, readers see
+// `degraded` + half_open:true, so the next routed call is a probe. A failed probe refreshes
+// last_failure_at (a new cooldown starts, no new operator alert — the stored row never left
+// `unavailable`); a successful one self-heals through markEngineSuccess. AUTH (credentials
+// really invalid) waits longer than quota/transient classes.
+function cooldownMs(failureClass) {
+  const env = failureClass === 'AUTH'
+    ? process.env.ENGINE_AUTH_COOLDOWN_SEC
+    : process.env.ENGINE_UNAVAILABLE_COOLDOWN_SEC;
+  const dflt = failureClass === 'AUTH' ? 6 * 3600 : 3600;
+  const n = parseInt(env || String(dflt), 10);
+  return (Number.isFinite(n) && n >= 0 ? n : dflt) * 1000;
+}
+
+function _effective(row, nowMs = Date.now()) {
+  if (!row || row.status !== 'unavailable' || !row.last_failure_at) return row;
+  const since = nowMs - Date.parse(row.last_failure_at);
+  if (!(since >= cooldownMs(row.last_failure_class))) return row;
+  return { ...row, status: 'degraded', half_open: true };
+}
+
 function normalizeEngine(engine) {
   return ENGINES.includes(engine) ? engine : 'claude';
 }
@@ -127,7 +152,7 @@ function markEngineFailure(engine, { failureClass, message, vm, at } = {}) {
   const prev = _row(eng);
   const consecutive = (prev.consecutive_failures || 0) + 1;
   const now = at || new Date().toISOString();
-  return _upsert({
+  const row = _upsert({
     engine: eng,
     vm: vm || VM_NAME,
     status: consecutive >= unavailableAfter() ? 'unavailable' : 'degraded',
@@ -138,6 +163,13 @@ function markEngineFailure(engine, { failureClass, message, vm, at } = {}) {
     consecutive_failures: consecutive,
     updated_at: now,
   });
+  // #1912: the degraded → unavailable TRANSITION alerts the operator once per
+  // outage (audit: codex sat `unavailable` (QUOTA) 5 days with no signal to anyone).
+  if (row && row.status === 'unavailable' && prev.status !== 'unavailable') {
+    try { require('./degrade-alert').engineUnavailable(eng, { message: message || cls }); }
+    catch { /* alerting must never break health bookkeeping */ }
+  }
+  return row;
 }
 
 // Self-heal: a successful authenticated engine call resets status to healthy and the failure
@@ -159,14 +191,15 @@ function markEngineSuccess(engine, { vm, at } = {}) {
   });
 }
 
-function getEngineHealth(engine) {
-  return _row(normalizeEngine(engine));
+// Readers get the EFFECTIVE status (half-open after cooldown); writers keep using the raw row.
+function getEngineHealth(engine, { now } = {}) {
+  return _effective(_row(normalizeEngine(engine)), now);
 }
 
 function getAllEngineHealth() {
   _open();
   const byEngine = Object.fromEntries(_stmts.all.all().map(r => [r.engine, r]));
-  return Object.fromEntries(ENGINES.map(e => [e, byEngine[e] || _defaultRow(e)]));
+  return Object.fromEntries(ENGINES.map(e => [e, _effective(byEngine[e] || _defaultRow(e))]));
 }
 
 function isCredentialInvalidClass(cls) {
@@ -182,6 +215,7 @@ module.exports = {
   ENGINES,
   HEALTH_RELEVANT,
   unavailableAfter,
+  cooldownMs,
   markEngineFailure,
   markEngineSuccess,
   getEngineHealth,

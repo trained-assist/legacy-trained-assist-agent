@@ -94,3 +94,36 @@ test('terminal (no-fallback) notice is class-aware too', () => {
   assert.doesNotMatch(engineAuthNotice('Codex', 'QUOTA'), /авторизац/i);
   assert.match(engineAuthNotice('OpenCode', 'AUTH'), /Авторизация OpenCode истекла/);
 });
+
+// Owner 2026-09-30: architect chain claude → codex → opencode.
+const { chatFallbackEngine, engineLabelOf } = require('../src/engine-crash-policy');
+
+test('claude falls back to codex while codex is usable', () => {
+  assert.equal(chatFallbackEngine('claude', { healthOf: () => ({ status: 'healthy' }) }), 'codex');
+  assert.equal(chatFallbackEngine('claude', { healthOf: () => ({ status: 'degraded', half_open: true }) }), 'codex');
+});
+
+test('claude skips an unavailable codex straight to opencode', () => {
+  assert.equal(chatFallbackEngine('claude', { healthOf: () => ({ status: 'unavailable' }) }), 'opencode');
+});
+
+test('codex (and anything else) falls back to opencode — never upward', () => {
+  assert.equal(chatFallbackEngine('codex', { healthOf: () => ({ status: 'healthy' }) }), 'opencode');
+  assert.equal(chatFallbackEngine('opencode', { healthOf: () => ({ status: 'healthy' }) }), 'opencode');
+});
+
+test('fallback notice names the real target engine', () => {
+  assert.match(engineFallbackNotice('Claude Code', 'QUOTA', engineLabelOf('codex')), /переключаюсь на Codex/);
+});
+
+// 2026-10-01: a revoked OAuth token on exit 1 used to be handled as a terminal quick crash OR
+// (worse, once the text reached the incomplete path) as a generic «код 1» retry — either way
+// the engine-fallback branch never saw it. The provider-unusable text must fall through.
+const CLAUDE_401 = 'Failed to authenticate. API Error: 401 OAuth access token has been revoked.';
+
+test('claude 401 (revoked token) falls through to the engine-fallback branch', () => {
+  assert.equal(isTerminalQuickCrash({
+    exitCode: 1, timedOut: false, outputLength: 0, hasResult: false,
+    engine: 'claude', engineFallbackDone: false, errorText: CLAUDE_401,
+  }), false);
+});

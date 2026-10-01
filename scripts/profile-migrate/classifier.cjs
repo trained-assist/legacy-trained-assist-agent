@@ -11,9 +11,16 @@
 // for the gitleaks report (in os.tmpdir, deleted afterwards). The mutating
 // half of the migration lives in runner.cjs and reuses THIS walk through the
 // `opts.onEntry` callback, so a plan can never drift from the classification:
-//   opts.onEntry({kind:'file'|'dir', rel, action, ruleIdx, size?, isSymlink?, isFile?})
+//   opts.onEntry({kind:'file'|'dir', rel, action, ruleIdx, size?, isSymlink?, isFile?, repoRoot?})
 // called once per directory entry (size only for files). Callback exceptions
 // propagate — they are a caller bug, not a classification error.
+//
+// `repoRoot` is the OUTERMOST ancestor directory (relative to the profile root)
+// that contains `.git`, or null outside a working copy — the same detection
+// `when: git-repo` uses, propagated from the walk without a second traversal.
+// M3 (phases/worktree.cjs) groups its plan by it: a working copy, not a file,
+// is the unit of that phase. It is '' (falsy) when the PROFILE ROOT itself is a
+// repo — a future M6 profile-as-repo is deliberately not an M3 worktree.
 //
 // Usage:
 //   node scripts/profile-migrate/classifier.cjs --profile <name> [flags]
@@ -40,7 +47,12 @@ const os = require('os');
 const { spawnSync } = require('child_process');
 
 const SCHEMA = 'profile-migrate/classifier@1';
-const ACTIONS = ['DELETE', 'ARCHIVE', 'MOVE', 'DEDUP', 'SYSTEM', 'KEEP'];
+// EXCLUDE (issue #1923, blocker B1 of #1808): the file stays on disk — never
+// deleted, archived or moved — but it never enters the git image (M6 .gitignore,
+// generator in scripts/profile-migrate/gitignore.cjs). No phase declares EXCLUDE
+// in its `actions`, so the runner's `actions.includes(e.action)` filter hands it
+// to nobody; it is only counted, as its own class, in classSummary / reports.
+const ACTIONS = ['DELETE', 'ARCHIVE', 'MOVE', 'DEDUP', 'SYSTEM', 'KEEP', 'EXCLUDE'];
 const UNKNOWN = 'UNKNOWN';
 const ALL_CLASSES = [...ACTIONS, UNKNOWN];
 const DEFAULT_CLEAN_LIST = path.join(__dirname, '..', '..', 'config', 'profile-clean-list.yaml');
@@ -275,7 +287,7 @@ function classifyProfile(profileRoot, opts = {}) {
     bucket.bytes += bytes;
   };
 
-  const walk = (relDir, parentIdx, inRepo) => {
+  const walk = (relDir, parentIdx, inRepo, parentRepoRoot) => {
     const absDir = relDir ? path.join(absRoot, relDir) : absRoot;
     let entries;
     try {
@@ -288,7 +300,13 @@ function classifyProfile(profileRoot, opts = {}) {
     // is a git working copy: everything inside it (including entries directly
     // at the repo root) classifies under the `when: git-repo` rule. Checked
     // from the already-read entry list — no extra syscall per directory.
-    const repoHere = inRepo || entries.some((e) => e.name === '.git');
+    const hasGit = entries.some((e) => e.name === '.git');
+    const repoHere = inRepo || hasGit;
+    // The OUTERMOST working-copy root for everything below here: an inner .git
+    // never overwrites an outer one (a nested repo is part of the outer copy's
+    // payload, see phases/worktree.cjs). '' = the profile root itself is a repo
+    // (falsy on purpose: M6's profile-as-repo is not an M3 worktree).
+    const repoRootHere = parentRepoRoot != null ? parentRepoRoot : (hasGit ? relDir : null);
     for (const entry of entries) {
       const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
@@ -296,8 +314,8 @@ function classifyProfile(profileRoot, opts = {}) {
         const idx = classifyIndex(rel, parentIdx, repoHere, rules);
         // -1 (UNKNOWN) must not poison the subtree: an unclassified directory
         // just means "no rule hit yet", so children start from scratch.
-        if (onEntry) onEntry({ kind: 'dir', rel, action: idx === -1 ? UNKNOWN : rules[idx].action, ruleIdx: idx });
-        walk(rel, idx === -1 ? Infinity : idx, repoHere);
+        if (onEntry) onEntry({ kind: 'dir', rel, action: idx === -1 ? UNKNOWN : rules[idx].action, ruleIdx: idx, repoRoot: repoRootHere });
+        walk(rel, idx === -1 ? Infinity : idx, repoHere, repoRootHere);
         continue;
       }
       let size = 0;
@@ -315,7 +333,7 @@ function classifyProfile(profileRoot, opts = {}) {
       stat.bytes += size;
       const idx = classifyIndex(rel, parentIdx, repoHere, rules);
       const action = idx === -1 ? UNKNOWN : rules[idx].action;
-      if (onEntry) onEntry({ kind: 'file', rel, action, ruleIdx: idx, size, isSymlink: entry.isSymbolicLink(), isFile: entry.isFile() });
+      if (onEntry) onEntry({ kind: 'file', rel, action, ruleIdx: idx, size, isSymlink: entry.isSymbolicLink(), isFile: entry.isFile(), repoRoot: repoRootHere });
       add(stat.classes[action], 1, size);
       if (idx !== -1) {
         add(stat.ruleHits[idx], 1, size);
@@ -338,7 +356,7 @@ function classifyProfile(profileRoot, opts = {}) {
     }
   };
 
-  walk('', Infinity, false);
+  walk('', Infinity, false, null);
 
   const unclassified = stat.classes[UNKNOWN];
   const pct = (n, d) => (d > 0 ? Math.round((n / d) * 10000) / 100 : 0);

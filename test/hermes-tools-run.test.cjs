@@ -20,7 +20,7 @@ const SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } } };
   ok(typeof hermesRunWithTools === 'function', 'hermesRunWithTools is exported as a function');
 
   const researchModel = require('../src/opencode-ladder-provider').buildOcProfileOverrides('research').agent.explore.model;
-  ok(researchModel === 'opencode-go/mimo-v2.6-flash', `research runs on OpenCode Go (got ${researchModel})`);
+  ok(researchModel === 'ladder/research:explore', `research rides the worker research ladder (got ${researchModel})`);
   process.env.HERMES_RESEARCH_ENGINE = 'claude';
   ok(process.env.HERMES_RESEARCH_ENGINE === 'claude', 'Claude rollback switch is available');
   delete process.env.HERMES_RESEARCH_ENGINE;

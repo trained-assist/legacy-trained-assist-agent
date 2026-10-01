@@ -34,8 +34,10 @@ const DEFAULT_LEVEL_MAP = Object.freeze({
   // health) or this step already failed on it with AUTH/CONFIG, the step runs on the
   // next rung of `fallback` instead of failing: claude → codex → opencode `doctor`
   // profile (owner 2026-09-28, #1689: Go MiMo first, then stronger models — not the
-  // cheapest `deepseek` tier; interim local copy of the llm-ladder worker's `doctor`
-  // ladder, keep in sync until #1687 lands). Default behaviour, overridable per plan / env.
+  // cheapest `deepseek` tier). This is the CROSS-ENGINE rung ladder and it is owned
+  // here; the model ladder INSIDE the opencode rung lives in the llm-ladder worker
+  // (#1687 landed — the earlier «interim local copy, keep in sync» note referred to
+  // that worker-side ladder, not to this table). Default, overridable per plan / env.
   doctor: { engine: 'claude', ocProfile: null, fallback: [
     { engine: 'codex', ocProfile: null },
     { engine: 'opencode', ocProfile: 'doctor' },
@@ -49,8 +51,26 @@ const ROLE_TO_OC = Object.freeze({
   reviewer: 'review',
   verifier: 'review',
 });
-const DEFAULT_ROLE_MAP = Object.freeze({
-  researcher: { engine: 'opencode', ocProfile: 'research', fallback: [{ engine: 'opencode', ocProfile: 'free' }] },
+// researcher used to be pinned to the `research` profile (OpenCode Go subscription, MiMo)
+// for playbook steps too. Owner 2026-10-01 incident: both Go keys hit the WEEKLY usage cap;
+// opencode then retries the 429 silently (no stdout) until the 5-min inactivity watchdog
+// kills it — every research step of every plan "timed out" and burned its attempts. A
+// flat-cap subscription is not a durable-step route: playbook researchers now go through
+// the llm-ladder like every other level (the worker owns provider failover). hermes_research
+// keeps its own Go pin (opencode-ladder-provider DIRECT_MODEL). Env PLAYBOOK_ROLE_MAP can
+// re-pin it.
+const DEFAULT_ROLE_MAP = Object.freeze({});
+
+// role × level routes that beat the plain level map. reviewer@doctor is the INDEPENDENT
+// review (owner 2026-09-30): the doctor builder runs on Claude, so the strongest review must
+// come «с другой стороны» — a different model family. Codex first, then the OpenCode doctor
+// profile; never Claude (a Claude review of Claude's work is not independent). Applies on the
+// normal rung only, like role overrides; a plan with its own level_map runs without role
+// routing (gtd-controller passes useRoleMap:false), so a pinned plan still owns every step.
+const DEFAULT_ROLE_LEVEL_MAP = Object.freeze({
+  reviewer: Object.freeze({
+    doctor: { engine: 'codex', ocProfile: null, fallback: [{ engine: 'opencode', ocProfile: 'doctor' }] },
+  }),
 });
 
 function loadLevelMap() {
@@ -112,21 +132,24 @@ function planLevelMap(policy) {
 // Quality escalation: the next level whose resolved engine/profile actually differs
 // from the current one (with bachelor and master on the same profile, a one-rung
 // bump would change nothing). null at the ceiling. Automatic escalation never lands on
-// Claude/Codex (owner requirement #1899: no paid insurance when cheap models fail) —
-// a step runs there only when its plan declares that level as its minimum.
-function nextDistinctLevel(item, levelMap) {
+// Claude/Codex unless allowPaid (owner requirement #1899: no paid insurance when cheap
+// models run OUT OF QUOTA). Since 2026-10-01 durable-recovery passes allowPaid for every
+// plan unless it sets execution_policy.quality_escalation_to_doctor=false (owner: «по
+// дефолту OpenCode, Claude на doctor и на эскалации» — опенкод облажался → Claude). The opt-in covers QUALITY failures only; quota /
+// provider exhaustion never reaches this function, so #1899 still holds there.
+function nextDistinctLevel(item, levelMap, { allowPaid = false } = {}) {
   const cur = resolveStepExecution(item, { levelMap, useRoleMap: false });
   const from = LEVELS.indexOf(cur.modelLevel);
   if (from < 0) return null;
   for (let i = from + 1; i < LEVELS.length; i++) {
     const r = resolveStepExecution({ ...item, current_model_level: LEVELS[i] }, { levelMap, useRoleMap: false });
-    if (r.engine !== 'opencode') return null;
+    if (r.engine !== 'opencode') return allowPaid ? LEVELS[i] : null;
     if (r.engine !== cur.engine || r.ocProfile !== cur.ocProfile) return LEVELS[i];
   }
   return null;
 }
 
-function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = null, roleMap = null, useRoleMap = true } = {}) {
+function resolveStepExecution(item = {}, { defaultEngine = null, levelMap = null, roleMap = null, useRoleMap = true } = {}) {
   const map = levelMap || loadLevelMap();
   const executionKind = item && item.execution_kind === 'programmatic' ? 'programmatic' : 'agent';
 
@@ -141,8 +164,18 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
     : LEVELS.includes(item.minimum_model_level) ? item.minimum_model_level
     : null;
 
+  // A step without a full contract (legacy task_create items, a playbook step that
+  // forgot role/level) runs on OpenCode at the master level (owner 2026-10-01: «по
+  // дефолту OpenCode, Claude только на doctor и эскалации»). Claude is reachable only
+  // through an explicit doctor level or quality escalation. `defaultEngine` still lets
+  // a caller pin the pre-2026-10 behaviour.
   if (!role || !level) {
-    return { executionKind, engine: defaultEngine, ocProfile: null, ocRole: null, skipModels: [], modelLevel: level, reason: 'no-contract' };
+    if (defaultEngine) {
+      return { executionKind, engine: defaultEngine, ocProfile: null, ocRole: null, skipModels: [], modelLevel: level, reason: 'no-contract' };
+    }
+    const r = resolveStepExecution({ ...item, executor_role: role || 'developer', minimum_model_level: level || 'master', current_model_level: level || 'master' },
+      { levelMap: map, roleMap, useRoleMap: false });
+    return { ...r, reason: 'no-contract' };
   }
 
   // A role override is intended for the normal rung only. Once durable recovery
@@ -150,9 +183,9 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
   const roleOverrides = { ...DEFAULT_ROLE_MAP, ...(roleMap || loadRoleMap()) };
   // A plan that pins its own routing (execution_policy.level_map, e.g. the playbook
   // e2e harness) owns every step's engine — role defaults don't override it.
-  const roleMapped = useRoleMap && item.current_model_level === item.minimum_model_level
-    ? roleOverrides[role]
-    : null;
+  const normalRung = useRoleMap && item.current_model_level === item.minimum_model_level;
+  const roleLevelMapped = normalRung ? (DEFAULT_ROLE_LEVEL_MAP[role] || {})[level] : null;
+  const roleMapped = roleLevelMapped || (normalRung ? roleOverrides[role] : null);
   const mapped = roleMapped || map[level] || DEFAULT_LEVEL_MAP[level];
   const ocRole = mapped.engine === 'opencode' ? (ROLE_TO_OC[role] || 'build') : null;
   const fbList = Array.isArray(mapped.fallback) ? mapped.fallback
@@ -175,4 +208,4 @@ function resolveStepExecution(item = {}, { defaultEngine = 'claude', levelMap = 
   };
 }
 
-module.exports = { resolveStepExecution, planLevelMap, nextDistinctLevel, DEFAULT_LEVEL_MAP, DEFAULT_ROLE_MAP, ROLE_TO_OC, LEVELS, ROLES, loadRoleMap };
+module.exports = { resolveStepExecution, planLevelMap, nextDistinctLevel, DEFAULT_LEVEL_MAP, DEFAULT_ROLE_MAP, DEFAULT_ROLE_LEVEL_MAP, ROLE_TO_OC, LEVELS, ROLES, loadRoleMap };

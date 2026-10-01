@@ -113,6 +113,30 @@ function decidePoll(wait, results, now) {
   return 'keep';
 }
 
+// A declared (then:'complete') wait that hits its deadline is NOT a step failure:
+// the external thing simply has not happened yet (a PR nobody merged, a deploy
+// still pending). Instead of resolving to 'timeout' and letting the step fail —
+// which spends the attempt budget on something the plan does not control
+// (issue #1959) — convert it into an owner wait that still polls the original
+// condition AND wakes on the owner's answer. `until` carries the original
+// condition, so a merge/deploy by the owner still completes the step without a
+// reply; the step stays parked (no attempts spent) and the owner is nudged.
+function escalateTimeout(wait, now, { until = null, timeoutSec = null } = {}) {
+  const sec = clampInt(timeoutSec ?? wait.timeout_sec, MIN_POLL_SEC, MAX_TIMEOUT_SEC, DEFAULT_TIMEOUT_SEC);
+  return {
+    then: 'rerun',
+    until: until && Object.keys(until).length ? until : (wait.until || null),
+    awaiting_user: true,
+    reason: wait.reason || 'внешнее условие не выполнено к сроку — нужно твоё действие',
+    poll_every_sec: clampInt(wait.poll_every_sec, MIN_POLL_SEC, MAX_TIMEOUT_SEC, DEFAULT_POLL_SEC),
+    timeout_sec: sec,
+    started_at: now,
+    deadline_at: now + sec * 1000,
+    escalated_at: now,
+    escalations: (Number(wait.escalations) || 0) + 1,
+  };
+}
+
 // When to look again: the next poll for a condition, otherwise the deadline
 // (a pure timer / user wait has nothing to poll — a wake moves due_at to now).
 function nextDueAt(wait, now) {
@@ -166,7 +190,7 @@ function resumeNote(wait, now = Date.now()) {
 module.exports = {
   DEFAULT_POLL_SEC, MIN_POLL_SEC, DEFAULT_TIMEOUT_SEC, MAX_TIMEOUT_SEC,
   parseWait, isActiveWait, startWait, normalizeAgentWait, decidePoll, nextDueAt,
-  summarizeResults, resumeNote,
+  escalateTimeout, summarizeResults, resumeNote,
 };
 
 // Chat-context notice: durable steps of this profile parked on a user answer.
@@ -174,12 +198,39 @@ module.exports = {
 // "вот ключ", "да, делаем вариант B" — wakes the right plan via task_item_wake
 // instead of being answered in isolation. '' when nothing is waiting (prompt
 // unchanged). `store` is injectable; production uses the GTD singleton.
-function buildAwaitingUserNotice(profileId, { store = null } = {}) {
+// #1886: with sessionId/chatId the notice is scoped to the plans this dialog owns —
+// a question of a plan started from another chat is not this chat's to answer.
+// Plans with no owner chat (legacy rows) stay visible everywhere, marked «(без чата)».
+// Without sessionId/chatId — every waiting plan of the profile (previous behaviour).
+function planScope(s, profileId, { sessionId = null, chatId = null } = {}) {
+  if (!sessionId && chatId == null) return () => ({ visible: true, orphan: false });
+  const { _resolvePlanOwner } = require('./gtd-controller');
+  const cache = new Map();
+  return (taskId) => {
+    if (cache.has(taskId)) return cache.get(taskId);
+    let verdict = { visible: true, orphan: false };
+    try {
+      const task = s.getTask(taskId, String(profileId));
+      if (task && !(sessionId && task.origin_session_id === sessionId)) {
+        const owner = _resolvePlanOwner(s, task);
+        if (!owner) verdict = { visible: true, orphan: true };
+        else verdict = { visible: chatId != null && String(owner.chatId) === String(chatId), orphan: false };
+      }
+    } catch { /* unreadable plan → show, like before */ }
+    cache.set(taskId, verdict);
+    return verdict;
+  };
+}
+
+function buildAwaitingUserNotice(profileId, { store = null, sessionId = null, chatId = null } = {}) {
   if (!profileId) return '';
   let rows;
+  let scope;
   try {
     const s = store || require('./gtd-controller').durableStore();
     rows = s.listItemsAwaitingUser(String(profileId));
+    scope = planScope(s, profileId, { sessionId, chatId });
+    rows = rows.filter(r => scope(r.task_id).visible);
   } catch { return ''; }
   // Batches waiting for the owner: one reply resumes every element — list the batch once
   // and hide its children's individual asks (N identical «нужен токен» lines otherwise).
@@ -187,8 +238,10 @@ function buildAwaitingUserNotice(profileId, { store = null } = {}) {
   try {
     const s = store || require('./gtd-controller').durableStore();
     batches = require('./playbook-fanout').listBatchesAwaitingOwner(s, profileId);
-    if (batches.length) {
-      const hidden = new Set(batches.flatMap(b => b.children));
+    const all = batches;
+    batches = batches.filter(b => scope(b.task_id).visible);
+    if (all.length) {
+      const hidden = new Set(all.flatMap(b => b.children));
       rows = (rows || []).filter(r => !hidden.has(r.task_id));
     }
   } catch { batches = []; }
@@ -202,7 +255,7 @@ function buildAwaitingUserNotice(profileId, { store = null } = {}) {
   }
   for (const r of rows.slice(0, 5)) {
     const w = parseWait(r) || {};
-    lines.push(`- item_id=${r.id} · план «${String(r.goal).slice(0, 120)}» · шаг «${String(r.title).slice(0, 120)}» · ждём: ${String(w.reason || 'ответ').slice(0, 300)}`);
+    lines.push(`- item_id=${r.id} · план «${String(r.goal).slice(0, 120)}»${scope(r.task_id).orphan ? ' (без чата)' : ''} · шаг «${String(r.title).slice(0, 120)}» · ждём: ${String(w.reason || 'ответ').slice(0, 300)}`);
   }
   return lines.join('\n');
 }

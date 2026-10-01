@@ -13,18 +13,19 @@
 //
 // Direction of error: keep the message. Anything lost here (server restart, failed
 // pull, missing registry entry) only means the gateway re-offers it after the run.
-const MEDIA_GATEWAY_URL = () => (process.env.MEDIA_GATEWAY_URL || '').replace(/\/+$/, '');
+const { gatewayUrl } = require('./bot-registry');
 
 const runs = new Map(); // taskId -> { chatId, threadId, requestId, given:Set<number>, consumed:Set<number> }
 
 /** Register an accepted Telegram run (sync, from runTask). Web/internal runs (chatId 0) are skipped. */
-function registerInboxRun({ taskId, chatId, threadId = null, requestId = null }) {
+function registerInboxRun({ taskId, chatId, threadId = null, requestId = null, audience = 'default' }) {
   const cid = Number(chatId);
   if (!taskId || !Number.isSafeInteger(cid) || cid === 0) return false;
   runs.set(taskId, {
     chatId: cid,
     threadId: Number.isSafeInteger(Number(threadId)) && Number(threadId) > 0 ? Number(threadId) : null,
     requestId: requestId || null,
+    audience: audience || 'default', // held messages live in THIS bot's gateway
     given: new Set(),
     consumed: new Set(),
   });
@@ -49,7 +50,7 @@ const fmtAt = (unixSec) => unixSec
 async function fetchNewMessages(taskId, { secret = process.env.AGENT_SECRET, limit = 20 } = {}) {
   const run = runs.get(taskId);
   if (!run) return { ok: true, messages: [], note: 'Живой ящик недоступен для этого запуска (веб/внутренний запуск или задача уже завершилась). Новые сообщения придут отдельно после ответа.' };
-  const base = MEDIA_GATEWAY_URL();
+  const base = gatewayUrl(run.audience);
   if (!base || !secret) return { ok: false, error: 'Источник новых сообщений не настроен на этом сервере.' };
   const qs = new URLSearchParams({ chatId: String(run.chatId) });
   if (run.threadId) qs.set('threadId', String(run.threadId));

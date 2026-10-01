@@ -11,9 +11,11 @@ const sessions = require('../session-store');
 const answerActions = require('../answer-actions');
 const { getCurrentSessionId, setCurrentSessionId } = require('../session-store');
 const projects = require('../projects');
-const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag } = require('../auth-flag');
-const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice, loopRecoveryEngine, loopFallbackNotice } = require('../engine-crash-policy');
+const { isAuthError, setAuthFailedFlag, clearAuthFailedFlag, authGate, claimRedirectNotice } = require('../auth-flag');
+const { isTerminalQuickCrash, engineFallbackNotice, engineAuthNotice, loopRecoveryEngine, loopFallbackNotice, chatFallbackEngine, engineLabelOf } = require('../engine-crash-policy');
+const { ladderFallbackTarget, ladderFallbackMessage } = require('../ladder-fallback');
 const ocLadder = require('../opencode-ladder-provider');
+const answerGlyphGuard = require('../answer-glyph-guard');
 const { MAX_RETRIES: MAX_INCOMPLETE_RETRIES, getRetryDelayMs } = require('../retry-policy');
 const { recordUsage } = require('../usage-store');
 const promptAudit = require('../prompt-audit');
@@ -40,6 +42,16 @@ const { TOKENS_ROOT } = require('../data-paths');
 // (a separate process) holds while it mutates a workspace. Checked here, before
 // a run is journaled — see the block comment in _runTaskInner.
 const { isProfileLocked, waitForProfileUnlocked } = require('../profile-lock');
+// Session archive read paths (epic #1784 M2, issue #1916 PR-C): bring a body or
+// an engine transcript back from GCS before the code below reads it — admission,
+// native --resume, the chat-history warm-up. See src/session-materialize.js.
+const {
+  materializeRunSessions, materializeTranscriptForResume, materializeRecentArchivedSessions,
+} = require('../session-materialize');
+// Post-run sweep (issue #1916 PR-D): after a run settles, the session bodies it
+// wrote (and any other local body) leave for GCS. Scheduled, never awaited —
+// see the two call sites in _runTaskInner.
+const { schedulePostRunSweep } = require('../session-sweep');
 const answerRouter = require('../answer-router');
 const closureIntent = require('../closure-intent');
 const promptDomains = require('../prompt-domains');
@@ -53,6 +65,13 @@ const { buildDevPlaybookSuggestion } = require('../dev-task-playbook-suggestion'
 const { buildProfilePlaybookMenu } = require('../profile-playbook-menu');
 const { buildAwaitingUserNotice } = require('../durable-wait');
 const skillsShadow = require('../skills/shadow');
+// Turn-intent tool mounting (architecture issue #76 L1): estimate which skill sections
+// THIS turn needs (deterministic, no model — src/skills/turn-intent.js), resolve the
+// plan (profile ∩ intent), inject the mount note with the TOOL_ESCALATION net, and
+// measure the resulting prefix (prompt-audit prompt_prefix_tokens).
+const skillsEnforce = require('../skills/enforce');
+const turnIntentMod = require('../skills/turn-intent');
+const { estimateToolTokens } = require('../mcp-tool-tokens');
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
 // tg-stream.js (issue #942 P1.4). The module owns the format/send/edit
 // primitives; runner.js keeps orchestration (queueing, retries around them).
@@ -102,6 +121,16 @@ const { runEngineProcess, buildEngineCommand, inputInspectionRows, resolveEngine
 // (spec: docs/user-scenarios/core/02-stop-and-supplement.md §2/§2а).
 const { stopEngineProcess, runAlive } = require('./engine-stop');
 const { traceIdFor, markTraceStopped, isRunStopped, traceStoppedAt } = require('../stop-trace');
+
+// Wording for a failed session materialize (#1916 PR-C) — one string for every
+// path that reports it (admission quick-answer, admission.run's catch, resume).
+// Must say what did NOT happen: the session was not recreated, the context is safe.
+function archiveUserMessage(e) {
+  const why = e && e.code === 'ARCHIVE_MISSING'
+    ? 'архивная копия не найдена в хранилище'
+    : 'хранилище GCS недоступно';
+  return `⚠️ Не могу открыть сессию: ${why}. Контекст не потерян — сессия НЕ пересоздана, повтори запрос позже.`;
+}
 
 const STREAM_INTERVAL_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 3000;
@@ -201,6 +230,24 @@ function isProviderFault(text) {
   if (/usage limit|purchase more credits|rate.?limit|too many requests|\b429\b|\b5\d\d\b|overloaded|upstream request failed|unexpected server error|bad\s*request/i.test(t)) return true;
   const workerFailure = ocLadder.classifyWorkerFailure(t);
   return !!workerFailure && workerFailure !== 'context';
+}
+
+// Genuine provider-error text for the ladder classifier — NEVER answer prose.
+//
+// codexErrorMsg is set only on an error/turn.failed event and claudeErrorText only on an
+// is_error result: both are real provider errors. fullOutput.text is consulted only when
+// the run never confirmed completion (an error printed as plain output, no event).
+// A CONFIRMED run's answer used to be scanned too (`codexErrorMsg || claudeResult ||
+// fullOutput.text || result`), and an answer that merely mentioned «401» (e.g. «токен из
+// origin URL мёртв (401)») classified as worker_unreachable — the runner then threw the
+// COMPLETED step away and answered ⛔ llm-ladder недоступен. execution-history still holds
+// those rows: errorText = a full step report ending in `DURABLE: done` (2026-09-30/10-01).
+// Research is affected most: from this PR its model is `ladder/research:*`, so the
+// classifier applies to it for the first time (a `opencode-go/…` model never matched).
+function providerErrorText({ codexErrorMsg, claudeErrorText, terminalSuccess, outputText, result } = {}) {
+  if (codexErrorMsg) return codexErrorMsg;
+  if (claudeErrorText) return claudeErrorText;
+  return terminalSuccess ? '' : String(outputText || result || '');
 }
 const MAX_RESUME_ATTEMPTS = 3; // cap on auto-retries for a task resumed after a server restart — a
 // restart is our fault, not the user's, so it's worth retrying automatically, but bounded: without
@@ -326,11 +373,25 @@ const activeTimers = new Map();
 // the Telegram user's own id, identical no matter which bot is messaged, so it
 // cannot disambiguate audiences by itself. Kept in one place so the taskId stop
 // path can never drift from the username-scoped path.
+// #1886: the chat a run belongs to for a chat-scoped stop. A durable plan step runs
+// chat-less (user.id = null — it must not reply into a chat), so its chat is the
+// plan's owner chat, resolved from its plan session (s-plan-<id8>). No owner → null.
+function runChatId(state) {
+  if (state.chatId != null) return state.chatId;
+  if (!/^s-plan-/.test(String(state.sessionId || ''))) return null;
+  try { return require('../gtd-controller').planSessionOwnerChat(state.username, state.sessionId); } catch { return null; }
+}
+
 function taskOwnedBy(state, owner) {
   if (!state || !owner || typeof owner.username !== 'string' || !owner.username) return false;
   if (state.username !== owner.username) return false;
   if ((state.audience || 'default') !== (owner.audience || 'default')) return false;
-  if (owner.chatId != null && state.chatId != null && String(state.chatId) !== String(owner.chatId)) return false;
+  // #1886: a chat-scoped stop only reaches runs of that chat — a chat-less run (a
+  // plan step of another chat, a web/cron run) is not «this chat's task».
+  if (owner.chatId != null) {
+    const chatId = runChatId(state);
+    if (chatId == null || String(chatId) !== String(owner.chatId)) return false;
+  }
   // Forum topics (#255): when the caller scopes to a topic, only a task started in
   // that same topic matches — stop in topic A must never kill a task in topic B.
   // A threadId-less caller (owner.threadId == null) keeps the legacy chat-wide scope.
@@ -529,7 +590,10 @@ function registerLiveRun(opts) {
 function _liveRunMatches(m, owner) {
   if (!owner?.username || m.username !== owner.username) return false;
   if ((m.audience || 'default') !== (owner.audience || 'default')) return false;
-  if (owner.chatId != null && m.chatId != null && String(m.chatId) !== String(owner.chatId)) return false;
+  if (owner.chatId != null) {
+    const chatId = runChatId(m);
+    if (chatId == null || String(chatId) !== String(owner.chatId)) return false;
+  }
   if (owner.threadId != null && m.threadId != null && Number(m.threadId) !== Number(owner.threadId)) return false;
   if (owner.sessionId != null && m.sessionId != null && m.sessionId !== owner.sessionId) return false;
   return true;
@@ -586,6 +650,7 @@ function _finishAcceptedChatRun(chatId, opts, outcome) {
     taskId: opts.taskId || null,
     outcome,
     consumed,
+    audience: opts.user?.audience || 'default',
     secret: opts.secrets?.AGENT_SECRET || process.env.AGENT_SECRET,
   }).catch(e => console.warn('[runner] notifyRunFinished:', e.message));
 }
@@ -600,6 +665,18 @@ function isSessionRunning(sessionId) {
   }
   if (queuedSessions.has(sessionId)) return true;
   return false;
+}
+
+// Ф5 (web visibility): 'running' — a live spawned process owns this session;
+// 'queued' — an accepted run still waits at admission (queuedSessions/queuedByOwner
+// are set at accept, activeTimers only at spawn). isSessionRunning() merges both
+// on purpose (the GTD guard needs the union); the web UI needs the difference to
+// render a visible «⏳ В очереди» instead of a silent spinner.
+function sessionRunPhase(username, sessionId) {
+  if (!sessionId) return null;
+  for (const s of activeTimers.values()) if (s.sessionId === sessionId) return 'running';
+  if (queuedSessions.has(sessionId) || queuedByOwner.get(ownerKey(username, sessionId))) return 'queued';
+  return null;
 }
 
 // Exact-session stop for web/API callers. Deliberately has NO profile-wide
@@ -710,6 +787,138 @@ function countIdleLiveRuns(owner = {}) {
 }
 
 /**
+ * Сколько ранов владельца сейчас С ПРОЦЕССОМ. Пара к countIdleLiveRuns — вместе
+ * они отвечают на вопрос «есть ли что останавливать» для «Дополнить» (SS-08):
+ * ноль и там, и там → задача уже кончилась, шлюз запускает обычное продолжение.
+ * То же правило владельца (#1303), что и у реестра: _liveRunMatches работает и
+ * на записях activeTimers (те же поля).
+ */
+function countLiveProcessRuns(owner = {}) {
+  let n = 0;
+  for (const s of activeTimers.values()) {
+    if (!s?.proc) continue;
+    if (_liveRunMatches(s, owner)) n++;
+  }
+  return n;
+}
+
+/** sessionId текущего (первого найденного) рана владельца — для «та же сессия» (SS-07). */
+function firstLiveRunSession(owner = {}) {
+  for (const s of activeTimers.values()) {
+    if (s?.proc && s.sessionId && _liveRunMatches(s, owner)) return s.sessionId;
+  }
+  for (const m of liveRuns.values()) {
+    if (m.sessionId && _liveRunMatches(m, owner)) return m.sessionId;
+  }
+  return null;
+}
+
+// Один «Дополнить» на диалог в полёте (K7/SS-07 «ровно один ран»): два параллельных
+// supok не должны каждый пойти своей остановкой-перезапуском. Ключ — диалог.
+const supplementInFlight = new Set();
+
+/**
+ * POST /tasks/supplement — «➕ Дополнить» на идущей задаче (spec Core 02 SS-07/08,
+ * issue #1934, §5 PR#4). Вместо гонки «шлюз: stopTask().catch(()=>{}) + runTask» —
+ * серверная атомарная операция:
+ *
+ *   1. остановить текущую цепочку диалога (kill + тумбстоун + GTD) и ДОЖДАТЬСЯ
+ *      подтверждения выхода (SS-01/SS-03);
+ *   2. подтверждено → ровно ОДИН новый ран в той же сессии, текст =
+ *      «[Дополнение к задаче] …», fromUser — гейт Стопа его не блокирует (K1),
+ *      initiatedAt = момент приёма дополнения (D1-якорь);
+ *   3. не останавливать нечего → `already_finished` (SS-08): шлюз запускает
+ *      дополнение обычным /run как продолжение сессии;
+ *   4. подтверждение не пришло → `stop_unconfirmed` и НИЧЕГО не запускаем:
+ *      хуже не запустить (шлюз повторит/покажет «добиваю»), чем получить два
+ *      рана (K7) или дополнить уже остановленную цепочку.
+ *
+ * @param {object} p
+ * @param {string} p.username           профиль (обязателен; валидирует сервер)
+ * @param {number|null} [p.chatId]      адрес диалога TG — одно из chatId/sessionId
+ * @param {string|null} [p.sessionId]   адрес сессии (та же сессия, SS-07)
+ * @param {string} [p.text]             текст дополнения (и/или fileRefs)
+ * @param {object} [deps]               тестовый шов: { run, confirm, now }
+ */
+async function supplementTask({
+  username, audience = null, chatId = null, threadId = null, sessionId = null,
+  workDir = null, text = '', fileRefs = null, initialMsgId = null, pinnedMsgId = null,
+  mode = null, secrets = {}, waitMs = 4500,
+}, { run = runTask, confirm = confirmStopped, now = Date.now } = {}) {
+  if (!username) return { ok: false, status: 'bad_request', error: 'username required' };
+  if (chatId == null && !sessionId) {
+    return { ok: false, status: 'bad_request', error: 'sessionId or chatId required — supplement addresses one dialog' };
+  }
+  const owner = { username, audience: audience || null, chatId: chatId ?? null, threadId, sessionId: sessionId || null };
+  const inFlightKey = `${username}\0${sessionId || ''}\0${chatId ?? ''}`;
+  if (supplementInFlight.has(inFlightKey)) return { ok: true, status: 'in_progress', audience: audience || 'default' };
+  supplementInFlight.add(inFlightKey);
+  try {
+    const idle = countIdleLiveRuns(owner);
+    const withProc = countLiveProcessRuns(owner);
+    if (idle + withProc === 0) {
+      console.log(`[supplement] nothing to stop user=${username} chat=${chatId ?? '-'} session=${sessionId || '-'} → already_finished (SS-08)`);
+      return { ok: true, status: 'already_finished', audience: audience || 'default' };
+    }
+
+    // Тот же состав операций, что POST /tasks/stop: kill → тумбстоун → GTD →
+    // подтверждение. Сессионный адрес (web/бот, приславший sessionId) идёт через
+    // stopSessionTask — точный матч, без чат-скоупа.
+    let killed = 0;
+    if (sessionId && chatId == null) {
+      if (stopSessionTask(username, sessionId)) killed = 1;
+    } else {
+      const scoped = stopUserTask(username, owner.chatId, owner.audience, threadId);
+      if (scoped) killed = 1;
+      else if (owner.chatId == null && killTaskByUsername(username, owner.audience) > 0) killed = 1;
+    }
+    const stoppedTraces = stopTracesFor(owner);
+    let gtdCancelled = 0;
+    if (workDir) {
+      try { gtdCancelled = require('../gtd-controller').closeStoppedGtd(workDir); }
+      catch (e) { console.warn('[supplement] gtd close:', e.message); }
+    }
+    const confirmed = await confirm(owner, waitMs);
+    if (!confirmed) {
+      console.warn(`[stop] stop_unconfirmed (supplement) user=${username} chat=${chatId ?? '-'} session=${sessionId || '-'} waitMs=${waitMs}`);
+      return { ok: true, status: 'stop_unconfirmed', killed, stoppedTraces, gtdCancelled, confirmed: false, audience: audience || 'default' };
+    }
+
+    // SS-07: одна сессия, один ран. Явный sessionId побеждает; иначе — координаты
+    // только что остановленного рана (та же сессия); иначе резолвер runTask сам
+    // возьмёт current-session (история диалога не теряется в любом случае).
+    const resolvedSession = sessionId || firstLiveRunSession(owner) || undefined;
+    const supplementTaskId = `${username}-supp-${now()}`;
+    const completion = run({
+      taskId: supplementTaskId,
+      user: {
+        id: chatId ?? 0, name: username, username, workDir: workDir || undefined,
+        profileId: username, telegramUserId: null, audience: audience || 'default',
+      },
+      task: `[Дополнение к задаче]\n${text || ''}`,
+      context: null,
+      sessionId: resolvedSession,
+      fromUser: true,
+      initiatedAt: now(),
+      secrets,
+      initialMsgId: initialMsgId ?? null,
+      pinnedMsgId: pinnedMsgId ?? null,
+      threadId: threadId ?? null,
+      mode: mode || null,
+      fileRefs: fileRefs || null,
+    });
+    Promise.resolve(completion).catch(err => console.error(`[${supplementTaskId}] supplement run error:`, err.message));
+    console.log(`[supplement] restarted user=${username} session=${resolvedSession || '-'} task=${supplementTaskId} (stoppedTraces=${stoppedTraces}, gtd=${gtdCancelled})`);
+    return {
+      ok: true, status: 'restarted', taskId: supplementTaskId, sessionId: resolvedSession || null,
+      killed, stoppedTraces, gtdCancelled, confirmed: true, audience: audience || 'default',
+    };
+  } finally {
+    supplementInFlight.delete(inFlightKey);
+  }
+}
+
+/**
  * Runs `claude --dangerously-skip-permissions` for a task,
  * streams output to Telegram by editing a "thinking" message.
  * Tasks for the same user are serialised — each waits for the previous to finish.
@@ -740,7 +949,7 @@ function runTask(opts) {
   _bumpAcceptedByChat(acceptedChatId);
   // Live inbox registry (get_new_messages): the server — not the engine — knows
   // which chat/topic/gateway dispatch this task belongs to.
-  if (acceptedChatId != null) liveInbox.registerInboxRun({ taskId: delivery.taskId, chatId: acceptedChatId, threadId: delivery.threadId, requestId: delivery.requestId });
+  if (acceptedChatId != null) liveInbox.registerInboxRun({ taskId: delivery.taskId, chatId: acceptedChatId, threadId: delivery.threadId, requestId: delivery.requestId, audience: delivery.user?.audience });
   // Реестр живых ранов — синхронно, до первого await: Стоп, пришедший сразу
   // после 202, обязан найти координаты рана. Ключ пробрасывается в _runTaskInner
   // через opts (taskDelivery копирует поля), там он добирается sessionId.
@@ -1039,6 +1248,70 @@ async function _runTaskInner(opts) {
     console.log('[%s] maintenance lock released — proceeding', opts.taskId);
   }
 
+  // ── PR-C: materialize the session this run is about to touch (#1916, B6) ────
+  // Between runs the VM holds NO session bodies (epic #1784 M2) — the body of the
+  // session this run resolves (the explicit id, or the chat's current-session
+  // pointer) may exist only in GCS. resolveChatSession reads bodies synchronously
+  // and its `getSession → null` cannot tell "archived" from "never existed", so
+  // an archived session that is not brought back first turns into a BLANK
+  // replacement and the accumulated context is lost (red-team B6, #1808).
+  //
+  // Started here — after the profile maintenance lock (the migrator may be moving
+  // these very bytes) — but deliberately NOT awaited on this path: everything
+  // from runTask() down to the journal write must stay SYNCHRONOUS («a restart
+  // must not silently lose accepted work», enforced by
+  // test/stop-trace.test.cjs asserting the journal exists the moment runTask
+  // returns). The promise is awaited at the two points that actually READ a body:
+  //   · the pre-queue quick answer's web-exact write (it would otherwise mint a
+  //     replacement shell over the archived id and duplicate its index record);
+  //   · the admission callback — which runs resolveChatSession, so the body is
+  //     back before the first authoritative read. Cost of starting early: the
+  //     sync foreign-session probe below may still see "no file" for an archived
+  //     id and skip its drop — resolveRunSession re-checks AFTER materialize, so
+  //     chat isolation still holds there.
+  // Any archive failure is reported to the user and stops the task. Recreating
+  // the session silently is the one thing this hook exists to make impossible.
+  const sessionMaterialize = materializeRunSessions({
+    workDir: opts.user.workDir,
+    profile: opts.user.username,
+    sessionId: opts.sessionId,
+    chatId: opts.user.id,
+    audience: opts.user.audience,
+    threadId: runThreadId,
+    forceNew: opts.forceNew,
+  });
+  // Some paths return without ever awaiting (stop-gate, journal failure) — a late
+  // rejection must not be an unhandled one. Awaiting the same promise later still
+  // rethrows, so this is not swallowing anything.
+  sessionMaterialize.catch(() => {});
+  // → null when the bodies are in place, otherwise the archive error (already
+  // carrying the user-facing wording). Non-archive errors are thrown as-is.
+  const awaitSessionMaterialize = async () => {
+    try {
+      const mat = await sessionMaterialize;
+      if (mat.materialized.length) {
+        console.log('[%s] materialized archived session(s) from GCS: %s', opts.taskId, mat.materialized.join(', '));
+      }
+      return null;
+    } catch (e) {
+      if (e.code !== 'ARCHIVE_UNAVAILABLE' && e.code !== 'ARCHIVE_MISSING') throw e;
+      console.error('[%s] session materialize failed: %s %s', opts.taskId, e.code, e.message);
+      e.userMessage = archiveUserMessage(e);
+      return e;
+    }
+  };
+  const reportArchiveFailure = async (e) => {
+    const text = e.userMessage || archiveUserMessage(e);
+    await status.close();
+    const token = opts.secrets?.TELEGRAM_BOT_TOKEN || opts.secrets?.BOT_TOKEN;
+    if (token && opts.user.id) {
+      const im = opts.initialMsgId;
+      if (im) await tgEdit(token, opts.user.id, im, text, {}).catch(() => sendTo(token, opts.user.id, text).catch(() => {}));
+      else await sendTo(token, opts.user.id, text).catch(() => {});
+    }
+    return text;
+  };
+
   // Pure-info quick answers (/agent_info, /secrets_list, /usage, ...) bypass the queue
   // entirely, same as /stop above — they read local state synchronously and don't touch
   // Claude or the session transcript, so there's no reason to make them wait behind
@@ -1066,9 +1339,26 @@ async function _runTaskInner(opts) {
         username: opts.user.username, chatId, threadId: runThreadId, audience: opts.user.audience,
         projectId: opts.projectId || null, task: opts.task, reply: quick,
       };
+      // Only this write needs the BODY (it appends into the named session). The
+      // plain Telegram path writes a side qa-<hash> session and needs nothing.
+      if (opts.webExactSession && opts.sessionId) {
+        const mErr = await awaitSessionMaterialize();
+        if (mErr) return await reportArchiveFailure(mErr);
+      }
       const qaSessionId = (opts.webExactSession && opts.sessionId
           && recordWebQuickExchange(opts.user.workDir, opts.sessionId, exchange))
         || recordQuickExchange(opts.user.workDir, exchange);
+      // ── PR-D post-run sweep (#1916): this path never reaches admission.run's
+      // finally below — it returns before the run is even journaled — but it
+      // DOES write a session (the exchange just recorded), so it schedules its
+      // own sweep. Deferred like every other trigger: only a timer is armed
+      // here, the ⚡ answer above is already on its way to the chat.
+      schedulePostRunSweep({
+        profile: opts.user.username,
+        workDir: opts.user.workDir,
+        sessionId: qaSessionId,
+        taskId: opts.taskId,
+      });
       const extra = { reply_markup: { inline_keyboard: escalateRows(qaSessionId) } };
       return (async () => {
         // Disarm the maintenance status from the lock gate above: this answer goes
@@ -1200,10 +1490,21 @@ async function _runTaskInner(opts) {
   const admissionScopes = legacyAdmissionScopes({
     chatId: opts.user.id, audience: opts.user.audience, threadId: runThreadId,
     profileId: opts.user.username, sessionId: opts.webExactSession ? opts.sessionId : opts.forceNew ? null : (opts.sessionId || opts.activitySessionId),
+    // RC-03: the user's explicit «⚡ Параллельно» (owner 2026-09-30) — the only
+    // way past the dialog lane. Session writer scope above stays untouched.
+    parallel: opts.parallel === true,
   });
-  if (admission.isBusy(admissionScopes)) status.waiting(
-    '↪️ Ожидаю завершения предыдущей работы. В этом диалоге выполняю задачи по очереди. Начну автоматически; повторно отправлять не нужно.'
-  );
+  // Web runs have no progress message to edit (initialMsgId is null → every
+  // status.publish is a no-op) — surface the admission phase over the SSE
+  // progress channel instead, so the submitting tab SEES «waiting» (Ф5).
+  const publishWebPhase = text => {
+    if (!opts.initialMsgId && typeof opts.onProgress === 'function') opts.onProgress(text);
+  };
+  if (admission.isBusy(admissionScopes)) {
+    const waitingText = '↪️ Ожидаю завершения предыдущей работы. В этом диалоге выполняю задачи по очереди. Начну автоматически; повторно отправлять не нужно.';
+    status.waiting(waitingText);
+    publishWebPhase(waitingText);
+  }
 
   // Postmortem diagnostics for issue #1015 ("session hung, no evidence of where
   // the time went"): stamp how long each admission stage actually took. Cheap
@@ -1234,6 +1535,14 @@ async function _runTaskInner(opts) {
         await status.finish(STOP_NOT_STARTED_MSG);
         return STOP_NOT_STARTED_MSG;
       }
+      // PR-C (#1916): the body must be on disk before _runTask resolves the
+      // session — `getSession → null` would otherwise adopt the archived id for a
+      // BLANK session (red-team B6). Thrown, not returned: admission.run's own
+      // catch reports it honestly and its `finally` clears the journal entry this
+      // task already wrote, so a failed materialize never leaves a phantom
+      // resumable task behind.
+      const materializeErr = await awaitSessionMaterialize();
+      if (materializeErr) throw materializeErr;
       // Global admission control: wait for a free slot + enough RAM before we
       // actually spawn `claude`. This is the OOM guard — the only remaining gate.
       const ramT0 = Date.now();
@@ -1246,9 +1555,11 @@ async function _runTaskInner(opts) {
         if (consumePendingStop(opts.user.username, opts.sessionId)) {
           console.log(`[${opts.taskId}] stopped before start`);
           await status.finish(STOP_NOT_STARTED_MSG);
+          publishWebPhase(STOP_NOT_STARTED_MSG);
           return STOP_NOT_STARTED_MSG;
         }
         await status.finish('🧠 Начинаю работу…');
+        publishWebPhase('🧠 Начинаю работу…');
         const runT0 = Date.now();
         try {
           return await _runTask(opts);
@@ -1262,9 +1573,29 @@ async function _runTaskInner(opts) {
       logStage('total', stageT0);
     }
   }).catch(async err => {
-    const msg = '❌ Не удалось запустить или завершить работу. Попробуй запустить задачу ещё раз.';
-    await status.finish(msg);
+    // Session-archive failures (issue #1916 PR-C) get their own, honest wording
+    // and an EXPLICIT send: status.finish() is a no-op without initialMsgId (web
+    // runs, journal resumes), and "no message at all" would read as the task
+    // silently vanishing. The message is also returned, so a caller that treats
+    // the resolved value as the answer (web SSE, GTD) echoes it instead of
+    // «задача завершилась без ответа».
+    const isArchive = !!err && (err.code === 'ARCHIVE_UNAVAILABLE' || err.code === 'ARCHIVE_MISSING');
+    const msg = isArchive
+      ? (err.userMessage || archiveUserMessage(err))
+      : '❌ Не удалось запустить или завершить работу. Попробуй запустить задачу ещё раз.';
     console.error(`[${opts.taskId}] unhandled queue error:`, err.message);
+    if (!isArchive) {
+      await status.finish(msg);
+      return;
+    }
+    await status.close();
+    const token = opts.secrets?.TELEGRAM_BOT_TOKEN || opts.secrets?.BOT_TOKEN;
+    if (token && opts.user.id) {
+      const im = opts.initialMsgId;
+      if (im) await tgEdit(token, opts.user.id, im, msg, {}).catch(() => sendTo(token, opts.user.id, msg).catch(() => {}));
+      else await sendTo(token, opts.user.id, msg).catch(() => {});
+    }
+    return msg;
   });
   current.finally(() => {
     // A task cut off by a restart keeps its journal entry: the next process resumes it.
@@ -1274,6 +1605,24 @@ async function _runTaskInner(opts) {
       const n = (queuedByOwner.get(qKey) || 1) - 1;
       if (n > 0) queuedByOwner.set(qKey, n);
       else { queuedByOwner.delete(qKey); pendingSessionStops.delete(qKey); }
+    }
+    // ── PR-D: post-run session sweep (#1916, epic #1784 M2) ──────────────────
+    // Arm it HERE, after the journal entry above is gone: the sweep's in-flight
+    // guard reads pending-tasks and must not see the run that is scheduling it.
+    // Deferred and never awaited — schedulePostRunSweep only starts a timer, and
+    // its returned promise is deliberately not chained onto the run's, so the
+    // user's final answer never waits for a gzip+upload («отложенно, не в
+    // критическом пути»). Both run paths reach this finally: the engine one
+    // (claude/opencode) and the quick-answer one inside _runTask — a quick
+    // answer writes a session exchange too. A restart keeps its task for resume
+    // and must not half-archive the body it will read again.
+    if (!restartShutdown) {
+      schedulePostRunSweep({
+        profile: opts.user.username,
+        workDir: opts.user.workDir,
+        sessionId: opts.activitySessionId || opts.sessionId || null,
+        taskId: opts.taskId,
+      });
     }
   });
   // Await retries for callers, but never hold their predecessor lane/lease.
@@ -1839,7 +2188,8 @@ function resolveRunSession(sessions, getCurrent, { workDir, sessionId, chatId, a
 // `runThreadId` referenced from _runTask, where only the `threadId` param exists).
 // Returns the scheduling promise (fire-and-forget at the call site); a null return
 // means "nothing scheduled" (internal re-run / no session / no checklist).
-function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task, secrets, workDir, username, projectDir, audience, chatId, threadId, runStartedAt = null }) {
+// `taskId` only feeds the gtd-intent LLM call's x-ladder-trace (#1917) — nothing keys on it.
+function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task, secrets, workDir, username, projectDir, audience, chatId, threadId, runStartedAt = null, taskId = null }) {
   if (internalGtd || !activeSessionId) return null;
   const gtd = require('../gtd-controller');
   // BV-08 (#1729): секция, которую этот ран дописал без `Owner-session:` (агент забыл
@@ -1860,7 +2210,7 @@ function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task,
     // задачи ("доведи до конца") гоняем через LLM-гейт (#501/#502/#505); если
     // фраза не совпала, но в проекте уже лежит незакрытый checklist.md — тот сам
     // по себе достаточное основание трекать (checklist ⇒ intent).
-    return gtd.maybeSchedule({ ...checklistArgs, task, apiKey: secrets?.OPENROUTER_API_KEY })
+    return gtd.maybeSchedule({ ...checklistArgs, task, apiKey: secrets?.OPENROUTER_API_KEY, taskId })
       .then(rec => rec || gtd.scheduleFromChecklist(checklistArgs))
       .catch(e => { console.warn('[gtd] schedule:', e.message); return null; });
   }
@@ -1872,7 +2222,7 @@ function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task,
     .catch(e => { console.warn('[gtd] schedule:', e.message); return null; });
 }
 
-async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null }) {
+async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, ladderFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null, toolEscalationDone = false }) {
   // Strip @botname suffix from slash commands once at intake so all INTENT regexes match cleanly.
   let task = rawTask ? rawTask.replace(/^(\/\S+?)@\S+/, '$1') : rawTask;
   // Старт рана для claimFreshChecklist (BV-08): initiatedAt — момент запроса у шлюза
@@ -1944,6 +2294,25 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   if (contextFromSession && !sessionExists) {
     const sourceCtx = sessions.buildContext(user.workDir, contextFromSession, ctxLimit, ctxMsgCount);
     if (sourceCtx) sessionContext = context ? `${sourceCtx}\n\n${context}` : sourceCtx;
+  }
+
+  // ── PR-C: chat-history warm-up (#1916) ──────────────────────────────────────
+  // buildRecentChatBlock (below) and the get_chat_history MCP tool both scan the
+  // sessions DIRECTORY, and between runs the last few sessions live only in GCS.
+  // Bring the top-5 most recently active archived ones back before either runs.
+  // Best-effort on purpose: the session THIS run continues was already
+  // materialized at admission and a failure here must not kill the task — it
+  // only costs the «недавняя история чата» reference block. Index-only fallback
+  // is deliberately NOT used: sessions.json carries no liveChatId, so a
+  // chat-scoped block built from it would leak another chat's lines here.
+  try {
+    const warm = await materializeRecentArchivedSessions({
+      workDir: user.workDir, profile: user.username, limit: 5,
+    });
+    if (warm.materialized.length) console.log('[%s] chat-history warm-up: %s', taskId, warm.materialized.join(', '));
+    for (const f of warm.failed) console.warn('[%s] chat-history warm-up failed for %s: %s', taskId, f.sessionId, f.message);
+  } catch (e) {
+    console.warn('[%s] chat-history warm-up:', taskId, e.message);
   }
 
   // Fresh session in a chat with recent history (4h window expired / new topic):
@@ -2234,6 +2603,35 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     }
   }
 
+  // ── Turn-intent tool mounting (architecture issue #76 L1) ───────────────────────
+  // Deterministic estimate → which skill sections THIS turn needs (src/skills/
+  // turn-intent.js: a keyword map, no model call — anything unrecognised returns
+  // null). The plan is profile ∩ intent; resolve() fails open to the full profile
+  // set when the intent selects nothing this profile has (intent.applied=false), so
+  // mountActive below is the honest "this run is narrowed" flag. Machine prompts
+  // (internalGtd), wrap_up and an escalation retry always get the full mount —
+  // never narrow on a guess, the risk here is quality, not money.
+  const turnMount = (!internalGtd && !wrapUp && !toolEscalationDone)
+    ? turnIntentMod.estimateTurnIntent(task)
+    : null;
+  const skillsPlan = skillsEnforce.planFor(user.workDir, { intent: turnMount ? turnMount.sections : null });
+  const mountActive = !!(turnMount && skillsPlan && skillsPlan.intent && skillsPlan.intent.applied);
+  const mountInfo = skillsPlan
+    ? {
+      mode: mountActive ? 'narrowed' : (skillsPlan.intent ? 'fallback' : 'profile'),
+      sections: skillsPlan.sections,
+      intent: skillsPlan.intent ? skillsPlan.intent.sections : null,
+    }
+    : { mode: 'full', sections: null, intent: null };
+  if (skillsPlan && skillsPlan.intent) {
+    console.log('[mount] %s: intent=%s %s', taskId,
+      (turnMount ? turnMount.intents.join('+') : '-'),
+      mountActive ? `→ sections=${skillsPlan.sections.join(',')}` : '→ fell open (full profile set)');
+  }
+  // Prompt block with the escalation net (#76 §3): only when the mount is actually
+  // narrowed — telling the model to escalate a full mount would buy a pointless re-run.
+  const mountNoteSection = mountActive ? turnIntentMod.buildMountNote({ sections: skillsPlan.sections }) : '';
+
   // Skills are now available via trained-skills MCP (tools/list → list_skills).
   // No prompt injection needed — Claude discovers and calls tools directly.
   //
@@ -2272,14 +2670,15 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
 
   // Durable steps parked on a user answer (task_item_wait awaiting_user): tell
   // the chat run so the answer wakes the plan (task_item_wake). '' when none.
+  // #1886: only plans owned by this session/chat (plus plans with no owner chat).
   const awaitingUserSection = (!internalGtd && user?.username)
-    ? buildAwaitingUserNotice(user.username)
+    ? buildAwaitingUserNotice(user.username, { sessionId: activeSessionId, chatId })
     : '';
 
   const wrapUpSection = wrapUp
     ? '[ФИНАЛИЗАЦИЯ: пользователь сказал, что поиск окончен. Ответь из уже найденного (история ниже, заметки, файлы проекта) — без новых поисков, коротко, за ~2 минуты.]'
     : null;
-  let baseContext = [currentTimeSection(), wrapUp ? wrapUpSection : timeoutSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, playbookSuggestionSection, awaitingUserSection, artifactsSection].filter(Boolean).join('\n\n');
+  let baseContext = [currentTimeSection(), wrapUp ? wrapUpSection : timeoutSection, mountNoteSection, notesSection, projectNotesSection, lastAttemptErrorSection, reqLogSection, vacancyApiErrorSection, playbookSuggestionSection, awaitingUserSection, artifactsSection].filter(Boolean).join('\n\n');
   if (sessionContext) baseContext = baseContext ? `${baseContext}\n\n${sessionContext}` : sessionContext;
   const currentTask = sessionContext ? `Пользователь: ${task}` : task;
   let prompt = baseContext ? `${baseContext}\n\n${currentTask}` : currentTask;
@@ -2299,13 +2698,35 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // `-c mcp_servers.*` overrides for codex, OPENCODE_CONFIG for opencode — see buildEngineCommand
   // / runEngineProcess in claude-runner.js). Both still have no separate system-prompt flag —
   // the system prompt is folded into the prompt text instead.
-  const engine = acceptedEngine || profiles.getEngine(user.workDir, chatId);
+  let engine = acceptedEngine || profiles.getEngine(user.workDir, chatId);
+
+  // Long-lived «Claude недоступен» gate (auth-flag.js). The flag is set by the auth branch
+  // below and by the OAuth refresh broker, and cleared only by the NEXT authorization — so
+  // while it holds, don't even spawn claude: it dies on 401 before doing any work and the
+  // generic retry budget just buries that under three «Работа прервана (код 1)» rounds
+  // (live 2026-10-01: 59 such rounds in one day, every one of them 401 account_on_hold).
+  // The run moves laterally instead — codex, or opencode when codex is unusable.
+  if (engine === 'claude') {
+    const gate = authGate('claude');
+    if (gate.blocked) {
+      engine = chatFallbackEngine('claude');
+      console.warn(`[${taskId}] claude auth gate: reason=${gate.reason || 'AUTH'} since=${gate.failedAt || '?'} — running on ${engine}`);
+      if (user.username && claimRedirectNotice('claude', user.username)) {
+        await tgSend(BOT_TOKEN, chatId, `⚠️ Авторизация Claude недоступна с ${gate.failedAt || 'неизвестно'} — выполняю на ${engineLabelOf(engine)}, пока её не восстановят.`, threadId);
+      }
+    }
+  }
 
   // Write per-user MCP config — gives Claude access only to this user's Chrome profile.
   // With isolation on (issue #1649) the file names only the MCP bridge client; the real
   // server specs (with server-side env) stay in memory as bridgedServers.
   const { mcpConfig, servers: bridgedServers } = writeRunMcpConfig(user.workDir, user.username, {
-    userName: user.name, userHandle: user.username,
+    userName: user.name, userHandle: user.username, botToken: secrets?.BOT_TOKEN,
+    // #76 L1: hand the precomputed plan through (null = legacy, object = as resolved)
+    // and, when the mount is narrowed, route both config files to .mcp-runs/<taskId>.*
+    // so a parallel run of the same profile can't clobber this run's server set.
+    skillsPlan,
+    runId: mountActive ? taskId : null,
   }, { bridged: isolationConfig().envAllowlist });
 
   // Strip ANTHROPIC_API_KEY so Claude uses OAuth from ~/.claude/.credentials.json.
@@ -2363,7 +2784,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // was just exposed above. Observation only — runShadow never throws, changes nothing.
   try {
     skillsShadow.runShadow({ workDir: user.workDir, username: user.username, audience: user.audience,
-      mcpConfigPath: mcpConfig, domainReport });
+      mcpConfigPath: mcpConfig, domainReport,
+      // #76: compare like with like — the shadow resolves with the same turn intent
+      // the mount used, so a narrowed run's diff stays 0 instead of showing drops.
+      intent: turnMount ? turnMount.sections : null });
   } catch { /* never affects the run */ }
 
   // Answer router: вставить блок режима в системный промпт для этого хода.
@@ -2415,11 +2839,58 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   } catch (e) { console.warn('[runner] run-input snapshot:', e.message); }
 
   const opencodeModel = process.env.OPENCODE_MODEL || null;
+
+  // Prompt-prefix metrics (architecture issue #76 §4): what the engine re-reads on
+  // every call = system prompt + this turn's prompt + the mounted tool schemas. The
+  // tools half comes from the static catalogs (src/mcp-tool-tokens.js), the text
+  // half from the same chars/4 heuristic prompt-audit uses everywhere. Recorded as
+  // prompt_prefix_tokens / prompt_tools_tokens in prompt-audit.jsonl — the
+  // before/after metric of the turn-intent mount (target: ≤40k on a typical turn,
+  // was ~112k). Recomputed at each call site so a mid-run retry records its own set.
+  const promptPrefix = () => {
+    let tools = { total: 0, per: {} };
+    try {
+      const cfg = JSON.parse(fs.readFileSync(mcpConfig, 'utf8'));
+      tools = estimateToolTokens(cfg.mcpServers || {}, { plan: skillsPlan });
+    } catch (e) { console.warn('[prompt-audit] tool tokens:', e.message); }
+    const text = promptAudit.estimateTokens((ocSystemPrompt || systemPromptText) + '\n' + prompt);
+    return { prompt_prefix_tokens: text + tools.total, prompt_tools_tokens: tools.total, prompt_text_tokens: text };
+  };
+
   // Resolve the code cwd ONCE and hand the identical value to the argv builder
   // (codex `-C` on the fresh path) and the process spawner (spawn.cwd) — see
   // resolveEngineCwd. This is what keeps `-C` and the actual process cwd from
   // silently diverging once a distinct per-run code cwd (workspace/A2) exists.
   const codeCwd = resolveEngineCwd(user);
+  // ── PR-C: native resume needs the transcript back first (#1916) ─────────────
+  // `claude --resume <id>` looks for <HOME>/.claude/projects/<cwd-slug>/<id>.jsonl
+  // (HOME=<profile>/.agent-home), and between runs those jsonl files are in GCS,
+  // not on the VM — without this the resume silently fails and the run falls back
+  // to a fresh engine session, losing exactly the context resume exists for.
+  // Only claude has transcripts in M2 scope (opencode keeps them inside its own
+  // SQLite, SYSTEM class; codex has none under .agent-home).
+  // Failure contract: object not in the archive → proceed as before PR-C (it was
+  // never archived, or the run's cwd differs); a GCS outage/timeouts → honest
+  // ARCHIVE_UNAVAILABLE surfaced to the user by the admission catch below, never
+  // a quiet context-losing fallback.
+  if (resumeSessionId && engine === 'claude') {
+    try {
+      const tr = await materializeTranscriptForResume({
+        workDir: user.workDir, profile: user.username, cwd: codeCwd, engineSessionId: resumeSessionId,
+      });
+      if (tr.status === 'written') console.log('[%s] materialized transcript %s from GCS', taskId, resumeSessionId);
+      else if (tr.status === 'missing') console.warn('[%s] transcript %s not in the archive (%s) — resuming without it', taskId, resumeSessionId, tr.key);
+      else if (tr.status === 'skipped') console.warn('[%s] transcript materialize skipped: %s', taskId, tr.reason);
+    } catch (e) {
+      if (e.code !== 'ARCHIVE_UNAVAILABLE' && e.code !== 'ARCHIVE_MISSING') throw e;
+      const fail = new Error(`не могу вернуть транскрипт сессии из архива: ${e.message}`);
+      fail.code = e.code;
+      // The session body itself is already materialized by the admission hook, so
+      // the honest wording is the shared one: context intact, nothing recreated.
+      fail.userMessage = archiveUserMessage(e);
+      throw fail;
+    }
+  }
   const [engineBin, engineArgs] = buildEngineCommand({
     engine, prompt, systemPromptText, ocSystemPrompt, opencodeModel,
     mcpConfig, systemPromptFile, user, cwd: codeCwd, resumeSessionId,
@@ -2479,6 +2950,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     activeTimers, tgEdit, tgSend, outputCallback, onProgress,
     consumePendingStop: () => consumePendingStop(user.username, activeSessionId),
     engineBin, engineArgs, mcpConfig, ocProfileOverrides, bridgedServers,
+    // x-ladder-app (#1917): a durable step / an internal GTD turn is background work,
+    // every other run is a chat run — resolved into AGENT_LADDER_APP in claude-runner.
+    internalGtd, resumeSink,
     cwd: codeCwd,
     // Watchdog step 1a (issue #942 [011]): heartbeat the pending-task journal on the
     // same 30s tick claude-runner.js already runs for the inactivity check, so a
@@ -2506,6 +2980,34 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     lastActivity, exitCode, processSignal, processError, timedOut,
     inactivityKill, loopKilled, toolBudgetKilled, outputPersistenceError, codexErrorMsg, sessionState,
   } = engineResult;
+
+  // #1910: attribute the durable execution right where the engine answered — the
+  // concrete model id and token usage exist only here, and this spot precedes every
+  // early return (crash/ladder/auth/timeout), so ALL paths get attributed. It only
+  // patches model/result_json; status/error_* stay owned by the settle path, so the
+  // two writes can never clobber each other (patch runs first, settle after).
+  if (resumeSink && resumeSink.kind === 'durable' && resumeSink.executionId) {
+    try {
+      const attributedModel = engine === 'opencode'
+        ? (ocActiveModel || opencodeModel || 'opencode-config')
+        : (claudeModel || process.env.ANTHROPIC_MODEL || engine || null);
+      const usage = engine === 'opencode'
+        ? (opencodeUsage ? {
+          input: opencodeUsage.input || 0, output: opencodeUsage.output || 0,
+          cache_read: opencodeUsage.cacheRead || 0, cache_write: opencodeUsage.cacheWrite || 0,
+          cost_usd: opencodeUsage.cost ?? null,
+        } : null)
+        : (claudeUsage ? {
+          input: claudeUsage.input_tokens || 0, output: claudeUsage.output_tokens || 0,
+          cache_read: claudeUsage.cache_read_input_tokens || 0,
+          cache_write: claudeUsage.cache_creation_input_tokens || 0,
+        } : null);
+      require('../gtd-controller').durableStore().patchExecution(resumeSink.executionId, {
+        model: attributedModel,
+        result_json: usage ? JSON.stringify({ usage, at: Date.now() }) : null,
+      });
+    } catch (e) { console.warn('[runner] durable execution attribution:', e.message); }
+  }
 
   // Loop guard (#1583): the engine kept repeating identical output/tool calls — the
   // model is stuck, NOT making progress. Unlike a plain timeout this must NOT auto-
@@ -2540,6 +3042,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         engine: recovery.engine,
         ocProfile: recovery.ocProfile,
         engineFallbackDone: true,
+        // Same run chain, second free-ladder guard (#1899): if the re-run then exhausts the
+        // ladder it must dead-end instead of buying yet another free re-run.
+        ladderFallbackDone,
         stepTimeoutMs,
         executionId,
       });
@@ -2555,6 +3060,64 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     });
     executionHistory.finalizeExecution(executionId, 'FAILED');
     return;
+  }
+
+  // ── tool_escalation net (architecture issue #76 §3) ──────────────────────────
+  // The narrowed mount left the task without a tool it needed. «Молча остаться без
+  // инструмента нельзя» → ONE transition, never a loop: record the event in the
+  // prompt audit (tool_escalation: 1), tell the chat what is happening, and re-run
+  // the SAME task with the full profile set — toolEscalationDone disables both the
+  // narrowing and a second escalation for the rest of this chain.
+  if (mountActive && !toolEscalationDone) {
+    const esc = turnIntentMod.detectEscalation(fullOutput.text, lastAssistantMsg || '');
+    if (esc) {
+      console.warn('[mount] %s tool_escalation via=%s: %s — re-running with the full profile set', taskId, esc.via, esc.reason);
+      try {
+        const escMode = (explicitMode === 'deep' || answerRouter.readMode(user.workDir, activeSessionId)?.mode === 'deep')
+          ? 'deep' : (explicitMode || 'oneshot');
+        promptAudit.recordPromptAudit(user.workDir, {
+          taskId, sessionId: activeSessionId, webExactSession,
+          at: Date.now(), engine,
+          mode: escMode,
+          model: engine === 'opencode' ? (opencodeModel || 'opencode-config') : (claudeModel || process.env.ANTHROPIC_MODEL || 'claude'),
+          input_tokens: engine === 'opencode' ? (opencodeUsage?.input || 0) : (claudeUsage?.input_tokens || 0),
+          output_tokens: engine === 'opencode' ? (opencodeUsage?.output || 0) : (claudeUsage?.output_tokens || 0),
+          cache_read: engine === 'opencode' ? (opencodeUsage?.cacheRead || 0) : (claudeUsage?.cache_read_input_tokens || 0),
+          cache_write: engine === 'opencode' ? (opencodeUsage?.cacheWrite || 0) : (claudeUsage?.cache_creation_input_tokens || 0),
+          cost_usd: engine === 'opencode' ? (opencodeUsage?.cost ?? null) : null,
+          tool_escalation: 1,
+          escalation_via: esc.via,
+          escalation_reason: esc.reason,
+          mount: mountInfo,
+          ...promptPrefix(),
+        });
+      } catch (e) { console.warn('[runner] escalation audit:', e.message); }
+      const escNotice = '🔧 Задаче не хватило инструментов этого хода — доустанавливаю полный набор секций и продолжаю…';
+      if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, escNotice, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, escNotice, threadId));
+      else await tgSend(BOT_TOKEN, chatId, escNotice, threadId);
+      if (activeSessionId) {
+        sessions.appendReply(user.workDir, activeSessionId, escNotice);
+        setCurrentSessionId(user.workDir, activeSessionId, chatId, audience, threadId);
+      }
+      _recordFailureAttempt(executionId, {
+        taskId, projectId, sessionId: activeSessionId, webExactSession, engine,
+        errorText: `tool_escalation (${esc.via}): ${esc.reason}`, action: 'tool_escalation',
+      });
+      const queuedRetry = runTask({
+        initiatedAt, threadId,
+        taskId: `${user.username}-${Date.now()}`,
+        user, task, context,
+        sessionId: activeSessionId, webExactSession,
+        forceClaude, initialMsgId: msgId, pinnedMsgId, secrets,
+        // The user message is already in the session (attempt 1 recorded it).
+        userMessageRecorded: true,
+        continuationCount, retryCount, mode, projectId, internalGtd, engine,
+        incompleteRetryAttempts,
+        executionId,
+        toolEscalationDone: true,
+      });
+      return { queuedRetry };
+    }
   }
 
   // Timeout / inactivity kill → durable partial + auto-continuation.
@@ -2598,16 +3161,25 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // P3a durable step: a run carrying its own `stepTimeoutMs` is a single step
     // with a declared budget + its own retry budget (max_attempts), owned by the
     // durable executor. Never auto-continue it 10× — overrunning the step budget
-    // is a step failure. Returning no DURABLE marker lets runDueDurable's failure
-    // branch fail the item and retry per max_attempts.
+    // is a step failure. #1911: return the timeout as TEXT (was `undefined`) so the
+    // settle classifies it TIMEOUT → backoff retry, instead of an empty reply that
+    // read as a quality miss and burned escalation attempts.
     if (stepTimeoutMs) {
+      // Name the REAL kill reason: a 5-min silent engine (hung provider, e.g. an exhausted
+      // subscription retried in silence) was reported as «не уложился в бюджет 900с», which
+      // sent the diagnosis to the step budget instead of the provider (2026-10-01).
+      const timeoutMsg = inactivityKill
+        ? `⏱ Движок молчал 5 мин (завис: вероятно, провайдер модели не отвечает или исчерпан лимит) — шаг прерван. Бюджет шага ${Math.round(stepTimeoutMs / 1000)}с не исчерпан.`
+        : `⏱ Шаг не уложился в бюджет: ${Math.round(stepTimeoutMs / 1000)}с. Частичный результат сохранён в истории сессии — повтори с меньшим объёмом.`;
       _recordFailureAttempt(executionId, {
         taskId, projectId, sessionId: activeSessionId, engine,
-        errorText: `step timeout: ${Math.round(stepTimeoutMs / 1000)}s budget exhausted`,
+        errorText: inactivityKill
+          ? 'inactivity timeout: no output for 5min'
+          : `step timeout: ${Math.round(stepTimeoutMs / 1000)}s budget exhausted`,
         action: 'step_failed',
       });
       executionHistory.finalizeExecution(executionId, 'FAILED');
-      return;
+      return timeoutMsg;
     }
 
     if (continuationCount < MAX_CONTINUATIONS) {
@@ -2667,9 +3239,12 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   if (sessionState.userStopped) {
     const partial = fullOutput.text.trim();
     const partialDisplay = pickFinalText(null, lastAssistantMsg, partial);
+    // SS-02 (spec Core 02): с тем, что успело сделаться — «Что успел», без
+    // выдуманного прогресса (K8: pickFinalText, не скретч-нарратив); без
+    // связного хода — честное «до начала работы», а не пустая победа.
     const stoppedMsg = partialDisplay
-      ? `⛔ Остановлено\n\n${partialDisplay.slice(-MAX_MSG_LEN)}`
-      : '⛔ Остановлено. Можешь задать новый вопрос.';
+      ? `⛔ Остановлено. Что успел:\n\n${partialDisplay.slice(-MAX_MSG_LEN)}`
+      : '⛔ Остановлено до начала работы.';
     const clearMarkup = { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } };
     if (msgId) {
       await tgEdit(BOT_TOKEN, chatId, msgId, stoppedMsg, clearMarkup).catch(() => tgSend(BOT_TOKEN, chatId, stoppedMsg, threadId));
@@ -2852,27 +3427,73 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // answering, so there is nothing left to try in-process — no local fallback ladder. The run
   // fails with a clear category instead:
   //   worker_unreachable — the worker never served the call (network / rejected token) → BLOCKED
-  //   ladder_exhausted   — the worker answered 502 ladder_error, every rung failed      → BLOCKED
+  //   ladder_exhausted   — the worker answered 502 ladder_error, every rung failed      → ONE free re-run (#1899
+  //                                                                                        п.2), else BLOCKED
   //   context            — the prompt did not fit the model; ask to split the task     → FAILED
   // Checked before isAuthError below, which would otherwise treat "401"/"rate limit" text as a
-  // total engine auth loss. codexErrorMsg (the error event's own message) is the most reliable
-  // source of the real provider error text.
-  const preLadderText = codexErrorMsg || claudeResult || fullOutput.text || result;
+  // total engine auth loss. Only GENUINE error text is classified (providerErrorText) — a
+  // confirmed answer is never scanned for error patterns.
+  const preLadderText = providerErrorText({
+    codexErrorMsg, claudeErrorText, terminalSuccess, outputText: fullOutput.text, result,
+  });
 
-  // Call log for every failed OpenCode run, before any branch below can return early.
-  if (engine === 'opencode' && ocProfileName && ocActiveModel) {
+  // Call log for a failed OpenCode run, before any branch below can return early. Gated on
+  // actual error text: logging it unconditionally made EVERY successful run write an error
+  // row first and an ok row 50ms later (error→ok pairs in calls.jsonl), polluting the ladder log.
+  if (engine === 'opencode' && ocProfileName && ocActiveModel && preLadderText) {
     _logOcLadderCall(ocProfileName, ocRole, ocActiveModel, 'error', preLadderText);
   }
   const workerFailure = engine === 'opencode' && ocActiveModel?.startsWith(`${ocLadder.PROVIDER_ID}/`)
     ? ocLadder.classifyWorkerFailure(preLadderText) : null;
   if (workerFailure) {
     const ladderName = ocLadder.ladderFor(ocProfileName) || ocProfileName;
+    console.warn(`[${taskId}] opencode ${workerFailure} (ladder ${ladderName}): ${String(preLadderText || '').slice(0, 300)}`);
+
+    // #1899 п.2: «каждая ступень отказала» is not «попробуй позже» — it is «переходим на
+    // бесплатную ступень». ONE automatic re-run of the same task on opencode/free, guarded by
+    // ladderFallbackDone exactly like engineFallbackDone guards the engine fallback. NEVER
+    // claude/codex (owner requirement: the Claude balance is not insurance), and never a second
+    // time in the same run. Durable plan steps keep their terminal message here — their own
+    // free-ladder move is the durable executor's CONFIG → fallback_rung (#1900/#1901).
+    const recovery = ladderFallbackTarget({
+      engine, workerFailure, ladderFallbackDone,
+      durable: !!(stepTimeoutMs || (resumeSink && resumeSink.kind === 'durable')),
+    });
+    if (recovery) {
+      // #1899 п.3: the tariff warning goes out once per profile (contexts/ladder/free-tariff.json);
+      // every later switch only shows the retry notice.
+      const fallbackMsg = ladderFallbackMessage(user.username);
+      if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, fallbackMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId));
+      else await tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId);
+      if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, fallbackMsg);
+      _recordFailureAttempt(executionId, {
+        taskId, projectId, sessionId: activeSessionId, webExactSession, engine: 'opencode', model: ocActiveModel,
+        errorText: `${workerFailure}: ${preLadderText || ''}`, action: 'ladder_fallback_to_free',
+      });
+      const queuedRetry = runTask({
+        initiatedAt, threadId,
+        taskId: `${user.username}-${Date.now()}`,
+        user, task, context,
+        sessionId: activeSessionId, webExactSession,
+        forceClaude,
+        initialMsgId: msgId, pinnedMsgId, secrets,
+        retryCount, continuationCount, mode, projectId, internalGtd,
+        engine: recovery.engine,
+        ocProfile: recovery.ocProfile,
+        // Both free-ladder guards carry over: at most ONE re-run per guard per run chain, in
+        // either order (loop → exhausted must not buy a third run, #1899 «повтор ровно один раз»).
+        engineFallbackDone,
+        ladderFallbackDone: true,
+        executionId,
+      });
+      return { queuedRetry };
+    }
+
     const failMsg = workerFailure === 'context'
       ? `⛔ Запрос слишком большой для модели лестницы «${ladderName}» — разбей задачу на более мелкие части и отправь по шагам.`
       : workerFailure === 'ladder_exhausted'
       ? `⛔ Вся лестница моделей «${ladderName}» временно недоступна (все ступени отказали в llm-ladder) — попробуй позже.`
       : `⛔ Сервис моделей llm-ladder недоступен (лестница «${ladderName}») — задача не выполнена, попробуй позже.`;
-    console.warn(`[${taskId}] opencode ${workerFailure} (ladder ${ladderName}): ${String(preLadderText || '').slice(0, 300)}`);
     if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, failMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, failMsg, threadId));
     else await tgSend(BOT_TOKEN, chatId, failMsg, threadId);
     if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, failMsg);
@@ -2909,13 +3530,15 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     const engineLabel = engine === 'codex' ? 'Codex' : engine === 'opencode' ? 'OpenCode' : 'Claude Code';
 
     if ((engine === 'claude' || engine === 'codex') && !engineFallbackDone) {
-      const fallbackMsg = engineFallbackNotice(engineLabel, authClass);
+      // claude → codex (if usable) → opencode; only the final hop to OpenCode closes the chain.
+      const fallbackEngine = chatFallbackEngine(engine);
+      const fallbackMsg = engineFallbackNotice(engineLabel, authClass, engineLabelOf(fallbackEngine));
       if (msgId) await tgEdit(BOT_TOKEN, chatId, msgId, fallbackMsg, { reply_markup: { inline_keyboard: inputInspectionRows(initialMsgId, activeSessionId) } }).catch(() => tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId));
       else await tgSend(BOT_TOKEN, chatId, fallbackMsg, threadId);
       if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, fallbackMsg);
       _recordFailureAttempt(executionId, {
         taskId, projectId, sessionId: activeSessionId, webExactSession, engine,
-        errorText: authText, action: 'engine_fallback_to_opencode',
+        errorText: authText, action: `engine_fallback_to_${fallbackEngine}`,
       });
       const queuedRetry = runTask({
         initiatedAt, threadId,
@@ -2930,8 +3553,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         secrets,
         retryCount,
         continuationCount, mode, projectId, internalGtd,
-        engine: 'opencode',
-        engineFallbackDone: true,
+        engine: fallbackEngine,
+        engineFallbackDone: fallbackEngine === 'opencode',
         executionId,
       });
       return { queuedRetry };
@@ -2969,7 +3592,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     if (activeSessionId) sessions.appendReply(user.workDir, activeSessionId, retryMsg);
     _recordFailureAttempt(executionId, {
       taskId, projectId, sessionId: activeSessionId, webExactSession, engine, exitCode,
-      errorText: incompleteReason, action: 'generic_incomplete_retry',
+      // The genuine provider error, not the reason string: recording `код 1` here made
+      // execution-history undecodable (classifier saw "код 1" → UNKNOWN, and nobody could
+      // tell an expired OAuth token from a broken MCP config after the fact).
+      errorText: codexErrorMsg || claudeErrorText || incompleteReason, action: 'generic_incomplete_retry',
     });
     const fireRetry = () => runTask({
       initiatedAt, threadId,
@@ -2987,6 +3613,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       : fireRetry();
     return { queuedRetry };
   }
+
+  // Перехват «иероглифов» (см. _applyAnswerGlyphGuard): чистый текст уходит в
+  // Telegram, в историю сессии, в сниппер и в классификаторы кнопок.
+  result = (await _applyAnswerGlyphGuard({ result, user, profileName: ocProfileName, sessionId: activeSessionId, incomplete, internalGtd })).text;
 
   // Record token usage for billing
   if (engine === 'opencode' && opencodeUsage) {
@@ -3031,6 +3661,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       cache_read: engine === 'opencode' ? (opencodeUsage?.cacheRead || 0) : (claudeUsage?.cache_read_input_tokens || 0),
       cache_write: engine === 'opencode' ? (opencodeUsage?.cacheWrite || 0) : (claudeUsage?.cache_creation_input_tokens || 0),
       cost_usd: engine === 'opencode' ? (opencodeUsage?.cost ?? null) : null,
+      // #76 L1: what was mounted this turn (narrowed|fallback|profile|full) and the
+      // prefix it produced — prompt_prefix_tokens is the before/after metric,
+      // tool_escalation:1 entries are the quality-net hits (see the branch above).
+      mount: toolEscalationDone ? { ...mountInfo, escalation_retry: true } : mountInfo,
+      ...promptPrefix(),
       section_tokens: promptAudit.computeSectionTokens({
         base: systemPromptText,
         oc_capabilities: ocCapBlock,
@@ -3039,6 +3674,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         reqlog: reqLogSection,
         history: sessionContext,
         current_task: currentTask,
+        mount_note: mountNoteSection,
       }),
       adherence: promptAudit.adherenceFlags(result, { mode: effectiveMode }),
     });
@@ -3062,7 +3698,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   if (incomplete) {
     _recordFailureAttempt(executionId, {
       taskId, projectId, sessionId: activeSessionId, engine, exitCode,
-      errorText: incompleteReason || 'incomplete', action: null,
+      errorText: codexErrorMsg || claudeErrorText || incompleteReason || 'incomplete', action: null,
     });
     executionHistory.finalizeExecution(executionId, 'INTERRUPTED');
   } else {
@@ -3186,7 +3822,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     scheduleGtdAfterRun({
       internalGtd, activeSessionId, explicitMode, task, secrets,
       workDir: user.workDir, username: user.username, projectDir: user.cwd || null,
-      audience: user.audience || 'default', chatId, threadId, runStartedAt,
+      audience: user.audience || 'default', chatId, threadId, runStartedAt, taskId,
     });
   } catch (e) { console.warn('[gtd] hook:', e.message); }
 
@@ -3232,6 +3868,35 @@ function interruptForRestart() {
   }
 }
 
+// Перехват «иероглифов» в финальном ответе агента (src/answer-glyph-guard.js):
+// движок иногда подмешивает в русский текст иероглифы («серый状态» вместо
+// «серый статус») — для пользователя это читается как поломка бота. Событие
+// редкое, но ловится на живых ответах, поэтому детект+переписывание живут в
+// ядре, а не в заметке или промпте.
+//
+// Правила места вызова (хук перед футерами в _runTask):
+//   • до футеров/кнопок/detectPlan/detectMenu/appendReply — в Telegram, в
+//     историю сессии и в сниппер уходит уже чистый текст, а классификаторы
+//     кнопок не видят мусор;
+//   • internalGtd не трогаем: там ответ читает GTD-контроллер, переписывание
+//     его текста ломает разбор;
+//   • незавершённый ход не трогаем: показывается прогресс, а не ответ;
+//   • любой сбой деградирует в исходный текст — ответ не теряется никогда.
+//
+// Отдельной функцией, а не инлайном: seam «раннер → перехватчик» должен быть
+// проверяем исполняемым тестом, а не вхождением в исходнике.
+async function _applyAnswerGlyphGuard({ result, user, profileName, sessionId = null, incomplete, internalGtd, engineRun }) {
+  if (incomplete || internalGtd || !answerGlyphGuard.needsRewrite(result)) return { text: result, guard: null };
+  try {
+    const guard = await answerGlyphGuard.rewriteAnswer({ text: result, user, profileName, engineRun });
+    console.log(`[glyph-guard] session=${sessionId || '-'} glyphs=${guard.glyphs} repl=${guard.replacements ?? 0} action=${guard.action} model=${guard.model || '-'}${guard.error ? ` error=${guard.error}` : ''}`);
+    return { text: guard.text, guard };
+  } catch (e) {
+    console.warn('[glyph-guard] не сработал, ответ как есть:', e.message);
+    return { text: result, guard: null };
+  }
+}
+
 module.exports = {
   interruptForRestart, MAX_RESUME_ATTEMPTS, isProviderFault,
   runTask, getQuickAnswer, runQuickAnswer, shouldAttemptQuickAnswer, generateConnectLink, getPendingTasks, clearPendingTask,
@@ -3239,13 +3904,17 @@ module.exports = {
   // never persist an absolute workDir, including over a legacy record.
   savePendingTask,
   resolveRunSession,
-  isTaskRunning, isChatTaskRunning, isSessionRunning, isSessionQueuedFor, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,
-  stopTracesFor, confirmStopped, countIdleLiveRuns,
+  isTaskRunning, isChatTaskRunning, isSessionRunning, isSessionQueuedFor, sessionRunPhase, stopSessionTask, extendTaskTimeout, stopTask, stopUserTask, killTaskByUsername,
+  stopTracesFor, confirmStopped, countIdleLiveRuns, supplementTask,
   reconcileSoftContinuations,
   // Exported for intent-coverage tests only
   _intents: { HH_MY_VACANCIES_INTENT, HH_FUNNEL_INTENT, HH_RESPONSES_INTENT, HH_ATS_EDITOR_INTENT, HH_REVIEW_PAGE_INTENT, ENGINE_SWITCH_INTENT },
+  // Exported for answer-glyph-guard wiring tests only
+  _glyph: { apply: _applyAnswerGlyphGuard },
   // Exported for pin-state tests only
   _pin: { updateContextPin, readPinStore, buildContextCard },
+  // Exported for the ladder-classifier tests only — genuine provider error vs answer prose
+  providerErrorText,
   // Exported for time-context tests only
   _time: { currentTimeSection },
   // Exported for final-text-selection tests only

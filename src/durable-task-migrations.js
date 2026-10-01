@@ -20,6 +20,10 @@ module.exports = function migratePlan(db) {
           hooks_json: 'TEXT',
           // Fanout (#1752): a child plan spawned by a parent's fanout step.
           parent_task_id: 'TEXT', parent_item_id: 'TEXT', batch_item_key: 'TEXT',
+          // #1886: the plan's owner chat — the session it was started from plus a
+          // snapshot {chatId,audience,threadId} of that session's chat at creation.
+          // Separate from task_sessions («the session's active task», one per session).
+          origin_session_id: 'TEXT', origin_chat_json: 'TEXT',
         },
         task_items: {
           // P4 (#1459): resolved per-item hooks — step on_complete/on_fail and the
@@ -44,9 +48,25 @@ module.exports = function migratePlan(db) {
           // started_at, deadline_at, reason, awaiting_user, wake_message, ...}.
           // NULL = the step does not wait. See src/durable-wait.js.
           wait_json: 'TEXT',
+          // already_done (#1959): deterministic pre-check evaluated when the step is
+          // claimed, BEFORE any model run. All pass → the step is closed with an
+          // audit row and the next step is taken; not pass → the normal run. NULL =
+          // no pre-check. Keys are registry validators, same shape as validation_json.
+          already_done_json: 'TEXT',
           // Fanout (#1752): batch config + durable state of a fanout step
           // (queue, child task per element, supervisor journal). See src/playbook-fanout.js.
           fanout_json: 'TEXT',
+          // Structured step result (#87 B1.3, ARCHITECTURE §4.4): what the step
+          // itself reports through task_item_result — {status, result, note, at,
+          // attempt}. Settled on this instead of parsing `DURABLE:` out of the
+          // reply text (94% of OpenCode step failures were a missing marker).
+          // Cleared by claimNextRunnable: every attempt starts with a clean result.
+          result_json: 'TEXT',
+          // Attempt fencing (prod-plans T6 / red-team B3, epic #87 B1.1): bumped by
+          // claimNextRunnable on every claim; every settle write of that attempt carries
+          // the generation it claimed, so a stale attempt (45-min orphan grace re-queued a
+          // run that was still alive) can no longer overwrite the step a newer attempt owns.
+          claim_generation: 'INTEGER NOT NULL DEFAULT 0',
         },
         executions: { executor_role: 'TEXT', model_level: 'TEXT', context_budget: 'TEXT', profile: 'TEXT', provider: 'TEXT', attempt_number: 'INTEGER', result_json: 'TEXT' },
       };
@@ -79,7 +99,23 @@ module.exports = function migratePlan(db) {
           detail TEXT,
           boundary_key TEXT NOT NULL UNIQUE,
           created_at INTEGER NOT NULL
-        );`);
+        );
+        CREATE TABLE IF NOT EXISTS task_signals (
+          -- Identity of an incoming signal = userTaskId + step (epic #87 B1.2):
+          -- one signal per plan step, so a second wake for the same step can never
+          -- overwrite the first (prod-plans T5: «второй wake перезаписывает
+          -- wake_message»). Rows survive consumption as the audit trail.
+          task_id      TEXT NOT NULL REFERENCES durable_tasks(id) ON DELETE CASCADE,
+          task_item_id TEXT NOT NULL REFERENCES task_items(id) ON DELETE CASCADE,
+          event_type   TEXT NOT NULL DEFAULT 'wake',
+          source       TEXT,
+          payload_json TEXT,
+          created_at   INTEGER NOT NULL,
+          consumed_at  INTEGER,
+          PRIMARY KEY (task_id, task_item_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_signals_pending
+          ON task_signals(task_id, consumed_at);`);
       if (db.pragma('foreign_key_check').length) throw new Error('plan migration foreign key check failed');
     })();
   } finally { db.pragma('foreign_keys = ON'); }

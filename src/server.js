@@ -28,7 +28,7 @@ const { runTask, generateConnectLink, getQuickAnswer, getPendingTasks, clearPend
 const { runMcpTool } = require('./mcp-action');
 const { isValidProjectId } = require('./valid-project-id');
 const { trackChat, pollDriveChanges } = require('./drive-watcher');
-const { listSessions, getSession: getSessionData, getCurrentSessionId, getEngineSessionId } = require('./session-store');
+const { listSessions, getCurrentSessionId, getEngineSessionId } = require('./session-store');
 const { startGetcourseLogin } = require('./getcourse-login');
 const { createHhNegotiations } = hhLib('hh-negotiations');
 
@@ -625,6 +625,17 @@ async function main() {
       return json(res, ready ? 200 : 503, { ready, checks, vm: VM_NAME, commit: GIT_COMMIT, uptime: process.uptime() });
     }
 
+    // POST /webhooks/github — event-driven wake for durable waits (#1846). Mounted
+    // BEFORE the Bearer gate (GitHub sends no token); it authenticates itself with
+    // HMAC-SHA256 over the raw body and never decides a verdict, only nudges the
+    // poll. Returns false when the path is not ours.
+    if (url.pathname === '/webhooks/github') {
+      if (await require('./handlers/github-webhook').handleGithubWebhook(req, url, res, {
+        json, secrets, readBodyBuffer, readBody,
+        getGtdTickNow: () => gtdTickNow,
+      }) !== false) return;
+    }
+
     // GET /p/:slug — serve a published page (no auth, public; password-gated
     // pages checked before ANY content incl. ?raw). See src/handlers/pages.js.
     if (req.method === 'GET' && require('./handlers/pages').servePublishedPage(req, url, res, publishPasswordForm)) return;
@@ -850,7 +861,9 @@ async function main() {
       let session = null;
       try {
         const sid = sessionId || getCurrentSessionId(workDir);
-        if (sid) session = await getSessionData(workDir, sid);
+        // #1916 PR-C: an archived session is served from GCS in memory; the whole
+        // block stays best-effort (a bug report must not fail on an archive outage).
+        if (sid) session = await require('./session-materialize').readSessionMaybeArchived({ workDir, sessionId: sid });
       } catch {}
 
       // Load recent sessions list
@@ -1001,10 +1014,12 @@ async function main() {
         return json(res, 400, { error: 'invalid username' });
       if (audience != null && (typeof audience !== 'string' || !/^[a-zA-Z0-9_-]{1,32}$/.test(audience)))
         return json(res, 400, { error: 'invalid audience' });
-      // Подтверждение выхода: 2500ms по умолчанию, потолок 4500ms — шлюз ждёт 5с,
-      // остаток нужен на сериализацию ответа и network jitter.
+      // Подтверждение выхода: 2500ms по умолчанию, потолок 10000ms — spec SS-03
+      // даёт шлюзу 10с на «подтвердилось/не подтвердилось» (эскалация SIGKILL уходит
+      // на 5с, engine-stop.js). Дефолт 2500 остаётся для текущего шлюза с AbortSignal 5с
+      // (agent-client.js) — старый вызов не меняется, новый может запросить окно целиком.
       const rawWaitMs = payload?.waitMs;
-      const waitMs = Number.isFinite(rawWaitMs) ? Math.min(Math.max(rawWaitMs, 0), 4500) : 2500;
+      const waitMs = Number.isFinite(rawWaitMs) ? Math.min(Math.max(rawWaitMs, 0), 10000) : 2500;
       const owner = { username, audience: audience || null, chatId: chatId ?? null, threadId };
       const { stopUserTask, killTaskByUsername, stopTracesFor, confirmStopped, countIdleLiveRuns } = require('./runner');
       // Раны владельца без процесса (очередь, retry/resume-backoff) — считаем ДО
@@ -1026,6 +1041,12 @@ async function main() {
         gtdCancelled = require('./gtd-controller').closeStoppedGtd(userWorkDir(username));
       } catch (e) { console.warn('[tasks/stop] gtd close:', e.message); }
       const confirmed = await confirmStopped(owner, waitMs);
+      // K11 (spec §3): метрика неуспешного подтверждения — шлюзу нужно отличить
+      // «процесс вышел» от «ответил, но цепочка ещё жива». grep journalctl:
+      // `grep stop_unconfirmed`.
+      if (!confirmed) {
+        console.warn(`[stop] stop_unconfirmed user=${username} chat=${chatId ?? '-'} audience=${audience || 'default'} waitMs=${waitMs}`);
+      }
       // stopped — «что-то реально остановлено»: сигнал живому рану, снятый с
       // очереди/backoff'а ран или закрытая доводка. Сама запись отметки (её
       // stopTracesFor ставит всегда, в т.ч. в пустом чате) — НЕ остановка:
@@ -1047,12 +1068,89 @@ async function main() {
       });
     }
 
+    // POST /tasks/supplement — «➕ Дополнить» на идущей задаче (spec Core 02 SS-07/08,
+    // issue #1934, §5 PR#4). Серверная операция вместо гонки «шлюз: stopTask().catch
+    // (() => {}) + runTask»: атомарно остановить цепочку диалога, дождаться
+    // подтверждения выхода и стартовать ровно ОДИН новый ран в той же сессии с
+    // текстом «[Дополнение к задаче] …».
+    //
+    // Body: { username, text?, fileRefs?, sessionId? | chatId?, audience?, threadId?,
+    //         initialMsgId?, pinnedMsgId?, mode?, waitMs? }
+    //   - адрес ОБЯЗАТЕЛЕН (sessionId или chatId): дополнение действует на один
+    //     диалог, а не на профиль (K4 — соседние чаты не трогаем);
+    //   - initialMsgId — прогресс-сообщение старой задачи: новый ран стримится в
+    //     него же, с кнопками Стоп/Дополнить (SS-07);
+    //   - ответ 200 { ok, status }:
+    //       restarted        — старая цепочка остановлена И подтверждена, ран стартовал (SS-07);
+    //       already_finished — останавливать нечего; шлюз запускает дополнение
+    //                          обычным /run как продолжение сессии (SS-08);
+    //       stop_unconfirmed — подтверждения нет (SS-03), НЕ запущено ничего (K7);
+    //       in_progress      — параллельный «Дополнить» уже в полёте (K7).
+    if (req.method === 'POST' && url.pathname === '/tasks/supplement') {
+      const body = await readBody(req);
+      let payload;
+      try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'bad json' }); }
+      const { username, audience, text, fileRefs, mode } = payload || {};
+      const chatId = payload?.chatId ?? payload?.userId ?? null;
+      const sessionId = payload?.sessionId ?? null;
+      const rawThreadId = payload?.threadId;
+      const threadId = Number.isInteger(rawThreadId) && rawThreadId > 0 ? rawThreadId : null;
+      if (rawThreadId != null && threadId == null) return json(res, 400, { error: 'invalid threadId' });
+      if (!username || !/^[a-zA-Z0-9_-]+$/.test(username)) return json(res, 400, { error: 'invalid username' });
+      if (audience != null && (typeof audience !== 'string' || !/^[a-zA-Z0-9_-]{1,32}$/.test(audience)))
+        return json(res, 400, { error: 'invalid audience' });
+      if (chatId != null && !/^-?\d{1,20}$/.test(String(chatId))) return json(res, 400, { error: 'invalid chatId' });
+      if (sessionId != null && !/^[a-zA-Z0-9_-]{1,128}$/.test(String(sessionId))) return json(res, 400, { error: 'invalid sessionId' });
+      if (chatId == null && !sessionId) return json(res, 400, { error: 'sessionId or chatId required' });
+      if (text != null && typeof text !== 'string') return json(res, 400, { error: 'invalid text' });
+      if (!(typeof text === 'string' && text.trim()) && !(Array.isArray(fileRefs) && fileRefs.length))
+        return json(res, 400, { error: 'missing text' });
+      if (mode != null && !/^[a-zA-Z0-9_-]{1,32}$/.test(String(mode))) return json(res, 400, { error: 'invalid mode' });
+      // Подтверждение остановки перед перезапуском: 4500ms по умолчанию (дефолт
+      // выше, чем у /tasks/stop — тут без подтверждения перезапускать НЕЛЬЗЯ),
+      // потолок 10000ms — spec SS-03 окно в 10с.
+      const rawWaitMs = payload?.waitMs;
+      const waitMs = Number.isFinite(rawWaitMs) ? Math.min(Math.max(rawWaitMs, 0), 10000) : 4500;
+
+      const workDir = path.join(BASE_USERS_DIR, username);
+      // Файлы/голос — тем же материализатором, что и POST /run (SS-10): рефы
+      // шлюза превращаются в пути + fileNote, вплетённый в текст дополнения.
+      let effectiveText = text || '';
+      let effectiveFileRefs = fileRefs;
+      if (Array.isArray(fileRefs) && fileRefs.length) {
+        try {
+          const { materializeFileRefs } = require('./intake-materializer');
+          const prepared = await materializeFileRefs({
+            workDir, username, fileRefs, task: effectiveText,
+            engine: profiles.getEngine(workDir, chatId ?? 0),
+            openrouterKey: secrets.OPENROUTER_API_KEY,
+            gatewayUrl: process.env.MEDIA_GATEWAY_URL, agentSecret: secrets.AGENT_SECRET,
+          });
+          effectiveText = prepared.task;
+          effectiveFileRefs = prepared.fileRefs;
+        } catch (e) {
+          if (e.statusCode === 400) return json(res, 400, { error: e.message });
+          console.error('[tasks/supplement] fileRef materialize:', e.cause?.message || e.message);
+          return json(res, 503, { error: 'attachment not persisted; retry with the same text' });
+        }
+      }
+
+      const { supplementTask } = require('./runner');
+      const result = await supplementTask({
+        username, audience: audience || null, chatId, threadId, sessionId,
+        workDir, text: effectiveText, fileRefs: effectiveFileRefs || null,
+        initialMsgId: payload?.initialMsgId || null, pinnedMsgId: payload?.pinnedMsgId || null,
+        mode: mode || null, secrets, waitMs,
+      });
+      return json(res, result.ok === false ? 400 : 200, result);
+    }
+
     if (req.method === 'POST' && url.pathname === '/run') {
       const body = await readBody(req, 32 * 1024 * 1024);
       let payload;
       try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid json' }); }
 
-      const { username, task, context, sessionId, contextFromSession, forceClaude, forceNew, telegramUserId, initialMsgId, pinnedMsgId, projectId, projectPicked, newProjectName, fileBase64, fileName, fileMimeType, fileRefs, requestId, mode, threadId, initiatedAt, audience } = payload;
+      const { username, task, context, sessionId, contextFromSession, forceClaude, forceNew, telegramUserId, initialMsgId, pinnedMsgId, projectId, projectPicked, newProjectName, fileBase64, fileName, fileMimeType, fileRefs, requestId, mode, threadId, initiatedAt, audience, parallel } = payload;
       // `chatId` is the canonical field for the Telegram chat to stream into (plan
       // generic-naming-conventions-refactoring, P1-C). `userId` is now a legacy wire
       // alias, normalized once right here — PR-D drops tg-bot's `userId` send, PR-E
@@ -1222,7 +1320,7 @@ async function main() {
         // задачи, остаются в держателе с кнопкой — но как только дошли до /run,
         // это решение юзера). Авто-ретраи внутренних хопов сюда не приходят: они
         // зовут runTask напрямую и гейтятся по initiatedAt.
-        const completion = runTask({ taskId, requestId: requestId || null, user, threadId, ...(Object.hasOwn(payload, 'initiatedAt') ? { initiatedAt } : {}), fromUser: true, task: effectiveTask, context, sessionId: sessionId || null, contextFromSession: contextFromSession || null, forceClaude: !!forceClaude, forceNew: !!forceNew, initialMsgId: initialMsgId || null, pinnedMsgId: pinnedMsgId || null, secrets, fileRefs: effectiveFileRefs, mode: mode || null, projectId: projectId || null, projectPicked: projectPicked === true, newProjectName: newProjectName || null });
+        const completion = runTask({ taskId, requestId: requestId || null, user, threadId, ...(Object.hasOwn(payload, 'initiatedAt') ? { initiatedAt } : {}), fromUser: true, task: effectiveTask, context, sessionId: sessionId || null, contextFromSession: contextFromSession || null, forceClaude: !!forceClaude, forceNew: !!forceNew, parallel: parallel === true, initialMsgId: initialMsgId || null, pinnedMsgId: pinnedMsgId || null, secrets, fileRefs: effectiveFileRefs, mode: mode || null, projectId: projectId || null, projectPicked: projectPicked === true, newProjectName: newProjectName || null });
         completion.catch(err => console.error(`[${taskId}] runTask error:`, err.message));
         if (requestId) atomicJson(receipt, { taskId, audience: audience || 'default', acceptedAt: Date.now() });
         json(res, 202, { taskId, requestId, durable: true });

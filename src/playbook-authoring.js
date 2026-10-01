@@ -89,8 +89,8 @@ const AUTHORING_PROMPT = [
   '4. Объективные проверки (CI зелёный, merge, файл существует, ответ API) — это execution_kind "programmatic",',
   '   без executor_role/minimum_model_level/context_budget. Не тратим модель на то, что отвечает API.',
   '5. Режь процесс на мелкие шаги, всего 15-20 пунктов. Для шагов, которые могут падать или идти долго,',
-  '   задавай max_attempts (2-3) и execution_timeout_seconds (обычно 300-900). Для ожидания CI/деплоя — delay_after_sec.',
-  '6. defaults: max_attempts 3, execution_timeout_seconds 600, recovery_policy "default".',
+  '   задавай max_attempts (2-3); execution_timeout_seconds не нужен — исполнитель даёт любому шагу 40 мин (потолок рана). Для ожидания CI/деплоя — delay_after_sec.',
+  '6. defaults: max_attempts 3, execution_timeout_seconds 2400, recovery_policy "default".',
   '7. Хуки — только на границах (stage.on_enter/on_exit, step.on_complete/on_fail, hooks.task_done/task_failed).',
   '   Закрытый словарь type: notify|check|create_issue|publish. notify наружу (боссу/клиенту) — редко и по делу:',
   '   это внешнее сообщение, оно требует согласия.',
@@ -102,6 +102,11 @@ const AUTHORING_PROMPT = [
   '    на языке пользователя (по ним агент узнаёт плейбук из обычной просьбы без id).',
   '12. В programmatic-шаге validation — ТОЛЬКО ключи из списка доступных проверок ниже (ровно эти имена),',
   '    и без instructions к исполнению: объективную проверку исполняет рантайм по ключу, а не модель.',
+  '13. Если ВСЕ проверки шага — ключи из списка доступных проверок (объективные), шаг ОБЯЗАН быть либо',
+  '    execution_kind "programmatic", либо нести "already_done": {<тот же ключ>: <значение>}. already_done —',
+  '    предварительная проверка: движок выполняет её при подхвате шага ДО запуска модели; прошла → шаг',
+  '    закрывается без запуска модели, не прошла → обычный прогон (агент делает работу). Так «Открыть PR» и',
+  '    «CI зелёный» не тратят модель, если результат уже есть, но всё ещё чинятся, если нет.',
 ].join('\n');
 
 // ── Authoring catalog: what the runtime can actually check and reuse ─────────
@@ -124,7 +129,16 @@ function loadStepTypeCatalog({ siblingRoots } = {}) {
     } catch {
       continue; // missing / unreadable / malformed → try the next root
     }
-    const arr = Array.isArray(raw) ? raw : (Array.isArray(raw && raw.step_types) ? raw.step_types : null);
+    // The live library (software-engineering-playbooks) keeps its types as an object keyed by
+    // id under `types`; the array shapes are the earlier format. Reading only the arrays left
+    // the authoring catalog silently empty for every profile.
+    const byId = raw && raw.types && typeof raw.types === 'object' && !Array.isArray(raw.types)
+      ? Object.entries(raw.types).map(([id, t]) => ({ ...(t || {}), id }))
+      : null;
+    const arr = Array.isArray(raw) ? raw
+      : Array.isArray(raw && raw.step_types) ? raw.step_types
+      : Array.isArray(raw && raw.types) ? raw.types
+      : byId;
     if (!arr) continue;
     return arr
       .map(t => ({ id: t && (t.id || t.title), purpose: (t && t.purpose) || '', execution_kind: (t && t.execution_kind) || '' }))
@@ -180,13 +194,22 @@ function assertAuthoringSemantics(playbook, { validatorKeys = null, requireWhenT
   const declaredInputs = new Set((Array.isArray(playbook.inputs) ? playbook.inputs : []).map(i => i && i.name));
   for (const stage of playbook.stages || []) {
     for (const step of stage.steps || []) {
+      const validationKeys = Object.keys((step && step.validation) || {});
       if (step && step.execution_kind === 'programmatic') {
-        for (const key of Object.keys(step.validation || {})) {
+        for (const key of validationKeys) {
           if (!keys.has(key)) {
             throw playbookError('PROGRAMMATIC_UNKNOWN_VALIDATOR',
               `unknown programmatic validator "${key}" в шаге «${step.title}»; доступны: ${[...keys].join(', ')}`);
           }
         }
+      } else if (step && validationKeys.length && validationKeys.every(k => keys.has(k))
+                 && !(step.already_done && Object.keys(step.already_done).length)) {
+        // #1959: a step whose checks are ALL deterministic costs a full model run
+        // for nothing when the result already holds. Require it to be programmatic
+        // or to declare already_done (a pre-check the engine runs before the run).
+        throw playbookError('AGENT_STEP_SHOULD_BE_PROGRAMMATIC',
+          `шаг «${step.title}»: все проверки детерминированные (${validationKeys.join(', ')}), но шаг агентский `
+          + 'без already_done — сделай его programmatic или добавь already_done: {<ключ>: <значение>}');
       }
     }
   }

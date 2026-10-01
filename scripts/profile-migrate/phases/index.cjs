@@ -4,22 +4,51 @@
 // A phase is a SMALL self-contained module in this directory that declares
 // which clean-list action classes it owns and what applying one item does to
 // the filesystem. Phases register themselves by existing: `loadPhases()` picks
-// up every `*.cjs` here (except this file), so M2–M5 (ARCHIVE / MOVE / DEDUP …)
+// up every `*.cjs` here (except this file), so M3–M5 (MOVE / DEDUP …)
 // wire in later PRs by dropping a file in — no edit to the runner.
 //
-// Phase contract (all four functions are required):
+// Phase contract (all four functions are required; all four MAY be async — the
+// runner awaits them, an archive is a blob upload):
 //   actions: string[]                 clean-list classes this phase plans for
 //   action:  string                   ledger action written by a successful apply
 //   failureAction/restoredAction?: string   ledger actions for the compensating
 //                                     record / the post-revert record
-//   prepare(ctx, item) -> {sha256, size, dest}   READ-ONLY: hash + reserve the
-//                                     destination. Runs before the ledger
-//                                     append, so a record is never written for
-//                                     a file that cannot be identified.
+//   usesQuarantine?: false            skip the quarantine-root pre-flight mkdir
+//                                     (a phase that archives to a blob store
+//                                     never needs the dir — see archive-sessions)
+//   plan(ctx, scan) -> {items, filtered?}   OPTIONAL self-planning hook. The
+//                                     classification walk always runs (it is the
+//                                     report), but the phase may replace the
+//                                     ITEM list — that is how a phase whose unit
+//                                     is not a file plans (worktree: group by
+//                                     working copy, ask git for clean/dirty).
+//                                     `filtered` is additive: entries declined
+//                                     after classification. Without this hook
+//                                     the plan IS scan.items.
+//   filter(ctx, entry) -> boolean     OPTIONAL item selector. The clean-list
+//                                     class is inherited by a whole subtree, so
+//                                     class alone is not the plan: ARCHIVE hands
+//                                     the phase its pointers, digest caches and
+//                                     git working copies too, and the phase
+//                                     declines them itself (declined entries are
+//                                     counted `filtered`, never planned).
+//   prepare(ctx, item) -> {sha256, size, dest, action?}   READ-ONLY: hash +
+//                                     reserve the destination. Runs before the
+//                                     ledger append, so a record is never
+//                                     written for a file that cannot be
+//                                     identified. For ARCHIVE `dest` is the
+//                                     relative blob key (isSafeRelPath contract
+//                                     unchanged). `action` overrides the
+//                                     phase-level ledger action for THIS item
+//                                     (worktree writes DELETE for a clean copy
+//                                     and ARCHIVE for a bundled one).
 //   apply(ctx, item, prepared)        perform the action (mutates the profile)
 //   verify(ctx, st) -> {status, message?}   post-state check for one FOLDED
 //                                     ledger record (status: ok | recreated |
-//                                     <failure>)
+//                                     pending | <failure>) — `pending` = both
+//                                     copies exist (remote is good, the local
+//                                     one is not removed yet): reported, never
+//                                     a failure, the sweep finishes it.
 //   revert(ctx, st) -> {status, reason?}     restore one folded record
 //                                     (status: restored | already | skip |
 //                                     conflict | lost | corrupt)

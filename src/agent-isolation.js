@@ -74,7 +74,7 @@ const ENGINE_ENV_ALLOW = new Set([
   // trace labels only: opencode stamps them onto every llm-ladder call as x-ladder-* headers
   // (src/opencode-ladder-provider.js). The chat goes under its own name so nothing starts
   // reading it as a send target (epic #1365 ratchet on the chat-id env).
-  'AGENT_RUN_ID', 'AGENT_TRACE_CHAT',
+  'AGENT_RUN_ID', 'AGENT_TRACE_CHAT', 'AGENT_LADDER_APP',
   'AGENT_USER_NAME', 'AGENT_USER_HANDLE',
   // run-scoped callback credentials (src/agent-run-tokens.js, src/agent-mcp-bridge.js)
   'AGENT_RUN_TOKEN', 'AGENT_MCP_BRIDGE_SOCKET',
@@ -137,11 +137,12 @@ function buildAgentEnv(fullEnv, { userTokenNames = [], extra = {}, engineCredent
 
 // Env names an engine reads its model-provider credentials from.
 // opencode: the built-in OpenRouter provider reads OPENROUTER_API_KEY; the built-in
-// OpenCode Go / Zen providers read OPENCODE_API_KEY (research runs on
-// opencode-go/mimo-v2.6-flash — the box stores it as OPENCODE_GO_API_KEY, mapped in
-// runEngineProcess); and custom providers in its config files reference env vars as
-// {env:NAME} or ${NAME} (e.g. gigachat → ${GIGACHAT_TOKEN}); every such reference is
-// followed.
+// OpenCode Go / Zen providers read OPENCODE_API_KEY (every profile routes through the
+// worker ladder now — this remains the credential for an explicit `opencode-go/…` model;
+// the box stores it as OPENCODE_GO_API_KEY[S], one key drawn per run in
+// runEngineProcess → goApiKey); and custom providers in its config files reference env
+// vars as {env:NAME} or ${NAME} (e.g. gigachat → ${GIGACHAT_TOKEN}); every such reference
+// is followed.
 // codex: OPENAI_API_KEY when it runs on an API key. claude: OAuth, nothing from env.
 const ENV_REF_RE = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 function engineCredentialNames(engine, { configFiles = [] } = {}) {

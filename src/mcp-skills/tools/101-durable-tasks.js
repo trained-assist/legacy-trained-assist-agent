@@ -30,12 +30,15 @@ function requireProfile(ctx) {
 
 // Resolve references only beneath the authenticated profile. Never trust an
 // incoming profile_id or a caller-supplied filesystem path.
+const safeId = value => typeof value === 'string' && value.length > 0 && value !== '.' && value !== '..' && !/[\\/\0]/.test(value);
+
+function ownedBy(profileId, file) {
+  try { return fs.realpathSync(file).startsWith(fs.realpathSync(userWorkDir(profileId)) + path.sep); } catch { return false; }
+}
+
 function checkReferences(profileId, projectId, sessionId) {
-  const safeId = value => typeof value === 'string' && value.length > 0 && value !== '.' && value !== '..' && !/[\\/\0]/.test(value);
   const root = userWorkDir(profileId);
-  const ownedPath = file => {
-    try { return fs.realpathSync(file).startsWith(fs.realpathSync(root) + path.sep); } catch { return false; }
-  };
+  const ownedPath = file => ownedBy(profileId, file);
   if (projectId && (!safeId(projectId) || !ownedPath(path.join(root, 'projects', projectId)) || !getProject(root, projectId))) {
     throw new Error('project not found in this profile');
   }
@@ -59,6 +62,22 @@ function sessionProjectId(profileId, sessionId) {
   } catch { return null; }
 }
 
+// #1886: a plan belongs to the chat it was started from. The owner session is the
+// explicit session_id, else the caller's own session (AGENT_SESSION_ID — the model
+// rarely passes session_id). A missing/foreign env session is ignored, never an error.
+// The chat snapshot survives the session file being deleted.
+function planOrigin(profileId, sessionId) {
+  const sid = sessionId || process.env.AGENT_SESSION_ID || null;
+  if (!sid || !safeId(sid) || !ownedBy(profileId, sessionFilePath(profileId, sid))) return { session_id: null, origin_chat: null };
+  try {
+    const sess = JSON.parse(fs.readFileSync(sessionFilePath(profileId, sid), 'utf8'));
+    const chatId = sess ? (sess.liveChatId ?? sess.ownerChatId ?? null) : null;
+    const origin_chat = chatId == null ? null
+      : { chatId, audience: sess.audience || 'default', threadId: sess.threadId || null };
+    return { session_id: sid, origin_chat };
+  } catch { return { session_id: sid, origin_chat: null }; }
+}
+
 function withProjection(result, profileId) {
   if (!result.task.project_id || !result.task.acceptance_criteria_json) return result;
   try {
@@ -75,6 +94,7 @@ function withProjection(result, profileId) {
 
 module.exports = {
   _sessionProjectId: sessionProjectId,
+  _planOrigin: planOrigin,
   tools: {
 
     task_create: {
@@ -108,7 +128,8 @@ module.exports = {
         checkReferences(profileId, project_id, plan.session_id);
         const id = crypto.randomUUID();
         if (Object.keys(plan).length) {
-          const result = store().createPlan({ ...plan, id, profile_id: profileId, project_id, goal });
+          const origin = planOrigin(profileId, plan.session_id);
+          const result = store().createPlan({ ...plan, ...origin, id, profile_id: profileId, project_id, goal });
           return withProjection(result, profileId);
         }
         const task = store().createTask({ id, profile_id: profileId, project_id, goal });
@@ -291,10 +312,21 @@ module.exports = {
         '`until` — validator keys, e.g. {"ci_green": "<PR url>"}, {"merged": "<PR url>"}, ' +
         '{"http_ok": {"url": "https://host/health", "contains": "<sha>"}}, {"credential_present": "github"}, ' +
         '{"command_exit_zero": "journalctl -u svc --since -30min | grep -q \'ERR_X\'"}, {"task_done": "<task id>"}, ' +
-        '{"file_exists": "path"}; `awaiting_user: true` — you asked the user something (send the question ' +
+        '{"file_exists": "path"}; ' +
+        '`awaiting_user: true` — you asked the user something (send the question ' +
         'yourself first); `sleep_sec` — a plain timer (observe for a day, then re-check). ' +
         'For CI or a merge pass `until:{ci_green}` / `{merged}` instead of `sleep_sec` — the wait tick ' +
         're-checks conditions every ~30s, so a sleep would overshoot the event. ' +
+        // #1846: event subjects — the GitHub webhook wakes these in seconds (a push),
+        // while the validator still gives the verdict on the poll. Subject forms:
+        // issue/PR "owner/repo#N", run "owner/repo/actions/runs/<id>",
+        // job "owner/repo/actions/runs/<id>/jobs/<jobId>".
+        'EVENT subjects (a GitHub webhook wakes the step in seconds, the validator still decides): ' +
+        '{"issue_pr_merged": "owner/repo#N"} — PR merged; ' +
+        '{"issue_pr_ci_green": "owner/repo#N"} — CI green on the PR head; ' +
+        '{"workflow_run_completed": "owner/repo/actions/runs/<id>"} — an Actions run finished; ' +
+        '{"workflow_run_green": "owner/repo/actions/runs/<id>"} — that run finished green; ' +
+        '{"workflow_job_completed": "owner/repo/actions/runs/<id>/jobs/<jobId>"} — a single job finished. ' +
         'You set poll_every_sec, timeout_sec and sleep_sec yourself — pick them for what you are waiting on. ' +
         'Waiting does not spend the step\'s attempts.',
       inputSchema: {
@@ -336,7 +368,10 @@ module.exports = {
       description:
         'Wake a durable step that is waiting (task_item_wait / a playbook wait). Use it when the user ' +
         'answers the question a waiting step asked, or when you know its condition now holds. The message ' +
-        'is handed to the resumed step. A programmatic wait is simply re-checked now.',
+        'is handed to the resumed step. A programmatic wait is simply re-checked now. ' +
+        'Signals are idempotent per plan step: if the step has not reached its wait yet the answer is ' +
+        'buffered (result {buffered:true}) and applied the moment it parks, and a duplicate signal never ' +
+        'overwrites the first one — {already_woken:true} / {duplicate:true} just confirm delivery.',
       inputSchema: {
         type: 'object',
         required: ['item_id'],
@@ -353,6 +388,32 @@ module.exports = {
         // Best-effort — a missed kick still resolves on the wait tick.
         if (out && !out.error) { try { await require('../../durable-kick').notify('wake'); } catch { /* never fails the wake */ } }
         return out;
+      },
+    },
+
+    task_item_result: {
+      description:
+        'Post the STRUCTURED result of the step you are running now, so the server reads your verdict ' +
+        'directly instead of parsing `DURABLE:` out of your reply text (a forgotten marker used to fail ' +
+        'the attempt even when the work was done). Call it right before finishing the step: status ' +
+        '"done" | "failed" | "waiting", `result` = what the next step and the validators need (urls, ' +
+        'ids, file paths, decisions), `note` = one short line, `attempt` = the `Attempt: N` line from ' +
+        'your prompt (it makes a stale attempt unable to overwrite a newer one). Still end the reply ' +
+        'with the DURABLE marker as well — engines that skip this tool rely on it.',
+      inputSchema: {
+        type: 'object',
+        required: ['item_id', 'status'],
+        properties: {
+          item_id: { type: 'string', description: 'Your Step id from the durable prompt' },
+          status: { type: 'string', enum: ['done', 'failed', 'waiting'] },
+          result: { description: 'Structured outcome (any JSON): urls, ids, file paths, decisions …' },
+          note: { type: 'string', description: 'One short line for the owner and the next step' },
+          attempt: { type: 'integer', description: 'The `Attempt: N` line of your prompt' },
+        },
+      },
+      handler: async ({ item_id, ...payload }, ctx) => {
+        const profileId = requireProfile(ctx);
+        return store().setStructuredResult(item_id, profileId, payload);
       },
     },
 

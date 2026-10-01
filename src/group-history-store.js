@@ -29,6 +29,19 @@ function keyOf(e) {
   return e.id != null ? `id:${e.id}` : `seq:${e.seq}:${e.ts}`;
 }
 
+// Telegram handle of an ambient attachment (gateway historyEntry.file), so
+// get_group_file can download it later. file_id is scoped to the bot that saw it.
+function sanitizeFile(f) {
+  if (!f || typeof f.fileId !== 'string' || !f.fileId || f.fileId.length > 512) return null;
+  return {
+    kind: typeof f.kind === 'string' ? f.kind.slice(0, 20) : 'document',
+    fileId: f.fileId,
+    ...(typeof f.name === 'string' && f.name ? { name: f.name.slice(0, 200) } : {}),
+    ...(typeof f.mime === 'string' && f.mime ? { mime: f.mime.slice(0, 200) } : {}),
+    ...(Number.isFinite(f.size) ? { size: f.size } : {}),
+  };
+}
+
 /** Only well-formed entries from the wire; anything else is dropped, not rejected. */
 function sanitize(raw) {
   if (!Array.isArray(raw)) return [];
@@ -41,6 +54,7 @@ function sanitize(raw) {
       ts: e.ts,
       from: typeof e.from === 'string' ? e.from.slice(0, 200) : 'участник',
       text: e.text.slice(0, TEXT_MAX),
+      ...(sanitizeFile(e.file) ? { file: sanitizeFile(e.file) } : {}),
     });
   }
   return out;
@@ -78,4 +92,11 @@ function readGroupHistory(username, chatId, threadId, opts = {}) {
   return entries.slice(-limit);
 }
 
-module.exports = { appendGroupHistory, readGroupHistory, RETAIN_MS, RETAIN_MAX };
+/** One kept entry by Telegram message id (null if unknown / expired). */
+function findGroupEntry(username, chatId, threadId, messageId, opts = {}) {
+  const id = Number(messageId);
+  if (!Number.isSafeInteger(id)) return null;
+  return readGroupHistory(username, chatId, threadId, { ...opts, limit: RETAIN_MAX }).find(e => e.id === id) || null;
+}
+
+module.exports = { appendGroupHistory, readGroupHistory, findGroupEntry, RETAIN_MS, RETAIN_MAX };

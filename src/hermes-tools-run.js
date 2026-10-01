@@ -39,7 +39,7 @@ const path = require('path');
 const { writeRunMcpConfig } = require('./browser');
 const { isolationConfig } = require('./agent-isolation');
 const { userWorkDir } = require('./data-paths');
-const { buildEngineCommand, runEngineProcess } = require('./runner/claude-runner');
+const { buildEngineCommand, runEngineProcess, LADDER_APP } = require('./runner/claude-runner');
 const { parseLlmJson } = require('./llm-client');
 const { loadUserTokens } = require('./user-tokens');
 const ocLadder = require('./opencode-ladder-provider');
@@ -194,6 +194,8 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
     mcpConfig,
     ocProfileOverrides,
     bridgedServers,
+    // x-ladder-app (#1917): research is its own OpenRouter application slice.
+    ladderApp: LADDER_APP.hermes,
   });
 
   const text = result.claudeResult || result.lastAssistantMsg || result.fullOutput?.text || '';

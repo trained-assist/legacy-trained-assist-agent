@@ -363,6 +363,26 @@ describe('authoring semantic rules (S4a, issue #1851)', () => {
     expect(out.draft.stages[0].steps[0].validation.my_free_key).toBe(true);
   });
 
+  it('rejects an agent step whose checks are ALL deterministic and has no already_done (#1959)', async () => {
+    const bad = validPlaybook({ stages: [{ id: 's', title: 'S', steps: [
+      { title: 'CI зелёный', execution_kind: 'agent', executor_role: 'developer', minimum_model_level: 'master', context_budget: 'small', validation: { ci_green: true } },
+    ] }] });
+    const run = fakeHermes([bad, bad]);
+    const { authoring } = load({ runHermes: run });
+    await expect(authoring.draft({ username: 'alice', description: 'Процесс' }))
+      .rejects.toThrow(/AGENT_STEP_SHOULD_BE_PROGRAMMATIC/);
+  });
+
+  it('accepts an agent step with deterministic checks when it declares already_done (#1959)', async () => {
+    const good = validPlaybook({ stages: [{ id: 's', title: 'S', steps: [
+      { title: 'CI зелёный', execution_kind: 'agent', executor_role: 'developer', minimum_model_level: 'master', context_budget: 'small', validation: { ci_green: true }, already_done: { ci_green: true } },
+    ] }] });
+    const run = fakeHermes([good]);
+    const { authoring } = load({ runHermes: run });
+    const out = await authoring.draft({ username: 'alice', description: 'Процесс' });
+    expect(out.draft.stages[0].steps[0].already_done).toEqual({ ci_green: true });
+  });
+
   it('rejects a profile draft without when_to_use (R4)', async () => {
     const bad = validPlaybook();
     delete bad.when_to_use;

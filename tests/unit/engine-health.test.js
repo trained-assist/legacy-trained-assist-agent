@@ -109,3 +109,42 @@ describe('credentials vs health', () => {
     expect(H.isCredentialInvalidClass('QUOTA')).toBe(false);
   });
 });
+
+describe('half-open: unavailable expires after the cooldown', () => {
+  const trip = (engine, cls, at) => {
+    process.env.ENGINE_UNAVAILABLE_AFTER_FAILURES = '1';
+    return H.markEngineFailure(engine, { failureClass: cls, message: 'limit', at });
+  };
+
+  it('stays unavailable inside the cooldown', () => {
+    const at = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    expect(trip('codex', 'QUOTA', at).status).toBe('unavailable');
+    expect(H.getEngineHealth('codex').status).toBe('unavailable');
+  });
+
+  it('QUOTA older than the cooldown reads as degraded + half_open (probe allowed)', () => {
+    trip('codex', 'QUOTA', new Date(Date.now() - 2 * 3600 * 1000).toISOString());
+    const h = H.getEngineHealth('codex');
+    expect(h.status).toBe('degraded');
+    expect(h.half_open).toBe(true);
+    expect(H.getAllEngineHealth().codex.status).toBe('degraded');
+  });
+
+  it('AUTH waits the longer auth cooldown', () => {
+    trip('codex', 'AUTH', new Date(Date.now() - 2 * 3600 * 1000).toISOString());
+    expect(H.getEngineHealth('codex').status).toBe('unavailable');
+  });
+
+  it('a failed probe restarts the cooldown without a second alert-worthy transition', () => {
+    trip('codex', 'QUOTA', new Date(Date.now() - 2 * 3600 * 1000).toISOString());
+    const probe = H.markEngineFailure('codex', { failureClass: 'QUOTA', message: 'still out' });
+    expect(probe.status).toBe('unavailable');
+    expect(H.getEngineHealth('codex').status).toBe('unavailable');
+  });
+
+  it('a successful probe heals', () => {
+    trip('codex', 'QUOTA', new Date(Date.now() - 2 * 3600 * 1000).toISOString());
+    H.markEngineSuccess('codex');
+    expect(H.getEngineHealth('codex').status).toBe('healthy');
+  });
+});

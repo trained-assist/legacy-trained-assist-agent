@@ -32,9 +32,11 @@
 //   6. prune the DELETE-class directories the phase emptied — an UNKNOWN
 //      ancestor, even when empty, is never removed.
 //
-// Phases are small self-registering modules (see phases/index.cjs). The first
-// concrete one is `delete` (M1 clean-list DELETE actions); ARCHIVE/MOVE/DEDUP
-// wire in later PRs by dropping a module into phases/.
+// Phases are small self-registering modules (see phases/index.cjs): `delete`
+// (M1 DELETE actions), `archive-sessions` (M2 ARCHIVE → GCS blob store),
+// `worktree` (M3: clean copy → quarantine, dirty copy → bundle archive). MOVE /
+// DEDUP wire in later PRs by dropping a module into phases/. All four phase
+// functions may be async — the runner awaits them (an archive is a blob upload).
 //
 // Exit-code mapping lives in cli.mjs: 0 ok · 1 usage · 2 operational failure ·
 // 3 lock refused.
@@ -80,15 +82,26 @@ function pushError(result, msg) {
 // ── planning ─────────────────────────────────────────────────────────────────
 // One walk of the profile through classifier.cjs itself (opts.onEntry): the
 // plan IS the classification, there is no second glob implementation to drift.
-function scanProfile(profileRoot, rules, actions) {
+//
+// `filter(entry)` is the phase's own item selector (phases/index.cjs): the
+// clean-list class alone is not the plan — ARCHIVE is inherited by a whole
+// subtree (pointers, digest caches, git working copies) that the phase must
+// decline itself. Declined entries are counted in `filtered`, never planned.
+//
+// Only DELETE-class directories are prune candidates: the contract (index.cjs)
+// is "prune the DELETE-class directories the phase emptied". An ARCHIVE/MOVE
+// directory survives even when emptied — `sessions/` holds the current-session
+// pointers, a git working copy is M3's to touch.
+function scanProfile(profileRoot, rules, actions, filter = null) {
   const items = [];
   const dirs = new Set();
   const special = [];
+  let filtered = 0;
   const stats = classifier.classifyProfile(profileRoot, {
     rules,
     onEntry(e) {
       if (e.kind === 'dir') {
-        if (actions.includes(e.action)) dirs.add(e.rel);
+        if (e.action === 'DELETE') dirs.add(e.rel);
         return;
       }
       if (!actions.includes(e.action)) return;
@@ -97,18 +110,48 @@ function scanProfile(profileRoot, rules, actions) {
         special.push({ path: e.rel, action: e.action, size: e.size });
         return;
       }
+      if (filter && !filter(e)) {
+        filtered++;
+        return;
+      }
       items.push({
         path: e.rel,
         action: e.action,
         size: e.size,
         isSymlink: !!e.isSymlink,
         ruleIdx: e.ruleIdx,
+        // Outermost working-copy root (classifier.cjs walk) or null — how the
+        // worktree phase groups a plan by repository (see planFor below).
+        repoRoot: e.repoRoot || null,
         reason: e.ruleIdx >= 0 && rules[e.ruleIdx] ? rules[e.ruleIdx].reason : null,
       });
     },
   });
   items.sort((a, b) => a.path.localeCompare(b.path));
-  return { items, dirs, special, stats };
+  return { items, dirs, special, filtered, stats };
+}
+
+// The phase's item selector bound to its ctx, or null when it has none.
+function phaseFilter(phaseObj, ctx) {
+  return typeof phaseObj.filter === 'function' ? (e) => phaseObj.filter(ctx, e) : null;
+}
+
+// Plan for one (phase, profile, mode): the classification walk ALWAYS runs (it
+// IS the report — classSummary, UNKNOWN, special files), but a phase that
+// declares `plan(ctx, scan)` replaces the item list with its own. That hook is
+// how phases whose unit is not a file plan: `worktree` (M3) groups the scan by
+// working copy and asks git which copies are clean (quarantine) and which are
+// dirty (bundle archive) — a decision no path-pattern filter can make.
+// plan() returns {items, filtered} (or just items); `filtered` is additive —
+// entries the phase declined after classification (e.g. a working copy whose
+// state git cannot determine is left alone, epic principle 2).
+function planFor(ctx, o) {
+  const scan = scanProfile(ctx.profileRoot, o.rules, o.phaseObj.actions, phaseFilter(o.phaseObj, ctx));
+  if (typeof o.phaseObj.plan !== 'function') return { scan, items: scan.items };
+  const planned = o.phaseObj.plan(ctx, scan);
+  const items = Array.isArray(planned) ? planned : (planned && planned.items) || [];
+  const extra = Array.isArray(planned) ? 0 : (planned && planned.filtered) || 0;
+  return { scan: { ...scan, filtered: (scan.filtered || 0) + extra }, items };
 }
 
 function classSummary(stats) {
@@ -275,7 +318,9 @@ async function runPhase(o) {
     ok: false,
     root: path.join(o.usersRoot, profile),
     ledgerFile: ledger.ledgerPath(profile),
-    quarantineRoot: quarantine.quarantineRoot(profile),
+    // null for a phase that never touches quarantine (archive-sessions) — the
+    // report must not print a directory nothing wrote to.
+    quarantineRoot: phaseObj.usesQuarantine === false ? null : quarantine.quarantineRoot(profile),
     lock: null,
     flush: null,
     drain: null,
@@ -283,6 +328,7 @@ async function runPhase(o) {
     unknown: null,
     planned: 0,
     plannedBytes: 0,
+    filtered: 0,
     applied: 0,
     appliedBytes: 0,
     failed: 0,
@@ -302,7 +348,7 @@ async function runPhase(o) {
     return result;
   }
 
-  const ctx = { profile, profileRoot, quarantineRoot: result.quarantineRoot, rules: o.rules, mode, log };
+  const ctx = { profile, profileRoot, quarantineRoot: quarantine.quarantineRoot(profile), rules: o.rules, mode, log };
 
   if (phaseObj.inventory && (mode === 'dry-run' || mode === 'verify')) {
     doInventory(ctx, result, o);
@@ -315,7 +361,7 @@ async function runPhase(o) {
     return result;
   }
   if (mode === 'verify') {
-    doVerify(ctx, result, o);
+    await doVerify(ctx, result, o);
     result.ok = result.errorCount === 0;
     return result;
   }
@@ -366,65 +412,76 @@ async function runPhase(o) {
   return result;
 }
 
-function applyScanFields(result, scan) {
+function applyScanFields(result, scan, items) {
   result.stats = classSummary(scan.stats);
   result.unknown = result.stats.UNKNOWN || { files: 0, bytes: 0, pctBytes: 0 };
   result.scanErrors = scan.stats.errors.length;
   result.specialSkipped = scan.special.length;
-  result.planned = scan.items.length;
-  result.plannedBytes = scan.items.reduce((s, i) => s + i.size, 0);
+  result.filtered = scan.filtered || 0;
+  result.planned = items.length;
+  result.plannedBytes = items.reduce((s, i) => s + i.size, 0);
   if (scan.stats.errors.length) {
     for (const e of scan.stats.errors.slice(0, 5)) pushError(result, `scan: ${e.path}: ${e.code || e.message}`);
   }
 }
 
 function doDryRun(ctx, result, o) {
-  const scan = scanProfile(ctx.profileRoot, o.rules, o.phaseObj.actions);
-  applyScanFields(result, scan);
-  result.items = scan.items;
+  const { scan, items } = planFor(ctx, o);
+  applyScanFields(result, scan, items);
+  result.items = items;
 }
 
 async function doApply(ctx, result, o, renewFn) {
   const phaseObj = o.phaseObj;
   const { log = defaultLog } = o;
-  const scan = scanProfile(ctx.profileRoot, o.rules, phaseObj.actions);
-  applyScanFields(result, scan);
-  result.items = scan.items.map(i => ({ path: i.path, size: i.size, status: 'planned', reason: i.reason }));
-  if (!scan.items.length) {
+  const { scan, items } = planFor(ctx, o);
+  applyScanFields(result, scan, items);
+  result.items = items.map(i => ({ path: i.path, size: i.size, action: i.action, status: 'planned', reason: i.reason }));
+  if (!items.length) {
     if (scan.special.length) log(`apply ${ctx.profile}: ${scan.special.length} non-regular file(s) in the plan — report only`);
     return;
   }
 
   // Fail fast on an unwritable quarantine root BEFORE the first record: a
-  // record for an action we cannot perform is noise for verify.
-  fs.mkdirSync(ctx.quarantineRoot, { recursive: true, mode: 0o700 });
+  // record for an action we cannot perform is noise for verify. Phases that do
+  // not use quarantine (archive-sessions: blobs, not quarantine) opt out — an
+  // empty quarantine dir for every archive run is litter.
+  if (phaseObj.usesQuarantine !== false) {
+    fs.mkdirSync(ctx.quarantineRoot, { recursive: true, mode: 0o700 });
+  }
 
   let consecutive = 0;
   let lastRenew = Date.now();
-  for (let i = 0; i < scan.items.length; i++) {
-    const item = scan.items[i];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
     if (Date.now() - lastRenew >= RENEW_INTERVAL_MS) {
       try { await renewFn(); lastRenew = Date.now(); } catch (e) { pushError(result, `lock renew: ${e.message}`); return; }
     }
     const abs = path.join(ctx.profileRoot, item.path);
     let prepared = null;
     let recorded = false;
+    // What the record says: the phase's action, or the per-item override its
+    // prepare() returned (worktree writes DELETE for a clean copy and ARCHIVE
+    // for a bundled one — epic M3: «clean → DELETE / dirty → ARCHIVE»).
+    let effAction = phaseObj.action;
     try {
-      prepared = phaseObj.prepare(ctx, item);
+      // prepare/apply may be async (a blob upload is), the runner always awaits.
+      prepared = await phaseObj.prepare(ctx, item);
+      effAction = (prepared && prepared.action) || phaseObj.action;
       ledger.appendRecord(ctx.profile, ledger.makeRecord({
         phase: phaseObj.name,
         profile: ctx.profile,
         path: item.path,
         sha256: prepared.sha256,
         size: prepared.size,
-        action: phaseObj.action,
+        action: effAction,
         dest: prepared.dest,
       }));
       recorded = true;
-      phaseObj.apply(ctx, item, prepared);
+      await phaseObj.apply(ctx, item, prepared);
       result.applied++;
       result.appliedBytes += prepared.size;
-      result.items[i] = { path: item.path, size: prepared.size, sha256: prepared.sha256, dest: prepared.dest, status: 'applied' };
+      result.items[i] = { path: item.path, size: prepared.size, sha256: prepared.sha256, dest: prepared.dest, action: effAction, status: 'applied' };
       consecutive = 0;
     } catch (e) {
       result.failed++;
@@ -441,7 +498,7 @@ async function doApply(ctx, result, o, renewFn) {
             path: item.path,
             sha256: prepared ? prepared.sha256 : null,
             size: prepared ? prepared.size : item.size,
-            action: phaseObj.failureAction || `${phaseObj.action}_FAILED`,
+            action: phaseObj.failureAction || `${effAction}_FAILED`,
             dest: prepared ? prepared.dest : null,
           }));
         } catch (e2) {
@@ -449,15 +506,15 @@ async function doApply(ctx, result, o, renewFn) {
         }
       }
       pushError(result, `apply ${item.path}: ${e.message}`);
-      result.items[i] = { path: item.path, size: item.size, status: 'failed', error: e.message };
+      result.items[i] = { path: item.path, size: item.size, action: effAction, status: 'failed', error: e.message };
       if (consecutive >= MAX_CONSECUTIVE_FAILURES) {
-        pushError(result, `${consecutive} consecutive failures — aborting, ${scan.items.length - i - 1} planned item(s) untouched`);
+        pushError(result, `${consecutive} consecutive failures — aborting, ${items.length - i - 1} planned item(s) untouched`);
         break;
       }
     }
   }
   result.prunedDirs = pruneDeleteDirs(ctx.profileRoot, scan.dirs);
-  log(`apply ${ctx.profile}: ${result.applied}/${scan.items.length} applied (${result.appliedBytes} B), ${result.failed} failed, ${result.prunedDirs} emptied dir(s) pruned`);
+  log(`apply ${ctx.profile}: ${result.applied}/${items.length} applied (${result.appliedBytes} B), ${result.failed} failed, ${result.prunedDirs} emptied dir(s) pruned`);
 }
 
 async function doRevert(ctx, result, o, renewFn) {
@@ -474,7 +531,7 @@ async function doRevert(ctx, result, o, renewFn) {
       try { await renewFn(); lastRenew = Date.now(); } catch (e) { pushError(result, `lock renew: ${e.message}`); return; }
     }
     let r;
-    try { r = phaseObj.revert(ctx, st); } catch (e) { r = { status: 'error', reason: e.message }; }
+    try { r = await phaseObj.revert(ctx, st); } catch (e) { r = { status: 'error', reason: e.message }; }
     if (r.status === 'restored' || r.status === 'already') {
       try {
         ledger.appendRecord(ctx.profile, ledger.makeRecord({
@@ -503,13 +560,13 @@ async function doRevert(ctx, result, o, renewFn) {
   log(`revert ${ctx.profile}: ${rev.restored} restored, ${rev.already} already in place, ${rev.skipped} skipped, ${rev.failures.length} failed`);
 }
 
-function doVerify(ctx, result, o) {
+async function doVerify(ctx, result, o) {
   const phaseObj = o.phaseObj;
   const { log = defaultLog } = o;
   const { records, skipped, missing } = ledger.readLedger(ctx.profile);
   const folded = foldPhaseRecords(records, phaseObj.name);
-  const scan = scanProfile(ctx.profileRoot, o.rules, phaseObj.actions);
-  applyScanFields(result, scan);
+  const { scan, items } = planFor(ctx, o);
+  applyScanFields(result, scan, items);
 
   const v = {
     records: folded.length,
@@ -518,6 +575,10 @@ function doVerify(ctx, result, o) {
     ok: 0,
     recreated: 0,
     failures: [],
+    // ARCHIVE records whose remote copy checks out but whose local copy has not
+    // been removed yet (crash between marker and unlink) — the post-run sweep
+    // (PR-D) finishes those, so they are reported, never failed.
+    pendingArchived: [],
     pendingCount: 0,
     pending: [],
   };
@@ -525,21 +586,56 @@ function doVerify(ctx, result, o) {
   for (const st of folded) {
     seen.add(st.path);
     let r;
-    try { r = phaseObj.verify(ctx, st); } catch (e) { r = { status: 'error', message: e.message }; }
+    try { r = await phaseObj.verify(ctx, st); } catch (e) { r = { status: 'error', message: e.message }; }
     if (r.status === 'ok') v.ok++;
     else if (r.status === 'recreated') v.recreated++;
+    else if (r.status === 'pending') v.pendingArchived.push({ path: st.path, message: r.message || '' });
     else v.failures.push({ path: st.path, state: st.state, status: r.status, message: r.message || '' });
   }
   // Planned right now but never recorded for this phase: files that appeared
   // after apply (npm ci re-created node_modules) or an apply that never ran.
   // Informational — verify's hard failures are the integrity ones above.
-  const pending = scan.items.filter(i => !seen.has(i.path));
+  const pending = items.filter(i => !seen.has(i.path));
   v.pendingCount = pending.length;
   v.pending = pending.slice(0, 50);
   result.verify = v;
 
   if (v.failures.length) pushError(result, `${v.failures.length} verification failure(s) for phase "${phaseObj.name}"`);
-  log(`verify ${ctx.profile}: ok=${v.ok} recreated=${v.recreated} pending=${v.pendingCount} failures=${v.failures.length}${skipped ? ` torn-lines=${skipped}` : ''}`);
+  log(`verify ${ctx.profile}: ok=${v.ok} recreated=${v.recreated} archive-pending=${v.pendingArchived.length} pending=${v.pendingCount} failures=${v.failures.length}${skipped ? ` torn-lines=${skipped}` : ''}`);
+}
+
+// Inventory phases (phases/index.cjs): scan → report; apply = ledger the scan
+// as the baseline; verify = scan again and let the phase judge it against the
+// folded baseline; revert = nothing to restore.
+function doInventory(ctx, result, o) {
+  const phaseObj = o.phaseObj;
+  const { log = defaultLog } = o;
+  if (ctx.mode === 'revert') {
+    result.revert = { records: 0, skippedLines: 0, restored: 0, already: 0, skipped: 0, failures: [] };
+    log(`revert ${ctx.profile}: phase "${phaseObj.name}" is read-only — nothing to revert`);
+    return;
+  }
+  const items = phaseObj.scan(ctx);
+  result.items = items;
+  result.planned = items.length;
+  if (phaseObj.resultKey) result[phaseObj.resultKey] = items;
+  if (ctx.mode === 'apply') {
+    phaseObj.record(ctx, items);
+    result.applied = items.length;
+    log(`apply ${ctx.profile}: ${items.length} ${phaseObj.name} record(s) ledgered`);
+    return;
+  }
+  if (ctx.mode !== 'verify') return;
+  const { records, skipped, missing } = ledger.readLedger(ctx.profile);
+  const folded = foldPhaseRecords(records, phaseObj.name);
+  const failures = folded.length ? phaseObj.check(ctx, items, folded) : [];
+  result.verify = {
+    records: folded.length, ledgerMissing: missing, skippedLines: skipped,
+    ok: folded.length - failures.length, recreated: 0, failures, pendingCount: 0, pending: [],
+  };
+  if (!folded.length) pushError(result, `no "${phaseObj.name}" baseline in the ledger — run --apply before the migration`);
+  if (failures.length) pushError(result, `${failures.length} verification failure(s) for phase "${phaseObj.name}": ${failures.map(f => f.path).join(', ')}`);
+  log(`verify ${ctx.profile}: ${phaseObj.name} baseline=${folded.length} failures=${failures.length}`);
 }
 
 // Inventory phases (phases/index.cjs): scan → report; apply = ledger the scan

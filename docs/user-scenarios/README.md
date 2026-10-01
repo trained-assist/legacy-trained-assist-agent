@@ -31,6 +31,7 @@ docs/user-scenarios/
   engineering/       ← домен: инженерная разработка через Playbooks (#1372)
     01-development-playbook.md  ← playbook `development`: от запроса до проверенной поставки
     02-custom-playbook-authoring.md ← личный плейбук: только реальные проверки + when_to_use-маршрут (#1851 S4a/S4b)
+     03-playbook-guide-mode.md     ← режим «гайд»: шаги плейбука как чек-лист в живом диалоге (#1887 п.1)
   exhibition/        ← домен: участники выставок → сайт продаж
     01-exhibition-catalog-to-sales-site.md ← каталог → обогащение → классификация → деплой
                                              (+ 🔵 новое: проверка реестров перед классификацией)

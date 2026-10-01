@@ -25,6 +25,7 @@ const { spawn } = require('child_process');
 const registry = require('./mcp-skills/registry');
 const { buildToolCatalog } = require('./action-tool-catalog');
 const { presentSiblings } = require('./skill-siblings');
+const { planFor } = require('./skills/enforce');
 
 const INDEX_PATH = path.join(__dirname, 'mcp-skills', 'index.js');
 const DEFAULT_TIMEOUT_MS = 45_000;
@@ -42,12 +43,29 @@ function staticCatalog(reg) {
   return typeof reg.listAllTools === 'function' ? reg.listAllTools() : reg.listTools();
 }
 
-// Effective catalog: core + every present sibling domain repo.
+// Effective catalog: core + every present sibling domain repo, filtered by the
+// profile's sections (#76 L1: the headless transport must assemble from the selected
+// sections, not from the full catalog — the same plan the session path mounts).
+// No workDir / no skills.json / any planFor() failure → plan null → full catalog,
+// byte-for-byte today's behaviour. Per-turn intent does NOT apply here: this path
+// gets no task text (it has no prompt prefix to save), only the profile's sections.
+// Sibling tools are filtered per module only when their registry ships `module`
+// attribution on the defs; otherwise the whole mounted sibling is counted — same
+// approximation as src/mcp-tool-tokens.js.
 const warnedShadow = new Set();
-function buildCatalogForProfile({ siblingList = siblings } = {}) {
+function buildCatalogForProfile({ siblingList = siblings, workDir } = {}) {
+  const plan = workDir ? planFor(workDir) : null;
+  const hiddenMods = new Set(plan && Array.isArray(plan.hidden?.modules) ? plan.hidden.modules : []);
+  const hiddenSibs = new Set(plan && Array.isArray(plan.hidden?.siblings) ? plan.hidden.siblings : []);
+  const keepCore = t => !(t.module && hiddenMods.has(t.module));
+  const activeSibs = siblingList.filter(s => !hiddenSibs.has(s.mcpServerId));
   const catalog = buildToolCatalog({
-    coreTools: staticCatalog(registry),
-    siblings: siblingList.map(s => ({ id: s.id, mcpServerId: s.mcpServerId, tools: staticCatalog(s.registry) })),
+    coreTools: staticCatalog(registry).filter(keepCore),
+    siblings: activeSibs.map(s => ({
+      id: s.id,
+      mcpServerId: s.mcpServerId,
+      tools: staticCatalog(s.registry).filter(t => !(t.module && hiddenMods.has(`${s.mcpServerId}/${t.module}`))),
+    })),
   });
   for (const { name, by } of catalog.shadowed) {
     if (warnedShadow.has(name)) continue;
@@ -58,9 +76,10 @@ function buildCatalogForProfile({ siblingList = siblings } = {}) {
 }
 
 // Safe in-process: tool metadata only, no user-scoped execution. profileId is
-// accepted for call-site compatibility; the catalog is the same for every profile.
+// accepted for call-site compatibility; pass options.workDir to scope the catalog
+// to that profile's sections (#76).
 function listActionTools(profileId, options = {}) {
-  return buildCatalogForProfile({ siblingList: options.siblings || siblings }).tools;
+  return buildCatalogForProfile({ siblingList: options.siblings || siblings, workDir: options.workDir }).tools;
 }
 
 // siblingNames: { [siblingId]: Set<toolName> } for the siblings present on this host.
@@ -82,7 +101,7 @@ async function runMcpTool({
   const list = siblingList || siblings;
 
   // A duplicate name across active sources throws CONFLICT here — never resolved implicitly.
-  const catalog = buildCatalogForProfile({ siblingList: list });
+  const catalog = buildCatalogForProfile({ siblingList: list, workDir });
 
   const owner = catalog.owners.get(tool);
   if (!owner) throw Object.assign(new Error(`Unknown tool: ${tool}`), { code: 'bad_request' });

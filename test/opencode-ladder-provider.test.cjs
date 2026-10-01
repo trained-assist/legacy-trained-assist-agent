@@ -13,7 +13,7 @@ const ROOT = path.join(__dirname, '..');
 test('profile → worker ladder table', () => {
   assert.deepStrictEqual({ ...p.PROFILE_LADDER }, {
     deepseek: 'deepseek', doctor: 'doctor', free: 'free',
-    max: 'doctor', value: 'deepseek', russian: 'deepseek',
+    max: 'doctor', value: 'deepseek', russian: 'deepseek', research: 'research',
   });
   assert.strictEqual(p.ladderFor('no-such-profile'), 'deepseek', 'unknown profile → default ladder');
 });
@@ -49,7 +49,7 @@ test('every ladder call carries trace headers from run-identity env the engine a
   const { ENGINE_ENV_ALLOW } = require('../src/agent-isolation');
   const h = p.buildOcProfileOverrides('deepseek').provider.ladder.options.headers;
   assert.deepStrictEqual(Object.keys(h).sort(),
-    ['x-ladder-chat', 'x-ladder-run', 'x-ladder-session', 'x-ladder-trace', 'x-ladder-user']);
+    ['x-ladder-app', 'x-ladder-chat', 'x-ladder-run', 'x-ladder-session', 'x-ladder-trace', 'x-ladder-user']);
   for (const v of Object.values(h)) {
     const name = v.match(/^\{env:([A-Z_]+)\}$/)[1];
     assert.ok(ENGINE_ENV_ALLOW.has(name), `${name} must pass the engine env allowlist, else the header is empty`);
@@ -57,18 +57,21 @@ test('every ladder call carries trace headers from run-identity env the engine a
   const src = fs.readFileSync(path.join(ROOT, 'src/runner/claude-runner.js'), 'utf8');
   assert.match(src, /AGENT_RUN_ID: require\('crypto'\)\.randomUUID\(\)/, 'a fresh run id per spawn');
   assert.match(src, /AGENT_TRACE_CHAT: require\('\.\.\/opencode-ladder-provider'\)\.traceChat\(chatId\)/, 'the chat reaches the header (null → "", see traceChat)');
+  assert.match(src, /AGENT_LADDER_APP: resolveLadderApp\(/, 'the run type reaches x-ladder-app (#1917)');
 });
 
-test('russian keeps its strict reviewer prompt; research is a pinned OpenCode Go model, not a ladder', () => {
+test('russian keeps its strict reviewer prompt; research rides the worker research ladder', () => {
   assert.match(p.buildOcProfileOverrides('russian').agent.review.prompt, /рецензент/);
   const r = p.buildOcProfileOverrides('research');
-  assert.strictEqual(r.agent.explore.model, 'opencode-go/mimo-v2.6-flash');
-  assert.strictEqual(p.ladderFor('research'), null, 'research bypasses the worker ladder for now');
-  assert.strictEqual(p.modelFor('research', 'build'), 'opencode-go/mimo-v2.6-flash');
-  // The search ladder (opencode-go/mimo-v2.6-flash → openrouter/google/gemini-2.5-flash)
-  // lives in the llm-ladder worker and is the last item on checklist.md — until then a
-  // flat Go pin means no fallback, which is exactly why the pin must be Go-priced.
-  assert.ok(p.DIRECT_MODEL.research.startsWith('opencode-go/'), 'research must stay on the subscription tier');
+  assert.strictEqual(r.agent.explore.model, 'ladder/research:explore');
+  assert.strictEqual(p.ladderFor('research'), 'research', 'research routes through the worker ladder');
+  assert.strictEqual(p.modelFor('research', 'build'), 'ladder/research:build');
+  // The worker research ladder is Go-first with a paid tail (llm-ladder #28): same
+  // subscription economics as the old pin, but with per-key rotation, health skips and a
+  // rung beneath Go — the pin had none of that and hung into the watchdog on a weekly cap
+  // (incident 2026-10-01).
+  assert.ok(p.PROFILES.includes('research'), 'research stays a selectable profile');
+  assert.ok(!('DIRECT_MODEL' in p), 'no direct-pin escape hatch is left');
 });
 
 test('worker failure categories', () => {

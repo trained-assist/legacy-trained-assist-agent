@@ -67,6 +67,16 @@ function harness({ chatPending, run = async () => {}, taskOpts = opts, expectedT
     // variables, exactly like the runner's module-level imports.
     isProfileLocked: profileLock.isProfileLocked,
     waitForProfileUnlocked: profileLock.waitForProfileUnlocked,
+    // #1916 PR-C: the admission hook starts a session materialize right after the
+    // lock. This harness isolates admission, not the archive — a stub that always
+    // reports "nothing to bring back" keeps the slice's sync/await shape intact.
+    materializeRunSessions: async () => ({ materialized: [], checked: [] }),
+    archiveUserMessage: e => `⚠️ ${e && e.code}`,
+    // #1916 PR-D: the post-run sweep is scheduled in the same `finally` that
+    // clears the journal. This harness isolates admission, not the archive — a
+    // stub that does nothing keeps the slice's shape (the runner never awaits
+    // it, so returning an inert promise is exactly production behaviour).
+    schedulePostRunSweep: () => Promise.resolve({ skipped: 'harness' }),
     // Stop-trace gate (spec §2а): the harness exercises admission, not stopping.
     // Stubs keep the gate inert — no tombstone on disk, never blocks.
     traceIdFor: () => 'tg:stub',
@@ -111,6 +121,26 @@ test('no predecessor: task starts immediately, no waiting message (session-lane 
   await done; await tick();
   assert.equal(runs, 1); assert.equal(h.journal.size, 0);
   assert.ok(!h.messages.some(m => /Ожидаю/.test(m)), 'must never announce waiting when nothing is pending in the chat');
+});
+
+test('Ф5 web: with no initialMsgId the admission phase goes to onProgress (SSE), never to Telegram edits', async () => {
+  // A web run has no progress message to edit (web-routes passes initialMsgId:
+  // null) — before Ф5 the «Ожидаю завершения предыдущей работы» status silently
+  // evaporated and the submitting tab saw a bare spinner. The same texts must
+  // now surface on the progress channel the SSE stream forwards to the browser.
+  const progress = [];
+  const webOpts = { ...opts, initialMsgId: null, onProgress: t => progress.push(t) };
+  let runs = 0;
+  const h = harness({ chatPending: true, taskOpts: webOpts, run: async () => { runs++; } });
+  const done = h.start();
+  await tick();
+  assert.ok(progress.some(t => /Ожидаю завершения предыдущей работы/.test(t)),
+    `waiting phase must reach onProgress, got: ${JSON.stringify(progress)}`);
+  assert.equal(runs, 0, 'still queued at the gate');
+  assert.ok(!h.messages.some(m => /Ожидаю/.test(m)), 'web must never edit a Telegram message it does not have');
+  h.gate.resolve(); await done; await tick();
+  assert.equal(runs, 1);
+  assert.ok(progress.some(t => /Начинаю работу/.test(t)), 'start phase also surfaces on the web channel');
 });
 
 test('unexpected runner error replaces waiting/start with explicit failure', async () => {

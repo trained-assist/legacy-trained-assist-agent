@@ -148,10 +148,42 @@ test('no scopes (headless internal / durable job) → runs immediately, never se
   assert.equal(await a.run(scopes, () => 7), 7);
 });
 
+test('RC-03: the explicit parallel flag is the only way past the dialog lane', async () => {
+  const a = createAdmission(), e = fakeEngine(a);
+  const A = e.start('A', tg(111, { sessionId: 's-A' }));
+  await tick();
+  assert.ok(a.isBusy(tg(111, { sessionId: 's-P' })), 'a default run must still see the busy lane (CH-01 unchanged)');
+  const P = e.start('P', tg(111, { sessionId: 's-P', parallel: true }));
+  await tick();
+  assert.deepEqual([...e.running].sort(), ['A', 'P'], 'only the flagged run overlaps the lane holder');
+  A.finish(); await A.done; await tick();
+  assert.ok(e.running.has('P'), 'parallel run is not tied to the lane holder lifetime');
+  P.finish(); await P.done;
+  assert.equal(e.maxOverlap, 2);
+  assert.ok(!a.isBusy(tg(111)), 'lane released — it was held by A only');
+});
+
+test('RC-03: parallel never bypasses the session writer guard (two writers of one history stay impossible)', async () => {
+  const a = createAdmission(), e = fakeEngine(a);
+  const A = e.start('A', tg(111, { sessionId: 's-1' }));
+  await tick();
+  const P = e.start('P', tg(111, { sessionId: 's-1', parallel: true }));
+  await tick();
+  assert.deepEqual([...e.running], ['A'], 'same session + parallel → P waits for the writer slot');
+  A.finish(); await A.done; await tick();
+  assert.ok(e.running.has('P'));
+  P.finish(); await P.done;
+});
+
 test('scope keys: lane from ConversationRef (endpoint+chat+topic), session keyed by profile', () => {
   assert.deepEqual(legacyAdmissionScopes({ chatId: 5, audience: 'default', threadId: 7, profileId: 'u', sessionId: 's1' }),
     ['lane:cref1|telegram|default|5|7', 'session:u:s1']);
   assert.deepEqual(legacyAdmissionScopes({ chatId: 0, profileId: 'u', sessionId: 's1' }), ['session:u:s1']);
   // unknown audience still gets a lane — never silently unserialized
   assert.equal(legacyAdmissionScopes({ chatId: 5, audience: 'ghost' }).length, 1);
+  // RC-03 parallel: drops ONLY the lane (both the ConversationRef and the legacy
+  // fallback form); the session writer guard survives every time.
+  assert.deepEqual(legacyAdmissionScopes({ chatId: 5, audience: 'default', threadId: 7, profileId: 'u', sessionId: 's1', parallel: true }),
+    ['session:u:s1']);
+  assert.deepEqual(legacyAdmissionScopes({ chatId: 5, audience: 'ghost', parallel: true }), []);
 });

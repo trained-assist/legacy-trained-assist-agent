@@ -215,6 +215,18 @@ describe('playbook-validators', () => {
     });
     const fail = await evaluateValidation('merged', { item: item(), profileId: 'u1' }, open);
     expect(fail.status).toBe('fail');
+    // an open PR keeps the durable wait polling — the fail is not final
+    expect(fail.evidence.final).toBeUndefined();
+  });
+
+  it('merged marks a closed-unmerged PR as a final fail so the wait wakes at once (#1959)', async () => {
+    const closed = createDefaultRegistry({
+      ghToken: () => 'token', ghFetch: async () => ({ merged: false, state: 'closed' }),
+    });
+    const r = await evaluateValidation('merged', { item: item(), profileId: 'u1' }, closed);
+    expect(r.status).toBe('fail');
+    expect(r.evidence.final).toBe(true);
+    expect(r.evidence.reason).toBe('pr-closed-unmerged');
   });
 
   it('merged_and_deployed passes the merge but stays inconclusive on deploy', async () => {
@@ -247,6 +259,16 @@ describe('playbook-validators', () => {
       const r = await evaluateValidation('pr_opened', { item: item(), profileId: 'u1' }, registry);
       expect(r.status).toBe('inconclusive');
       expect(r.evidence.reason).toBe('pr-not-found');
+    });
+
+    it('fails on a closed PR — "a PR is open" is not true, so the step must run (#1959)', async () => {
+      const registry = createDefaultRegistry({
+        ghToken: () => 'token',
+        ghFetch: async url => (url.endsWith('/pulls/7') ? { ...prBody, state: 'closed' } : null),
+      });
+      const r = await evaluateValidation('pr_opened', { item: item(), profileId: 'u1' }, registry);
+      expect(r.status).toBe('fail');
+      expect(r.evidence.reason).toBe('pr-closed');
     });
 
     it('finds a PR by repo + head branch when the validation names them', async () => {

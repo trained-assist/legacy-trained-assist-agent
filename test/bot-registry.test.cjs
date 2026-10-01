@@ -21,7 +21,21 @@ test('every registry audience is routable by bot-delivery, and routes to its own
 test('a new bot is one registry entry: delivery + missing-token detection pick it up',()=>{
  const bots=loadRegistry({bots:{registry:[...BOTS,{botId:'x',audience:'x',token_secret_name:'X_BOT_TOKEN',enabled:true}]}});
  assert.equal(tokenSecretName('x',bots),'X_BOT_TOKEN');
- assert.deepEqual(missingBotTokens({TELEGRAM_BOT_TOKEN:'a',RECRUITER_BOT_TOKEN:'b',FREELANCE_BOT_TOKEN:'c'},bots).map(b=>b.botId),['x']);
+ // The fixture deliberately lists every REAL token except the new bot's, so the
+ // expected list must follow the registry: a hardcoded trio stopped being true the
+ // moment `sales` was registered (its own test below covers that case).
+ const allReal={};for(const b of BOTS) allReal[b.token_secret_name]='present';
+ delete allReal.X_BOT_TOKEN;
+ assert.deepEqual(missingBotTokens(allReal,bots).map(b=>b.botId),['x']);
+});
+test('the sales audience answers as @cmr_management_bot, never as the classic bot',()=>{
+ // Regression: flexi-telegram-deal-bot delegates via POST /run. Without its own
+ // audience the agent replied with TELEGRAM_BOT_TOKEN; the classic bot is not in the
+ // sales groups (it was kicked from -1004485888030), so every answer died on
+ // sendMessage 403 AFTER a 202 — the operator saw «⏳ Передаю ассистенту…» and silence.
+ assert.equal(tokenSecretName('sales'),'SALES_BOT_TOKEN');
+ const secrets={BOT_TOKEN:'classic',TELEGRAM_BOT_TOKEN:'classic',SALES_BOT_TOKEN:'sales-bot'};
+ assert.equal(deliverySecrets(secrets,'sales').BOT_TOKEN,'sales-bot');
 });
 test('disabled bots are never reported missing; empty registry is a hard error',()=>{
  assert.deepEqual(missingBotTokens({},[{botId:'off',audience:'off',token_secret_name:'OFF',enabled:false}]),[]);
@@ -51,10 +65,10 @@ test('auditBots:false silences the registry audit; the default stays loud', asyn
    const edge=await loadSecrets({auditBots:false});
    assert.equal(errs.length,0,'ru-edge boot must not cry about registry bots');
    // The data is unchanged — only the log is suppressed.
-   assert.deepEqual(edge.MISSING_BOTS,['recruiter','freelance']);
+   assert.deepEqual(edge.MISSING_BOTS,BOTS.filter(b=>b.audience!=='default').map(b=>b.botId));
    errs.length=0;
    await loadSecrets();
-   assert.equal(errs.filter(e=>e.includes('BOT TOKEN MISSING')).length,2,'agent boot stays loud');
+   assert.equal(errs.filter(e=>e.includes('BOT TOKEN MISSING')).length,edge.MISSING_BOTS.length,'agent boot stays loud');
  }finally{
    console.error=orig;
    for(const k of Object.keys(process.env)) if(!(k in saved)) delete process.env[k];

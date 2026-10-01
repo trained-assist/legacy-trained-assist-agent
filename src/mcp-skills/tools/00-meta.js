@@ -63,7 +63,7 @@ const SKILLS = [
       'ba_clarify_requirements классифицирует задачу по размеру (trivial/small/feature) и задаёт только те вопросы, ' +
       'которые реально неясны для этого уровня. Для feature-уровня — ba_write_spec: durable EARS-спека (requirements, ' +
       'acceptance criteria, out of scope, tasks) файлом в репозитории, ДО правок кода, чтобы намерение не терялось между сессиями. ' +
-      'Для больших инженерных задач — playbook_run(playbook_id, goal) компилирует плейбук в durable-план в SQLite. На согласованной задаче — playbook_run(..., activate: true) сразу; план исполняется durable-исполнителем, шаги идут разными движками по контракту, финализация — только по evidence. ba_development_playbook — legacy read-only, не нужен. ' +
+      'Для больших инженерных задач — playbook_run(playbook_id, goal) компилирует плейбук в durable-план в SQLite. На согласованной задаче — playbook_run(...) сразу, без mode: в Telegram по умолчанию это гайд (шаги ведутся в этом диалоге по checklist.md проекта), фон — если в чате уже идёт гайд или пользователь сказал «в фоне» (mode: "background", activate: true); фоновый план исполняется durable-исполнителем, финализация — только по evidence. ba_development_playbook — legacy read-only, не нужен. ' +
       'Для trivial/small — без вопросов и без спеки, это чистые накладные расходы.',
     requires: 'Ничего — работает сразу, для любой задачи.',
   },

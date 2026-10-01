@@ -13,6 +13,7 @@ const itemSchema = {
     minimum_model_level: { type: ['string', 'null'], enum: [...LEVELS, null] },
     context_budget: { type: ['string', 'null'], enum: [...BUDGETS, null] },
     validation: { type: 'object', minProperties: 1 },
+    already_done: { type: 'object', minProperties: 1 },
     delay_after_sec: { type: 'integer', minimum: 0 },
     max_attempts: { type: 'integer', minimum: 1 },
     execution_timeout_seconds: { type: 'integer', minimum: 1 },
@@ -35,6 +36,15 @@ function validateItem(item) {
   if (!item.validation || typeof item.validation !== 'object' || Array.isArray(item.validation) || !Object.keys(item.validation).length) throw new Error('item validation required');
   for (const key of ['delay_after_sec', 'max_attempts', 'execution_timeout_seconds']) {
     if (item[key] != null && (!Number.isSafeInteger(item[key]) || item[key] < (key === 'delay_after_sec' ? 0 : 1))) throw new Error(`invalid ${key}`);
+  }
+  // already_done (#1959) is a deterministic pre-check the engine runs at claim
+  // time, before any model run: all keys pass → the step is closed (audited) and
+  // the next step is taken. It is meaningful on agent steps (a programmatic step
+  // already runs its checks without a model); a malformed one is rejected here.
+  if (item.already_done != null) {
+    if (typeof item.already_done !== 'object' || Array.isArray(item.already_done) || !Object.keys(item.already_done).length) {
+      throw new Error('invalid already_done (object with at least one validator key)');
+    }
   }
   // A declared wait polls the step's own validations until they pass — only a
   // programmatic step has validations a poll can evaluate without a model.

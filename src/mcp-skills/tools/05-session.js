@@ -1,7 +1,10 @@
 'use strict';
 
 const fs = require('fs');
-const path = require('path');
+
+// Per-fetch deadline for one archived body, and for the whole search call.
+const SEARCH_FETCH_TIMEOUT_MS = 5_000;
+const SEARCH_TOTAL_BUDGET_MS = 30_000;
 
 module.exports = {
   tools: {
@@ -78,7 +81,14 @@ module.exports = {
         const username = process.env.AGENT_USER_ID;
         if (!username) return { error: 'AGENT_USER_ID not set' };
 
-        const sessionsDir = require('../../data-paths').sessionsDirPath(username);
+        const { userWorkDir } = require('../../data-paths');
+        // Issue #1916 PR-C: between runs the bodies are in GCS, not on disk. The
+        // index (always local) tells us which ids exist — including the archived
+        // ones — and each archived body is downloaded INTO MEMORY for this search
+        // and dropped: no permanent per-session cache is written back to the VM.
+        const {
+          readSessionMaybeArchived, sessionIdsForSearch,
+        } = require('../../session-materialize');
 
         let re;
         try {
@@ -87,24 +97,40 @@ module.exports = {
           return { error: `Invalid RegExp: ${e.message}` };
         }
 
-        let files;
-        try {
-          files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
-        } catch {
-          return { matches: [], total: 0, note: 'No sessions found' };
-        }
+        const workDir = userWorkDir(username);
+        const ids = sessionIdsForSearch(workDir);
+        if (!ids.length) return { matches: [], total: 0, note: 'No sessions found' };
 
         const cap = Math.min(Math.max(1, limit), 50);
         const matches = [];
+        let searched = 0;
+        // Honest degradation: if the archive cannot be read, say so — returning
+        // "no matches" would claim the search covered sessions it never saw.
+        let archiveError = null;
+        // Budget: an archived body costs one GCS round-trip per session (up to
+        // the 50-entry index), so bound BOTH the whole call and each fetch —
+        // a hung archive must not hang the tool call, and an overrun is reported
+        // as `archiveUnavailable` rather than silently truncating the search.
+        const deadline = Date.now() + SEARCH_TOTAL_BUDGET_MS;
 
-        for (const file of files) {
+        for (const id of ids) {
           if (matches.length >= cap) break;
+          if (Date.now() >= deadline) {
+            archiveError = `поиск прерван по лимиту времени (${SEARCH_TOTAL_BUDGET_MS}ms)`;
+            break;
+          }
           let session;
           try {
-            session = JSON.parse(fs.readFileSync(path.join(sessionsDir, file), 'utf8'));
-          } catch {
+            session = await readSessionMaybeArchived({ workDir, sessionId: id, timeoutMs: SEARCH_FETCH_TIMEOUT_MS });
+          } catch (e) {
+            const code = e && e.code;
+            if (code === 'ARCHIVE_MISSING') continue; // this one object is gone; the rest are searchable
+            archiveError = e && e.message || String(e);
+            if (code === 'ARCHIVE_UNAVAILABLE') break; // GCS is down — every archived fetch will fail the same way
             continue;
           }
+          if (!session) continue;
+          searched++;
 
           const msgs = session.messages || [];
           for (let i = 0; i < msgs.length && matches.length < cap; i++) {
@@ -127,7 +153,13 @@ module.exports = {
           }
         }
 
-        return { matches, total: matches.length, searched: files.length };
+        const out = { matches, total: matches.length, searched };
+        if (archiveError) {
+          out.archiveUnavailable = true;
+          out.archiveError = archiveError;
+          out.note = 'Часть сессий недоступна: архив (GCS) не отвечает — результат неполный.';
+        }
+        return out;
       },
     },
 

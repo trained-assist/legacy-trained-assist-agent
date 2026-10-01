@@ -52,6 +52,29 @@ function _parseJsonDetailed(content) {
   return { error: 'no JSON object found in content', raw };
 }
 
+// D1 attribution (#1917): the worker reads x-ladder-* off the request and stores them in
+// ladder_calls (trace_id / run_id / user_id / session_id — query-trace.py presets), and
+// x-ladder-app becomes the OpenRouter "Application" slice (for a service call that is the
+// tool's own name: gtd-intent, hh-messages, session-summary, …).
+//
+// Sent ONLY when the caller passes `ctx` — the ~20 pre-#1917 call sites keep their exact
+// header set (backwards compatibility, pinned by test/service-llm.test.cjs). Empty/absent
+// fields are omitted rather than sent as "", so a partial ctx never fabricates a row key.
+function traceHeadersFor(ctx, source) {
+  if (!ctx || typeof ctx !== 'object') return null;
+  const headers = {};
+  const put = (name, value) => {
+    if (value === undefined || value === null || String(value) === '') return;
+    headers[name] = String(value);
+  };
+  put('x-ladder-trace', ctx.trace);
+  put('x-ladder-run', ctx.run);
+  put('x-ladder-user', ctx.user);
+  put('x-ladder-session', ctx.session);
+  put('x-ladder-app', ctx.app || source);
+  return headers;
+}
+
 /**
  * @param {object} o
  * @param {Array}  o.messages       OpenAI-style messages
@@ -61,6 +84,10 @@ function _parseJsonDetailed(content) {
  * @param {number} [o.timeoutMs=20000] per rung (worker-side)
  * @param {number} [o.totalTimeoutMs]  whole-ladder budget (latency-sensitive callers)
  * @param {string} [o.source]       caller tag for logs
+ * @param {object}[o.ctx]           optional trace ids for the worker's D1 log (#1917):
+ *                                  {trace, run, user, session, app} → x-ladder-* headers
+ *                                  (x-ladder-app = app || source). No ctx → no headers,
+ *                                  exactly as before #1917.
  * @param {Function}[o.fetchImpl]   injectable fetch (tests)
  * @param {Function}[o.onDiagnose]  called with {reason, source, ...} on EVERY outcome —
  *                                  'ok' | 'no_token' | 'fetch_error' | 'http_error' |
@@ -68,8 +95,13 @@ function _parseJsonDetailed(content) {
  *                                  log why it is about to fall back.
  * @returns {Promise<{content:string, value?:any, usage?:object, model:string}|null>} null = no answer
  */
-async function serviceChat({ messages, maxTokens = 800, temperature = 0, json = false, timeoutMs = 20000, totalTimeoutMs = null, source = 'service-llm', fetchImpl = null, onDiagnose = null } = {}) {
+async function serviceChat({ messages, maxTokens = 800, temperature = 0, json = false, timeoutMs = 20000, totalTimeoutMs = null, source = 'service-llm', fetchImpl = null, onDiagnose = null, ctx = null } = {}) {
   const diag = (reason, info = {}) => {
+    // #1912: every rung outcome feeds the degradation streak — N consecutive
+    // failures alert the operator instead of hiding in journalctl (audit: 397
+    // «every rung failed» lines over 2 days, noticed days later).
+    try { require('./degrade-alert').ladderOutcome({ ok: reason === 'ok', reason, source, detail: info.message || info.error || info.attempts || null }); }
+    catch { /* alerting must never break the call */ }
     if (typeof onDiagnose !== 'function') return;
     try { onDiagnose({ reason, source, ...info }); } catch { /* diagnostics must never break the call */ }
   };
@@ -89,7 +121,11 @@ async function serviceChat({ messages, maxTokens = 800, temperature = 0, json = 
   try {
     res = await (fetchImpl || fetch)(`${LADDER_URL()}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        ...(traceHeadersFor(ctx, source) || {}),
+      },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout((totalTimeoutMs || timeoutMs * 4) + 3000),
     });

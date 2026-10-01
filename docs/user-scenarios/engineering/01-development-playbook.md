@@ -3,8 +3,13 @@
 **Домен:** Инженерная разработка (сам продукт `trained-assist-agent` и родственные репозитории)  
 **Длина:** ~16 шагов (5 стадий плейбука)  
 **Профиль:** любой профиль, запускающий изменения в репозитории  
-**Плейбук:** `trained-assist-engineering/playbooks/development.json` (id `development`, v1, scope `system`; sibling-репо, ядро резолвит opt-in)  
-**Тул:** `ba_development_playbook` (`src/mcp-skills/tools/62-business-analyst.js`), компилятор — `src/playbook-compiler.js`  
+**Плейбуки (актуально, 2026-09-30):** `trained-assist-engineering/playbooks/{feature,debugging,new-software}.json`
+(id `feature` / `debugging` / `new-software`, scope `system`) — именно они есть в sibling-репо;
+исторический `development.json` и тул `ba_development_playbook` **вышли из употребления**
+(`ba_development_playbook` — legacy read-only, в `00-meta.js` помечен «не нужен»; автоматический
+дефолт аудитенса ведёт на `feature`, см. `config/audience-default-playbooks.json`). Сценарий ниже
+описывает методологию, общую для всех трёх.  
+**Компилятор:** `src/playbook-compiler.js`  
 **Охват:** от «пользователь просит поставить изменение» до финализации только с актуальным доказательством приёмки
 
 > Этот сценарий описывает **engineering playbook** — первый реальный плейбук системы. Он
@@ -12,6 +17,10 @@
 > агентный шаг несёт `executor_role` / `minimum_model_level` / `context_budget` и
 > машино-проверяемую `validation`; объективные проверки — programmatic-шаги. Плейбук
 > никогда не называет конкретную модель/провайдера — их резолвит рантайм по контракту шага.
+>
+> **Режим запуска (#1887 п.1).** Этот сценарий — **фоновый** путь (durable-план). Он по умолчанию
+> для веба и неинтерактивных вызовов, в Telegram — при явном `mode:"background"` («в фоне») или
+> когда в чате уже открыт гайд. В Telegram без `mode` по умолчанию идёт гайд — см. `03-playbook-guide-mode.md`.
 
 ---
 
@@ -40,9 +49,10 @@
 `executor_role` + `minimum_model_level` (эскалированный `current_model_level` важнее) →
 `{engine, ocProfile, ocRole}`. Programmatic-шаги движка не получают; contract-шаги без
 контракта / legacy → дефолтный движок (`claude`). Таблица level→engine — это данные
-(`PLAYBOOK_LEVEL_MAP`): `bachelor → opencode/value`, `master → opencode/max`,
-`doctor → claude`. `context_budget` влияет на то, как шаг получает контекст
-(`contextSkipModels`).
+(`PLAYBOOK_LEVEL_MAP`): `bachelor → opencode/deepseek`, `master → opencode/deepseek`,
+`doctor → claude` (дефолт с 2026-09-27; раньше здесь были `value`/`max` — уводили на платный
+OpenRouter). `context_budget` контрактно объявлен, но сейчас **no-op** (`skipModels: []`,
+см. Known contract gaps в `docs/playbooks.md`).
 
 ---
 
@@ -189,7 +199,7 @@ Executor claim-ит items по порядку. Первые три шага:
 - `attempt_count` шага инкрементится на `startExecution`, а не на claim
 - Шаг без `DURABLE:`-маркера трактуется как провал и ретраится по `max_attempts`
 
-**Статус:** claim + бюджет ✅ IMPLEMENTED (P3a); резолв `researcher/bachelor` в движок ✅ IMPLEMENTED (P3b — `bachelor → opencode/value`).
+**Статус:** claim + бюджет ✅ IMPLEMENTED (P3a); резолв `researcher/bachelor` в движок ✅ IMPLEMENTED (P3b — `bachelor → opencode/deepseek`).
 
 ---
 
@@ -242,7 +252,7 @@ Task(durable item): [developer/master/large] Implement
 - `implementation_complete`
 - Пробой `execution_timeout_seconds` = провал шага (не «бесконечное продолжение»),
   ретраит durable-слой по `max_attempts`
-- Движок для шага (`developer/master/large`) резолвится ✅ IMPLEMENTED (P3b — `master → opencode/max`)
+- Движок для шага (`developer/master/large`) резолвится ✅ IMPLEMENTED (P3b — `master → opencode/deepseek`)
 
 **Статус:** claim/таймаут ✅ IMPLEMENTED (P3a)
 
@@ -294,6 +304,10 @@ Task(durable item): [programmatic] Wait for CI and staging; repair failures
 
 **Ожидаем:**
 - `delay_after_sec: 600` — шаг становится runnable не раньше, чем через 10 минут
+- Направление развития (#1846): ожидание CI/мержа — через событие каталога
+  (`task_item_wait(until: {"ci_green": …})` + GitHub-вебхук, см.
+  `docs/user-scenarios/core/05-durable-wait-events.md`), а не sleep; опрос тиком
+  остаётся запасным путём
 - Пока шаг ждёт, он `waiting` с `wait_deadline_at`; `expireWaitingDeadlines` фейлит
   шаг, если внешнее ожидание переросло дедлайн (вечное откладывание исключено)
 - Провал CI чинится и перезапускается

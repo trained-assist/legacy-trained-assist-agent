@@ -66,7 +66,7 @@ function _step(item, task) {
   return task && task.acceptance_criteria_json
     // same routing as the executor: a plan with its own level map ignores the role map
     ? resolveStepExecution(item, { levelMap: _planMap(task), useRoleMap: !(_policy(task) || {}).level_map })
-    : { engine: 'claude', ocProfile: null, ocRole: null };
+    : resolveStepExecution(item);
 }
 
 /**
@@ -81,7 +81,9 @@ function _step(item, task) {
  * @param {string}   [o.errorText]
  * @param {Function} [o.classifier]   sync/async (text, opts) → {class}
  * @param {number}   [o.budget]       recovery-step budget (default DEFAULT_RECOVERY_BUDGET)
- * @param {boolean}  [o.escalate=true]
+ * @param {boolean}  [o.escalate=true]           legacy TIER ladder (free→standard→strong)
+ * @param {boolean}  [o.escalateLevel=true]      quality path may bump current_model_level
+ *                                               (#1907: false = retry at the SAME level only)
  * @param {number}   [o.retryDelayMs=0]
  * @returns {Promise<{recovered:boolean,failureClass:string,action:string|null,
  *                    attempts:number,maxAttempts:number,reason:string}>}
@@ -89,7 +91,7 @@ function _step(item, task) {
 async function recoverDurableItem({
   store, task, itemId, errorText = '',
   classifier = classifyDeterministic, budget = DEFAULT_RECOVERY_BUDGET,
-  escalate = true, retryDelayMs = 0, quality = false,
+  escalate = true, retryDelayMs = 0, quality = false, escalateLevel = true,
 } = {}) {
   const profileId = task.profile_id;
   const item = store.getTaskItem(itemId) || { id: itemId, attempt_count: 0, max_attempts: 1 };
@@ -127,12 +129,14 @@ async function recoverDurableItem({
   // Quality failure (the model did not manage the task: DURABLE failed / no marker):
   // attempt 1 and 2 run at the step's level (2 with the failure reasons in its input),
   // attempt 3 runs one distinct level up. Provider/infra failures keep the class policy.
+  // escalateLevel=false (#1907, uncertain verdict of the marker judge): retry at the SAME
+  // level only — a protocol/uncertainty miss must never burn a doctor run.
   if (quality && QUALITY_CLASSES.has(failureClass) && task && task.acceptance_criteria_json) {
     // Three attempts, whatever max_attempts says: the same level twice, then one up.
     if (attempts >= QUALITY_MAX_ATTEMPTS) return terminal('quality-attempts-exhausted');
     let move = 'retry_same_with_reasons';
-    if (attempts >= 2) {
-      const next = nextDistinctLevel(item, _planMap(task));
+    if (attempts >= 2 && escalateLevel) {
+      const next = nextDistinctLevel(item, _planMap(task), { allowPaid: (_policy(task) || {}).quality_escalation_to_doctor !== false });
       if (next) {
         store.updateTaskItem(itemId, { current_model_level: next }, profileId);
         move = `escalate:${item.current_model_level || item.minimum_model_level}→${next}`;

@@ -75,16 +75,18 @@ const cli = (args, env = {}) => spawnSync(process.execPath, [CLS, ...args], {
 
 // ── clean list ─────────────────────────────────────────────────────────────
 test('clean list parses: version, every rule has action+reason', () => {
-  assert.ok(RULES.version >= 1);
+  assert.ok(RULES.version >= 2, 'the EXCLUDE action bumped the clean-list schema version');
   assert.ok(RULES.rules.length >= 50, `expected the M1 table to be fully transcribed, got ${RULES.rules.length}`);
   const actions = new Set(RULES.rules.map((r) => r.action));
-  for (const a of ['DELETE', 'ARCHIVE', 'MOVE', 'SYSTEM', 'KEEP']) {
+  for (const a of ['DELETE', 'ARCHIVE', 'MOVE', 'SYSTEM', 'KEEP', 'EXCLUDE']) {
     assert.ok(actions.has(a), `action ${a} must be present in the M1 clean list`);
   }
   for (const r of RULES.rules) {
     assert.ok(r.reason.length > 0);
     assert.ok(classifier.ALL_CLASSES.includes(r.action));
   }
+  assert.deepStrictEqual(classifier.ACTIONS, ['DELETE', 'ARCHIVE', 'MOVE', 'DEDUP', 'SYSTEM', 'KEEP', 'EXCLUDE'],
+    'EXCLUDE is an action of the enum, reported before UNKNOWN');
 });
 
 test('clean list rejects malformed rules loudly', () => {
@@ -162,6 +164,88 @@ test('first matching rule wins; no rule → UNKNOWN', () => {
   assert.strictEqual(flipped[flipDirIdx].action, 'ARCHIVE');
   assert.strictEqual(flipped[classifier.classifyIndex('sessions/x.png', flipDirIdx, false, flipped)].action, 'ARCHIVE',
     'a rule matched on the directory (parentIdx) beats a later rule matching the file');
+});
+
+// ── EXCLUDE: secrets, local only, never in the git image (#1923, B1/#1808) ──
+// Every file the B1 red-team listed as "пересоздаётся внутри профиля каждым
+// запуском" and that `*.json → KEEP` used to classify as pushable.
+const B1_SECRETS = [
+  'playwright-storage-state.json',                    // src/browser.js:158 — rewritten every run (86/94 profiles)
+  'sites/hh/storage-state.json',                      // src/user-sites.js saveStorageState (mode 0600)
+  'sites/hh/creds.json',                              // src/user-sites.js saveSiteCreds (mode 0600)
+  '.agent-home/.codex/auth.json',                     // src/agent-isolation.js staged + syncBack
+  '.agent-home/.local/share/opencode/auth.json',      // src/agent-isolation.js staged
+  '.local/share/opencode/auth.json',                  // legacy layout, no .agent-home
+  '.mcp.json',                                        // plaintext AGENT_SECRET in 10/22 profiles
+  '.webpasswd',                                       // src/web-auth.js PASSWD_FILE
+  'kinescope-creds',                                  // ZeroCreds credential file
+  'gc_export/.cookies',                               // observed cookie jar (VM scan 2026-09-28)
+  'cookies.json',
+  'cookies.txt',
+  'chrome/Default/Cookies',                           // Chrome cookie DB (3 profiles)
+];
+
+test('EXCLUDE: every B1 secret classifies as EXCLUDE — never KEEP, never UNKNOWN', () => {
+  for (const rel of B1_SECRETS) {
+    const idx = classifier.classifyIndex(rel, Infinity, false, RULES.rules);
+    assert.notEqual(idx, -1, `${rel} must be classified`);
+    assert.strictEqual(RULES.rules[idx].action, 'EXCLUDE', `${rel} classified as ${idx === -1 ? 'UNKNOWN' : RULES.rules[idx].action}`);
+  }
+});
+
+test('EXCLUDE beats every rule that takes a file somewhere — including a git worktree', () => {
+  const action = (rel, inRepo = false) => {
+    const idx = classifier.classifyIndex(rel, Infinity, inRepo, RULES.rules);
+    return idx === -1 ? 'UNKNOWN' : RULES.rules[idx].action;
+  };
+  // The `when: git-repo` `**` rule archives a whole working copy — a secret
+  // inside one must not travel with it (this is the first-push leak of B1).
+  assert.strictEqual(action('engineering-workspaces/w/code/auth.json', true), 'EXCLUDE');
+  assert.strictEqual(action('projects/p/clone/.mcp.json', true), 'EXCLUDE');
+  // …and above the KEEP catch-alls it used to fall through to.
+  assert.strictEqual(action('sessions/playwright-storage-state.json'), 'EXCLUDE');
+  assert.strictEqual(action('contexts/hh/.mcp.json'), 'EXCLUDE');
+
+  const firstExclude = RULES.rules.findIndex((r) => r.action === 'EXCLUDE');
+  assert.ok(firstExclude >= 0, 'the clean list has an EXCLUDE block');
+  assert.ok(firstExclude < RULES.rules.findIndex((r) => r.pattern === '*.json'),
+    'concrete secret paths come BEFORE *.json → KEEP (first-match-wins)');
+  assert.ok(firstExclude < RULES.rules.findIndex((r) => r.pattern === '**' && r.when === 'git-repo'),
+    'EXCLUDE comes BEFORE the worktree ARCHIVE rule');
+  assert.ok(firstExclude > RULES.rules.findIndex((r) => r.pattern === 'node_modules'),
+    'EXCLUDE comes AFTER DELETE — a regenerable subtree keeps its DELETE semantics');
+  assert.ok(RULES.rules.filter((r) => r.action === 'EXCLUDE').every((r) => !r.when),
+    'EXCLUDE rules are unconditional');
+});
+
+test('classifyProfile counts EXCLUDE as its own class — reported, never planned', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-fixture-ex-'));
+  try {
+    const p = path.join(root, 'alice');
+    const secrets = {
+      'playwright-storage-state.json': 'SECRET-STATE-1234',
+      '.agent-home/.codex/auth.json': '{"SECRET":1}',
+      '.mcp.json': '{"mcpServers":{}}',
+      '.webpasswd': 'pw',
+      'recruiter-creds': 'cred',
+    };
+    for (const [rel, body] of Object.entries(secrets)) write(path.join(p, rel), body);
+    write(path.join(p, 'persona.md'), '# persona');       // KEEP — the whitelist still works
+    write(path.join(p, 'keep.json'), '{}');               // KEEP — a json that is not a secret
+    write(path.join(p, 'weird.bin'), 'zz');               // UNKNOWN
+
+    const r = classifier.classifyProfile(p, { rules: RULES.rules, profileName: 'alice' });
+    const by = Object.fromEntries(r.classes.map((c) => [c.action, c]));
+    assert.strictEqual(by.EXCLUDE.files, 5, 'EXCLUDE class holds every secret');
+    assert.strictEqual(by.KEEP.files, 2, 'KEEP untouched by the secret rules');
+    assert.strictEqual(by.UNKNOWN.files, 1);
+    assert.strictEqual(by.EXCLUDE.bytes, Object.values(secrets).reduce((s, v) => s + v.length, 0));
+    assert.strictEqual(r.totals.files, r.classes.reduce((s, c) => s + c.files, 0), 'classes sum to total');
+    assert.ok(r.classes.some((c) => c.action === 'EXCLUDE'), 'the class survives into the report JSON');
+    assert.deepStrictEqual(r.errors, [], 'no read errors');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // ── classifier walk ────────────────────────────────────────────────────────

@@ -39,6 +39,9 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     })),
   });
   store.db.prepare('UPDATE durable_tasks SET status=? WHERE id=?').run('active', r.task.id);
+  // #1886: createPlan no longer attaches session_id (it is the owner chat now);
+  // the re-entrancy guard still covers a session explicitly attached to the task.
+  if (sessionId) store.attachSession(r.task.id, sessionId, 'u1');
   return r.task.id;
 }
 
@@ -58,7 +61,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     const item = store.listTaskItems(taskId, 'u1')[0];
     ok(fired === 1, `durable: one item fired (got ${fired})`);
     ok(/step one/.test(prompted) && /DURABLE: done/.test(prompted), 'durable: prompt carries step + completion marker');
-    ok(firedOpts.stepTimeoutMs === 600 * 1000, `durable: step carries execution_timeout_seconds as the engine budget (got ${firedOpts && firedOpts.stepTimeoutMs})`);
+    ok(firedOpts.stepTimeoutMs === 2400 * 1000, `durable: a 600s step is floored at the 40-min run cap (got ${firedOpts && firedOpts.stepTimeoutMs})`);
     ok(firedOpts.engine === 'opencode' && firedOpts.ocProfile === 'deepseek',
       `durable: bachelor contract item resolves to opencode/deepseek (got ${firedOpts && firedOpts.engine}/${firedOpts && firedOpts.ocProfile})`);
     ok(firedOpts.user && /users[/\\]u1$/.test(firedOpts.user.workDir),
@@ -192,8 +195,9 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     let firedOpts = null;
     await G8.runDueDurable({ secrets: {}, now: Date.now(), isTaskRunning: () => false,
       runTask: async (opts) => { firedOpts = opts; return 'DURABLE: done'; } });
-    ok(firedOpts && firedOpts.engine === 'claude' && !firedOpts.ocProfile,
-      `durable: legacy item still runs on claude with no oc profile (got ${firedOpts && firedOpts.engine}/${firedOpts && firedOpts.ocProfile})`);
+    // Owner 2026-10-01: a legacy (contract-less) item defaults to OpenCode master, not Claude.
+    ok(firedOpts && firedOpts.engine === 'opencode' && firedOpts.ocProfile === 'deepseek',
+      `durable: legacy item runs on opencode/deepseek by default (got ${firedOpts && firedOpts.engine}/${firedOpts && firedOpts.ocProfile})`);
   }
 
   // 9. programmatic item executes deterministically: NO runTask, verdicts recorded (P3d-1)
@@ -595,12 +599,14 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
       items: [
         { title: 'research', execution_kind: 'agent', executor_role: 'researcher', minimum_model_level: 'bachelor', context_budget: 'small', validation: { command: 'true' } },
         { title: 'review', execution_kind: 'agent', executor_role: 'reviewer', minimum_model_level: 'master', context_budget: 'medium', validation: { command: 'true' } },
-        { title: 'finalize', execution_kind: 'agent', executor_role: 'reviewer', minimum_model_level: 'doctor', context_budget: 'medium', validation: { command: 'true' } },
+        { title: 'finalize', execution_kind: 'agent', executor_role: 'developer', minimum_model_level: 'doctor', context_budget: 'medium', validation: { command: 'true' } },
+        // reviewer@doctor = independent review on another model family (owner 2026-09-30): codex, not claude.
+        { title: 'independent review', execution_kind: 'agent', executor_role: 'reviewer', minimum_model_level: 'doctor', context_budget: 'medium', validation: { command: 'true' } },
       ],
     });
     store.updateTask(r.task.id, 'u1', { status: 'active' });
     const opts = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       await G19.runDueDurable({
         secrets: {}, now: Date.now(), isTaskRunning: () => false,
         runTask: async (o) => { opts.push(o); return 'DURABLE: done'; },
@@ -608,7 +614,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
       });
       await drain();
     }
-    ok(opts.length === 3, `role: three agent steps fired (got ${opts.length})`);
+    ok(opts.length === 4, `role: four agent steps fired (got ${opts.length})`);
     const shape = o => o && { engine: o.engine, ocProfile: o.ocProfile, ocRole: o.ocRole, forceClaude: o.forceClaude };
     ok(opts[0] && opts[0].engine === 'opencode' && opts[0].ocRole === 'explore' && opts[0].forceClaude === false,
       `role: researcher→opencode/explore, forceClaude=false (got ${JSON.stringify(shape(opts[0]))})`);
@@ -616,6 +622,8 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
       `role: reviewer→opencode/review, forceClaude=false (got ${JSON.stringify(shape(opts[1]))})`);
     ok(opts[2] && opts[2].engine === 'claude' && !opts[2].ocRole && opts[2].forceClaude === true,
       `role: doctor→claude, forceClaude=true (got ${JSON.stringify(shape(opts[2]))})`);
+    ok(opts[3] && opts[3].engine === 'codex' && !opts[3].ocRole && opts[3].forceClaude === false,
+      `role: reviewer@doctor→codex, forceClaude=false (got ${JSON.stringify(shape(opts[3]))})`);
   }
 
   // 20. strict positional ordering (#1450): a 3-item plan with a delay-gated step

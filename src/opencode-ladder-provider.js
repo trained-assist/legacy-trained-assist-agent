@@ -27,30 +27,18 @@ const PROFILE_LADDER = Object.freeze({
   max: 'doctor',        // was the "strongest Go models" ladder — the worker's strongest tier is doctor
   value: 'deepseek',    // was a cheap OpenRouter/GigaChat ladder — superseded by deepseek
   russian: 'deepseek',  // GigaChat ladder dropped; keeps its strict Russian reviewer prompt
+  research: 'research', // hermes_research + researcher roles — worker ladder, Go-first (llm-ladder #28)
 });
 
-// Research (hermes_research) is pinned, not laddered — but on OpenCode Go, not OpenRouter.
-// Go is a flat $10/mo subscription with a per-model monthly allowance (MiMo-V2.6-Flash:
-// $0.14/$0.28 per 1M, ~150k requests/month included), so the research profile has no
-// marginal per-call cost and can be offered without counting tokens — which is exactly
-// the point of a researcher that runs on every research-shaped task. ladder-log already
-// classifies `opencode-go/*` as tier `subscription`.
-//
-// `opencode-go` is a built-in provider (auth: OPENCODE_API_KEY, endpoint
-// https://opencode.ai/zen/go/v1); runEngineProcess maps the box's OPENCODE_GO_API_KEY
-// onto it. Verified live on the prod VM 2026-09-28: `opencode run -m
-// opencode-go/mimo-v2.6-flash` on the shipped client (1.18.31) answers, even though the
-// model is newer than that build's registry.
-//
-// Failover: the box carries TWO Go keys in rotation (`OPENCODE_GO_API_KEYS`, both passed
-// through as OPENCODE_API_KEY — verified live, the comma-joined pair is accepted), so one
-// exhausted key does not stop research. What is still missing is a rung BENEATH Go: when
-// both keys are spent the run fails instead of degrading. That rung is
-// `openrouter/google/gemini-2.5-flash`, and it lives in the `search` ladder — the last
-// item on checklist.md, in the llm-ladder worker where ladders belong (#1687).
-const DIRECT_MODEL = Object.freeze({
-  research: 'opencode-go/mimo-v2.6-flash',
-});
+// Research used to be a DIRECT pin to `opencode-go/mimo-v2.6-flash` (subscription, no
+// fallback). Incident 2026-10-01: a weekly Go allowance cap made every research run
+// 429 → opencode retried silently → the 5-min inactivity watchdog killed the run and the
+// step read it as «не уложился в бюджет» — all with NO rung to fall to, because a pin
+// never failovers. The worker's `research` ladder (Go mimo → Go deepseek-v4.1 → paid
+// OpenRouter tails, trained-assist-llm-ladder #28) keeps the same Go-first economics but
+// owns what the pin could not: per-key rotation, health skips and a paid tail when Go is
+// spent. The box's own Go keys stay only as the credential for the built-in `opencode-go`
+// provider when a run is explicitly pointed there (`OPENCODE_MODEL=opencode-go/...`).
 
 const ROLE_PROMPTS = Object.freeze({
   russian: {
@@ -58,15 +46,14 @@ const ROLE_PROMPTS = Object.freeze({
   },
 });
 
-const PROFILES = Object.freeze([...Object.keys(PROFILE_LADDER), ...Object.keys(DIRECT_MODEL)]);
+const PROFILES = Object.freeze(Object.keys(PROFILE_LADDER));
 
 // Unknown profile → deepseek (the default ladder), never a local model list.
 function ladderFor(profileName) {
-  return PROFILE_LADDER[profileName] || (DIRECT_MODEL[profileName] ? null : 'deepseek');
+  return PROFILE_LADDER[profileName] || 'deepseek';
 }
 
 function modelFor(profileName, role = 'build') {
-  if (DIRECT_MODEL[profileName]) return DIRECT_MODEL[profileName];
   return `${PROVIDER_ID}/${ladderFor(profileName)}:${role}`;
 }
 
@@ -80,6 +67,10 @@ const TRACE_HEADERS = Object.freeze({
   'x-ladder-session': '{env:AGENT_SESSION_ID}',
   'x-ladder-user': '{env:AGENT_USER_ID}',
   'x-ladder-chat': '{env:AGENT_TRACE_CHAT}',
+  // "Application" slice in the OpenRouter console (worker: llm-ladder#33 — the slug goes
+  // out as HTTP-Referer/X-OpenRouter-Title). AGENT_LADDER_APP is the run type, set in
+  // runEngineProcess: background-playbooks | hermes-research | opencode-chat (#1917).
+  'x-ladder-app': '{env:AGENT_LADDER_APP}',
 });
 
 // AGENT_TRACE_CHAT value: runs with no chat (plan/durable sessions) → "" (stored as null),
@@ -131,6 +122,6 @@ function classifyWorkerFailure(text) {
 }
 
 module.exports = {
-  ROLES, PROFILES, PROFILE_LADDER, DIRECT_MODEL, PROVIDER_ID, TOKEN_ENV, TRACE_HEADERS,
+  ROLES, PROFILES, PROFILE_LADDER, PROVIDER_ID, TOKEN_ENV, TRACE_HEADERS,
   ladderFor, modelFor, providerConfig, traceChat, buildOcProfileOverrides, ladderToken, classifyWorkerFailure,
 };

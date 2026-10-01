@@ -150,6 +150,18 @@ test('#1899: nextDistinctLevel never escalates onto Claude/Codex', () => {
   assert.equal(nextDistinctLevel(item, map), 'master', 'escalation between OpenCode rungs still works');
 });
 
+// Owner 2026-09-30: a plan may opt into QUALITY escalation onto doctor (Claude).
+test('quality_escalation_to_doctor: opted-in plan escalates master → doctor, default stays capped', () => {
+  const { nextDistinctLevel, resolveStepExecution, DEFAULT_LEVEL_MAP } = require('../src/playbook-executor');
+  const item = { executor_role: 'developer', minimum_model_level: 'master', current_model_level: 'master' };
+  assert.equal(nextDistinctLevel(item, DEFAULT_LEVEL_MAP), null);
+  assert.equal(nextDistinctLevel(item, DEFAULT_LEVEL_MAP, { allowPaid: true }), 'doctor');
+  const r = resolveStepExecution({ ...item, current_model_level: 'doctor' }, { levelMap: DEFAULT_LEVEL_MAP });
+  assert.equal(r.engine, 'claude', 'escalated builder runs on Claude');
+  const top = { executor_role: 'developer', minimum_model_level: 'doctor', current_model_level: 'doctor' };
+  assert.equal(nextDistinctLevel(top, DEFAULT_LEVEL_MAP, { allowPaid: true }), null, 'ceiling stays null');
+});
+
 test('#1899: QUOTA/model recovery never bumps a step onto the Claude level', async () => {
   const { recoverDurableItem } = require('../src/durable-recovery');
   const item = { id: 'i1', task_id: 't1', executor_role: 'developer', minimum_model_level: 'master', current_model_level: 'master', attempt_count: 1, max_attempts: 3 };
@@ -162,4 +174,58 @@ test('#1899: QUOTA/model recovery never bumps a step onto the Claude level', asy
   await recoverDurableItem({ store, task, itemId: 'i1', errorText: 'x', classifier: () => ({ class: 'QUOTA' }) });
   assert.equal(bumped, false, 'master → doctor (Claude) must not happen automatically');
   assert.equal(item.current_model_level, 'master');
+});
+
+// #1899 пункты 2–3: a chat run on an exhausted ladder re-runs ONCE on opencode/free — the fallback
+// path itself may never produce claude/codex, whatever the engine, the worker failure class, the
+// ladderFallbackDone flag or the durable marker says. Do not relax this test to make a fallback pass.
+test('#1899: chat ladder_exhausted fallback path never targets Claude/Codex', () => {
+  const { ladderFallbackTarget } = require('../src/ladder-fallback');
+  const engines = ['opencode', 'claude', 'codex'];
+  const workerFailures = ['ladder_exhausted', 'worker_unreachable', 'context', null];
+  const targets = [];
+  for (const engine of engines) {
+    for (const workerFailure of workerFailures) {
+      for (const ladderFallbackDone of [false, true]) {
+        for (const durable of [false, true]) {
+          const t = ladderFallbackTarget({ engine, workerFailure, ladderFallbackDone, durable });
+          if (!t) continue;
+          assert.deepEqual(t, { engine: 'opencode', ocProfile: 'free' }, `${engine}/${workerFailure}/done=${ladderFallbackDone}/durable=${durable}`);
+          targets.push(t);
+        }
+      }
+    }
+  }
+  assert.equal(targets.length, 1, 'exactly one combination re-runs: a non-durable opencode run, ladder_exhausted, flag unset');
+});
+
+// #1911: a killed step budget is its own class — backoff retry, never the quality ladder
+// (previously this text fell to UNKNOWN and burned a quality attempt / escalated level).
+test('deterministic: step/inactivity/hard timeouts classify as TIMEOUT', () => {
+  assert.equal(classifyDeterministic('step timeout: 600s budget exhausted').class, 'TIMEOUT');
+  assert.equal(classifyDeterministic('inactivity timeout: no output for 5min').class, 'TIMEOUT');
+  assert.equal(classifyDeterministic('claude timed out after 2400s').class, 'TIMEOUT');
+  assert.equal(classifyDeterministic('timeout: 40min budget').class, 'TIMEOUT');
+  assert.equal(classifyDeterministic('no DURABLE terminal marker in reply: ⏱ Шаг не уложился в бюджет: 600с.').class, 'TIMEOUT');
+  assert.equal(classifyDeterministic('no DURABLE terminal marker in reply: ⏱ Движок молчал 5 мин (завис…) — шаг прерван.').class, 'TIMEOUT');
+});
+
+test('playbook researcher is not pinned to the Go `research` subscription profile (2026-10-01)', () => {
+  const { resolveStepExecution } = require('../src/playbook-executor');
+  for (const lvl of ['bachelor', 'master']) {
+    const r = resolveStepExecution({ executor_role: 'researcher', minimum_model_level: lvl, current_model_level: lvl });
+    assert.equal(r.engine, 'opencode');
+    assert.equal(r.ocProfile, 'deepseek', 'researcher goes through the llm-ladder');
+    assert.equal(r.ocRole, 'explore');
+  }
+});
+
+// 2026-10-01: the live Claude OAuth failure classified UNKNOWN — execution-history rows read
+// «код 1», the auth flag never rose and nothing redirected the run off a dead engine.
+test('deterministic: Claude OAuth 401 / account_on_hold classify as AUTH', () => {
+  assert.equal(classifyDeterministic('Failed to authenticate. API Error: 401 OAuth access token has been revoked.').class, 'AUTH');
+  assert.equal(classifyDeterministic('refresh HTTP 400: {"error":"invalid_grant","error_description":"account_on_hold"}').class, 'AUTH');
+  assert.equal(classifyDeterministic('see https://claude.ai/restricted').class, 'AUTH');
+  // A quoted status code inside an ordinary answer is still not an auth failure (#1227).
+  assert.equal(classifyDeterministic('токен из origin URL мёртв (401) — обновил'), null);
 });
