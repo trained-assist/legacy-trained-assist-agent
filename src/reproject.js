@@ -26,6 +26,9 @@ const path = require('path');
 const { atomicJson } = require('./atomic-json');
 
 const projects = require('./projects');
+// #1813: gtd-записи хранят адрес checklist.md относительно корня профиля —
+// читаем/пишем через общий резолвер, иначе перепривязка затирала бы projectPath.
+const { gtdProjectDir, storeProjectRef } = require('./gtd-project-ref');
 
 const STATE_FILE = '.reproject-state.json';
 const LEDGER_FILE = '.reproject-ledger.json';
@@ -418,7 +421,8 @@ function pruneEmptyDirs(dir, base = dir) {
 // Update gtd/*.json records whose projectDir points into a project folder that
 // was vacated/moved by this apply. Mirrors the retag logic for sessions.json:
 // old path is preserved in staleProjectDir for reversibility, projectDir is
-// repointed to the new project folder resolved from the session's final project.
+// repointed to the new project folder resolved from the session's final project
+// (stored relative to the profile root, #1813).
 function syncGtdRecords(profileRoot, sessionMoves) {
   const gtdDir = path.join(profileRoot, 'gtd');
   const actions = [];
@@ -430,7 +434,10 @@ function syncGtdRecords(profileRoot, sessionMoves) {
     const fp = path.join(gtdDir, f);
     let rec;
     try { rec = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { continue; }
-    const pd = rec && rec.projectDir;
+    if (!rec) continue;
+    // Относительная запись сама резолвится в актуальный каталог (он существует —
+    // иначе перенос профиля сломал бы и checklist), legacy-абсолют может быть мёртв.
+    const pd = gtdProjectDir(profileRoot, rec);
     if (!pd || fs.existsSync(pd)) continue; // live path — nothing to do
     // Resolve new project: prefer the session's explicit move, else same old project.
     const sid = rec.sessionId;
@@ -451,7 +458,7 @@ function syncGtdRecords(profileRoot, sessionMoves) {
     if (!target) { actions.push({ kind: 'gtd-stale', file: f, projectDir: pd, warning: 'не удалось определить новый проект — осталось указывать на мёртвый путь' }); continue; }
     rec.staleProjectDir = pd;
     rec.projectDir = target;
-    atomicJson(fp, rec);
+    atomicJson(fp, storeProjectRef(profileRoot, rec));
     actions.push({ kind: 'gtd-sync', file: f, from: pd, to: target });
   }
   return actions;
@@ -558,10 +565,12 @@ function applyPlan(profileRoot, plan, { dryRun = true, now = Date.now() } = {}) 
     }
   }
 
-  // Keep GTD records (gtd/*.json) in sync: they hold an absolute projectDir that
-  // the tick loop reads as the ONE source of truth (checklist.md location). A missed
-  // update here leaves dead paths after any project move (bug found 2026-09-23:
-  // 37/40 GTD records pointed at pre-reorg folders → readChecklist() returned null).
+  // Keep GTD records (gtd/*.json) in sync: they hold the checklist.md address that
+  // the tick loop reads as the ONE source of truth (stored relative to the profile
+  // root since #1813; legacy absolute paths are read through the same resolver).
+  // A missed update here leaves dead paths after any project move (bug found
+  // 2026-09-23: 37/40 GTD records pointed at pre-reorg folders → readChecklist()
+  // returned null).
   if (!dryRun && ledger.moves.length) {
     const gtdActions = syncGtdRecords(profileRoot, ledger.moves);
     ledger.gtdSyncs = gtdActions.filter(a => a.kind === 'gtd-sync').map(a => ({ file: a.file, from: a.from, to: a.to }));
@@ -673,10 +682,10 @@ function revertPlan(profileRoot, { now = Date.now() } = {}) {
     const fp = path.join(profileRoot, 'gtd', g.file);
     try {
       const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
-      if (rec.projectDir !== g.to) continue; // changed since — don't clobber
+      if (gtdProjectDir(profileRoot, rec) !== g.to) continue; // changed since — don't clobber
       rec.projectDir = g.from;
       delete rec.staleProjectDir;
-      atomicJson(fp, rec);
+      atomicJson(fp, storeProjectRef(profileRoot, rec));
       gtdReverted++;
     } catch { /* best-effort */ }
   }
