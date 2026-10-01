@@ -149,7 +149,10 @@ module.exports = {
         'moves on. Use it when a continuation step ("продолжение", "остаток") would otherwise re-derive work ' +
         'that already holds — e.g. {already_done: {merged: "<PR url>"}}, {file_exists: "path"}, ' +
         '{credential_present: "<service>"}, {http_ok: {"url": …}}, {ci_green: "<PR url>"}, ' +
-        '{task_done: "<task id>"}. Legacy tasks: title + tier only.',
+        '{task_done: "<task id>"}. Legacy tasks: title + tier only. ' +
+        '`replaces_item_id` = the step this new step supersedes: it is skipped for you, in the same ' +
+        'transaction, with the reason «заменён шагом …». Use it instead of add + a separate skip, so a ' +
+        'replaced step can never be left behind in the plan.',
       inputSchema: {
         type: 'object',
         required: ['task_id', 'title'],
@@ -157,6 +160,7 @@ module.exports = {
           task_id: { type: 'string' },
           title: { type: 'string' },
           after_item_id: { type: 'string', description: 'Contract plan: insert right after this step (default: append)' },
+          replaces_item_id: { type: 'string', description: 'The step this one replaces — it is skipped automatically with the reason "заменён шагом …"' },
           execution_kind: { type: 'string', enum: ['agent', 'programmatic'] },
           executor_role: { type: 'string', enum: ['researcher', 'developer', 'reviewer', 'verifier'] },
           minimum_model_level: { type: 'string', enum: ['bachelor', 'master', 'doctor'] },
@@ -170,7 +174,7 @@ module.exports = {
           delay_after_sec: { type: 'number', description: 'Delay before this item becomes runnable, in seconds' },
         },
       },
-      handler: async ({ task_id, title, position, execution_tier, delay_after_sec, after_item_id, ...contract }, ctx) => {
+      handler: async ({ task_id, title, position, execution_tier, delay_after_sec, after_item_id, replaces_item_id, ...contract }, ctx) => {
         const profileId = requireProfile(ctx);
         const task = store().getTask(task_id, profileId);
         if (!task) return { error: 'task not found (or not owned by this profile)' };
@@ -185,8 +189,9 @@ module.exports = {
         }
         if (task.acceptance_criteria_json) {
           try {
-            const item = store().insertPlanItem(task_id, profileId, {
+            const { item, replaced, warning } = store().insertPlanItem(task_id, profileId, {
               afterItemId: after_item_id || null,
+              replacesItemId: replaces_item_id || null,
               item: {
                 title, stage: contract.stage, instructions: contract.instructions,
                 execution_kind: contract.execution_kind || 'agent', executor_role: contract.executor_role ?? null,
@@ -195,7 +200,7 @@ module.exports = {
                 already_done: contract.already_done ?? null,
               },
             });
-            return { item };
+            return { item, replaced, warning };
           } catch (e) { return { error: e.message }; }
         }
         const existing = store().listTaskItems(task_id, profileId);
@@ -207,7 +212,19 @@ module.exports = {
           execution_tier: execution_tier || 'free',
           delay_after_sec: delay_after_sec || 0,
         });
-        return { item };
+        // A legacy (non-contract) plan gets the same one-call replacement, minus the
+        // transaction: createTaskItem already committed, so a refused skip is
+        // reported as a warning and the new step still stands.
+        let warning;
+        if (replaces_item_id) {
+          try {
+            const replaced = store().skipItem(replaces_item_id, profileId, {
+              reason: `заменён шагом «${title}» (${item.id.slice(0, 8)})`, by: 'plan-edit',
+            });
+            return { item, replaced };
+          } catch (e) { warning = `replaces_item_id не отменён: ${e.message}`; }
+        }
+        return warning ? { item, warning } : { item };
       },
     },
 
