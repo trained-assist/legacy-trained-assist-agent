@@ -478,6 +478,34 @@ function runCommand(command, cwd, timeoutMs) {
   });
 }
 
+// A `command_exit_zero` condition can be impossible to satisfy, not merely
+// "not yet": the wait/poll child inherits the engine env, which by design holds
+// NO service credentials (secrets live in the credential store, never in
+// process.env). So `gh api …`, `curl` with a private token, `git ls-remote` on
+// a private repo all fail the same way, forever, and the wait re-parks silently
+// until its deadline — a livelock that also stalls every parent waiting on
+// task_done (prod: a plan sat on `gh api` for 12 executions, epic stuck at 11/17).
+//
+// These are environment failures, not a pending condition: mark them `final`
+// (the contract decidePoll already honours) so the wait resolves at once and the
+// step is re-run with a note that says what to use instead.
+const UNSATISFIABLE_PATTERNS = [
+  { reason: 'unauthenticated', re: /gh auth login|populate the GH_TOKEN|authentication required|could not authenticate|requires authentication|bad credentials|401 Unauthorized/i,
+    hint: 'the wait condition has no credentials. Use a token-backed validator instead: {"issue_pr_merged": "owner/repo#N"}, {"issue_pr_ci_green": "owner/repo#N"}, {"merged": "<PR url>"}, {"ci_green": "<PR url>"}, or {"workflow_run_green": "owner/repo/actions/runs/<id>"} — never a shell call to gh/curl/git against an authenticated API.' },
+  { reason: 'command-missing', re: /(command not found|: not found|ENOENT|No such file or directory)/i,
+    hint: 'the command does not exist in the wait environment. Use a validator built into the engine — {"file_exists": "path"}, {"http_ok": {"url": …}}, {"credential_present": "<service>"}, {"task_done": "<task id>"} — or a command that needs no credentials.' },
+];
+
+// Export for tests: pure classification of a command_exit_zero verdict.
+function classifyUnsatisfiable(evidence) {
+  const e = evidence || {};
+  const text = `${e.stderr || ''}\n${e.stdout || ''}\n${e.error || ''}`;
+  for (const p of UNSATISFIABLE_PATTERNS) {
+    if (p.re.test(text)) return p;
+  }
+  return null;
+}
+
 // command_exit_zero — success is the exit code, not a model's judgement. cwd is
 // the step's project/workDir; the child is hard-killed by an AbortSignal timeout.
 async function commandExitZero(ctx) {
@@ -487,7 +515,15 @@ async function commandExitZero(ctx) {
   const timeoutMs = Number.isFinite(validation && validation.timeout_ms) && validation.timeout_ms > 0
     ? validation.timeout_ms : DEFAULT_COMMAND_TIMEOUT_MS;
   const cwd = ctx.projectDir || process.cwd();
-  return runCommand(String(command), cwd, timeoutMs);
+  const res = await runCommand(String(command), cwd, timeoutMs);
+  if (res.status !== 'fail') return res;
+  const unsat = classifyUnsatisfiable(res.evidence);
+  if (!unsat) return res;
+  return {
+    status: 'fail',
+    subject: res.subject,
+    evidence: { ...res.evidence, final: true, unsatisfiable: unsat.reason, hint: unsat.hint },
+  };
 }
 
 // credential_present — the profile has a stored credential for a service
@@ -934,7 +970,7 @@ module.exports = {
   makePrOpenedValidator, defaultGitInfo, gitRemoteRepo, extractPrRef, checkRunsGreen,
   makeIssuePrMergedValidator, makeIssuePrCiGreenValidator,
   makeWorkflowRunCompletedValidator, makeWorkflowJobCompletedValidator,
-  credentialPresent, makeHttpOkValidator, makeTaskDoneValidator,
+  credentialPresent, makeHttpOkValidator, makeTaskDoneValidator, classifyUnsatisfiable,
   VALIDATOR_NOTES, listValidatorCatalog,
   PR_REF_RE, DEFAULT_COMMAND_TIMEOUT_MS,
   VALIDATION_MODES, DEFAULT_VALIDATION_MODE, DEFAULT_VALIDATION_MODEL, LLM_VALIDATOR_TIMEOUT_MS,

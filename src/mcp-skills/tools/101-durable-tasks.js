@@ -355,9 +355,28 @@ module.exports = {
           return { error: `task_item_wait parks the step that is running now (status=${item.status})` };
         }
         const { normalizeAgentWait } = require('../../durable-wait');
-        const { getDefaultRegistry } = require('../../playbook-validators');
+        const { getDefaultRegistry, evaluateItemValidations } = require('../../playbook-validators');
         const { wait, error } = normalizeAgentWait(req, { now: Date.now(), registryKeys: Object.keys(getDefaultRegistry()) });
         if (error) return { error };
+        // Preflight the condition ONCE before parking. A condition the wait
+        // environment can never satisfy (gh/curl/git without credentials, a
+        // command that does not exist) would otherwise park silently and
+        // re-park until the deadline, stalling the step and every parent
+        // waiting on it. Refuse the park and say what to use instead.
+        if (wait.until && Object.keys(wait.until).length) {
+          let preflight = null;
+          try {
+            preflight = await evaluateItemValidations({ validation: wait.until, title: item.title }, { task, profileId });
+          } catch { preflight = null; }
+          const fatal = (preflight || []).find(r => r.status === 'fail' && r.evidence && r.evidence.final === true);
+          if (fatal) {
+            return {
+              error: `until.${fatal.key} is not satisfiable in the wait environment — parking on it would hang the step forever: ${fatal.evidence.hint}`,
+              evidence: fatal.evidence,
+              fix: 'use a validator the engine runs with its own credentials (issue_pr_merged / issue_pr_ci_green / merged / ci_green / workflow_run_*), or awaiting_user: true.',
+            };
+          }
+        }
         s.setItemWait(item_id, profileId, wait);
         return {
           ok: true,
