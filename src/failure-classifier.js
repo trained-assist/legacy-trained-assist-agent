@@ -35,6 +35,15 @@ const RULES = [
   { class: 'AUTH', pattern: /please run \/login/i },
   { class: 'AUTH', pattern: /invalid[_\s-]{0,5}api[_\s-]{0,5}key/i },
   { class: 'AUTH', pattern: /authentication[^.]{0,30}failed/i },
+  // Claude Code OAuth, live 2026-10-01: "Failed to authenticate. API Error: 401 OAuth access
+  // token has been revoked." — none of the patterns above matched it, so the run classified
+  // UNKNOWN and the operator only ever saw «код 1». Phrase-based on purpose (never a bare
+  // \b401\b): answer prose quoting a status code must stay out of it (#1227).
+  { class: 'AUTH', pattern: /failed to authenticate/i },
+  { class: 'AUTH', pattern: /oauth access token has been revoked/i },
+  { class: 'AUTH', pattern: /invalid[_\s-]?grant/i },
+  { class: 'AUTH', pattern: /account[_\s-]?on[_\s-]?hold/i },
+  { class: 'AUTH', pattern: /claude\.ai\/restricted/i },
 
   // RATE_LIMIT — short-lived, provider is throttling this request rate specifically.
   { class: 'RATE_LIMIT', pattern: /rate[_\s-]?limit/i },
