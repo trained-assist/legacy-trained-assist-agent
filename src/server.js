@@ -753,7 +753,7 @@ async function main() {
 
     // /internal/* — machine-to-machine routes (handlers/internal.js).
     if (url.pathname.startsWith('/internal/') &&
-        await handleInternal(req, url, res, { json, readBody, BASE_USERS_DIR, getGtdTickNow: () => gtdTickNow }) !== false) return;
+        await handleInternal(req, url, res, { json, readBody, readBodyBuffer, BASE_USERS_DIR, getGtdTickNow: () => gtdTickNow }) !== false) return;
 
     // POST /cleanup-flood — delete the text messages this agent sent to a chat.
     // Called by the gateway's /clean_up_flood command (which separately deletes the
