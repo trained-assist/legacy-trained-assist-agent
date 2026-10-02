@@ -136,7 +136,7 @@ const baseOpts = {
   fs.rmSync(tmp2, { recursive: true, force: true });
   console.log('V2 PASS: happy path + crash-no-hang + timers cleanup + command build + codex/opencode mcp wiring');
 
-  // (6) editLanded — pins the ⛔/➕ button delivery contract. progressEdit is
+  // (6) editLanded — pins the ⛔ button delivery contract. progressEdit is
   // best-effort+coalesced (tg-stream.js), so a real Telegram success, a 429
   // drop, and a coalesce-skip are three different shapes; only the first one
   // means the buttons actually reached the chat.
@@ -146,8 +146,8 @@ const baseOpts = {
   assert.equal(editLanded(undefined), false, 'no response (thrown+caught) does not land');
   assert.deepEqual(
     runningControls('t-x').reply_markup.inline_keyboard[0].map(b => b.callback_data),
-    ['stop|t-x', 'sup|t-x'],
-    'runningControls pairs ⛔ Стоп with ➕ Дополнить on the same row'
+    ['stop|t-x'],
+    'runningControls carries ⛔ Стоп alone — «➕ Дополнить» was removed (owner 30.09, Ф3/tg-bot#316)'
   );
   assert.deepEqual(runningControls('t-x', 123).reply_markup.inline_keyboard[1].map(b => b.callback_data),
     ['input_run|123', 'input_journal|123'], 'input controls stay bound to the exact launch message');
@@ -194,8 +194,8 @@ echo '{"type":"result","result":"done","usage":{"input_tokens":1,"output_tokens"
   assert.ok(buttonEdits.length >= 2, `expected a dropped attempt + a landed retry, got ${buttonEdits.length} button-carrying edits`);
   assert.deepEqual(
     buttonEdits[0].reply_markup.inline_keyboard[0].map(b => b.callback_data),
-    ['stop|t-retry', 'sup|t-retry'],
-    'the dropped attempt still carried both buttons (not silently downgraded to Стоп-only)'
+    ['stop|t-retry'],
+    'the dropped attempt still carried the markup (not silently downgraded to a bare edit)'
   );
   fs.rmSync(tmp3, { recursive: true, force: true });
   console.log('V2b PASS: editLanded gate + dropped button edit retries instead of being marked shown');
@@ -203,7 +203,7 @@ echo '{"type":"result","result":"done","usage":{"input_tokens":1,"output_tokens"
   // (8) Regression for the "buttons visible for 1 second then vanish" bug:
   // editMessageText WITHOUT reply_markup clears the keyboard. The old code sent
   // markup only on the first landing and bare text on every later tick, so the
-  // next progress edit erased ⛔/➕. Every landed progress edit past the
+  // next progress edit erased the running-controls markup. Every landed progress edit past the
   // threshold must carry the running-controls markup.
   const tmp4 = fs.mkdtempSync(path.join(os.tmpdir(), 'p13-smoke-persist-'));
   const quietBin2 = path.join(tmp4, 'fake-claude-quiet2');
@@ -225,7 +225,7 @@ echo '{"type":"result","result":"done","usage":{"input_tokens":1,"output_tokens"
   const postThreshold = landedEdits.filter(e => !e.bare);
   assert.ok(postThreshold.length >= 3, `expected several button-carrying edits across ticks, got ${postThreshold.length}`);
   for (const e of postThreshold) {
-    assert.deepEqual(e.keys, ['stop|t-persist', 'sup|t-persist'], 'every post-threshold edit carries ⛔/➕ markup (no bare edits after buttons appear)');
+    assert.deepEqual(e.keys, ['stop|t-persist'], 'every post-threshold edit carries the running-controls markup (no bare edits after buttons appear)');
   }
   assert.ok(!landedEdits.some(e => e.bare && landedEdits.indexOf(e) > landedEdits.indexOf(postThreshold[0])), 'no bare (button-stripping) edit after the first button-carrying one');
   fs.rmSync(tmp4, { recursive: true, force: true });
