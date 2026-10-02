@@ -854,8 +854,17 @@ async function main() {
         catch { return json(res, 413, { error: 'file too large' }); }
         fs.mkdirSync(storeDir, { recursive: true });
         fs.writeFileSync(path.join(storeDir, 'data'), buf, { mode: 0o600 });
+        const dataFile = path.join(storeDir, 'data');
         fs.writeFileSync(path.join(storeDir, 'meta.json'), JSON.stringify({ name: safeName, mime, size: buf.length, buffered: true }));
-        return json(res, 200, { id: ifId, name: safeName, mime, size: buf.length });
+        // `path` is relative to the profile's workspace — the SAME directory /action
+        // spawns MCP servers in (cwd: workDir). Callers that need the file back from a
+        // tool (the gateway's speech_transcribe, tg-bot#319) use this instead of
+        // recomputing our disk layout: media/intake-store/<id>/data is an implementation
+        // detail that would otherwise be copied into a second repo and break silently.
+        return json(res, 200, {
+          id: ifId, name: safeName, mime, size: buf.length,
+          path: path.relative(workspacePath(ifUsername), dataFile).split(path.sep).join('/'),
+        });
       }
       // GET
       try {
