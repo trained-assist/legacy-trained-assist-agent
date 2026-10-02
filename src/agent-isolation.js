@@ -108,6 +108,11 @@ const SERVER_ONLY_ENV = new Set([
   'GOOGLE_APPLICATION_CREDENTIALS', 'AGENT_KEEPALIVE_FILE', 'AGENT_SESSION_FILE',
   'NODE_OPTIONS', 'LD_PRELOAD', 'LD_LIBRARY_PATH',
 ]);
+// Bot tokens are server-only by CLASS, not by enumeration: a token missing from this
+// list leaks into the engine (model) env. SALES_BOT_TOKEN was absent until 2026-10-02 —
+// the same registry that loadSecrets now honours (agent#2041) also drives this, so a
+// bot added tomorrow is protected without a second hand-edited list.
+for (const b of require('./bot-registry').BOTS) SERVER_ONLY_ENV.add(b.token_secret_name);
 
 /**
  * Build the engine env from the full ("legacy") env the runner would have used.
