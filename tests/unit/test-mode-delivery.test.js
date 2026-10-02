@@ -99,6 +99,29 @@ describe('tg-stream log delivery gate', () => {
     expect(edited.skipped).toBeUndefined();
     expect(logs.some(l => l.includes('[test-mode]'))).toBe(false);
   });
+
+  // R2 regression: the mark used to have no unmark at all — one test run silenced
+  // the chat until a process restart. It now dies with the run (refcounted).
+  it('the mark releases one run at a time (overlapping runs of one chat)', () => {
+    tg.markLogChat(TEST_CHAT); // a second, overlapping log-run
+    tg.unmarkLogChat(TEST_CHAT); // the first one settles
+    expect(tg.isLogChat(TEST_CHAT), 'still silent — the other run is live').toBe(true);
+    tg.unmarkLogChat(TEST_CHAT); // the second settles
+    expect(tg.isLogChat(TEST_CHAT), 'the chat is live again (US-TEST-01 step 6)').toBe(false);
+    tg.markLogChat(TEST_CHAT); // keep the suite's beforeEach/afterEach balanced
+  });
+
+  it('a released chat sends to Telegram again (no network while marked, full call after release)', async () => {
+    tg.unmarkLogChat(TEST_CHAT);
+    const sent = await tg.tgSend('tok', TEST_CHAT, 'обычный ответ');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(sent.skipped).toBeUndefined();
+  });
+
+  it('unmarking a chat nobody marked is a no-op', () => {
+    expect(() => tg.unmarkLogChat(424242)).not.toThrow();
+    expect(tg.isLogChat(424242)).toBe(false);
+  });
 });
 
 // ── A3a: the answer store the run-finished callback reads ────────────────────
