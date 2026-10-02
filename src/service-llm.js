@@ -42,7 +42,20 @@ function available() {
 }
 
 function _stripFences(s) {
-  return String(s || '').replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+  return String(s || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+}
+
+// The worker already tells us, on EVERY response, which rungs it walked and what each one said
+// (`x-ladder-attempts: model=outcome, model=outcome, …`). Until now we threw it away, so a dead
+// call reached the operator as `fetch_error` with no rung named anywhere — the failure that started
+// this. Read it on the failure paths and it rides along into journalctl AND the degradation alert.
+// Defensive on purpose: injected fetchImpls (and a real `fetch` before the body arrives) may have
+// no headers at all.
+function attemptsHeader(res) {
+  try {
+    const v = res && res.headers && typeof res.headers.get === 'function' ? res.headers.get('x-ladder-attempts') : null;
+    return v ? String(v).slice(0, 600) : null;
+  } catch { return null; }
 }
 
 // Fenced or prose-wrapped JSON is common from small models.
@@ -57,8 +70,8 @@ function _parseJsonDetailed(content) {
 }
 
 // D1 attribution (#1917): the worker reads x-ladder-* off the request and stores them in
-// ladder_calls (trace_id / run_id / user_id / session_id — query-trace.py presets), and
-// x-ladder-app becomes the OpenRouter "Application" slice (for a service call that is the
+// ladder_calls (trace_id / run_id / user_id / chat_id / session_id — query-trace.py presets),
+// and x-ladder-app becomes the OpenRouter "Application" slice (for a service call that is the
 // tool's own name: gtd-intent, hh-messages, session-summary, …).
 //
 // x-ladder-app is sent ALWAYS (owner 01.10.2026: 540 из 571 запросов в аналитике были
@@ -75,6 +88,7 @@ function traceHeadersFor(ctx, source) {
     put('x-ladder-trace', ctx.trace);
     put('x-ladder-run', ctx.run);
     put('x-ladder-user', ctx.user);
+    put('x-ladder-chat', ctx.chat);
     put('x-ladder-session', ctx.session);
   }
   put('x-ladder-app', (ctx && ctx.app) || source);
@@ -155,22 +169,26 @@ async function serviceChat({ messages, maxTokens = 800, temperature = 0, json = 
     try { data = await res.json(); } catch (e) { bodyError = e.message; }
   }
   if (!res.ok) {
-    const attempts = data?.error?.attempts ? JSON.stringify(data.error.attempts).slice(0, 400) : null;
+    // Prefer the worker's own rung trace (compact, already normalised); fall back to the body's
+    // raw attempts array for older workers that only sent the error payload.
+    const attempts = attemptsHeader(res) || (data?.error?.attempts ? JSON.stringify(data.error.attempts).slice(0, 400) : null);
     diag('http_error', { status: res.status, message: data?.error?.message || '', attempts });
-    console.warn(`[${source}] llm-ladder HTTP ${res.status}: ${data?.error?.message || ''}${data?.error?.attempts ? ` ${JSON.stringify(data.error.attempts).slice(0, 400)}` : ''}`);
+    console.warn(`[${source}] llm-ladder HTTP ${res.status}: ${data?.error?.message || ''}${attempts ? ` | rungs: ${attempts}` : ''}`);
     return null;
   }
   if (bodyError) {
-    diag('fetch_error', { status: res.status, error: `body read failed: ${bodyError}` });
-    console.warn(`[${source}] llm-ladder body read failed (HTTP ${res.status}): ${bodyError}`);
+    const attempts = attemptsHeader(res);
+    diag('fetch_error', { status: res.status, error: `body read failed: ${bodyError}`, attempts });
+    console.warn(`[${source}] llm-ladder body read failed (HTTP ${res.status}): ${bodyError}${attempts ? ` | rungs: ${attempts}` : ''}`);
     return null;
   }
   const content = String(data?.choices?.[0]?.message?.content || '').trim();
   const model = data?.model || null;
   const finishReason = data?.choices?.[0]?.finish_reason || null;
   if (!content) {
-    diag('empty_content', { model, finishReason });
-    console.warn(`[${source}] llm-ladder empty content (rung=${model || '?'} finish=${finishReason || '?'}) → null`);
+    const attempts = attemptsHeader(res);
+    diag('empty_content', { model, finishReason, attempts });
+    console.warn(`[${source}] llm-ladder empty content (rung=${model || '?'} finish=${finishReason || '?'})${attempts ? ` | rungs: ${attempts}` : ''} → null`);
     return null;
   }
   if (json) {

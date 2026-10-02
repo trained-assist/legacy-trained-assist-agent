@@ -20,7 +20,7 @@ const report = require('../scripts/input-router-report');
 function fakeFetch(content, extra = {}) {
   const calls = [];
   const fn = async (url, init) => {
-    calls.push({ url, body: JSON.parse(init.body) });
+    calls.push({ url, body: JSON.parse(init.body), headers: init.headers || {} });
     return { ok: true, json: async () => ({ choices: [{ message: { content } }], ...extra }), text: async () => '' };
   };
   fn.calls = calls;
@@ -30,6 +30,27 @@ function fakeFetch(content, extra = {}) {
 const GOOD = JSON.stringify({
   route: 'agent', quick_handler: null, ready: 'ready', supplement_to_running: false,
   sections: ['software-engineering'], tools_hint: ['engineering_spawn_workspace'], confidence: 0.8,
+});
+
+test('the router attributes its ladder call to the user/chat/session it was given', async () => {
+  // Both entry points already held this identity (server.js intake-gate: username+chatId,
+  // runner/index.js: +sessionId+taskId) and it died at the boundary, so the router's calls landed
+  // in ladder_calls unattributed — the alert it raised could not be traced back to anybody.
+  ir._cache.clear();
+  const f = fakeFetch(GOOD);
+  ir.startShadow({
+    text: 'собери мне отчёт по проекту', source: 'quick',
+    user: 'kobzevvv', sessionId: 'sess-42', chatId: '1714048', traceId: 'task-7',
+    openrouterKey: 'k', ctx: { fetchImpl: f },
+  }).record({ quick: false });
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(f.calls.length, 1);
+  const h = f.calls[0].headers;
+  assert.equal(h['x-ladder-user'], 'kobzevvv');
+  assert.equal(h['x-ladder-chat'], '1714048');
+  assert.equal(h['x-ladder-session'], 'sess-42');
+  assert.equal(h['x-ladder-trace'], 'task-7');
+  assert.equal(h['x-ladder-app'], 'input-router');
 });
 
 test('short input passes through unchanged', () => {

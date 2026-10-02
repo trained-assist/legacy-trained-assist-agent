@@ -2480,6 +2480,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // only logged next to the legacy quick-intent decision (src/input-router.js).
   const routerShadow = startInputRouterShadow({
     text: task, source: 'quick', user: user.username, sessionId: activeSessionId || null,
+    chatId: chatId || null, traceId: taskId || null,
     openrouterKey: secrets.OPENROUTER_API_KEY, ctx: { sessionExists },
   });
   // Machine prompts (durable steps, GTD re-opens) never take a quick answer: an OpenCode
@@ -3747,9 +3748,12 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   const gtdFooter = (!internalGtd && !incomplete && user.workDir)
     ? (() => { try { return require('../gtd-controller').listGtd(user.workDir).filter(r => r.status === 'open').length > 0 ? '\n\n📋 Чеклист активен — /show_active_cheklist · /checklist_turn_off' : ''; } catch { return ''; } })()
     : '';
+  // Attribution for the answer-shaping ladder calls (paragraphize / extractAnswerActions): both run
+  // on the user's own answer, so their rung trace belongs to this run — see input-router's ladderCtx.
+  const answerLadderCtx = { trace: taskId || null, user: user.username, chat: chatId || null, session: activeSessionId || null };
   // #1542 P3: a wall of text is re-split into paragraphs (word-coverage guarded, fail-soft).
   if (!internalGtd && !incomplete && process.env.ANSWER_FORMAT !== '0') {
-    result = await answerActions.paragraphize(result, secrets.OPENROUTER_API_KEY);
+    result = await answerActions.paragraphize(result, secrets.OPENROUTER_API_KEY, { ctx: answerLadderCtx });
   }
   const final = (result + costFooter).slice(-MAX_MSG_LEN) + gtdFooter;
 
@@ -3798,7 +3802,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // #1542 P3: one extraction call → concrete action buttons (act|sid|n) named after
     // what the answer actually proposes. null = LLM unavailable → legacy plan/menu path.
     const extracted = activeSessionId && process.env.ANSWER_ACTIONS !== '0'
-      ? await answerActions.extractAnswerActions(result, secrets.OPENROUTER_API_KEY)
+      ? await answerActions.extractAnswerActions(result, secrets.OPENROUTER_API_KEY, { ctx: answerLadderCtx })
       : null;
     if (extracted) {
       finalMarkup = extracted.actions.length

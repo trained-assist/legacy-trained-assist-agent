@@ -1551,7 +1551,12 @@ async function main() {
       }
 
       try {
-        const result = await classifyMessage(message, recentSessions, secrets.OPENROUTER_API_KEY);
+        // Attribution (#1917): identity rides in the payload when the caller knows it (web/tg),
+        // so this hot-path call is findable in ladder_calls by user instead of landing anonymous.
+        const result = await classifyMessage(message, recentSessions, secrets.OPENROUTER_API_KEY, {
+          trace: payload.taskId || null, user: payload.username || payload.user || null,
+          chat: payload.chatId || null, session: payload.sessionId || null,
+        });
         return json(res, 200, result);
       } catch (e) {
         console.error('[classify] error:', e.message);
@@ -1568,7 +1573,8 @@ async function main() {
       if (typeof text !== 'string') return json(res, 400, { error: 'missing text' });
       // #1542 P1: router SHADOW next to the legacy completeness gate — never awaited.
       const routerShadow = startInputRouterShadow({
-        text, source: 'intake-gate', user: typeof payload.userId === 'string' || typeof payload.userId === 'number' ? String(payload.userId) : null,
+        text, source: 'intake-gate', user: username || null,
+        chatId: chatId || null, threadId,
         openrouterKey: secrets.OPENROUTER_API_KEY,
       });
       try {
