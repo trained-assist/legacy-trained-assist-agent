@@ -25,6 +25,30 @@ test('sends the ladder name + JSON mode + time budgets to the worker with the be
   assert.equal(seen.body.ladder_total_timeout_ms, 6000);
 });
 
+test('the worker ALWAYS gets a deadline, and the client outlives it', async () => {
+  // The bug this pins: without a worker deadline the worker keeps walking rungs while the client
+  // aborts, and the call is booked as `fetch_error` (a client timeout) although the worker
+  // answered it — 278 of 2509 service calls over 7 days. The client signal must therefore always
+  // outlive the budget we handed the worker, so the worker stops first and we read its answer.
+  const bodies = [];
+  const budgets = [];
+  const realTimeout = AbortSignal.timeout;
+  AbortSignal.timeout = (ms) => { budgets.push(ms); return realTimeout(ms); };
+  const fetchImpl = async (u, init) => {
+    bodies.push(JSON.parse(init.body));
+    return ok({ choices: [{ message: { content: 'hi' } }] });
+  };
+  try {
+    await s.serviceChat({ messages: [{ role: 'user', content: 'hi' }], timeoutMs: 4000, fetchImpl });
+    await s.serviceChat({ messages: [{ role: 'user', content: 'hi' }], timeoutMs: 4000, totalTimeoutMs: 6000, fetchImpl });
+  } finally { AbortSignal.timeout = realTimeout; }
+  // derived from the per-rung budget when the caller gives none — this is the assertion that
+  // fails on the old code, which sent no total at all and let the worker walk for ever
+  assert.equal(bodies[0].ladder_total_timeout_ms, 16000);
+  assert.equal(bodies[1].ladder_total_timeout_ms, 6000, 'an explicit budget wins');
+  assert.deepEqual(budgets, [19000, 9000], 'the client outlives the worker budget by the headroom');
+});
+
 test('worker failure / unreachable / non-JSON in JSON mode → null (callers are fail-soft)', async () => {
   assert.equal(await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], fetchImpl: async () => ok({ error: { type: 'ladder_error', attempts: [] } }, 502) }), null);
   assert.equal(await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], fetchImpl: async () => { throw new Error('ECONNREFUSED'); } }), null);

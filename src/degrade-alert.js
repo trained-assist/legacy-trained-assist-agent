@@ -17,7 +17,12 @@ const { getLoadedSecrets } = require('./secrets');
 const LADDER_STREAK_THRESHOLD = Number(process.env.DEGRADE_ALERT_STREAK) || 5;
 const COOLDOWN_MS = Number(process.env.DEGRADE_ALERT_COOLDOWN_MS) || 30 * 60 * 1000;
 
-let ladderStreak = 0;
+// Consecutive failures PER SOURCE (source → streak). One counter for the whole process let a
+// single flaky caller speak for the whole ladder: five failures of anyone alerted, and the text
+// then named whichever caller happened to fail last — «5 отказов подряд (input-router)» during a
+// provider incident that had nothing to do with the router (2026-10-02).
+const ladderStreaks = new Map();
+const STREAK_KEY_CAP = 200; // source is a literal at every call site; this is a leak valve only
 const lastAlertAt = new Map(); // alert key → epoch ms
 
 function _inTest() {
@@ -55,15 +60,20 @@ async function send(text) {
 
 // A rung outcome from service-llm: failures build a consecutive streak, a success
 // clears it. At the threshold one alert goes out (cooldown-suppressed afterwards).
+// The streak is per source (see ladderStreaks); the COOLDOWN stays global — the ladder
+// is one service, and one alert per window is enough no matter how many tools noticed.
 function ladderOutcome({ ok, reason = null, source = null, detail = null } = {}) {
-  if (ok) { ladderStreak = 0; return 0; }
-  ladderStreak += 1;
-  if (ladderStreak >= LADDER_STREAK_THRESHOLD && _due('ladder')) {
+  const key = source || 'ladder';
+  if (ok) { ladderStreaks.set(key, 0); return 0; }
+  if (ladderStreaks.size >= STREAK_KEY_CAP) ladderStreaks.clear();
+  const streak = (ladderStreaks.get(key) || 0) + 1;
+  ladderStreaks.set(key, streak);
+  if (streak >= LADDER_STREAK_THRESHOLD && _due('ladder')) {
     const where = source ? ` (${source})` : '';
     // via module.exports so tests can spy on the delivery layer
-    void module.exports.send(`⚠️ llm-ladder недоступна: ${ladderStreak} отказов подряд${where}${reason ? ` — ${reason}` : ''}${detail ? `\n${String(detail).slice(0, 300)}` : ''}`);
+    void module.exports.send(`⚠️ llm-ladder недоступна: ${streak} отказов подряд${where}${reason ? ` — ${reason}` : ''}${detail ? `\n${String(detail).slice(0, 300)}` : ''}`);
   }
-  return ladderStreak;
+  return streak;
 }
 
 // Engine-health transition to `unavailable` — fired ONCE per outage (the caller
@@ -76,7 +86,7 @@ function engineUnavailable(engine, { message = null } = {}) {
 }
 
 function _resetForTests() {
-  ladderStreak = 0;
+  ladderStreaks.clear();
   lastAlertAt.clear();
 }
 

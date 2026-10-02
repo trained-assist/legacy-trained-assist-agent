@@ -60,6 +60,19 @@ describe('#1912 ladder streak', () => {
     for (let i = 0; i < a.LADDER_STREAK_THRESHOLD - 1; i++) a.ladderOutcome({ ok: false });
     expect(sent).toHaveLength(0); // после ok счётчик обнулён — порог не набран
   });
+
+  it('streaks are per source — one flaky caller cannot alert for the whole ladder', () => {
+    const a = spy();
+    // 4 + 4 отказа разных инструментов: ни один источник не дошёл до порога, поэтому тишина.
+    // Со счётчиком на весь процесс это было 8 «подряд» и алерт с именем того, кто попался последним.
+    for (let i = 0; i < a.LADDER_STREAK_THRESHOLD - 1; i++) a.ladderOutcome({ ok: false, reason: 'http_error', source: 'gtd-intent' });
+    for (let i = 0; i < a.LADDER_STREAK_THRESHOLD - 1; i++) a.ladderOutcome({ ok: false, reason: 'http_error', source: 'input-router' });
+    expect(sent).toHaveLength(0);
+    // а вот реальная серия одного источника — алерт и называет именно его
+    a.ladderOutcome({ ok: false, reason: 'http_error', source: 'input-router' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatch(/input-router/);
+  });
 });
 
 describe('#1912 engine unavailable transition', () => {

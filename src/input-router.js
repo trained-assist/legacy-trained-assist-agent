@@ -19,7 +19,14 @@ const crypto = require('crypto');
 const SHORT_LIMIT = 1200;
 const HEAD_TAIL = 400;
 const DIGEST_MAX_ITEMS = 40;
-const DEFAULT_TIMEOUT_MS = 4000;
+// Budget of the SHADOW call — nobody awaits it (startShadow is fire-and-forget: the legacy regex
+// path answers in parallel), so latency is free here and only worker time is spent. 4s per rung
+// was the tightest budget in the codebase, and it did not buy speed: it killed every rung slower
+// than 4s (30% of real ladder answers, measured over 7 days) and booked the loss as a ladder
+// failure. 8s lets the first rung serve those calls; 60s total is enough to walk the whole
+// `service` ladder (Go → OpenRouter free → zen → paid) when a provider is down.
+const DEFAULT_TIMEOUT_MS = 8000;
+const TOTAL_TIMEOUT_MS = 60_000;
 const LOG_NAME = 'input-router-shadow.jsonl';
 const LOG_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -181,7 +188,7 @@ async function routeInput(text, ctx = {}) {
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: `${meta}\n---\n${c.text}` },
       ],
-      json: true, maxTokens: 300, timeoutMs, apiKey: key, source: 'input-router', fetchImpl: ctx.fetchImpl || null,
+      json: true, maxTokens: 300, timeoutMs, totalTimeoutMs: TOTAL_TIMEOUT_MS, apiKey: key, source: 'input-router', fetchImpl: ctx.fetchImpl || null,
     });
     if (!r) return null;
     const data = { usage: r.usage };
