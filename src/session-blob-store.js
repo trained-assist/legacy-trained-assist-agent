@@ -113,6 +113,24 @@ function assertSafeKey(key) {
 }
 
 // profiles/<profile>/sessions/<sessionId>.json.gz
+// Кандидатские документы (hh-skill #87/#105): байты файла живут в том же бакете,
+// ключ собирает ТОЛЬКО этот модуль (тем же правилам, что и сессии): профиль-каталог
+// с опечатками/путями не может превратиться в произвольный ключ бакета.
+function candidateDocKey(profile, candidateId, docId, ext) {
+  assertProfileName(profile);
+  if (!SEGMENT_RE.test(String(candidateId || ''))) {
+    throw blobError('BLOB_BAD_KEY', `candidateId: недопустимые символы (${String(candidateId).slice(0, 40)})`);
+  }
+  if (!SEGMENT_RE.test(String(docId || ''))) {
+    throw blobError('BLOB_BAD_KEY', `docId: недопустимые символы (${String(docId).slice(0, 40)})`);
+  }
+  const e = String(ext || '').toLowerCase();
+  if (!/^\.[a-z0-9]{1,10}$/.test(e)) {
+    throw blobError('BLOB_BAD_KEY', `ext: ожидалось расширение вида .pdf, получено ${JSON.stringify(String(ext || '').slice(0, 12))}`);
+  }
+  return `profiles/${profile}/candidate-docs/${candidateId}/${docId}${e}`;
+}
+
 function sessionKey(profile, sessionId) {
   return `profiles/${assertProfileName(profile)}/sessions/${assertSegment(sessionId, 'sessionId')}.json.gz`;
 }
@@ -286,7 +304,7 @@ function createSessionBlobStore(options = {}) {
   const bucket = options.bucket || (fakeDir ? createFileBackedBucket(fakeDir) : defaultBucket(bucketName));
   const timeoutMs = options.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : options.timeoutMs;
 
-  async function upload(key, data) {
+  async function upload(key, data, { contentType = CONTENT_TYPE } = {}) {
     assertSafeKey(key);
     const buf = toBuffer(data);
     const sha256 = sha256Hex(buf);
@@ -294,7 +312,9 @@ function createSessionBlobStore(options = {}) {
     // contentType only — never gzip:true / content-encoding: gzip: the bytes are
     // already gzipped by the caller, and download() must return them verbatim so
     // the sha256 returned here still matches the stored object.
-    await withTimeout(file.save(buf, { contentType: CONTENT_TYPE, timeout: timeoutMs }), timeoutMs, `blob upload ${key}`);
+    // Негзипнутые кандидатские файлы (кандидат-docs) передают свой contentType
+    // явно — дефолт остаётся gzip для архива сессий.
+    await withTimeout(file.save(buf, { contentType, timeout: timeoutMs }), timeoutMs, `blob upload ${key}`);
     let meta = null;
     try {
       const res = await withTimeout(file.getMetadata(), timeoutMs, `blob stat ${key}`);
@@ -331,6 +351,7 @@ function createSessionBlobStore(options = {}) {
 }
 
 module.exports = {
+  candidateDocKey,
   createSessionBlobStore,
   createFileBackedBucket,
   sessionKey,

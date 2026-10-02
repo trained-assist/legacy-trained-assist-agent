@@ -10,6 +10,13 @@ const { getAllEngineHealth } = require('../engine-health');
 
 async function handleInternal(req, url, res, ctx) {
   const { json, readBody, BASE_USERS_DIR, getGtdTickNow } = ctx;
+  const readBodyBuffer = ctx.readBodyBuffer
+    || ((req, maxBytes = 1_048_576) => new Promise((resolve, reject) => {
+      const chunks = []; let total = 0;
+      req.on('data', c => { total += c.length; if (total > maxBytes) { req.destroy(); return reject(new Error('body too large')); } chunks.push(c); });
+      req.on('end', () => resolve(Buffer.concat(chunks)));
+      req.on('error', reject);
+    }));
 
     // POST /internal/publish — publish a page for a profile on behalf of a domain skill
     // repo (#1470): the same writer as the publish_page tool, reached over HTTP so a
@@ -247,6 +254,59 @@ async function handleInternal(req, url, res, ctx) {
     if (req.method === 'POST' && url.pathname === '/internal/auth-status/clear') {
       clearAuthFailedFlag(url.searchParams.get('engine'));
       return json(res, 200, { ok: true });
+    }
+
+    // ── /internal/blob/* — тяжёлые файлы (кандидатские документы hh-skill #105) ──
+    // Байты живут в том же GCS-бакете, что и архив сессий (session-blob-store:
+    // ADC через metadata-сервер, GCS_FAKE_DIR = файловый фейк в тестах). Ключ
+    // собирает только store — параметры здесь валидируются им же.
+    // POST /internal/blob/upload?username=&candidate_id=&doc_id=&ext= — сырые байты в теле.
+    if (req.method === 'POST' && url.pathname === '/internal/blob/upload') {
+      const { createSessionBlobStore, candidateDocKey } = require('../session-blob-store');
+      let key;
+      try {
+        key = candidateDocKey(url.searchParams.get('username'), url.searchParams.get('candidate_id'), url.searchParams.get('doc_id'), url.searchParams.get('ext'));
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+      const MAX = 256 * 1024 * 1024;
+      let buf;
+      try {
+        buf = await readBodyBuffer(req, MAX);
+      } catch (e) {
+        return json(res, e && e.message === 'body too large' ? 413 : 400, { error: e && e.message === 'body too large' ? 'Файл больше 256 МБ — отдай ссылкой на облачное хранилище.' : `чтение тела: ${e.message}` });
+      }
+      if (!buf || !buf.length) return json(res, 400, { error: 'пустое тело' });
+      const rawCt = String(req.headers['content-type'] || '');
+      const contentType = /^[a-zA-Z0-9!#$&^_.+-]{1,60}\/[a-zA-Z0-9!#$&^_.+-]{1,60}$/.test(rawCt) ? rawCt : 'application/octet-stream';
+      try {
+        const out = await createSessionBlobStore().upload(key, buf, { contentType });
+        return json(res, 200, { ok: true, key, ...out });
+      } catch (e) {
+        console.error('[internal/blob/upload]', key, e.message);
+        return json(res, 500, { error: e.message });
+      }
+    }
+
+    // GET /internal/blob/download?username=&candidate_id=&doc_id=&ext= — байты назад
+    // (текст-экстракция, Deepgram: скачивает hh-skill и шлёт байтами как раньше).
+    if (req.method === 'GET' && url.pathname === '/internal/blob/download') {
+      const { createSessionBlobStore, candidateDocKey } = require('../session-blob-store');
+      let key;
+      try {
+        key = candidateDocKey(url.searchParams.get('username'), url.searchParams.get('candidate_id'), url.searchParams.get('doc_id'), url.searchParams.get('ext'));
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+      try {
+        const buf = await createSessionBlobStore().download(key);
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(buf.length), 'X-Blob-Key': key });
+        return res.end(buf);
+      } catch (e) {
+        if (e.code === 'BLOB_NOT_FOUND') return json(res, 404, { error: `файл не найден: ${key}` });
+        console.error('[internal/blob/download]', key, e.message);
+        return json(res, 500, { error: e.message });
+      }
     }
 
   return false;
