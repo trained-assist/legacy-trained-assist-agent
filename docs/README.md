@@ -10,3 +10,4 @@ Durable reference only. Plans, checklists, audits and reviews live in GitHub iss
 | [how-to-add-skill.md](how-to-add-skill.md) | Step-by-step guide: create a new MCP skill `.js` file in `src/mcp-skills/tools/` |
 | [narrow-wide-bot-architecture-spec.md](narrow-wide-bot-architecture-spec.md) | Architecture sketch: agent-assistant + specialized bot pattern (narrow vs wide scope) |
 | [skill-spec-template.md](skill-spec-template.md) | Template to fill in before implementing a new skill (external system analysis, API map) |
+| [test-mode.md](test-mode.md) | Gateway test mode contract (`delivery:"log"`): no Telegram sends, answer in run-finished, log-mark released on run finish (regression R2) |
