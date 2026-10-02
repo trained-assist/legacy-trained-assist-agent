@@ -1,43 +1,18 @@
-name: CI-Fix Cleanup
-
-# When a fix/ci-* PR is merged, close the original broken PR with a comment.
+# Managed by the trained-assist-engineering pr-autofix service.
+# Cleanup for trained-assist/trained-assist-agent — change the service registration, not this file.
+# Delegates to the pinned pr-autofix cleanup callable when a PR closes.
+name: CI Fix Cleanup
 
 on:
   pull_request:
     types: [closed]
 
 permissions:
+  contents: write
   pull-requests: write
 
 jobs:
-  close-original:
-    if: >
-      github.event.pull_request.merged == true &&
-      startsWith(github.event.pull_request.head.ref, 'fix/ci-')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Close original PR
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEW_PR: ${{ github.event.pull_request.number }}
-          NEW_PR_URL: ${{ github.event.pull_request.html_url }}
-          BODY: ${{ github.event.pull_request.body }}
-        run: |
-          # Extract original PR number planted by autofix-openrouter.mjs
-          ORIG_PR=$(echo "$BODY" | grep -oP '<!-- ci-fixer-original-pr: \K\d+' || true)
-          if [ -z "$ORIG_PR" ]; then
-            echo "No ci-fixer-original-pr marker found — nothing to close"
-            exit 0
-          fi
-
-          # Verify the original PR still exists and is open
-          STATE=$(gh pr view "$ORIG_PR" -R "${{ github.repository }}" --json state -q '.state' 2>/dev/null || echo "NOT_FOUND")
-          if [ "$STATE" != "OPEN" ]; then
-            echo "Original PR #$ORIG_PR is $STATE — nothing to do"
-            exit 0
-          fi
-
-          gh pr comment "$ORIG_PR" -R "${{ github.repository }}" --body \
-            "🤖 Superseded by #${NEW_PR} (${NEW_PR_URL}), which has been merged. Closing this PR."
-          gh pr close "$ORIG_PR" -R "${{ github.repository }}"
-          echo "Closed original PR #$ORIG_PR"
+  cleanup:
+    uses: trained-assist/pr-autofix/.github/workflows/ci-fix-cleanup.yml@v1.7.8
+    secrets:
+      gh_token: ${{ secrets.AUTOFIX_PAT || github.token }}
