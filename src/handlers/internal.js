@@ -288,6 +288,25 @@ async function handleInternal(req, url, res, ctx) {
       }
     }
 
+    // POST /internal/blob/delete?username=&candidate_id=&doc_id=&ext= — идемпотентно
+    // удаляет объект документа (удаление документа кандидата из hh-skill #107).
+    if (req.method === 'POST' && url.pathname === '/internal/blob/delete') {
+      const { createSessionBlobStore, candidateDocKey } = require('../session-blob-store');
+      let key;
+      try {
+        key = candidateDocKey(url.searchParams.get('username'), url.searchParams.get('candidate_id'), url.searchParams.get('doc_id'), url.searchParams.get('ext'));
+      } catch (e) {
+        return json(res, 400, { error: e.message });
+      }
+      try {
+        const out = await createSessionBlobStore().remove(key);
+        return json(res, 200, { ok: true, key, deleted: out.deleted });
+      } catch (e) {
+        console.error('[internal/blob/delete]', key, e.message);
+        return json(res, 500, { error: e.message });
+      }
+    }
+
     // GET /internal/blob/download?username=&candidate_id=&doc_id=&ext= — байты назад
     // (текст-экстракция, Deepgram: скачивает hh-skill и шлёт байтами как раньше).
     if (req.method === 'GET' && url.pathname === '/internal/blob/download') {

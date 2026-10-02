@@ -113,3 +113,40 @@ describe('/internal/blob/upload → download', () => {
     expect(typeof createSessionBlobStore().bucketName).toBe('string');
   });
 });
+
+async function callDelete(params) {
+  const url = new URL('http://x/internal/blob/delete?' + new URLSearchParams(params));
+  const { res, out } = makeRes();
+  const ctx = {
+    json: (_r, status, data) => { out.status = status; out.json = data; },
+    readBody: async () => '',
+    BASE_USERS_DIR: '/tmp',
+    getGtdTickNow: () => async () => {},
+  };
+  const req = fakeReq('', {}, 'POST');
+  await handleInternal(req, url, res, ctx);
+  return out;
+}
+
+describe('/internal/blob/delete — удаление документа (#107)', () => {
+  it('upload → delete → download 404; повторный delete идемпотентен', async () => {
+    const up = await callUpload(OK, Buffer.from('bytes-to-die'), { 'content-type': 'audio/mp4' });
+    expect(up.status).toBe(200);
+
+    const del = await callDelete(OK);
+    expect(del.status).toBe(200);
+    expect(del.json).toMatchObject({ ok: true, deleted: true });
+
+    const down = await callDownload(OK);
+    expect(down.status).toBe(404);
+
+    const again = await callDelete(OK);
+    expect(again.status).toBe(200);
+    expect(again.json).toMatchObject({ ok: true, deleted: false });
+  });
+
+  it('невалидные параметры → 400, объект не трогается', async () => {
+    expect((await callDelete({ ...OK, username: '../etc' })).status).toBe(400);
+    expect((await callDelete({ ...OK, ext: 'x' })).status).toBe(400);
+  });
+});
