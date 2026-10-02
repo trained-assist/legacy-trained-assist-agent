@@ -274,6 +274,15 @@ function createFileBackedBucket(dir, env = process.env) {
           maybeFail('exists', key);
           return [fs.existsSync(abs)];
         },
+        async delete() {
+          maybeFail('delete', key);
+          if (!fs.existsSync(abs)) {
+            const err = new Error(`No such object: ${key}`);
+            err.code = 404;
+            throw err;
+          }
+          fs.rmSync(abs, { force: true });
+        },
       };
     },
   };
@@ -341,13 +350,28 @@ function createSessionBlobStore(options = {}) {
     return Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
   }
 
+  // Идемпотентное удаление (кандидат-документы #105/#107): отсутствующий объект —
+  // не ошибка, повтор безопасен. Архив сессий НЕ использует remove — только явные
+  // вызовы (удаление документа кандидатом).
+  async function remove(key) {
+    assertSafeKey(key);
+    const file = bucket.file(key);
+    try {
+      await withTimeout(file.delete(), timeoutMs, `blob delete ${key}`);
+      return { ok: true, deleted: true };
+    } catch (err) {
+      if (isNotFound(err)) return { ok: true, deleted: false };
+      throw err;
+    }
+  }
+
   async function exists(key) {
     assertSafeKey(key);
     const res = await withTimeout(bucket.file(key).exists(), timeoutMs, `blob exists ${key}`);
     return !!(Array.isArray(res) ? res[0] : res);
   }
 
-  return { bucketName, upload, download, exists };
+  return { bucketName, upload, download, exists, remove };
 }
 
 module.exports = {
