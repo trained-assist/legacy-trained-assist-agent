@@ -163,7 +163,7 @@ function buildSpawnEnv({ username, workDir, hostAction }) {
   return {
     ...process.env,
     // Platform keys the tool servers need (DEEPGRAM_API_KEY, CLOUDFLARE_API_TOKEN,
-    // HH_CLIENT_*, AGENT_BOT_TOKEN) live in memory after loadSecrets() — never in
+    // HH_CLIENT_*, the bot tokens) live in memory after loadSecrets() — never in
     // process.env (prod: GCP Secret Manager). The session path hands them over via
     // browser.js → toolPlatformEnv(); this path was missed, so on /action every tool
     // depending on a platform key answered key_missing for profiles without a personal
