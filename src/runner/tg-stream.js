@@ -73,10 +73,20 @@ const NO_TELEGRAM_CHAT = Object.freeze({ ok: true, skipped: 'no-telegram-chat', 
 // comes back to the gateway as the `answer` field of run-finished instead.
 //
 // This is the single chokepoint every run send goes through, so one check here
-// covers the whole run (the audited exceptions are documented in DESIGN §2.3).
-// The gate sits right after hasTelegramChat: no network, no formatter, no
-// sent-messages bookkeeping — and it never throws, so a run cannot die on a
-// suppressed send. Fail-safe: an unflagged chat is completely unaffected.
+// covers the whole run. The gate sits right after hasTelegramChat: no network,
+// no formatter, no sent-messages bookkeeping — and it never throws, so a run
+// cannot die on a suppressed send. Fail-safe: an unflagged chat is completely
+// unaffected.
+//
+// Audited, and deliberately NOT covered here (the truncated scope of the test
+// mode, tracked as the gateway side's R3): the raw Bot API calls elsewhere —
+// the MCP artifact tools (94-tg-send, 95-illustrate, 96-label), the connect
+// flow (handlers/connect.js), GTD/durable notices (gtd-controller.js), the web
+// and lifecycle pushes in server.js, and the streaming "typing" indicator in
+// claude-runner.js. None of them can reach a live chat in test mode: the gateway
+// rewrites the dispatch to a dead chatId, so a call made during such a run hits
+// a chat that does not exist and Telegram answers 400. What that does NOT give
+// us is a log line for them — an auto-test must not assert on their failure.
 const logChats = new Set();
 const MAX_LOG_CHATS = 64;
 function markLogChat(chatId) {
