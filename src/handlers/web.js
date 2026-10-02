@@ -302,6 +302,43 @@ async function handleWeb(req, url, res, ctx) {
     }
   }
 
+  // ── POST /web/session-ladder — which models actually answered a session ─────
+  // Bearer twin of the other /web/session-* reads. /web/session-trace answers "what did the
+  // engine do"; this one answers "which models were tried, in what order, and what did the ones
+  // that were skipped say" — the per-call rung trace read straight from the ladder worker's D1
+  // log (GET /v1/calls). Until now the only reader of that log was scripts/query-trace.py on a
+  // laptop holding a Cloudflare token, so a dead model call was invisible in the UI.
+  // {username, id?, limit?} → {ok:true, calls:[…]} — id narrows to one session, omit for the user.
+  if (req.method === 'POST' && url.pathname === '/web/session-ladder') {
+    const verifySecret = secrets.WEB_VERIFY_SECRET || secrets.AGENT_SECRET;
+    const auth = req.headers['authorization'] || '';
+    if (!verifySecret || auth !== `Bearer ${verifySecret}`) return json(res, 401, { error: 'unauthorized' });
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }); }
+    const { username, id, limit } = body || {};
+    if (!username || !/^[a-zA-Z0-9_-]{1,64}$/.test(username)) return json(res, 400, { error: 'invalid username' });
+    try {
+      const { LADDER_URL, ladderToken } = require('../service-llm');
+      const token = ladderToken();
+      if (!token) return json(res, 503, { error: 'ladder not configured' });
+      const q = new URLSearchParams({ user: username });
+      if (id) q.set('session', String(id).slice(0, 200));
+      if (limit) q.set('limit', String(Math.min(Math.max(Number(limit) || 20, 1), 200)));
+      // Same ladder client service-llm uses — one auth, one URL, no second token to manage.
+      const res2 = await fetch(`${LADDER_URL()}/v1/calls?${q}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
+      });
+      // Any non-2xx from the worker is an agent/worker problem, not the caller's → 502 either way
+      // (a 401 here means OUR ladder token is wrong, which must not surface as "forbidden").
+      if (!res2.ok) return json(res, 502, { error: `ladder responded ${res2.status}` });
+      const data = await res2.json();
+      return json(res, 200, { ok: true, count: data.count, calls: data.calls });
+    } catch (e) {
+      return json(res, 500, { error: 'ladder trace failed', detail: String(e.message || e).slice(0, 200) });
+    }
+  }
+
   // ── POST /web/session-input — «📋 Посмотреть input» for external frontends ─
   // Bearer twin of GET /web/session/:id/input. {username, id, at?} in → the REAL
   // model input of the run that produced the answer at `at`, verbatim:

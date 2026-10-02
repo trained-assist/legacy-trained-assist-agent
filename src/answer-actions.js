@@ -42,8 +42,8 @@ function cutWords(s, max) {
 
 // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last) — throws when every rung
 // failed so callers keep their existing fail-soft catch.
-async function callJson({ apiKey, system, user, maxTokens, timeoutMs, source }) {
-  const value = await serviceLlm.serviceJson({ system, user, maxTokens, timeoutMs, apiKey, source });
+async function callJson({ apiKey, system, user, maxTokens, timeoutMs, source, ctx = null }) {
+  const value = await serviceLlm.serviceJson({ system, user, maxTokens, timeoutMs, apiKey, source, ctx });
   if (value == null) throw new Error('service-llm: no rung answered');
   return value;
 }
@@ -64,14 +64,14 @@ const ACTIONS_SYSTEM = [
 ].join(' ');
 
 // → { kind, actions: [{label, quote}] } | null (null = LLM unavailable → caller uses legacy)
-async function extractAnswerActions(text, apiKey, { timeoutMs = 10000 } = {}) {
+async function extractAnswerActions(text, apiKey, { timeoutMs = 10000, ctx = null } = {}) {
   const t = String(text || '').trim();
   if (t.length < 100) return { kind: 'none', actions: [] };
   if (!serviceLlm.available(apiKey)) return null;
   let obj;
   try {
     obj = await callJson({
-      apiKey, source: 'answer-actions',
+      apiKey, source: 'answer-actions', ctx,
       system: ACTIONS_SYSTEM,
       user: t.slice(-6000),
       maxTokens: 400,
@@ -155,13 +155,13 @@ const PARA_SYSTEM = [
 ].join(' ');
 
 // → reformatted text, or the original when not needed / unsafe / unavailable.
-async function paragraphize(text, apiKey, { timeoutMs = 12000 } = {}) {
+async function paragraphize(text, apiKey, { timeoutMs = 12000, ctx = null } = {}) {
   const t = String(text || '');
   if (!isWallOfText(t) || t.length > 8000) return t;
   if (!serviceLlm.available(apiKey)) return t;
   try {
     const obj = await callJson({
-      apiKey, source: 'answer-format',
+      apiKey, source: 'answer-format', ctx,
       system: PARA_SYSTEM,
       user: t,
       maxTokens: Math.min(4000, Math.ceil(t.length / 2) + 200),

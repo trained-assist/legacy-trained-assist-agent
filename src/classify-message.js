@@ -28,7 +28,7 @@ function sessionAgeStr(ageMs) {
  * @param {string} openrouterKey
  * @returns {Promise<{sessionId:string|null, confidence:'high'|'medium'|'low', sessionAge?:number}>}
  */
-async function classifyMessage(message, sessions, openrouterKey) {
+async function classifyMessage(message, sessions, openrouterKey, ctx = null) {
   const now = Date.now();
 
   const activeSessions = sessions.filter(s => {
@@ -77,7 +77,7 @@ ${sessionDescriptions}
   if (!serviceLlm.available(openrouterKey)) {
     throw new Error('No API key configured for classify (OpenCode Go or OPENROUTER_API_KEY required)');
   }
-  const out = await serviceLlm.serviceText({ user: prompt, maxTokens: 64, timeoutMs: 8000, apiKey: openrouterKey, source: 'classify' });
+  const out = await serviceLlm.serviceText({ user: prompt, maxTokens: 64, timeoutMs: 8000, apiKey: openrouterKey, source: 'classify', ctx });
   if (out == null) throw new Error('classify: no service-llm rung answered');
   const answer = out.trim().replace(/^["'`]+|["'`.]+$/g, '') || 'ambiguous';
 
