@@ -49,6 +49,34 @@ test('the worker ALWAYS gets a deadline, and the client outlives it', async () =
   assert.deepEqual(budgets, [19000, 9000], 'the client outlives the worker budget by the headroom');
 });
 
+test('a dead call reports WHICH rungs the worker walked (x-ladder-attempts)', async () => {
+  // The failure that started this: the operator saw `fetch_error` with no rung named anywhere.
+  // The worker has always sent `x-ladder-attempts` on every response — we used to throw it away.
+  const rungs = 'opencode-go/mimo-v2.6-flash=error, opencode-go/space-bunny-free=error, openrouter/xiaomi/mimo-v2.6-flash=ok';
+  const withHeader = (status, data) => ({
+    ok: status === 200, status,
+    headers: new Headers({ 'x-ladder-attempts': rungs }),
+    json: async () => data,
+  });
+  // http_error — the ladder walked rungs and gave up
+  let seen = [];
+  await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], source: 'input-router', onDiagnose: d => seen.push(d), fetchImpl: async () => withHeader(502, { error: { message: 'every rung failed' } }) });
+  assert.equal(seen[0].reason, 'http_error');
+  assert.equal(seen[0].attempts, rungs, 'the rung trace reaches the diagnostic layer → the alert');
+
+  // empty_content — a rung answered but the guard rejected the answer
+  seen = [];
+  await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], onDiagnose: d => seen.push(d), fetchImpl: async () => withHeader(200, { model: 'opencode-go/mimo-v2.6-flash', choices: [{ message: { content: '' }, finish_reason: 'length' }] }) });
+  assert.equal(seen[0].reason, 'empty_content');
+  assert.equal(seen[0].attempts, rungs);
+
+  // no header at all (older worker, injected fetch) must stay silent, not crash
+  seen = [];
+  await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], onDiagnose: d => seen.push(d), fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }) });
+  assert.equal(seen[0].reason, 'http_error');
+  assert.equal(seen[0].attempts, null, 'no header and no body attempts → null, not a crash and not an empty string');
+});
+
 test('worker failure / unreachable / non-JSON in JSON mode → null (callers are fail-soft)', async () => {
   assert.equal(await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], fetchImpl: async () => ok({ error: { type: 'ladder_error', attempts: [] } }, 502) }), null);
   assert.equal(await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], fetchImpl: async () => { throw new Error('ECONNREFUSED'); } }), null);

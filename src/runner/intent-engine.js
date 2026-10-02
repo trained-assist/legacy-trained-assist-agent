@@ -864,7 +864,7 @@ async function runQuickAnswerUnchecked(task, userId, workDir, openrouterKey = nu
           const projSess = sessions.listSessions(workDir, 1000, audience).filter(s => s.projectId === activePid);
           if (meta && projects.needsSummary(meta, projSess.length)) {
             const { generateProjectSummary } = require('../project-summary');
-            const res = await generateProjectSummary(projSess, { apiKey: orK });
+            const res = await generateProjectSummary(projSess, { apiKey: orK, ctx: { user: userId } });
             if (res) projects.setProjectSummary(workDir, activePid, res, projSess.length);
           }
         }

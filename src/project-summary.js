@@ -89,7 +89,7 @@ function coerceProjectSummary(obj) {
 // Generate {name, summary:{start,middle,end}, type} from a project's session metas.
 // Returns null on any failure (caller keeps the previous name/summary). Never throws.
 // Runs on the service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
-async function generateProjectSummary(sessionMetas, { apiKey, timeoutMs = 25000 } = {}) {
+async function generateProjectSummary(sessionMetas, { apiKey, timeoutMs = 25000, ctx = null } = {}) {
   const serviceLlm = require('./service-llm');
   if (!serviceLlm.available(apiKey)) return null;
   const digest = buildProjectDigest(sessionMetas);
@@ -98,7 +98,7 @@ async function generateProjectSummary(sessionMetas, { apiKey, timeoutMs = 25000 
     const parsed = await serviceLlm.serviceJson({
       system: SYSTEM_PROMPT,
       user: `Диалоги проекта (хронология):\n\n${digest}\n\nВерни JSON: name + summary{start,middle,end} + type.`,
-      maxTokens: 500, temperature: 0.2, timeoutMs, apiKey, source: 'project-summary',
+      maxTokens: 500, temperature: 0.2, timeoutMs, apiKey, source: 'project-summary', ctx,
     });
     return parsed ? coerceProjectSummary(parsed) : null;
   } catch (e) {

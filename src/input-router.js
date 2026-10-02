@@ -168,6 +168,14 @@ const SYSTEM_PROMPT = [
 ].join(' ');
 
 
+// Attribution for the worker's D1 trace (#1917): both entry points already hold the identity —
+// server.js intake-gate has username/chatId, runner/index.js adds the session id — but it died at
+// the boundary, so the router's ladder calls landed in ladder_calls unattributed (and the alert it
+// raised could not be traced back to a user). Reads the identity startShadow already forwards.
+function ladderCtx(ctx) {
+  return { trace: ctx.traceId || null, user: ctx.user || null, chat: ctx.chatId || null, session: ctx.sessionId || null };
+}
+
 async function routeInput(text, ctx = {}) {
   try {
     const serviceLlm = require('./service-llm');
@@ -188,7 +196,7 @@ async function routeInput(text, ctx = {}) {
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: `${meta}\n---\n${c.text}` },
       ],
-      json: true, maxTokens: 300, timeoutMs, totalTimeoutMs: TOTAL_TIMEOUT_MS, apiKey: key, source: 'input-router', fetchImpl: ctx.fetchImpl || null,
+      json: true, maxTokens: 300, timeoutMs, totalTimeoutMs: TOTAL_TIMEOUT_MS, apiKey: key, source: 'input-router', fetchImpl: ctx.fetchImpl || null, ctx: ladderCtx(ctx),
     });
     if (!r) return null;
     const data = { usage: r.usage };
@@ -258,11 +266,13 @@ function cachedRoute(text, ctx) {
 const NOOP = { record() {} };
 function startShadow(opts) {
   try {
-    const { text, source, user = null, sessionId = null, openrouterKey = null, ctx = {} } = opts || {};
+    const { text, source, user = null, sessionId = null, chatId = null, traceId = null, openrouterKey = null, ctx = {} } = opts || {};
     if (!shadowEnabled(openrouterKey)) return NOOP;
     const raw = String(text || '').trim();
     if (!raw) return NOOP;
-    const pending = cachedRoute(raw, { ...ctx, openrouterKey });
+    // Identity rides along for the worker's D1 trace (ladderCtx) — `user`/`sessionId` were already
+    // here for the shadow JSONL, they just never reached the ladder headers.
+    const pending = cachedRoute(raw, { ...ctx, openrouterKey, user, sessionId, chatId, traceId });
     let recorded = false;
     return {
       record(legacy = {}) {
