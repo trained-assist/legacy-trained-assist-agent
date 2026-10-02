@@ -100,6 +100,9 @@ const ARGV_ENV = [...ENGINE_ENV_ALLOW].filter(k => GLIBC_SETUID_STRIPPED_ENV.has
 // (e.g. a profile token file with a colliding name) would admit them.
 const SERVER_ONLY_ENV = new Set([
   'AGENT_SECRET', 'TELEGRAM_BOT_TOKEN', 'RECRUITER_BOT_TOKEN', 'FREELANCE_BOT_TOKEN',
+  // Registry bot tokens are server-only by class, not by enumeration: a token
+  // missing here leaks into the engine env. Added below from bots.registry so a
+  // new bot needs no edit here (SALES_BOT_TOKEN was missing until 2026-10-02).
   'BOT_SECRET', 'ANTHROPIC_API_KEY', 'DEEPGRAM_API_KEY', 'OPENAI_API_KEY', 'FAL_KEY',
   'IDEOGRAM_API_KEY', 'RECRAFT_API_KEY', 'CF_API_TOKEN', 'CLOUDFLARE_API_TOKEN', 'OPENROUTER_API_KEY',
   'GITHUB_ISSUES_TOKEN', 'WEB_JWT_SECRET', 'WEB_VERIFY_SECRET', 'CHECKLIST_API_KEY',
@@ -108,6 +111,7 @@ const SERVER_ONLY_ENV = new Set([
   'GOOGLE_APPLICATION_CREDENTIALS', 'AGENT_KEEPALIVE_FILE', 'AGENT_SESSION_FILE',
   'NODE_OPTIONS', 'LD_PRELOAD', 'LD_LIBRARY_PATH',
 ]);
+for (const b of require('./bot-registry').BOTS) SERVER_ONLY_ENV.add(b.token_secret_name);
 
 /**
  * Build the engine env from the full ("legacy") env the runner would have used.

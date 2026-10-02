@@ -1,4 +1,4 @@
-const { missingBotTokens } = require('./bot-registry');
+const { missingBotTokens, BOTS } = require('./bot-registry');
 
 const REQUIRED = ['TELEGRAM_BOT_TOKEN', 'AGENT_SECRET'];
 const OPTIONAL = ['RECRUITER_BOT_TOKEN', 'FREELANCE_BOT_TOKEN', 'SALES_BOT_TOKEN', 'ANTHROPIC_API_KEY', 'DEEPGRAM_API_KEY', 'BOT_SECRET', 'CF_API_TOKEN', 'OPERATOR_CHAT_ID', 'GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET', 'HH_CLIENT_ID', 'HH_CLIENT_SECRET', 'OPENAI_API_KEY', 'FAL_KEY', 'IDEOGRAM_API_KEY', 'RECRAFT_API_KEY', 'OPENROUTER_API_KEY', 'GITHUB_ISSUES_TOKEN', 'WEB_JWT_SECRET', 'WEB_VERIFY_SECRET', 'CHECKLIST_API_KEY'];
@@ -95,11 +95,20 @@ async function loadSecrets({ auditBots = true } = {}) {
     }
   }
 
+  // Every non-default bot token is spread in from the registry, never listed by
+  // hand: a token that is loaded (OPTIONAL) but absent from this object is a
+  // 503 on every delivery to its audience — exactly how SALES_BOT_TOKEN was
+  // dropped on 2026-10-02 and the sales bot rejected every task with
+  // "sales Telegram delivery is not configured". One registry entry stays the
+  // whole wiring.
+  const registryTokens = Object.fromEntries(
+    BOTS.filter(b => b.audience !== 'default').map(b => [b.token_secret_name, values[b.token_secret_name] || null])
+  );
+
   return {
     MISSING_BOTS: missingBots.map(b => b.botId),
     BOT_TOKEN: values.TELEGRAM_BOT_TOKEN,
-    RECRUITER_BOT_TOKEN: values.RECRUITER_BOT_TOKEN,
-    FREELANCE_BOT_TOKEN: values.FREELANCE_BOT_TOKEN,
+    ...registryTokens,
     ANTHROPIC_API_KEY: values.ANTHROPIC_API_KEY, // not used for direct API calls — Claude Code uses OAuth; OpenRouter for LLM calls
     AGENT_SECRET: values.AGENT_SECRET,
     DEEPGRAM_API_KEY: values.DEEPGRAM_API_KEY,

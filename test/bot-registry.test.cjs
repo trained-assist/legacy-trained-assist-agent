@@ -79,3 +79,35 @@ test('ru-edge passes auditBots:false (guard against reintroducing the noise)',()
  const src=fs.readFileSync(path.join(__dirname,'..','src','ru-edge.js'),'utf8');
  assert.match(src,/loadSecrets\(\{\s*auditBots:\s*false\s*\}\)/,'ru-edge must opt out of the registry audit');
 });
+
+// 2026-10-02: the flexi-telegram-deal-bot worker sent audience:"sales" and every
+// /run was rejected with "sales Telegram delivery is not configured" — the token
+// was loaded (OPTIONAL had SALES_BOT_TOKEN, check-env-sync passed) but the
+// hand-written return object of loadSecrets never carried it. The registry is
+// the source of truth: whatever is loaded must be RETURNED, and must be hidden
+// from the engine env.
+test('loadSecrets RETURNS every registry bot token (loaded-but-dropped = audience 503)', async()=>{
+ const saved={...process.env};
+ process.env.SECRETS_SOURCE='env';
+ process.env.TELEGRAM_BOT_TOKEN='classic';
+ process.env.AGENT_SECRET='s3cret';
+ process.env.SALES_BOT_TOKEN='sales-tok';
+ process.env.RECRUITER_BOT_TOKEN='rec-tok';
+ process.env.FREELANCE_BOT_TOKEN='fre-tok';
+ try{
+  const s=await loadSecrets({auditBots:false});
+  for(const b of BOTS.filter(b=>b.audience!=='default')){
+   assert.ok(b.token_secret_name in s,`${b.token_secret_name} missing from loadSecrets() output`);
+   assert.equal(s[b.token_secret_name],process.env[b.token_secret_name],b.token_secret_name);
+  }
+  // the concrete regression: the sales audience must route to its own token
+  assert.equal(deliverySecrets(s,'sales').BOT_TOKEN,'sales-tok');
+ }finally{
+  for(const k of Object.keys(process.env)) if(!(k in saved)) delete process.env[k];
+  Object.assign(process.env,saved);
+ }
+});
+test('registry bot tokens are server-only in the engine env (class rule, not a list)',()=>{
+ const {SERVER_ONLY_ENV}=require('../src/agent-isolation');
+ for(const b of BOTS) assert.ok(SERVER_ONLY_ENV.has(b.token_secret_name),`${b.token_secret_name} would leak into the engine env`);
+});
