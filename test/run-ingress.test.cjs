@@ -27,7 +27,7 @@ function fixture(t) {
  const start=source.indexOf("    if (req.method === 'POST' && url.pathname === '/run') {");
  const end=source.indexOf('    // POST /action',start);
  const runs=[];const pending=new Map();
-  const sandbox={deliverySecrets:require('../src/bot-delivery').deliverySecrets,withDedupLock:require('../src/request-dedup-lock').withDedupLock,fs,path,os,Buffer,require:sandboxRequire(),console,process:{env:{AGENT_DATA_DIR:root}},BASE_USERS_DIR:path.join(root,'users'),secrets:{},
+  const sandbox={deliverySecrets:require('../src/bot-delivery').deliverySecrets,runDeliveryFromPayload:require('../src/bot-delivery').runDeliveryFromPayload,withDedupLock:require('../src/request-dedup-lock').withDedupLock,fs,path,os,Buffer,require:sandboxRequire(),console,process:{env:{AGENT_DATA_DIR:root}},BASE_USERS_DIR:path.join(root,'users'),secrets:{},
   isValidProjectId:()=>true,trackChat:()=>{},getPendingTasks:()=>[...pending.values()],atomicJson,profiles,
   readBody:async req=>JSON.stringify(req.body),json:(res,status,data)=>Object.assign(res,{status,data}),
   runTask:opts=>{pending.set(opts.taskId,{...opts,audience:opts.user.audience});runs.push(opts);return Promise.resolve();},
@@ -41,6 +41,17 @@ test('lost ACK is deduplicated from persisted receipt after process memory is lo
  const f=fixture(t);const first=await f.send({mode:'deep',projectId:'project'});assert.equal(first.status,202);assert.equal(first.data.durable,true);
  f.pending.clear();const retry=await f.send();assert.equal(retry.data.duplicate,true);assert.equal(retry.data.requestId,'request-1');
  assert.equal(f.runs.length,1);assert.equal(f.runs[0].mode,'deep');assert.equal(f.runs[0].projectId,'project');
+});
+test('delivery:log reaches runTask as "log", anything else stays normal delivery (test-mode §2.3)',async t=>{
+  const f=fixture(t);
+  assert.equal((await f.send({delivery:'log'})).status,202);
+  assert.equal(f.runs[0].delivery,'log');
+  assert.equal((await f.send({requestId:'request-2',delivery:'Telegram'})).status,202);
+  assert.equal(f.runs[1].delivery,null);
+  assert.equal((await f.send({requestId:'request-3',delivery:123})).status,202);
+  assert.equal(f.runs[2].delivery,null);
+  assert.equal((await f.send({requestId:'request-4'})).status,202);
+  assert.equal(f.runs[3].delivery,null);
 });
 test('receipt-write failure still deduplicates the durable pending journal on retry',async t=>{
  const f=fixture(t);f.sandbox.atomicJson=()=>{throw Error('disk full');};
