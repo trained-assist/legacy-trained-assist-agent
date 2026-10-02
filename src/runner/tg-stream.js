@@ -87,16 +87,26 @@ const NO_TELEGRAM_CHAT = Object.freeze({ ok: true, skipped: 'no-telegram-chat', 
 // rewrites the dispatch to a dead chatId, so a call made during such a run hits
 // a chat that does not exist and Telegram answers 400. What that does NOT give
 // us is a log line for them — an auto-test must not assert on their failure.
-const logChats = new Set();
+// The mark lives exactly as long as the runs that carry it: markLogChat on run
+// start, unmarkLogChat in _finishAcceptedChatRun when that run settles — so
+// removing the chat from the gateway's TEST_CHAT_IDS restores ordinary delivery
+// without a process restart (US-TEST-01 step 6; a sticky mark was R2: the chat
+// went permanently silent). Value = count of active log-runs: two overlapping
+// runs of the same chat release one at a time.
+const logChats = new Map();
 const MAX_LOG_CHATS = 64;
 function markLogChat(chatId) {
   if (!hasTelegramChat(chatId)) return;
   const id = Number(chatId);
-  if (logChats.size >= MAX_LOG_CHATS && !logChats.has(id)) logChats.delete(logChats.values().next().value);
-  logChats.add(id);
+  if (logChats.size >= MAX_LOG_CHATS && !logChats.has(id)) logChats.delete(logChats.keys().next().value);
+  logChats.set(id, (logChats.get(id) || 0) + 1);
 }
 function unmarkLogChat(chatId) {
-  logChats.delete(Number(chatId));
+  const id = Number(chatId);
+  const active = logChats.get(id);
+  if (active == null) return;
+  if (active <= 1) logChats.delete(id);
+  else logChats.set(id, active - 1);
 }
 function isLogChat(chatId) {
   return hasTelegramChat(chatId) && logChats.has(Number(chatId));

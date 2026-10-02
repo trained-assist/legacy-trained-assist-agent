@@ -76,7 +76,7 @@ const { estimateToolTokens } = require('../mcp-tool-tokens');
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
 // tg-stream.js (issue #942 P1.4). The module owns the format/send/edit
 // primitives; runner.js keeps orchestration (queueing, retries around them).
-const { TG_API, tgSend, tgEdit, markLogChat } = require('./tg-stream');
+const { TG_API, tgSend, tgEdit, markLogChat, unmarkLogChat } = require('./tg-stream');
 const { notifyRunFinished } = require('../gateway-callback');
 const liveInbox = require('../live-inbox');
 const {
@@ -664,6 +664,11 @@ function takeRunAnswer(taskId) {
 function _finishAcceptedChatRun(chatId, opts, outcome) {
   try { _releaseAcceptedByChat(chatId); } catch (e) { console.warn('[runner] release acceptedByChat:', e.message); }
   if (!opts) return;
+  // Gateway test mode (#329): release the chat's log-mark together with the run —
+  // done, error, stop or quick answer all funnel here exactly once (R2 fix).
+  // Overlapping runs of the same chat release one refcount each; a normal run
+  // (no flag) never marked and never unmarks.
+  if (opts.delivery === 'log' && chatId != null) unmarkLogChat(chatId);
   // Live inbox: messages the model already took in mid-run are done (src/live-inbox.js).
   let consumed = [];
   try { consumed = liveInbox.takeConsumed(opts.taskId); } catch { /* keep the messages */ }
@@ -976,10 +981,6 @@ function runTask(opts) {
   const rawChatId = Number(delivery.user?.id);
   const acceptedChatId = Number.isSafeInteger(rawChatId) && rawChatId !== 0 ? rawChatId : null;
   _bumpAcceptedByChat(acceptedChatId);
-  // Gateway test mode (#329): this run's Telegram traffic goes to the log instead of
-  // the network. Marked here — before the first send of the run, and before any await,
-  // so nothing can slip out ahead of the flag. No-op for a chatless (web) run.
-  if (delivery.delivery === 'log') markLogChat(acceptedChatId);
   // Live inbox registry (get_new_messages): the server — not the engine — knows
   // which chat/topic/gateway dispatch this task belongs to.
   if (acceptedChatId != null) liveInbox.registerInboxRun({ taskId: delivery.taskId, chatId: acceptedChatId, threadId: delivery.threadId, requestId: delivery.requestId, audience: delivery.user?.audience });
@@ -987,6 +988,13 @@ function runTask(opts) {
   // после 202, обязан найти координаты рана. Ключ пробрасывается в _runTaskInner
   // через opts (taskDelivery копирует поля), там он добирается sessionId.
   delivery._liveRunKey = registerLiveRun(delivery);
+  // Gateway test mode (#329): this run's Telegram traffic goes to the log instead of
+  // the network. Marked synchronously — before the first send of the run and before
+  // any await, so nothing can slip out ahead of the flag — but AFTER everything that
+  // can throw synchronously above: a throw between the mark and the finish wiring
+  // below would leave the chat marked with no run left to release it (the sticky
+  // half of R2). No-op for a chatless (web) run; released in _finishAcceptedChatRun.
+  if (delivery.delivery === 'log') markLogChat(acceptedChatId);
   let ret;
   try {
     ret = _runTaskInner(delivery);

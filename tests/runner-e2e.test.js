@@ -1377,4 +1377,24 @@ describe('Gateway test mode (delivery:"log")', () => {
     expect(finished.length, 'run-finished not delivered').toBeGreaterThan(0);
     expect('answer' in finished.at(-1), 'no answer field for an ordinary run').toBe(false);
   });
+
+  // R2 regression (trained-assist-tg-bot#329 US-TEST-01 step 6): the log-mark
+  // must die with the run that carried it. Before the fix markLogChat had no
+  // unmark anywhere, so one test run silenced the chat until a process restart.
+  it('after the log run finishes, the same chat delivers normally again', { timeout: 30000 }, async () => {
+    setupFakeClaude('Тестовый ответ');
+    await chat('сделай что-нибудь', { userId: TEST_CHAT, delivery: 'log', secrets: { BOT_TOKEN: 'fake:token', AGENT_SECRET } });
+    await new Promise(r => setTimeout(r, 400));
+    expect(tgSent().filter(l => Number(l.body.chat_id) === TEST_CHAT).length, 'phase 1: silence').toBe(0);
+
+    setupFakeClaude('Обычный ответ после теста');
+    await chat('сделай что-нибудь ещё', { userId: TEST_CHAT, secrets: { BOT_TOKEN: 'fake:token', AGENT_SECRET } });
+    await new Promise(r => setTimeout(r, 400));
+
+    const after = tgSent().filter(l => Number(l.body.chat_id) === TEST_CHAT);
+    expect(after.map(l => l.body.text).filter(Boolean).some(t => t.includes('Обычный ответ после теста')), 'phase 2: the chat must be live again').toBe(true);
+    const finished = gwLog.filter(b => b.chatId === TEST_CHAT);
+    expect(finished.length, 'run-finished not delivered').toBeGreaterThan(0);
+    expect('answer' in finished.at(-1), 'phase 2 run must not carry the answer field').toBe(false);
+  });
 });
