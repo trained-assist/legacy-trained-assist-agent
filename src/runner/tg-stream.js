@@ -66,8 +66,53 @@ function hasTelegramChat(chatId) {
 }
 const NO_TELEGRAM_CHAT = Object.freeze({ ok: true, skipped: 'no-telegram-chat', result: null });
 
+// Gateway test mode (trained-assist-tg-bot#329, design §2.3). A dispatch for a
+// chat listed in the gateway's TEST_CHAT_IDS arrives with delivery:"log": the
+// run must still execute, but it must not touch the Telegram API AT ALL —
+// neither the thinking bubble, nor progress edits, nor the final answer, which
+// comes back to the gateway as the `answer` field of run-finished instead.
+//
+// This is the single chokepoint every run send goes through, so one check here
+// covers the whole run. The gate sits right after hasTelegramChat: no network,
+// no formatter, no sent-messages bookkeeping — and it never throws, so a run
+// cannot die on a suppressed send. Fail-safe: an unflagged chat is completely
+// unaffected.
+//
+// Audited, and deliberately NOT covered here (the truncated scope of the test
+// mode, tracked as the gateway side's R3): the raw Bot API calls elsewhere —
+// the MCP artifact tools (94-tg-send, 95-illustrate, 96-label), the connect
+// flow (handlers/connect.js), GTD/durable notices (gtd-controller.js), the web
+// and lifecycle pushes in server.js, and the streaming "typing" indicator in
+// claude-runner.js. None of them can reach a live chat in test mode: the gateway
+// rewrites the dispatch to a dead chatId, so a call made during such a run hits
+// a chat that does not exist and Telegram answers 400. What that does NOT give
+// us is a log line for them — an auto-test must not assert on their failure.
+const logChats = new Set();
+const MAX_LOG_CHATS = 64;
+function markLogChat(chatId) {
+  if (!hasTelegramChat(chatId)) return;
+  const id = Number(chatId);
+  if (logChats.size >= MAX_LOG_CHATS && !logChats.has(id)) logChats.delete(logChats.values().next().value);
+  logChats.add(id);
+}
+function unmarkLogChat(chatId) {
+  logChats.delete(Number(chatId));
+}
+function isLogChat(chatId) {
+  return hasTelegramChat(chatId) && logChats.has(Number(chatId));
+}
+const NO_LOG_DELIVERY = Object.freeze({ ok: true, skipped: 'test-mode', result: null });
+// Returns the sentinel to hand back, or null when the chat delivers normally.
+function _suppressForLogChat(chatId, kind, text) {
+  if (!isLogChat(chatId)) return null;
+  console.log(`[test-mode] agent-suppress kind=${kind} chat=${chatId} len=${String(text ?? '').length}`);
+  return NO_LOG_DELIVERY;
+}
+
 async function tgSend(token, chatId, text, extra = {}, threadId = null) {
   if (!hasTelegramChat(chatId)) return NO_TELEGRAM_CHAT;
+  const suppressed = _suppressForLogChat(chatId, 'send', text);
+  if (suppressed) return suppressed;
   const f = await tgFormat(text, extra);
   const body = { chat_id: chatId, text: f.text, ...f.extra };
   if (Number.isInteger(threadId) && threadId > 0) body.message_thread_id = threadId;
@@ -158,6 +203,8 @@ function _rememberFlood(chatId, retryAfterSec) {
  */
 async function tgEdit(token, chatId, messageId, text, extra = {}, opts = {}) {
   if (!hasTelegramChat(chatId)) return NO_TELEGRAM_CHAT;
+  const suppressed = _suppressForLogChat(chatId, 'edit', text);
+  if (suppressed) return suppressed;
   const deliveryKey = `${String(token).split(':')[0]}:${chatId}`;
   const { retries = 3, bestEffort = false, coalesce = false } = opts;
   const f = await tgFormat(text, extra);
@@ -226,4 +273,4 @@ async function tgEdit(token, chatId, messageId, text, extra = {}, opts = {}) {
   throw new Error('Telegram editMessageText rate limit retries exhausted');
 }
 
-module.exports = { TG_API, tgFormat, tgSend, tgEdit, hasTelegramChat };
+module.exports = { TG_API, tgFormat, tgSend, tgEdit, hasTelegramChat, markLogChat, unmarkLogChat, isLogChat };
