@@ -8,6 +8,7 @@ const {test}=require('node:test');const assert=require('node:assert/strict');
 const {BOTS}=require('../src/bot-registry');
 const {loadSecrets,REQUIRED,OPTIONAL}=require('../src/secrets');
 const {deliverySecrets}=require('../src/bot-delivery');
+const {buildAgentEnv}=require('../src/agent-isolation');
 
 function withEnv(values,fn){
   const saved=Object.fromEntries(Object.keys(values).map(k=>[k,process.env[k]]));
@@ -43,5 +44,19 @@ test('delivery resolves each enabled audience to its own token, none missing',as
     const expected=b.audience==='default'?secrets.BOT_TOKEN:fixtures[b.token_secret_name];
     assert.equal(routed.BOT_TOKEN,expected,`audience "${b.audience}" is routed to the wrong token`);
     assert.equal(routed.TELEGRAM_BOT_TOKEN,expected);
+  }
+});
+
+// The other half of the same class: a bot token must never reach the engine (model) env.
+// SERVER_ONLY_ENV used to be a hand-kept list that lost the race with the registry —
+// SALES_BOT_TOKEN was absent until 2026-10-02, so the sales token leaked into the model
+// env by construction. buildAgentEnv is the choke point, so assert there, not on the list.
+test('no registry bot token can leak into the engine env (buildAgentEnv drops them all)',()=>{
+  for(const b of BOTS){
+    const fullEnv={};for(const x of BOTS)fullEnv[x.token_secret_name]=fixtures[x.token_secret_name]||`tok-${x.botId}`;
+    const envOut=buildAgentEnv(fullEnv,{userTokenNames:BOTS.map(x=>x.token_secret_name)});
+    const extraOut=buildAgentEnv({},{extra:fullEnv,userTokenNames:BOTS.map(x=>x.token_secret_name)});
+    assert.ok(!Object.hasOwn(envOut,b.token_secret_name),`${b.token_secret_name} leaked from fullEnv into the engine env`);
+    assert.ok(!Object.hasOwn(extraOut,b.token_secret_name),`${b.token_secret_name} leaked from extra into the engine env`);
   }
 });
