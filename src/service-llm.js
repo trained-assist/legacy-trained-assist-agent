@@ -21,6 +21,10 @@
 
 const LADDER = 'deepseek';
 const LADDER_URL = () => (process.env.LLM_LADDER_URL || 'https://llm-ladder.trainedassist.store').replace(/\/+$/, '');
+// What the client keeps ON TOP of the worker's budget: enough to read the worker's answer (and its
+// x-ladder-attempts header) after the worker has already given up walking rungs. The worker must
+// stop first, otherwise we abort a request that is still being served.
+const CLIENT_ABORT_HEADROOM_MS = 3000;
 
 function _ladderToken() {
   if (process.env.LLM_LADDER_TOKEN) return process.env.LLM_LADDER_TOKEN.trim();
@@ -84,7 +88,8 @@ function traceHeadersFor(ctx, source) {
  * @param {number} [o.temperature=0]
  * @param {boolean}[o.json=false]   request JSON and parse it (→ result.value)
  * @param {number} [o.timeoutMs=20000] per rung (worker-side)
- * @param {number} [o.totalTimeoutMs]  whole-ladder budget (latency-sensitive callers)
+ * @param {number} [o.totalTimeoutMs]  whole-ladder budget; defaults to timeoutMs * 4. ALWAYS sent
+ *                                  to the worker, so it stops walking before we abort (see below)
  * @param {string} [o.source]       caller tag for logs
  * @param {object}[o.ctx]           optional trace ids for the worker's D1 log (#1917):
  *                                  {trace, run, user, session, app} → x-ladder-* headers
@@ -113,10 +118,17 @@ async function serviceChat({ messages, maxTokens = 800, temperature = 0, json = 
     console.warn(`[${source}] llm-ladder: no token (LLM_LADDER_TOKEN or $AGENT_TOKENS_DIR/llm-ladder/token) → null`);
     return null;
   }
+  // The worker owns the ladder, so it must ALWAYS know the deadline. Without one it keeps walking
+  // rungs — up to ~90s for the 15-rung `service` ladder — while we hang up on it, and the call is
+  // then booked as `fetch_error`, i.e. a CLIENT timeout, even though the worker answered it: over
+  // 7 days 278 of 2509 service calls (11%) were thrown away that way, 200 of them under 40s
+  // (2026-10-02, OpenCode Go incident). One budget, two consumers: the worker stops walking first
+  // and returns a real `every rung failed` error, we keep a headroom to read that answer.
+  const workerBudgetMs = totalTimeoutMs || timeoutMs * 4;
   const body = {
     model: LADDER, messages, temperature, max_tokens: maxTokens,
     ladder_timeout_ms: timeoutMs,
-    ...(totalTimeoutMs ? { ladder_total_timeout_ms: totalTimeoutMs } : {}),
+    ladder_total_timeout_ms: workerBudgetMs,
     ...(json ? { response_format: { type: 'json_object' } } : {}),
   };
   let res;
@@ -129,7 +141,7 @@ async function serviceChat({ messages, maxTokens = 800, temperature = 0, json = 
         ...(traceHeadersFor(ctx, source) || {}),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout((totalTimeoutMs || timeoutMs * 4) + 3000),
+      signal: AbortSignal.timeout(workerBudgetMs + CLIENT_ABORT_HEADROOM_MS),
     });
   } catch (e) {
     diag('fetch_error', { error: e.message });
