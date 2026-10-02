@@ -58,8 +58,13 @@ const inputInspectionRows = (messageId, sessionId = null) => messageId ? [[
   { text: '📜 Журнал', callback_data: journalCallback(messageId, sessionId) },
 ]] : [];
 const runningControls = (taskId, inputMessageId = null, sessionId = null) => ({ reply_markup: { inline_keyboard: [[
+  // «➕ Дополнить» на сообщении работающей задачи убрана (владелец 30.09,
+  // решение №3; Ф3 плана рефакторинга, tg-bot#316): «сейчас очень плохо работает,
+  // сверхнеудобно и коряво». Замена — стоп-опции на квитанции накопления шлюза
+  // («🛑 Стоп и запуск с добавкой» / «⛔ Стоп → новая задача», RC-04/RC-05): решение
+  // принимается там, где юзер реально видит накопленный ввод. Обработчики sup| на
+  // стороне шлюза остаются для старых кнопок в истории (Ф6 выпилит).
   { text: '⛔ Стоп', callback_data: `stop|${controlKey(taskId)}` },
-  { text: '➕ Дополнить', callback_data: `sup|${controlKey(taskId)}` },
 ], ...inputInspectionRows(inputMessageId, sessionId)] } });
 // progressEdit is best-effort+coalesced (see comment above `tgEdit` in
 // tg-stream.js) — a 429 drop returns {ok:false}, a coalesce-skip returns
