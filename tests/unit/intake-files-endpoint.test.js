@@ -104,6 +104,23 @@ describe('PUT/GET /intake-files', () => {
     const res = await fetch(base(`/intake-files?username=${USERNAME}&id=not-hex`), { headers: authHeader() });
     expect(res.status).toBe(400);
   });
+
+  // tg-bot#319: the gateway hands this path straight to speech_transcribe as `source`.
+  // Without it the caller has to re-derive `media/intake-store/<id>/data` — a second copy
+  // of this file's layout that breaks silently the day we move the store.
+  it('PUT answers with a workspace-relative path the same dir /action spawns tools in', async () => {
+    const id = 'e'.repeat(64);
+    const put = await fetch(base(`/intake-files?username=${USERNAME}&id=${id}&name=voice.ogg`), {
+      method: 'PUT', headers: { ...authHeader(), 'Content-Type': 'audio/ogg' }, body: Buffer.from([1, 2, 3]),
+    });
+    expect(put.status).toBe(200);
+    const meta = await put.json();
+    expect(meta.path).toBe(`media/intake-store/${id}/data`);
+
+    // The claim is only useful if the bytes are really there.
+    const read = await fetch(base(`/intake-files?username=${USERNAME}&id=${id}`), { headers: authHeader() });
+    expect(read.status).toBe(200);
+  });
 });
 
 describe('/run with fileRefs and requestId', () => {
