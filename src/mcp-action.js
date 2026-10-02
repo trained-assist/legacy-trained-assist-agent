@@ -30,6 +30,23 @@ const { planFor } = require('./skills/enforce');
 const INDEX_PATH = path.join(__dirname, 'mcp-skills', 'index.js');
 const DEFAULT_TIMEOUT_MS = 45_000;
 
+// Per-tool budgets. DEFAULT_TIMEOUT_MS fits fast command-shaped tools (quick
+// answers, HH lookups); tools that legitimately take longer get their own entry
+// instead of silently inheriting the default and dying at 45s (#2043).
+// speech_transcribe must stay >= the gateway's own transcription budget
+// (trained-assist-tg-bot/src/media-jobs.js: AbortSignal.timeout(120000)) — a
+// shorter value here would be a regression that only shows up on long voice.
+const TOOL_TIMEOUT_MS = {
+  speech_transcribe: 120_000,
+};
+
+// An explicit caller-supplied timeoutMs always wins: the caller knows its own
+// deadline (a Durable Object watchdog, a cron budget).
+function timeoutForTool(tool, timeoutMs) {
+  if (timeoutMs !== undefined) return timeoutMs;
+  return TOOL_TIMEOUT_MS[tool] || DEFAULT_TIMEOUT_MS;
+}
+
 // Sibling skill providers (hh, freelance, engineering — src/skill-siblings.js) are
 // discovered from their checkouts. Duplicate names across any two sources are
 // configuration errors, never implicit local-first overrides (contract v1).
@@ -94,7 +111,7 @@ function resolveToolSource(tool, localNames, siblingNames = {}) {
 }
 
 async function runMcpTool({
-  tool, params, username, workDir, timeoutMs = DEFAULT_TIMEOUT_MS,
+  tool, params, username, workDir, timeoutMs,
   siblings: siblingList,
 }) {
   if (!tool || typeof tool !== 'string') throw Object.assign(new Error('tool required'), { code: 'bad_request' });
@@ -110,7 +127,7 @@ async function runMcpTool({
   const indexPath = owner.kind === 'local'
     ? INDEX_PATH
     : list.find(s => s.id === owner.id).indexPath;
-  return spawnToolCall({ indexPath, tool, params, username, workDir, timeoutMs, hostAction: false });
+  return spawnToolCall({ indexPath, tool, params, username, workDir, timeoutMs: timeoutForTool(tool, timeoutMs), hostAction: false });
 }
 
 // Host-only actions (epic #1470 P1.3, HH first): deterministic quick answers the
@@ -201,5 +218,5 @@ function spawnToolCall({ indexPath, command, args, tool, params, username, workD
 
 module.exports = {
   runMcpTool, runHostAction, listHostActions, listActionTools, resolveToolSource,
-  buildCatalogForProfile,
+  buildCatalogForProfile, timeoutForTool, TOOL_TIMEOUT_MS, DEFAULT_TIMEOUT_MS,
 };
