@@ -76,7 +76,7 @@ const { estimateToolTokens } = require('../mcp-tool-tokens');
 // Telegram send/edit + markdown-degradation ladder chokepoint live in
 // tg-stream.js (issue #942 P1.4). The module owns the format/send/edit
 // primitives; runner.js keeps orchestration (queueing, retries around them).
-const { TG_API, tgSend, tgEdit } = require('./tg-stream');
+const { TG_API, tgSend, tgEdit, markLogChat } = require('./tg-stream');
 const { notifyRunFinished } = require('../gateway-callback');
 const liveInbox = require('../live-inbox');
 const {
@@ -635,6 +635,29 @@ function stopTracesFor(owner = {}) {
   return n;
 }
 
+// Gateway test mode (#329, DESIGN §2.3): for a delivery:"log" run the answer
+// never reaches the chat (tg-stream suppresses every send), so it is parked here
+// between the final-answer block and the run-finished callback that reads it.
+// Error/stop/quick outcomes deliberately record nothing — the callback's `outcome`
+// already says what happened, and there is no answer to hand back.
+const MAX_TRACKED_RUN_ANSWERS = 64;
+const runAnswers = new Map(); // taskId -> final answer
+function recordRunAnswer(taskId, answer) {
+  if (!taskId || typeof answer !== 'string' || !answer) return;
+  // Bounded: a settled run is always taken, but a task killed mid-flight must not
+  // leave an entry behind forever.
+  if (runAnswers.size >= MAX_TRACKED_RUN_ANSWERS && !runAnswers.has(taskId)) {
+    runAnswers.delete(runAnswers.keys().next().value);
+  }
+  runAnswers.set(taskId, answer);
+}
+function takeRunAnswer(taskId) {
+  if (!taskId || !runAnswers.has(taskId)) return null;
+  const answer = runAnswers.get(taskId);
+  runAnswers.delete(taskId); // one-shot: a repeated callback must not replay it
+  return answer;
+}
+
 // Release the chat counter and push run-finished to the gateway. Called exactly
 // once per runTask invocation from the runTask wrapper below — every code path
 // (quick answer, stop, admission, error) funnels through there.
@@ -644,6 +667,10 @@ function _finishAcceptedChatRun(chatId, opts, outcome) {
   // Live inbox: messages the model already took in mid-run are done (src/live-inbox.js).
   let consumed = [];
   try { consumed = liveInbox.takeConsumed(opts.taskId); } catch { /* keep the messages */ }
+  // Gateway test mode (#329): a delivery:"log" run never reached the chat, so its
+  // answer travels back here instead. One-shot — a repeated callback (or a retry of
+  // the same taskId) must not replay it.
+  const answer = opts.delivery === 'log' ? takeRunAnswer(opts.taskId) : null;
   notifyRunFinished({
     chatId,
     threadId: Number.isInteger(opts.threadId) && opts.threadId > 0 ? opts.threadId : null,
@@ -653,6 +680,7 @@ function _finishAcceptedChatRun(chatId, opts, outcome) {
     consumed,
     audience: opts.user?.audience || 'default',
     secret: opts.secrets?.AGENT_SECRET || process.env.AGENT_SECRET,
+    ...(answer ? { answer } : {}),
   }).catch(e => console.warn('[runner] notifyRunFinished:', e.message));
 }
 function consumePendingStop(username, sessionId) {
@@ -948,6 +976,10 @@ function runTask(opts) {
   const rawChatId = Number(delivery.user?.id);
   const acceptedChatId = Number.isSafeInteger(rawChatId) && rawChatId !== 0 ? rawChatId : null;
   _bumpAcceptedByChat(acceptedChatId);
+  // Gateway test mode (#329): this run's Telegram traffic goes to the log instead of
+  // the network. Marked here — before the first send of the run, and before any await,
+  // so nothing can slip out ahead of the flag. No-op for a chatless (web) run.
+  if (delivery.delivery === 'log') markLogChat(acceptedChatId);
   // Live inbox registry (get_new_messages): the server — not the engine — knows
   // which chat/topic/gateway dispatch this task belongs to.
   if (acceptedChatId != null) liveInbox.registerInboxRun({ taskId: delivery.taskId, chatId: acceptedChatId, threadId: delivery.threadId, requestId: delivery.requestId, audience: delivery.user?.audience });
@@ -2223,7 +2255,7 @@ function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task,
     .catch(e => { console.warn('[gtd] schedule:', e.message); return null; });
 }
 
-async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, ladderFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null, toolEscalationDone = false }) {
+async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets, delivery = null,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, ladderFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null, toolEscalationDone = false }) {
   // Strip @botname suffix from slash commands once at intake so all INTENT regexes match cleanly.
   let task = rawTask ? rawTask.replace(/^(\/\S+?)@\S+/, '$1') : rawTask;
   // Старт рана для claimFreshChecklist (BV-08): initiatedAt — момент запроса у шлюза
@@ -3624,6 +3656,9 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       forceClaude, initialMsgId: msgId, pinnedMsgId, secrets,
       incompleteRetryAttempts: nextAttempt,
       continuationCount, mode, projectId, internalGtd, engine,
+      // A retry of a gateway test-mode run must keep the flag, or the retry would
+      // answer a chat the original run was told to stay silent in.
+      delivery,
       executionId,
       lastAttemptError: { reason: `работа прервана (${incompleteReason})`, errorText: codexErrorMsg || fullOutput.text.trim().slice(-1000) },
     });
@@ -3804,6 +3839,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   }
 
   // Send result (clear stop button; attach action buttons unless suppressed)
+  // Gateway test mode (#329): park the answer BEFORE the send below, which the
+  // tg-stream gate swallows for a delivery:"log" run — _finishAcceptedChatRun picks
+  // it up when the run settles.
+  if (delivery === 'log') recordRunAnswer(taskId, final);
   if (msgId) {
     await tgEdit(BOT_TOKEN, chatId, msgId, `🧠 ${final}`, finalExtra).catch(() =>
       tgSend(BOT_TOKEN, chatId, `🧠 ${final}`, finalExtra, threadId)
@@ -3952,4 +3991,7 @@ module.exports = {
   // Exported for GTD scheduling-hook wiring tests only (regression: inline hook
   // referenced an out-of-scope `runThreadId`, silently killing all GTD scheduling)
   _gtd: { scheduleGtdAfterRun },
+  // Exported for the gateway-test-mode contract tests only — the answer store the
+  // run-finished callback reads for a delivery:"log" run (#329)
+  _testMode: { recordRunAnswer, takeRunAnswer, runAnswers },
 };

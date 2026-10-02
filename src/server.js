@@ -2,7 +2,7 @@
 const executionOwner = require('./execution-owner-lock').acquireExecutionOwner(require('./data-paths').SYSTEM_ROOT);
 process.once('exit', () => executionOwner.close());
 const { atomicJson } = require('./atomic-json');
-const { deliverySecrets, taskDelivery } = require('./bot-delivery');
+const { deliverySecrets, taskDelivery, runDeliveryFromPayload } = require('./bot-delivery');
 const { withDedupLock } = require('./request-dedup-lock');
 const { isTaskResumable, resumeSinkOf, resolvePendingWorkDir } = require('./pending-task-resume');
 const { isNonTaskMessage } = require('./resume-hygiene');
@@ -1344,7 +1344,7 @@ async function main() {
         // задачи, остаются в держателе с кнопкой — но как только дошли до /run,
         // это решение юзера). Авто-ретраи внутренних хопов сюда не приходят: они
         // зовут runTask напрямую и гейтятся по initiatedAt.
-        const completion = runTask({ taskId, requestId: requestId || null, user, threadId, ...(Object.hasOwn(payload, 'initiatedAt') ? { initiatedAt } : {}), fromUser: true, task: effectiveTask, context, sessionId: sessionId || null, contextFromSession: contextFromSession || null, forceClaude: !!forceClaude, forceNew: !!forceNew, parallel: parallel === true, initialMsgId: initialMsgId || null, pinnedMsgId: pinnedMsgId || null, secrets, fileRefs: effectiveFileRefs, mode: mode || null, projectId: projectId || null, projectPicked: projectPicked === true, newProjectName: newProjectName || null });
+        const completion = runTask({ taskId, requestId: requestId || null, user, threadId, ...(Object.hasOwn(payload, 'initiatedAt') ? { initiatedAt } : {}), fromUser: true, task: effectiveTask, context, sessionId: sessionId || null, contextFromSession: contextFromSession || null, forceClaude: !!forceClaude, forceNew: !!forceNew, parallel: parallel === true, initialMsgId: initialMsgId || null, pinnedMsgId: pinnedMsgId || null, secrets, fileRefs: effectiveFileRefs, mode: mode || null, projectId: projectId || null, projectPicked: projectPicked === true, newProjectName: newProjectName || null, delivery: runDeliveryFromPayload(payload) });
         completion.catch(err => console.error(`[${taskId}] runTask error:`, err.message));
         if (requestId) atomicJson(receipt, { taskId, audience: audience || 'default', acceptedAt: Date.now() });
         json(res, 202, { taskId, requestId, durable: true });

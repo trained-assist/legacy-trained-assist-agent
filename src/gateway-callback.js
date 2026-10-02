@@ -21,6 +21,9 @@
 const { gatewayUrl } = require('./bot-registry');
 const inflight = new Set();
 
+// Upper bound for the optional test-mode `answer` (see notifyRunFinished).
+const MAX_RUN_ANSWER_CHARS = 8000;
+
 /**
  * Await every run-finished notification still in flight. Called on shutdown
  * (server.js) before process.exit so a restart releases its chats promptly
@@ -56,10 +59,15 @@ function pendingRunFinished() {
  *   via get_new_messages (src/live-inbox.js) — the gateway drops them from its collector
  * @param {string} [p.audience]      Bot the run came through — picks its gateway
  *   (bot-registry gateway_url); 'default' = env MEDIA_GATEWAY_URL
+ * @param {string} [p.answer]        Final answer of a gateway test-mode run
+ *   (trained-assist-tg-bot#329, delivery:"log"): the run was deliberately NOT
+ *   delivered to its chat, so the answer travels back here and the gateway logs
+ *   it for the auto-test. OPTIONAL in both directions — an old gateway ignores
+ *   it, an ordinary run never sets it. Truncated before it hits the wire.
  * @param {string} [p.secret]        Bearer token (AGENT_SECRET)
  * @returns {Promise<boolean>} true if the gateway acknowledged
  */
-async function notifyRunFinished({ chatId, threadId = null, requestId = null, taskId = null, outcome = 'done', consumed = [], audience = 'default', secret = process.env.AGENT_SECRET }) {
+async function notifyRunFinished({ chatId, threadId = null, requestId = null, taskId = null, outcome = 'done', consumed = [], audience = 'default', answer = null, secret = process.env.AGENT_SECRET }) {
   const base = gatewayUrl(audience);
   if (!base) return false;
   const numericChatId = Number(chatId);
@@ -67,6 +75,9 @@ async function notifyRunFinished({ chatId, threadId = null, requestId = null, ta
   // including NEGATIVE group/supergroup ids.
   if (!Number.isSafeInteger(numericChatId) || numericChatId === 0) return false;
   if (!secret) return false;
+  // Defensive cap: an answer is a chat message, not a transcript. A long final
+  // answer (a long run) is cut here rather than handed to the gateway to reject.
+  const answerText = typeof answer === 'string' && answer ? answer.slice(0, MAX_RUN_ANSWER_CHARS) : '';
   // Track the request so a shutdown that races it can still await delivery.
   // The caller (runTask's side chain) does not hold this promise, so nothing
   // else would keep the event loop alive for it.
@@ -82,6 +93,7 @@ async function notifyRunFinished({ chatId, threadId = null, requestId = null, ta
           taskId: taskId || null,
           outcome,
           ...(Array.isArray(consumed) && consumed.length ? { consumed } : {}),
+          ...(answerText ? { answer: answerText } : {}),
         }),
         signal: AbortSignal.timeout(5000),
       });

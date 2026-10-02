@@ -34,4 +34,14 @@ function taskDelivery(opts) {
   audience ||= 'default';
   return { ...opts, user: { ...opts.user, audience }, secrets: deliverySecrets(opts.secrets, audience) };
 }
-module.exports = { deliverySecrets, taskDelivery };
+
+// Тестовый режим шлюза (trained-assist-tg-bot#329, design §2.3): чат из
+// TEST_CHAT_IDS диспетчится с `delivery: "log"` — ран не лиётся в Telegram, а
+// его ответ возвращается полем `answer` в run-finished, и автотест читает журнал
+// шлюза вместо живого чата. Единственное допустимое значение — 'log'; всё
+// остальное (в т.ч. мусор от старого шлюза) → null, т.е. обычная доставка:
+// флаг не может молча выключить отправку в РЕАЛЬНЫЙ чат.
+function runDeliveryFromPayload(payload) {
+  return payload?.delivery === 'log' ? 'log' : null;
+}
+module.exports = { deliverySecrets, taskDelivery, runDeliveryFromPayload };

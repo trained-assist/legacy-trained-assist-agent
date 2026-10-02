@@ -235,7 +235,7 @@ function makeUser(userId = 111222333) {
   return { id: userId, name: 'Test', username: testUsername, workDir };
 }
 
-async function chat(task, { userId = 111222333, sessionId = null, forceNew = false, claudeReply = null } = {}) {
+async function chat(task, { userId = 111222333, sessionId = null, forceNew = false, claudeReply = null, delivery = null, secrets = { BOT_TOKEN: 'fake:token' } } = {}) {
   if (claudeReply !== null) setupFakeClaude(claudeReply);
   await runTask({
     taskId: `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -245,7 +245,8 @@ async function chat(task, { userId = 111222333, sessionId = null, forceNew = fal
     sessionId,
     forceNew,
     contextFromSession: null,
-    secrets: { BOT_TOKEN: 'fake:token' },
+    ...(delivery ? { delivery } : {}),
+    secrets,
   });
 }
 
@@ -1292,5 +1293,88 @@ ${tools ? `${toolLines}\nexec sleep 30` : `echo '{"type":"result","result":"Ит
     const last = tgTexts().at(-1);
     expect(last).toMatch(/лимит инструментов финализации/);
     expect(last).toContain('Итог: нашёл 3 вакансии');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCENARIO: delivery:"log" — the gateway test mode (trained-assist-tg-bot#329)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// The real path a test chat takes: the gateway rewrites the dispatch and calls
+// POST /run with delivery:"log" instead of streaming the run into the chat. The
+// run must still execute, must touch NO Telegram API for that chat, and must
+// hand its final answer back as the `answer` field of the run-finished
+// callback — the gateway logs it there for the auto-test to read.
+describe('Gateway test mode (delivery:"log")', () => {
+  const TEST_CHAT = -100000000000099;
+  const CONTROL_CHAT = 777000111;
+  const AGENT_SECRET = 'test-secret-run-finished';
+
+  let gwServer;
+  let gwPort;
+  let gwLog = []; // bodies of POST /internal/run-finished
+
+  beforeAll(() => new Promise((resolve) => {
+    gwServer = http.createServer((req, res) => {
+      let raw = '';
+      req.on('data', d => raw += d);
+      req.on('end', () => {
+        if (req.url === '/internal/run-finished') { try { gwLog.push(JSON.parse(raw)); } catch { /* not ours */ } }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+    });
+    gwServer.listen(0, '127.0.0.1', () => { gwPort = gwServer.address().port; resolve(); });
+  }));
+
+  afterAll(() => new Promise(r => gwServer.close(r)));
+
+  let origGateway;
+  beforeEach(() => {
+    origGateway = process.env.MEDIA_GATEWAY_URL;
+    process.env.MEDIA_GATEWAY_URL = `http://127.0.0.1:${gwPort}`;
+    gwLog = [];
+  });
+  afterEach(() => {
+    if (origGateway === undefined) delete process.env.MEDIA_GATEWAY_URL;
+    else process.env.MEDIA_GATEWAY_URL = origGateway;
+    const { unmarkLogChat } = require('../src/runner/tg-stream');
+    unmarkLogChat(TEST_CHAT);
+  });
+
+  it('runs the task, sends NOTHING to the test chat, returns the answer via run-finished', { timeout: 20000 }, async () => {
+    setupFakeClaude('Ответ для тестового чата');
+    await chat('сделай что-нибудь', {
+      userId: TEST_CHAT,
+      delivery: 'log',
+      secrets: { BOT_TOKEN: 'fake:token', AGENT_SECRET },
+    });
+    await new Promise(r => setTimeout(r, 400));
+
+    // Not a single Telegram call for the test chat — not the thinking bubble,
+    // not the progress edits, not the final answer.
+    const toTestChat = tgSent().filter(l => Number(l.body.chat_id) === TEST_CHAT);
+    expect(toTestChat.map(l => l.body.text).filter(Boolean), 'nothing may reach a test chat').toEqual([]);
+
+    // The run really executed: the answer landed in the session, not just skipped.
+    const sess = readSession(readCurrentSession(TEST_CHAT).id);
+    expect(sess.messages.at(-1).content).toContain('Ответ для тестового чата');
+
+    // …and came back over the existing callback, truncated defensively by the caller.
+    const finished = gwLog.filter(b => b.chatId === TEST_CHAT);
+    expect(finished.length, 'run-finished not delivered').toBeGreaterThan(0);
+    expect(finished.at(-1).outcome).toBe('done');
+    expect(finished.at(-1).answer).toContain('Ответ для тестового чата');
+  });
+
+  it('leaves an ordinary chat on the ordinary path', { timeout: 20000 }, async () => {
+    setupFakeClaude('Обычный ответ');
+    await chat('сделай что-нибудь', { userId: CONTROL_CHAT, secrets: { BOT_TOKEN: 'fake:token', AGENT_SECRET } });
+    await new Promise(r => setTimeout(r, 400));
+
+    expect(tgSent().filter(l => Number(l.body.chat_id) === CONTROL_CHAT).length).toBeGreaterThan(0);
+    const finished = gwLog.filter(b => b.chatId === CONTROL_CHAT);
+    expect(finished.length, 'run-finished not delivered').toBeGreaterThan(0);
+    expect('answer' in finished.at(-1), 'no answer field for an ordinary run').toBe(false);
   });
 });
