@@ -29,9 +29,14 @@ hh-скилу, DaData в `USERS_DIR/<u>/.inn-config.json`.
 
 ```json
 { "consumer": "speech-skill:deepgram", "scope": "profile", "host": "bridge",
-  "env": ["DEEPGRAM_API_KEY"], "aliases": ["DEEPGRAM_KEY"],
+  "env": ["SYSTEM_DEEPGRAM_API_KEY"], "aliases": ["DEEPGRAM_API_KEY", "DEEPGRAM_KEY"],
   "files": ["deepgram/key.txt"], "filesRoot": "tokens" }
 ```
+
+`env[]` — каноническое имя по схеме `{SCOPE}_{SERVICE}_{TYPE}` (#2046):
+`ADMIN_` — админский токен хоста, `SYSTEM_` — серверный ключ, `USER_` — ключ
+профиля. `aliases` — старые имена, которые потребитель ещё принимает; хост их
+давать не обязан. Правило разрешения: каноническое побеждает, alias — фолбэк.
 
 - `scope`: `platform` — env хоста (одинаков для всех профилей); `profile` — токен-файл профиля (env — запасной путь).
 - `host`: какой слой обязан дать `env[]`: `mcp` — `buildMcpToolEnv`, `bridge` — `engineEnv`, который мост MCP пробрасывает скилам.
@@ -69,6 +74,11 @@ node scripts/profile-migrate/cli.mjs credentials-reachability --profile <u> --ve
 Хост даёт каноническое имя, потребитель принимает и старое. При `DEEPGRAM_KEY` или `CF_API_TOKEN`
 без канонического имени ключ доступен, источник = alias-имя.
 Проверка: песочница C7.
+
+Тот же контракт на уровне загрузчика: `loadSecrets()` отдаёт каноническое поле,
+даже когда в Secret Manager лежит только старое имя — `ADMIN_CLOUDFLARE_API_TOKEN
+=== CF_API_TOKEN`. Это делает переименование безопасным для деплоя.
+Проверка: `test/token-naming.test.cjs` (core), `tests/unit/deepgram-rotation.test.js` (speech).
 
 ### US-CRED-05 Файл скила
 DaData: env нет, `USERS_DIR/<u>/.inn-config.json` есть → доступен. Файл читается через

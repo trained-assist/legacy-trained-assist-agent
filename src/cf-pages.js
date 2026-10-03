@@ -11,8 +11,10 @@
 // Token resolution, first match wins:
 //   1. the profile's own token: agent-tokens/<user>/cloudflare —
 //      {"value": "<api token>", "account_id": "<id>"} (account_id optional)
-//   2. the shared default: CF_API_TOKEN / CLOUDFLARE_API_TOKEN (+ CF_ACCOUNT_ID /
-//      CLOUDFLARE_ACCOUNT_ID, or the only account the token can see)
+//   2. the shared admin default: ADMIN_CLOUDFLARE_API_TOKEN (canonical, #2046),
+//      falling back to the legacy CF_API_TOKEN / CLOUDFLARE_API_TOKEN —
+//      plus CF_ACCOUNT_ID / CLOUDFLARE_ACCOUNT_ID, or the only account the
+//      token can see
 //
 // On the shared account several profiles share one Pages namespace, so every
 // project created through here is recorded with its owner, and a profile may only
@@ -53,7 +55,7 @@ function readOwnToken(username, tokensRoot = TOKENS_ROOT) {
 function resolveCredential(username, { env = process.env, tokensRoot = TOKENS_ROOT } = {}) {
   const own = readOwnToken(username, tokensRoot);
   if (own) return { source: 'own', token: own.token, accountId: own.accountId };
-  const token = env.CF_API_TOKEN || env.CLOUDFLARE_API_TOKEN || '';
+  const token = env.ADMIN_CLOUDFLARE_API_TOKEN || env.CF_API_TOKEN || env.CLOUDFLARE_API_TOKEN || '';
   if (!token) return null;
   return { source: 'shared', token, accountId: env.CF_ACCOUNT_ID || env.CLOUDFLARE_ACCOUNT_ID || '' };
 }

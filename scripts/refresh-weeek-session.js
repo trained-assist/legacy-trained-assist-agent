@@ -183,15 +183,16 @@ async function captureViaPlaywright(profiles) {
 
 async function main() {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  const cfToken  = process.env.CF_API_TOKEN;
+  // #2046: canonical ADMIN_CLOUDFLARE_API_TOKEN, legacy CF_API_TOKEN as fallback.
+  const cfToken  = process.env.ADMIN_CLOUDFLARE_API_TOKEN || process.env.CF_API_TOKEN;
 
   if (!cfToken) {
-    console.error('[refresh-weeek] CF_API_TOKEN not set — cannot update CF secret');
+    console.error('[refresh-weeek] ADMIN_CLOUDFLARE_API_TOKEN not set — cannot update CF secret');
     await tgSend(botToken, OPERATOR_CHAT,
       '⚠️ <b>Weeek авторефреш не настроен</b>\n\n' +
-      'CF_API_TOKEN не задан в GCP secrets.\n\n' +
+      'ADMIN_CLOUDFLARE_API_TOKEN не задан в GCP secrets.\n\n' +
       'Нужно один раз добавить:\n' +
-      '<code>echo "TOKEN" | gcloud secrets create CF_API_TOKEN --data-file=-</code>\n\n' +
+      '<code>echo "TOKEN" | gcloud secrets create ADMIN_CLOUDFLARE_API_TOKEN --data-file=-</code>\n\n' +
       'Токен создаётся на dash.cloudflare.com/profile/api-tokens → Create Token → Workers:Edit'
     );
     process.exit(1);

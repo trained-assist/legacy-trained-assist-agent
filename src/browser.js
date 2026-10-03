@@ -145,6 +145,10 @@ function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, to
     ...(process.env.SERPER_API_KEY ? { SERPER_API_KEY: process.env.SERPER_API_KEY } : {}),
     // HH OAuth app (hh-skills 91c-hh-sync) — declared in config/credentials.json, was
     // never passed before the credential contract (#1891) caught it.
+    // #2046: canonical SYSTEM_HEADHUNTER_* names are handed to the MCP servers;
+    // the legacy HH_CLIENT_* env the hh-skill reads is satisfied from the same value.
+    ...(process.env.SYSTEM_HEADHUNTER_CLIENT_ID     ? { SYSTEM_HEADHUNTER_CLIENT_ID:     process.env.SYSTEM_HEADHUNTER_CLIENT_ID }     : {}),
+    ...(process.env.SYSTEM_HEADHUNTER_CLIENT_SECRET ? { SYSTEM_HEADHUNTER_CLIENT_SECRET: process.env.SYSTEM_HEADHUNTER_CLIENT_SECRET } : {}),
     ...(process.env.HH_CLIENT_ID     ? { HH_CLIENT_ID:     process.env.HH_CLIENT_ID }     : {}),
     ...(process.env.HH_CLIENT_SECRET ? { HH_CLIENT_SECRET: process.env.HH_CLIENT_SECRET } : {}),
     // Token root (a path, not a secret): siblings resolve profile token files through
