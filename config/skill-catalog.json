@@ -56,7 +56,7 @@
     "software-engineering": {
       "title": "Разработка ПО",
       "siblings": ["engineering-skills"],
-      "modules": ["engineering-skills/10-prepare-task.js", "engineering-skills/20-workspace.js", "engineering-skills/30-repo-context.js", "engineering-skills/35-repo-map.js", "engineering-skills/40-qa-logs.js", "engineering-skills/50-pr-autofix.js", "engineering-skills/60-github.js", "engineering-skills/61-dev.js", "engineering-skills/62-pr-status.js", "engineering-skills/63-ci-cd.js", "engineering-skills/64-complexity.js", "engineering-skills/65-spec-generation.js", "engineering-skills/66-repo-find.js", "engineering-skills/70-playbook-artifacts.js"],
+      "modules": ["engineering-skills/10-prepare-task.js", "engineering-skills/20-workspace.js", "engineering-skills/30-repo-context.js", "engineering-skills/35-repo-map.js", "engineering-skills/40-qa-logs.js", "engineering-skills/50-pr-autofix.js", "engineering-skills/60-github.js", "engineering-skills/61-dev.js", "engineering-skills/62-pr-status.js", "engineering-skills/63-ci-cd.js", "engineering-skills/64-complexity.js", "engineering-skills/65-spec-generation.js", "engineering-skills/66-repo-find.js", "engineering-skills/67-repo-status.js", "engineering-skills/70-playbook-artifacts.js"],
       "promptDomains": ["github.setup", "engineering", "spec-generation"],
       "pinned": { "engineering-skills": ["engineering_spawn_workspace", "engineering_release_workspace"] }
     },
