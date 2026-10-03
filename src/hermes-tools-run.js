@@ -133,6 +133,17 @@ function buildPrompt(task, context, outputSchema, level1 = null) {
 }
 
 /**
+ * Profile resolution for a Hermes run. Understands every profile the ladder provider knows —
+ * master/phd/free included (#2065): an explicit ocProfile passes through when valid, an unknown
+ * name falls back to the research default instead of producing an unknown ladder on the worker.
+ * No profile + a non-opencode engine → null (the engine has no OpenCode profile at all).
+ */
+function resolveHermesProfile(ocProfile, engine) {
+  if (ocProfile) return ocLadder.PROFILES.includes(ocProfile) ? ocProfile : 'research';
+  return engine === 'opencode' ? 'research' : null;
+}
+
+/**
  * hermesRunWithTools — Hermes-задача, которой нужен реальный интернет (поиск/браузер),
  * не только текст в контексте. Спавнит scoped headless CLI-сессию (по умолчанию opencode
  * с профилем `research`, см. runEngineProcess → OPENCODE_ENABLE_EXA) с уже существующим
@@ -169,7 +180,7 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
   if (admitted.movedFrom) {
     console.warn(`[hermes] engine=${resolvedEngine} not admitted (${admitted.reason}) — running on ${admitted.engine}`);
   }
-  const resolvedProfile = ocProfile || (resolvedEngine === 'opencode' ? 'research' : null);
+  const resolvedProfile = resolveHermesProfile(ocProfile, resolvedEngine);
   const ocProfileOverrides = resolvedEngine === 'opencode'
     ? ocLadder.buildOcProfileOverrides(resolvedProfile) : null;
   const [engineBin, engineArgs] = buildEngineCommand({ engine: resolvedEngine, ocProfile: resolvedProfile, ocRole: 'explore', prompt, mcpConfig, opencodeModel: ocProfileOverrides?.agent?.explore?.model });
@@ -222,4 +233,4 @@ function hermesEngineSecrets() {
   return require('./secrets').getLoadedSecrets() || {};
 }
 
-module.exports = { hermesRunWithTools, buildPrompt, prefetchLevel1, searchQueryFromTask, hermesEngineSecrets };
+module.exports = { hermesRunWithTools, buildPrompt, prefetchLevel1, searchQueryFromTask, hermesEngineSecrets, resolveHermesProfile };

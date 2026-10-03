@@ -50,8 +50,9 @@ function withFakeConnectedService(username) {
 
   const card = buildContextCard(username, wd, 42);
   ok(/⚙️ OpenCode · free/.test(card), `pin shows this workDir's own oc profile (free), got: ${card}`);
-  // free runs on the llm-ladder worker's `free` ladder (issue #1687) — the pin names that model id.
-  ok(/ladder\/free:build/.test(card), `pin shows free's worker ladder model, got: ${card}`);
+  // free runs on the llm-ladder worker's `free` ladder (issue #1687) — the pin names that model
+  // id; since #2065 the build role of the free profile IS the free ladder (`ladder/free`).
+  ok(/ladder\/free\b/.test(card), `pin shows free's worker ladder model, got: ${card}`);
   fs.unlinkSync(staleFile);
 }
 

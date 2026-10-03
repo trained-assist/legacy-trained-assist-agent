@@ -38,7 +38,7 @@ for (const cmd of ['/oc_openrouter', '/oc_ds_or', '/oc_deepseek_openrouter']) {
 
 test('legacy profile names resolve to their ladder (deepseek/value → service, max → doctor)', () => {
   const { ladderFor } = require('../src/opencode-ladder-provider');
-  for (const [legacy, ladder] of [['deepseek', 'service'], ['value', 'service'], ['max', 'doctor']]) {
+  for (const [legacy, ladder] of [['deepseek', 'service:build'], ['value', 'service:build'], ['max', 'doctor:build']]) {
     const wd = freshWorkDir();
     fs.writeFileSync(path.join(wd, 'profile.json'), JSON.stringify({ ocProfile: legacy }));
     // The stored name is kept as-is (no silent rewrite) and resolved on read, so a stored
@@ -48,10 +48,12 @@ test('legacy profile names resolve to their ladder (deepseek/value → service, 
   }
 });
 
-test('legacy stored deepseek-go / deepseek-openrouter read back as the single service ladder', () => {
+test('legacy stored deepseek-go / deepseek-openrouter read back as the master default (#2065)', () => {
   for (const legacy of ['deepseek-go', 'deepseek-openrouter']) {
     const wd = freshWorkDir();
     fs.writeFileSync(path.join(wd, 'profile.json'), JSON.stringify({ ocProfile: legacy }));
-    assert.equal(profiles.getOcProfile(wd), 'service');
+    // The two halves of the removed VM-wide Go/OpenRouter toggle meant "the standard Go-first
+    // ladder" — that is now the master default (per-role ladders, owner 2026-10-03, #2065).
+    assert.equal(profiles.getOcProfile(wd), 'master');
   }
 });
