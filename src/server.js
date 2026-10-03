@@ -636,9 +636,15 @@ async function main() {
     // owner decision (issue #1288); this agent still publishes to it via
     // publishVacancyPage() in hh-skill src/hh-vacancy.js (VACANCY_REMOTE_STORE_URL), unchanged.
 
-    // GET /health — no auth, liveness check for smoke tests and monitoring
+    // GET /health — no auth, liveness check for smoke tests and monitoring.
+    // publicLinks reports which origin page links are rewritten to, and whether
+    // env asked for one we refuse to publish on (see src/public-links.js) — a
+    // silently-ignored pages env is how a stale origin reached a user once.
     if (req.method === 'GET' && url.pathname === '/health') {
-      return json(res, 200, { status: 'alive', uptime: process.uptime(), vm: VM_NAME, commit: GIT_COMMIT });
+      return json(res, 200, {
+        status: 'alive', uptime: process.uptime(), vm: VM_NAME, commit: GIT_COMMIT,
+        publicLinks: require('./public-links').publicLinksStatus(),
+      });
     }
 
     // GET /readiness — no auth, "can this server accept work?" (distinct from liveness).
