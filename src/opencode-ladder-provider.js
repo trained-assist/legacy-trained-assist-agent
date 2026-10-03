@@ -6,8 +6,8 @@
 // ONLY in the worker (https://llm-ladder.trainedassist.store, repo trained-assist-llm-ladder).
 // This module does no routing of its own: it maps an OpenCode profile to a worker ladder name and
 // emits the per-run OPENCODE_CONFIG piece — one openai-compatible provider `ladder` whose model id
-// is `<ladder>:<role>` (e.g. `ladder/service:plan`). There is no in-process fallback: if the
-// worker is unreachable the run fails with a clear category (classifyWorkerFailure).
+// is the worker's ladder id (e.g. `ladder/build`, `ladder/service:plan`). There is no in-process
+// fallback: if the worker is unreachable the run fails with a clear category (classifyWorkerFailure).
 //
 // The engine gets the worker token as OPENCODE_LADDER_TOKEN — a per-run engine credential (like
 // CLAUDE_CODE_OAUTH_TOKEN), so the #1649 env allowlist can admit it while the server-side
@@ -19,26 +19,38 @@ const ROLES = ['build', 'plan', 'explore', 'general', 'review'];
 const PROVIDER_ID = 'ladder';
 const TOKEN_ENV = 'OPENCODE_LADDER_TOKEN';
 
-// OpenCode profile → worker ladder. A profile IS a ladder on the worker
-// (trained-assist-llm-ladder, config/ladders.json): the worker owns the rungs, the key pool and
-// the failover, so a profile must never name anything it doesn't know — `deepseek` was the
-// ladder's old name and the worker dropped the alias (llm-ladder #49/#101), which 404'd every
-// run that still sent it. Every KEY below is a worker ladder name (plus `russian`, which is the
-// service ladder plus a reviewer prompt — see ROLE_PROMPTS), and every VALUE is a ladder the
-// worker resolves; scripts/check-client-contracts.mjs (llm-ladder repo) checks exactly that
-// against the live config/ladders.json, so a rename on either side fails loudly.
-const PROFILE_LADDER = Object.freeze({
-  service: 'service',   // default; playbook bachelor/master
-  doctor: 'doctor',     // playbook doctor fallback after claude → codex
-  free: 'free',
-  research: 'research', // hermes_research + researcher roles — worker ladder, Go-first (llm-ladder #28)
-  russian: 'service',   // service ladder + the strict Russian reviewer prompt below
+// OpenCode profile → worker ladder PER ROLE (issue #2065). A profile is no longer one ladder for
+// every role: the agent's default `master` walks the worker's role ladders (build/plan/explore/
+// general/review — each agent role is its own ladder on the worker, config/ladders.json), so the
+// worker's D1 log finally sees per-role traffic instead of everything on `service:*`. The ladder
+// value is the full worker model id suffix: role ladders are named after the role (`ladder/build`),
+// ladders that carry their own role variants keep the suffix (`ladder/service:plan`,
+// `ladder/research:explore`). This table mirrors the owner's own
+// ~/.config/opencode/profiles/{master,phd,free,ladder-research}.json.
+//
+// Every VALUE is a ladder the worker resolves; scripts/check-client-contracts.mjs (llm-ladder
+// repo) checks exactly that against the live config/ladders.json, so a rename on either side
+// fails loudly. `russian` is the one non-ladder key — the service ladder plus a reviewer prompt
+// (see ROLE_PROMPTS).
+const ALL_ROLES = (ladder) => Object.freeze(Object.fromEntries(ROLES.map((role) => [role, `${ladder}:${role}`])));
+const PROFILE_ROLE_LADDER = Object.freeze({
+  // master (the default, src/profiles.js): one role ladder per agent role — the #2065 fix.
+  master: Object.freeze({ build: 'build', plan: 'plan', explore: 'explore', general: 'general', review: 'review' }),
+  // phd: the build role on the advanced build ladder (mimo-first), everything else like master.
+  phd: Object.freeze({ build: 'build advanced', plan: 'plan', explore: 'explore', general: 'general', review: 'review' }),
+  // free: the build role on the hard-$0 free ladder, everything else like master.
+  free: Object.freeze({ build: 'free', plan: 'plan', explore: 'explore', general: 'general', review: 'review' }),
+  // Single-ladder profiles: every role rides the same ladder (the service/research/doctor cases).
+  service: ALL_ROLES('service'), // the standard ladder; /oc_service, /oc_go, /oc_ds
+  doctor: ALL_ROLES('doctor'),   // playbook doctor fallback after claude → codex
+  research: Object.freeze({ build: 'research', plan: 'research:plan', explore: 'research:explore', general: 'research:general', review: 'research:review' }), // hermes_research — worker ladder, Go-first (llm-ladder #28)
+  russian: ALL_ROLES('service'), // service ladder + the strict Russian reviewer prompt below
 });
 
 // Names still found in a per-profile profiles.json, in OPENCODE_PROFILE or behind a /profile
 // alias from before the ladder rename. Resolved on READ only — never written back — so stored
-// state keeps working after the rename instead of falling through to the default ladder (a
-// stored `max` must still reach `doctor`, not `service`). A profile is renamed by /profile or
+// state keeps working after the rename instead of falling through to the default profile (a
+// stored `max` must still reach `doctor`, not `master`). A profile is renamed by /profile or
 // by editing profiles.json; the aliases in infra/opencode-switch-profile.sh and
 // src/runner/quick/profile-commands.js point at the new names.
 const LEGACY_PROFILE_LADDER = Object.freeze({
@@ -63,15 +75,21 @@ const ROLE_PROMPTS = Object.freeze({
   },
 });
 
-const PROFILES = Object.freeze(Object.keys(PROFILE_LADDER));
+const PROFILES = Object.freeze(Object.keys(PROFILE_ROLE_LADDER));
 
-// Unknown profile → service (the default ladder), never a local model list.
-function ladderFor(profileName) {
-  return PROFILE_LADDER[profileName] || LEGACY_PROFILE_LADDER[profileName] || 'service';
+// Unknown profile → the default service ladder with the role intact (the pre-#2065 fallback);
+// a known profile with a role it doesn't declare → the service ladder's default role. Never a
+// local model list — the worker owns every rung.
+function ladderFor(profileName, role = 'build') {
+  const ladders = PROFILE_ROLE_LADDER[profileName];
+  if (ladders) return ladders[role] || 'service';
+  const legacy = LEGACY_PROFILE_LADDER[profileName];
+  if (legacy) return `${legacy}:${role}`;
+  return `service:${role}`;
 }
 
 function modelFor(profileName, role = 'build') {
-  return `${PROVIDER_ID}/${ladderFor(profileName)}:${role}`;
+  return `${PROVIDER_ID}/${ladderFor(profileName, role)}`;
 }
 
 // Every ladder call carries who made it, so the worker's D1 log (ladder_calls, llm-ladder#18)
@@ -98,8 +116,8 @@ function traceChat(chatId) {
 
 function providerConfig() {
   const models = {};
-  for (const ladder of new Set(Object.values(PROFILE_LADDER))) {
-    for (const role of ROLES) models[`${ladder}:${role}`] = { name: `llm-ladder ${ladder}:${role}` };
+  for (const ladder of new Set(Object.values(PROFILE_ROLE_LADDER).flatMap((ladders) => Object.values(ladders)))) {
+    models[ladder] = { name: `llm-ladder ${ladder}` };
   }
   return {
     [PROVIDER_ID]: {
@@ -139,6 +157,6 @@ function classifyWorkerFailure(text) {
 }
 
 module.exports = {
-  ROLES, PROFILES, PROFILE_LADDER, LEGACY_PROFILE_LADDER, PROVIDER_ID, TOKEN_ENV, TRACE_HEADERS,
+  ROLES, PROFILES, PROFILE_ROLE_LADDER, LEGACY_PROFILE_LADDER, PROVIDER_ID, TOKEN_ENV, TRACE_HEADERS,
   ladderFor, modelFor, providerConfig, traceChat, buildOcProfileOverrides, ladderToken, classifyWorkerFailure,
 };
