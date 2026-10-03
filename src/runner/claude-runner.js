@@ -16,6 +16,7 @@ const { keepaliveFilePath, lastKeepaliveAt } = require('../mcp-keepalive');
 const { prepareEngineSpawn } = require('./engine-isolation');
 const { stopEngineProcess } = require('./engine-stop');
 const traceStore = require('../session-trace-store');
+const { StreamNoiseFilter, stripLeakedToolMarkup } = require('./stream-noise-filter');
 
 const STREAM_INTERVAL_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 3000;
@@ -545,6 +546,10 @@ async function runEngineProcess(opts) {
   let lastSent = '';
   let lineBuffer = '';
   let fullOutput = { text: '' };
+  // Single ingestion chokepoint for engine text across claude/codex/opencode:
+  // drops leaked tool-call markup before it can stream to the user or land in the
+  // transcript (src/runner/stream-noise-filter.js).
+  const noiseFilter = new StreamNoiseFilter();
   let claudeResult = null;  // text from result event
   let claudeErrorText = null; // result-event text ONLY when event.is_error — genuine provider error, never answer prose (#1227)
   let engineSessionId = null; // native CLI session id (claude session_id / codex thread_id / opencode sessionID) — for real --resume (#1234)
@@ -785,7 +790,11 @@ async function runEngineProcess(opts) {
         if (engine === 'opencode') {
           persistOpencodePart(user?.workDir, event.sessionID || engineSessionId, event, taskId);
           if (event.type === 'text' && typeof event.part?.text === 'string') {
-            fullOutput.text += event.part.text;
+            // Raw text may carry leaked tool-call markup → filter before it can reach
+            // fullOutput / the transcript. The loop guard below keeps using the RAW
+            // part: repetition is a model property, filtering must not hide it.
+            const ocText = noiseFilter.push(event.part.text);
+            fullOutput.text += ocText;
             lastAssistantMsg = fullOutput.text;
             // Loop guard (#1583): a stuck model repeats the SAME assistant text part
             // (e.g. "Публикую доку через publish_page.") over and over while emitting
@@ -899,10 +908,13 @@ async function runEngineProcess(opts) {
         }
         if (engine === 'codex') {
           if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
-            fullOutput.text += event.item.text;
-            lastAssistantMsg = event.item.text;
+            // All-junk input filters to '' → lastAssistantMsg stays empty, which is the
+            // honest "no coherent turn" signal the stuck-detector downstream relies on.
+            const codexText = noiseFilter.push(event.item.text);
+            fullOutput.text += codexText;
+            lastAssistantMsg = codexText;
             // A message alone is not proof that the turn completed.
-            if (outputCallback) try { outputCallback(event.item.text); } catch {}
+            if (codexText && outputCallback) try { outputCallback(codexText); } catch {}
             scheduleStream();
           } else if (event.type === 'item.started' && event.item?.type === 'command_execution') {
             lastAssistantMsg = '';
@@ -956,9 +968,10 @@ async function runEngineProcess(opts) {
           let turnText = '';
           for (const block of event.message.content) {
             if (block.type === 'text') {
-              fullOutput.text += block.text;
-              turnText += block.text;
-              if (outputCallback) try { outputCallback(block.text); } catch {}
+              const blockText = noiseFilter.push(block.text);
+              fullOutput.text += blockText;
+              turnText += blockText;
+              if (blockText && outputCallback) try { outputCallback(blockText); } catch {}
             } else if (block.type === 'tool_use') {
               countToolCall(block.name);
               lastActivity = formatToolActivity(block.name, block.input);
@@ -1135,6 +1148,21 @@ async function runEngineProcess(opts) {
     heartbeatTimer = null;
     try { fs.unlinkSync(keepaliveFile); } catch {}
   }
+
+  // Release whatever the noise filter held back (stream-noise-filter.js). A tail
+  // that never terminated a tool-call block is dropped there, so this can only
+  // add legitimate text.
+  const noiseTail = noiseFilter.flush();
+  if (noiseTail) {
+    fullOutput.text += noiseTail;
+    if (outputCallback) try { outputCallback(noiseTail); } catch {}
+  }
+  // Defence in depth: whatever produced the final answer, it must not carry the
+  // markup. The OpenCode engine snapshots the whole scratchpad into
+  // claudeResult mid-run, so ingestion-time filtering alone can't be trusted
+  // to have covered this string.
+  claudeResult = stripLeakedToolMarkup(claudeResult);
+  lastAssistantMsg = stripLeakedToolMarkup(lastAssistantMsg);
 
   return {
     fullOutput, lastAssistantMsg, claudeResult, claudeErrorText, engineSessionId, terminalSuccess,
