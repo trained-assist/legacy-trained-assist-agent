@@ -13,7 +13,9 @@ const { RELAY_ENV_ALLOW, FORBIDDEN_ENV_PATTERNS, relayEnvFrom, leaksForbidden } 
 
 const RELAY_ID = 'capability-relay';
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-mount-'));
-const BASE_KEYS = ['playwright', 'trained-skills'];
+// The server list is environmental (staging checks out the domain skill siblings),
+// so the invariant is "the relay changes nothing else" — measured against the config
+// built here with the feature off, never against a hard-coded whitelist.
 const saved = {};
 for (const key of ['CAPABILITY_RELAY_ENDPOINT', 'CAPABILITY_RELAY_TOKEN', 'CAPABILITY_RELAY_CONTRACT_VERSION', 'CAPABILITY_RELAY_TIMEOUT_MS', 'USER_ID', 'AGENT_RUN_ID', 'CF_API_TOKEN', 'OPENROUTER_API_KEY', 'TELEGRAM_BOT_TOKEN', 'AGENT_SECRET', 'DEEPGRAM_API_KEY']) {
   saved[key] = process.env[key];
@@ -29,9 +31,9 @@ after(() => {
 test('without an endpoint the mount is absent and the config keeps its previous shape', () => {
   const config = buildMcpConfig(workDir, 'tester');
   assert.equal(RELAY_ID in config.mcpServers, false, 'feature is default-off');
-  assert.deepEqual(Object.keys(config.mcpServers).filter(k => !BASE_KEYS.includes(k)), [],
-    'no new server key appears without CAPABILITY_RELAY_ENDPOINT');
-  assert.deepEqual(Object.keys(buildMcpConfig(workDir, 'tester').mcpServers), Object.keys(config.mcpServers));
+  const baselineKeys = Object.keys(config.mcpServers).sort();
+  assert.equal(baselineKeys.includes(RELAY_ID), false, 'the baseline itself must not carry the relay');
+  assert.deepEqual(Object.keys(buildMcpConfig(workDir, 'tester').mcpServers).sort(), baselineKeys);
   assert.equal(config.mcpServers['trained-skills'].command, 'node');
 });
 
@@ -45,6 +47,10 @@ test('a fat service env alone does not switch the feature on', () => {
 });
 
 test('with an endpoint the relay mounts with exactly the allowlisted env and no service secret', () => {
+  // The baseline is rebuilt here, not shared with the previous test: each test must
+  // stand on its own (it may be run alone, and the server list is environmental).
+  const baselineKeys = Object.keys(buildMcpConfig(workDir, 'tester').mcpServers).sort();
+  assert.equal(baselineKeys.includes(RELAY_ID), false, 'the baseline itself must not carry the relay');
   process.env.CAPABILITY_RELAY_ENDPOINT = 'http://127.0.0.1:8787';
   process.env.CAPABILITY_RELAY_TOKEN = 'relay-caller-credential';
   process.env.CAPABILITY_RELAY_CONTRACT_VERSION = '1';
@@ -75,8 +81,10 @@ test('with an endpoint the relay mounts with exactly the allowlisted env and no 
     assert.notDeepEqual(spec.env, config.mcpServers['trained-skills'].env);
     assert.equal(JSON.stringify(spec.env).includes('cf-secret'), false);
 
-    // The rest of the config is untouched by the feature.
-    assert.deepEqual(Object.keys(config.mcpServers).filter(k => !BASE_KEYS.includes(k) && k !== RELAY_ID), []);
+    // The rest of the config is untouched by the feature: same server set, minus the relay.
+    assert.ok(Array.isArray(baselineKeys), 'the default-off baseline must be recorded first');
+    assert.deepEqual(Object.keys(config.mcpServers).filter(k => k !== RELAY_ID).sort(), baselineKeys,
+      'the relay must not add, drop or rename any other server');
   } finally {
     delete process.env.CAPABILITY_RELAY_ENDPOINT;
     delete process.env.CAPABILITY_RELAY_TOKEN;
@@ -104,6 +112,7 @@ test('relayEnvFrom drops everything outside the allowlist, whatever the caller p
 // ── R14: the relay is a separate process whose only input is the contract ──────
 
 function requireGraph(dir) {
+  const repoRoot = path.resolve(__dirname, '..');
   const seen = new Set();
   const stack = [...fs.readdirSync(dir).filter(f => f.endsWith('.js')).map(f => path.join(dir, f))];
   while (stack.length) {
@@ -117,12 +126,14 @@ function requireGraph(dir) {
       else seen.add(`ext:${target}`);
     }
   }
-  return [...seen];
+  // Repo-relative: the absolute path of a GitHub runner is /home/runner/work/… and
+  // would otherwise trip the `runner` forbidden substring on the checkout location.
+  return [...seen].map(entry => (entry.startsWith('ext:') ? entry : `local:${path.relative(repoRoot, entry)}`));
 }
 
 test('the relay requires no core internals — contract in, HTTP out, nothing else', () => {
   const graph = requireGraph(path.resolve(__dirname, '..', 'src', 'capability-relay'));
-  const local = graph.filter(entry => !entry.startsWith('ext:'));
+  const local = graph.filter(entry => entry.startsWith('local:')).map(entry => entry.slice(6));
   const external = graph.filter(entry => entry.startsWith('ext:')).map(entry => entry.slice(4));
   assert.ok(local.length >= 4, `expected the relay modules, saw ${local.length}`);
   const forbidden = ['mcp-skills', 'mcp-action', 'llm-ladder', 'runner', 'secrets', 'browser', 'agent-isolation', 'skills/'];
