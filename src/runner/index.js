@@ -2105,7 +2105,7 @@ function _logOcLadderCall(ocProfileName, ocRole, model, outcome, errorText) {
   try {
     require('../ladder-log').logCall({
       source: `runner:${ocProfileName}`,
-      ladder: ocLadder.ladderFor(ocProfileName) || ocProfileName,
+      ladder: ocLadder.ladderFor(ocProfileName, ocRole) || ocProfileName,
       rungsTotal: null,
       outcome,
       attempts: [{
@@ -3506,7 +3506,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   const workerFailure = engine === 'opencode' && ocActiveModel?.startsWith(`${ocLadder.PROVIDER_ID}/`)
     ? ocLadder.classifyWorkerFailure(preLadderText) : null;
   if (workerFailure) {
-    const ladderName = ocLadder.ladderFor(ocProfileName) || ocProfileName;
+    const ladderName = ocLadder.ladderFor(ocProfileName, ocRole) || ocProfileName;
     console.warn(`[${taskId}] opencode ${workerFailure} (ladder ${ladderName}): ${String(preLadderText || '').slice(0, 300)}`);
 
     // #1899 п.2: «каждая ступень отказала» is not «попробуй позже» — it is «переходим на
