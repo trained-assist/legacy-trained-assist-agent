@@ -20,17 +20,17 @@ const { claudeAdmissible } = require('./engine-admission');
 
 // level → {engine, ocProfile}. bachelor/master are OpenCode ladder profiles;
 // doctor is the strongest tier and runs on Claude (cross-engine fallback /
-// degradation is the recovery slice P3c). `free` vs `value` for bachelor is a
-// product choice — default `value` (deepseek/glm) for stable availability;
+// degradation is the recovery slice P3c). `free` vs `service` for bachelor is a
+// product choice — default `service` (the standard Go ladder) for stable availability;
 // override with PLAYBOOK_LEVEL_MAP={"bachelor":{"engine":"opencode","ocProfile":"free"}}.
 const DEFAULT_LEVEL_MAP = Object.freeze({
-  // Both OpenCode levels run on the standard Go deepseek profile (owner 2026-09-27) — `value`
-  // led with paid OpenRouter and `max` ended on it, which is how durable/web steps leaked there.
-  // Whole ladder dead (every rung failed → CONFIG) → the free ladder, NEVER Claude/Codex (owner
-  // 2026-09-29, #1899): Claude credit is kept for critical work; auto-spending it when cheap
-  // quotas run out drains it exactly when it's needed. Guarded by test/failure-classifier.
-  bachelor: { engine: 'opencode', ocProfile: 'deepseek', fallback: [{ engine: 'opencode', ocProfile: 'free' }] },
-  master: { engine: 'opencode', ocProfile: 'deepseek', fallback: [{ engine: 'opencode', ocProfile: 'free' }] },
+  // Both OpenCode levels run on the standard service ladder (owner 2026-09-27) — the old
+  // `value` led with paid OpenRouter and `max` ended on it, which is how durable/web steps leaked
+  // there. Whole ladder dead (every rung failed → CONFIG) → the free ladder, NEVER Claude/Codex
+  // (owner 2026-09-29, #1899): Claude credit is kept for critical work; auto-spending it when
+  // cheap quotas run out drains it exactly when it's needed. Guarded by test/failure-classifier.
+  bachelor: { engine: 'opencode', ocProfile: 'service', fallback: [{ engine: 'opencode', ocProfile: 'free' }] },
+  master: { engine: 'opencode', ocProfile: 'service', fallback: [{ engine: 'opencode', ocProfile: 'free' }] },
   // Claude has no model ladder of its own. When an engine is unavailable (engine
   // health) or this step already failed on it with AUTH/CONFIG, the step runs on the
   // next rung of `fallback` instead of failing: claude → codex → opencode `doctor`

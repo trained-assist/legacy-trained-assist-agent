@@ -62,7 +62,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     ok(fired === 1, `durable: one item fired (got ${fired})`);
     ok(/step one/.test(prompted) && /DURABLE: done/.test(prompted), 'durable: prompt carries step + completion marker');
     ok(firedOpts.stepTimeoutMs === 2400 * 1000, `durable: a 600s step is floored at the 40-min run cap (got ${firedOpts && firedOpts.stepTimeoutMs})`);
-    ok(firedOpts.engine === 'opencode' && firedOpts.ocProfile === 'deepseek',
+    ok(firedOpts.engine === 'opencode' && firedOpts.ocProfile === 'service',
       `durable: bachelor contract item resolves to opencode/deepseek (got ${firedOpts && firedOpts.engine}/${firedOpts && firedOpts.ocProfile})`);
     ok(firedOpts.user && /users[/\\]u1$/.test(firedOpts.user.workDir),
       `durable: step carries the profile workspace, not null (got ${firedOpts.user && firedOpts.user.workDir})`);
@@ -196,7 +196,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     await G8.runDueDurable({ secrets: {}, now: Date.now(), isTaskRunning: () => false,
       runTask: async (opts) => { firedOpts = opts; return 'DURABLE: done'; } });
     // Owner 2026-10-01: a legacy (contract-less) item defaults to OpenCode master, not Claude.
-    ok(firedOpts && firedOpts.engine === 'opencode' && firedOpts.ocProfile === 'deepseek',
+    ok(firedOpts && firedOpts.engine === 'opencode' && firedOpts.ocProfile === 'service',
       `durable: legacy item runs on opencode/deepseek by default (got ${firedOpts && firedOpts.engine}/${firedOpts && firedOpts.ocProfile})`);
   }
 
@@ -714,7 +714,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
       acceptance_criteria: [{ description: 'c' }],
       // Pinned level without a fallback engine: default bachelor falls back to the free ladder
       // (#1899), which would turn this AUTH into fallback_rung — covered by 22b.
-      execution_policy: { validation_mode: 'programmatic', level_map: { bachelor: { engine: 'opencode', ocProfile: 'deepseek' } } },
+      execution_policy: { validation_mode: 'programmatic', level_map: { bachelor: { engine: 'opencode', ocProfile: 'service' } } },
       items: [{ title: 'auth step', execution_kind: 'agent', executor_role: 'developer',
         minimum_model_level: 'bachelor', context_budget: 'small', validation: { command: 'true' }, max_attempts: 5 }],
     });
@@ -753,7 +753,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
       secrets: {}, now, isTaskRunning: () => false,
       runTask: async (opts) => {
         engines.push(`${opts.engine}/${opts.ocProfile}`);
-        return opts.ocProfile === 'deepseek' ? '⚠️ OpenCode завершился с ошибкой: every rung failed' : 'ok. DURABLE: done';
+        return opts.ocProfile === 'service' ? '⚠️ OpenCode завершился с ошибкой: every rung failed' : 'ok. DURABLE: done';
       },
     });
     await run(Date.now()); await drain();
@@ -763,7 +763,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     store.db.prepare('UPDATE task_items SET due_at=NULL WHERE id=?').run(item.id);
     await run(Date.now() + 24 * 3600 * 1000); await drain();
     item = store.listTaskItems(r.task.id, 'u1')[0];
-    ok(engines.join(',') === 'opencode/deepseek,opencode/free' && item.status === 'done',
+    ok(engines.join(',') === 'opencode/service,opencode/free' && item.status === 'done',
       `ladder exhausted: next run goes to the free ladder (not claude) and completes (got ${engines.join(',')}/${item.status})`);
   }
 
@@ -829,7 +829,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
   {
     const G25 = freshStore('25');
     const store = G25.durableStore();
-    process.env.PLAYBOOK_LEVEL_MAP = JSON.stringify({ bachelor: { engine: 'opencode', ocProfile: 'deepseek' } });
+    process.env.PLAYBOOK_LEVEL_MAP = JSON.stringify({ bachelor: { engine: 'opencode', ocProfile: 'service' } });
     try {
       const r = store.createPlan({
         profile_id: 'u1', goal: 'provider recovery', user_value: 'uv',

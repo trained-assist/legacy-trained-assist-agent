@@ -26,11 +26,11 @@ describe('resolveStepExecution', () => {
   // exhausted → silent hang); it goes through the llm-ladder like every level.
   it('researcher goes through the llm-ladder (deepseek), explore role', () => {
     expect(resolveStepExecution(agent({ executor_role: 'researcher', minimum_model_level: 'bachelor', current_model_level: 'bachelor' })))
-      .toMatchObject({ engine: 'opencode', ocProfile: 'deepseek', ocRole: 'explore', modelLevel: 'bachelor' });
+      .toMatchObject({ engine: 'opencode', ocProfile: 'service', ocRole: 'explore', modelLevel: 'bachelor' });
   });
 
   it('master → opencode Go deepseek too (owner 2026-09-27: value/max leaked to OpenRouter); developer maps to build', () => {
-    expect(resolveStepExecution(agent())).toMatchObject({ engine: 'opencode', ocProfile: 'deepseek', ocRole: 'build' });
+    expect(resolveStepExecution(agent())).toMatchObject({ engine: 'opencode', ocProfile: 'service', ocRole: 'build' });
   });
 
   it('doctor → claude, no opencode override', () => {
@@ -72,7 +72,7 @@ describe('resolveStepExecution', () => {
 
   it('researcher uses the level map by default and role map can override it', () => {
     expect(resolveStepExecution(agent({ executor_role: 'researcher', minimum_model_level: 'master', current_model_level: 'master' })))
-      .toMatchObject({ engine: 'opencode', ocProfile: 'deepseek', ocRole: 'explore' });
+      .toMatchObject({ engine: 'opencode', ocProfile: 'service', ocRole: 'explore' });
     expect(resolveStepExecution(agent({ executor_role: 'researcher' }), {
       roleMap: { researcher: { engine: 'opencode', ocProfile: 'free' } },
     })).toMatchObject({ engine: 'opencode', ocProfile: 'free' });

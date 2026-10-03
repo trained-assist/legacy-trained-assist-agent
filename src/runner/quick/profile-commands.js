@@ -34,13 +34,13 @@ const SETTINGS_INTENT       = /^\/(?:settings|config|настройки|конф
 // \b doesn't fire after a Cyrillic letter in JS, so both alternatives end on
 // (?=\s|$) instead (same fix as PERSONA_INTENT above).
 const ENGINE_SWITCH_INTENT  = /^\/?switch\s*2\s*(klod|codex|opencode|клод|кодекс)(?:@\S+)?(?=\s|$)|(?:переключ\S*|switch)\s+(?:меня\s+)?(?:на|to)\s+(klod|claude|codex|opencode|клод|кодекс)(?=\s|$)/i;
-const OC_PROFILE_INTENT = /^\/oc_(max|value|free|russian-recruiter|russian|recruiter|rr|ru|quality|mimo|lavish-luna|ll|q|x|deepseek_openrouter|deepseek_go|ds_or|ds_go|deepseek|ds)(?:@\S+)?\b|^\/oc\s+(max|value|free|russian-recruiter|russian|recruiter|rr|ru|quality|mimo|lavish-luna|ll|q|x|deepseek_openrouter|deepseek_go|ds_or|ds_go|deepseek|ds)\b/i;
+const OC_PROFILE_INTENT = /^\/oc_(service|max|value|free|russian-recruiter|russian|recruiter|rr|ru|quality|mimo|lavish-luna|ll|q|x|deepseek_openrouter|deepseek_go|ds_or|ds_go|deepseek|ds)(?:@\S+)?\b|^\/oc\s+(service|max|value|free|russian-recruiter|russian|recruiter|rr|ru|quality|mimo|lavish-luna|ll|q|x|deepseek_openrouter|deepseek_go|ds_or|ds_go|deepseek|ds)\b/i;
 // /oc_go, /oc_openrouter — used to flip a VM-wide go/openrouter toggle; removed 2026-09-27 (a
 // sticky manual /oc_openrouter drained the OpenRouter balance). /oc_go now just selects the
-// deepseek profile (Go first); /oc_openrouter only explains that OpenRouter is the ladder's
+// service profile (Go first); /oc_openrouter only explains that OpenRouter is the ladder's
 // automatic last rung.
 const OC_GO_TOGGLE_INTENT = /^\/oc_(go|openrouter)(?:@\S+)?\b/i;
-const OPENROUTER_RETIRED_MSG = 'ℹ️ Ручного переключения на OpenRouter больше нет. Профиль deepseek всегда идёт через OpenCode Go (два ключа с ротацией); OpenRouter — только последняя запасная ступень лестницы: включается сам, когда оба ключа Go на лимите, и Go возвращается автоматически, как только ключ оживёт.';
+const OPENROUTER_RETIRED_MSG = 'ℹ️ Ручного переключения на OpenRouter больше нет. Профиль service идёт через llm-ladder — он сам держит ключи и ротацию, выбирает ступень и уходит на OpenRouter только когда бесплатные ступени кончились, а потом возвращается сам. У агента ключей провайдеров нет.';
 const AGENT_INFO_INTENT = /^\/(?:get_agent_info|agent_info|info)(?:@\S+)?(?=\s|$)/i;
 // Natural-language "what model/agent are you?" — «на какой модели ты сейчас работаешь?»,
 // «какая у тебя модель», «какой моделью пользуешься», «какой ты агент». Maps to the same
@@ -362,16 +362,21 @@ function profileCommandsAnswer(task, { userId, workDir, chatId = null, audience 
   if (ocProfileM && workDir) {
     const rawAlias = (ocProfileM[1] || ocProfileM[2] || '').toLowerCase();
     // Same alias table as infra/opencode-switch-profile.sh — quality/mimo/lavish-luna were
-    // retired in #1061 Фаза 1 (folded into max/value's ladders as rungs, not standalone
+    // retired in #1061 Фаза 1 (folded into the service/doctor ladders as rungs, not standalone
     // profiles anymore), so those names get a helpful redirect instead of a raw 404.
     const RETIRED = new Set(['quality', 'mimo', 'lavish-luna', 'll', 'q']);
     if (RETIRED.has(rawAlias)) {
-      return `⚠️ Профиль '${rawAlias}' упразднён в #1061 (стал ступенью лестницы max/value) — выбери max|value|free|russian.`;
+      return `⚠️ Профиль '${rawAlias}' упразднён в #1061 (стал ступенью лестницы service/doctor) — выбери service|doctor|free|russian.`;
     }
+    // Profiles are named after the worker ladder (llm-ladder config/ladders.json), so the ladder
+    // rename (#49/#101) renamed the profiles too. These aliases keep old muscle memory working —
+    // ds/deepseek/value → service, x/max → doctor. `deepseek` is only the ladder's OLD name.
     const ALIASES = {
-      ru: 'russian', recruiter: 'russian', rr: 'russian', 'russian-recruiter': 'russian', x: 'max', ds: 'deepseek',
-      ds_go: 'deepseek', deepseek_go: 'deepseek',
+      ru: 'russian', recruiter: 'russian', rr: 'russian', 'russian-recruiter': 'russian',
+      ds: 'service', ds_go: 'service', deepseek_go: 'service', deepseek: 'service', value: 'service',
+      v: 'service', x: 'doctor', max: 'doctor',
     };
+    const RENAMED = new Set(['ds', 'ds_go', 'deepseek_go', 'deepseek', 'value', 'v', 'x', 'max']);
     // Pinning a profile to OpenRouter is gone (2026-09-27) — OpenRouter is only the service
     // ladder's automatic last rung.
     if (rawAlias === 'ds_or' || rawAlias === 'deepseek_openrouter') return OPENROUTER_RETIRED_MSG;
@@ -381,25 +386,26 @@ function profileCommandsAnswer(task, { userId, workDir, chatId = null, audience 
     const engineNote = switchChatEngineToOpencode(workDir, chatId);
     // Rung order lives in the llm-ladder worker (#1687) — labels name the ladder, not models.
     const PROFILE_LABELS = {
-      max:      'MAX — лестница doctor (сильнейшие модели Go)',
-      value:    'VALUE — лестница service',
-      free:     'FREE — лестница free (дешёвые/бесплатные модели)',
+      service:  'SERVICE (дефолт) — стандартная лестница (Go → платный хвост OpenRouter)',
+      doctor:   'DOCTOR — сильнейшая лестница (модели Go)',
+      free:     'FREE — дешёвые/бесплатные модели',
       russian:  'RUSSIAN — лестница service + строгий русскоязычный рецензент',
-      deepseek: 'DEEPSEEK (дефолт) — лестница service (Go → платный хвост OpenRouter)',
+      research: 'RESEARCH — исследовательская лестница (Go-first)',
     };
     const label = PROFILE_LABELS[raw] || raw;
-    return `✅ OpenCode профиль → ${label}\n\nПрименён только для твоего профиля (другие юзеры VM не затронуты). Следующая задача в OpenCode подхватит новые модели.${engineNote}`;
+    const renamed = RENAMED.has(rawAlias) ? `\n(имя '${rawAlias}' переименовано в '${raw}' — профили теперь называются как лестницы llm-ladder)` : '';
+    return `✅ OpenCode профиль → ${label}${renamed}\n\nПрименён только для твоего профиля (другие юзеры VM не затронуты). Следующая задача в OpenCode подхватит новые модели.${engineNote}`;
   }
 
-  // /oc_go → the deepseek profile (Go first); /oc_openrouter → explanation only. See
+  // /oc_go → the service profile (Go first); /oc_openrouter → explanation only. See
   // OC_GO_TOGGLE_INTENT above.
   const ocGoToggleM = task.trim().match(OC_GO_TOGGLE_INTENT);
   if (ocGoToggleM) {
     if (ocGoToggleM[1].toLowerCase() === 'openrouter') return OPENROUTER_RETIRED_MSG;
     if (!workDir) return null;
-    profiles.setOcProfile(workDir, 'deepseek');
+    profiles.setOcProfile(workDir, 'service');
     const engineNote = switchChatEngineToOpencode(workDir, chatId);
-    return `✅ OpenCode профиль → DEEPSEEK (лестница service) на Go (mimo-v2.6-flash → deepseek-v4.1-flash).${engineNote}`;
+    return `✅ OpenCode профиль → SERVICE (стандартная лестница) на Go (mimo-v2.6-flash → deepseek-v4.1-flash).${engineNote}`;
   }
   return undefined;
 }

@@ -141,7 +141,7 @@ const MAX_MSG_LEN = 3500;
 // Telegram cards report token usage only; monetary estimates are not displayed.
 //
 // Owner decision 29.09.2026: the card must not leak internal engine/model slugs
-// ("deepseek:build") and must read as plain language. The wording below is the
+// ("service:build") and must read as plain language. The wording below is the
 // owner's own dictation, kept verbatim:
 //   «ИИ натренированный на рабочие вопросы. Расход токенов: вход: X, обработка: Y, ответ: Z»
 //   вход      — prompt tokens read for the FIRST time this step (fresh input + cache write);

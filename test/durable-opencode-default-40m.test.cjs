@@ -9,7 +9,7 @@ test('no-contract step resolves to OpenCode master, never Claude', () => {
   for (const item of [{}, { executor_role: 'developer' }, { minimum_model_level: 'master' }, { title: 'legacy' }]) {
     const r = resolveStepExecution(item);
     assert.equal(r.engine, 'opencode', JSON.stringify(item));
-    assert.equal(r.ocProfile, 'deepseek');
+    assert.equal(r.ocProfile, 'service');
     assert.equal(r.reason, 'no-contract');
   }
   // explicit pin still honoured

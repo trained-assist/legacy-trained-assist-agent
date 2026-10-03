@@ -19,19 +19,32 @@ const ROLES = ['build', 'plan', 'explore', 'general', 'review'];
 const PROVIDER_ID = 'ladder';
 const TOKEN_ENV = 'OPENCODE_LADDER_TOKEN';
 
-// OpenCode profile → worker ladder. The canonical ladder name is `service`
-// (renamed from `deepseek` in llm-ladder #49/#101); the worker no longer
-// resolves the `deepseek` alias, so every profile must send `service` explicitly.
-// The profile NAME `deepseek` stays (OPENCODE_PROFILE on the VM, profiles.js default,
-// /profile ds in Telegram) — it is only the ladder it maps to that changed.
+// OpenCode profile → worker ladder. A profile IS a ladder on the worker
+// (trained-assist-llm-ladder, config/ladders.json): the worker owns the rungs, the key pool and
+// the failover, so a profile must never name anything it doesn't know — `deepseek` was the
+// ladder's old name and the worker dropped the alias (llm-ladder #49/#101), which 404'd every
+// run that still sent it. Every KEY below is a worker ladder name (plus `russian`, which is the
+// service ladder plus a reviewer prompt — see ROLE_PROMPTS), and every VALUE is a ladder the
+// worker resolves; scripts/check-client-contracts.mjs (llm-ladder repo) checks exactly that
+// against the live config/ladders.json, so a rename on either side fails loudly.
 const PROFILE_LADDER = Object.freeze({
-  deepseek: 'service', // default; playbook bachelor/master — legacy profile name → service ladder
+  service: 'service',   // default; playbook bachelor/master
   doctor: 'doctor',     // playbook doctor fallback after claude → codex
   free: 'free',
-  max: 'doctor',        // was the "strongest Go models" ladder
-  value: 'service',     // was a cheap OpenRouter/GigaChat ladder — superseded by service
-  russian: 'service',   // GigaChat ladder dropped; keeps its strict Russian reviewer prompt
   research: 'research', // hermes_research + researcher roles — worker ladder, Go-first (llm-ladder #28)
+  russian: 'service',   // service ladder + the strict Russian reviewer prompt below
+});
+
+// Names still found in a per-profile profiles.json, in OPENCODE_PROFILE or behind a /profile
+// alias from before the ladder rename. Resolved on READ only — never written back — so stored
+// state keeps working after the rename instead of falling through to the default ladder (a
+// stored `max` must still reach `doctor`, not `service`). A profile is renamed by /profile or
+// by editing profiles.json; the aliases in infra/opencode-switch-profile.sh and
+// src/runner/quick/profile-commands.js point at the new names.
+const LEGACY_PROFILE_LADDER = Object.freeze({
+  deepseek: 'service', // the ladder's former name
+  value: 'service',    // duplicate of service
+  max: 'doctor',       // duplicate of doctor
 });
 
 // Research used to be a DIRECT pin to `opencode-go/mimo-v2.6-flash` (subscription, no
@@ -54,7 +67,7 @@ const PROFILES = Object.freeze(Object.keys(PROFILE_LADDER));
 
 // Unknown profile → service (the default ladder), never a local model list.
 function ladderFor(profileName) {
-  return PROFILE_LADDER[profileName] || 'service';
+  return PROFILE_LADDER[profileName] || LEGACY_PROFILE_LADDER[profileName] || 'service';
 }
 
 function modelFor(profileName, role = 'build') {
@@ -126,6 +139,6 @@ function classifyWorkerFailure(text) {
 }
 
 module.exports = {
-  ROLES, PROFILES, PROFILE_LADDER, PROVIDER_ID, TOKEN_ENV, TRACE_HEADERS,
+  ROLES, PROFILES, PROFILE_LADDER, LEGACY_PROFILE_LADDER, PROVIDER_ID, TOKEN_ENV, TRACE_HEADERS,
   ladderFor, modelFor, providerConfig, traceChat, buildOcProfileOverrides, ladderToken, classifyWorkerFailure,
 };

@@ -31,7 +31,7 @@ const KEYS = ['USERS_DIR', 'AGENT_DATA_DIR', 'AGENT_TOKENS_DIR', 'AGENT_TOKENS_R
 const PROFILE = 'e2e';
 const PR_URL = 'https://github.com/o/sandbox/pull/7';
 const LEVEL_MAP = {
-  doctor: { engine: 'opencode', ocProfile: 'deepseek' },
+  doctor: { engine: 'opencode', ocProfile: 'service' },
   master: { engine: 'opencode', ocProfile: 'free' },
   bachelor: { engine: 'opencode', ocProfile: 'free' },
 };
@@ -157,7 +157,7 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
       const ex = store.db.prepare('SELECT model_level, engine, profile FROM executions WHERE task_id = ? AND engine IS NOT NULL').all(task.id);
       expect(ex.length).toBeGreaterThan(0);
       for (const e of ex) expect([e.model_level, e.engine, e.profile]).toEqual([e.model_level, 'opencode', LEVEL_MAP[e.model_level].ocProfile]);
-      if (items.some(i => i.minimum_model_level === 'doctor')) expect(ex.some(e => e.profile === 'deepseek')).toBe(true);
+      if (items.some(i => i.minimum_model_level === 'doctor')) expect(ex.some(e => e.profile === 'service')).toBe(true);
 
       // one workspace label for the whole plan
       const labels = new Set(calls.map(c => c.label));
@@ -331,7 +331,7 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     const t = await drive(G, task.id, { runTask, registry: fakeGitHub() });
     expect(t.status).toBe('done');
     const impl = calls.filter(c => /^Реализация/.test(c.title));
-    expect(impl.map(c => `${c.engine}/${c.ocProfile}`)).toEqual(['opencode/free', 'opencode/free', 'opencode/deepseek']);
+    expect(impl.map(c => `${c.engine}/${c.ocProfile}`)).toEqual(['opencode/free', 'opencode/free', 'opencode/service']);
     expect(prompts[0]).not.toContain('ПРОШЛЫЕ ПОПЫТКИ');
     expect(prompts[1]).toContain('ПРОШЛЫЕ ПОПЫТКИ');
     expect(prompts[1]).toContain('попытка 1');

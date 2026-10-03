@@ -48,29 +48,9 @@ function shareEngineInputs(workDir, candidates) {
   }
 }
 
-// opencode authenticates `opencode-go` from its STORED credential
-// (.agent-home/…/opencode/auth.json, staged from the service home) and gives it
-// precedence over OPENCODE_API_KEY — verified on prod 2026-10-01: a valid env key plus a
-// garbage auth.json fails with 401. So the per-run key goApiKey() draws would never reach
-// the engine while the staged file carried another key: rewrite the staged copy with THIS
-// run's key. Same file → same mode and ACL; only the bytes change. A missing file is left
-// alone (the engine then falls back to the env var, which is the drawn key) and so is an
-// empty key (a stored credential beats no credential at all).
-// Exported for tests — the run-as path that produces a staged file needs slot machinery.
-function syncOpencodeGoAuth({ home, key }) {
-  if (!home || !key) return false;
-  const authPath = path.join(home, '.local', 'share', 'opencode', 'auth.json');
-  try {
-    if (!fs.existsSync(authPath)) return false;
-    const auth = JSON.parse(fs.readFileSync(authPath, 'utf8'));
-    auth['opencode-go'] = { type: 'api', key };
-    fs.writeFileSync(authPath, JSON.stringify(auth, null, 2) + '\n');
-    return true;
-  } catch (e) {
-    console.warn(`[isolation] cannot sync opencode auth.json: ${e.message}`);
-    return false;
-  }
-}
+// opencode authenticates every model through the `ladder` provider, whose credential is
+// OPENCODE_LADDER_TOKEN (staged per run). The agent holds no OpenCode Go / Zen key, so there
+// is no auth.json to rewrite here — the llm-ladder owns the provider key pools.
 
 /**
  * @param {object} p
@@ -123,11 +103,6 @@ async function prepareEngineSpawn({ engine, taskId, user, cwd, engineEnv, engine
     }
     if (runAs) isoRun = await iso.prepareIsolatedRun(config, { workDir: user.workDir, cwd, engine, reach: [socket] });
     if (isoRun) shareEngineInputs(user.workDir, [...(engineArgs || []), engineEnv.OPENCODE_CONFIG]);
-    // opencode reads its staged auth.json INSTEAD of OPENCODE_API_KEY (see syncOpencodeGoAuth):
-    // without this the drawn per-run key would be shadowed by whatever the service home held.
-    if (engine === 'opencode' && isoRun) {
-      syncOpencodeGoAuth({ home: iso.engineHomeDir(user.workDir), key: engineEnv.OPENCODE_API_KEY });
-    }
     const configFiles = engine === 'opencode'
       ? [path.join(config.serviceHome || os.homedir(), '.config', 'opencode', 'opencode.json'), engineEnv.OPENCODE_CONFIG].filter(Boolean)
       : [];
@@ -146,4 +121,4 @@ async function prepareEngineSpawn({ engine, taskId, user, cwd, engineEnv, engine
   }
 }
 
-module.exports = { prepareEngineSpawn, bridgeDir, shareEngineInputs, syncOpencodeGoAuth };
+module.exports = { prepareEngineSpawn, bridgeDir, shareEngineInputs };

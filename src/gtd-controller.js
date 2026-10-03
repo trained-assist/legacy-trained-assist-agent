@@ -58,7 +58,7 @@ function pickUsableTarget(store, item, step, engineHealth) {
   const hardRows = store.db.prepare(`SELECT engine, profile FROM executions
       WHERE task_item_id = ? AND engine IS NOT NULL AND error_class IN ('AUTH','CONFIG')`)
     .all(item.id);
-  // OpenCode rungs differ by ladder profile: an exhausted `deepseek` ladder must not rule out the
+  // OpenCode rungs differ by ladder profile: an exhausted `service` ladder must not rule out the
   // `free` ladder fallback (#1899). Other engines are hard-failed as a whole.
   const failedOn = c => hardRows.some(r => r.engine === c.engine
     && (c.engine !== 'opencode' || (r.profile || null) === (c.ocProfile || null)));
