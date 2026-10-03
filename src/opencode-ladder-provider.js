@@ -6,7 +6,7 @@
 // ONLY in the worker (https://llm-ladder.trainedassist.store, repo trained-assist-llm-ladder).
 // This module does no routing of its own: it maps an OpenCode profile to a worker ladder name and
 // emits the per-run OPENCODE_CONFIG piece — one openai-compatible provider `ladder` whose model id
-// is `<ladder>:<role>` (e.g. `ladder/deepseek:plan`). There is no in-process fallback: if the
+// is `<ladder>:<role>` (e.g. `ladder/service:plan`). There is no in-process fallback: if the
 // worker is unreachable the run fails with a clear category (classifyWorkerFailure).
 //
 // The engine gets the worker token as OPENCODE_LADDER_TOKEN — a per-run engine credential (like
@@ -19,14 +19,18 @@ const ROLES = ['build', 'plan', 'explore', 'general', 'review'];
 const PROVIDER_ID = 'ladder';
 const TOKEN_ENV = 'OPENCODE_LADDER_TOKEN';
 
-// OpenCode profile → worker ladder. The decision per profile is listed in PR for #1687.
+// OpenCode profile → worker ladder. The canonical ladder name is `service`
+// (renamed from `deepseek` in llm-ladder #49/#101); the worker no longer
+// resolves the `deepseek` alias, so every profile must send `service` explicitly.
+// The profile NAME `deepseek` stays (OPENCODE_PROFILE on the VM, profiles.js default,
+// /profile ds in Telegram) — it is only the ladder it maps to that changed.
 const PROFILE_LADDER = Object.freeze({
-  deepseek: 'deepseek', // default; playbook bachelor/master
+  deepseek: 'service', // default; playbook bachelor/master — legacy profile name → service ladder
   doctor: 'doctor',     // playbook doctor fallback after claude → codex
   free: 'free',
-  max: 'doctor',        // was the "strongest Go models" ladder — the worker's strongest tier is doctor
-  value: 'deepseek',    // was a cheap OpenRouter/GigaChat ladder — superseded by deepseek
-  russian: 'deepseek',  // GigaChat ladder dropped; keeps its strict Russian reviewer prompt
+  max: 'doctor',        // was the "strongest Go models" ladder
+  value: 'service',     // was a cheap OpenRouter/GigaChat ladder — superseded by service
+  russian: 'service',   // GigaChat ladder dropped; keeps its strict Russian reviewer prompt
   research: 'research', // hermes_research + researcher roles — worker ladder, Go-first (llm-ladder #28)
 });
 
@@ -48,9 +52,9 @@ const ROLE_PROMPTS = Object.freeze({
 
 const PROFILES = Object.freeze(Object.keys(PROFILE_LADDER));
 
-// Unknown profile → deepseek (the default ladder), never a local model list.
+// Unknown profile → service (the default ladder), never a local model list.
 function ladderFor(profileName) {
-  return PROFILE_LADDER[profileName] || 'deepseek';
+  return PROFILE_LADDER[profileName] || 'service';
 }
 
 function modelFor(profileName, role = 'build') {

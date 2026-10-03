@@ -19,7 +19,7 @@ test('sends the ladder name + JSON mode + time budgets to the worker with the be
   assert.equal(r.model, 'opencode-go/mimo-v2.6-flash');
   assert.match(seen.url, /\/v1\/chat\/completions$/);
   assert.equal(seen.init.headers.Authorization, `Bearer ${process.env.LLM_LADDER_TOKEN}`);
-  assert.equal(seen.body.model, 'deepseek');
+  assert.equal(seen.body.model, 'service'); // canonical ladder name (alias 'deepseek' removed 2026-10-03)
   assert.equal(seen.body.response_format.type, 'json_object');
   assert.equal(seen.body.ladder_timeout_ms, 4000);
   assert.equal(seen.body.ladder_total_timeout_ms, 6000);

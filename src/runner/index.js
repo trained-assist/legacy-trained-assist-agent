@@ -1823,7 +1823,7 @@ function buildContextCard(username, workDir, chatId, actualModel = null, threadI
     // ~/.config/opencode/.current-profile file — that file is machine-wide and went stale
     // once #1045 scoped /oc_* switching to each profile individually.
     const ocProfile = profiles.getOcProfile(workDir);
-    // The llm-ladder worker model id this profile runs on (issue #1687), e.g. ladder/deepseek:build.
+    // The llm-ladder worker model id this profile runs on (issue #1687), e.g. ladder/service:build.
     const ocModel = process.env.OPENCODE_MODEL || ocLadder.modelFor(ocProfile);
     lines.push(`⚙️ OpenCode · ${ocProfile}${ocModel ? ` (${ocModel})` : ''}`);
   } else if (eng === 'codex') {

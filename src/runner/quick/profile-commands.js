@@ -372,7 +372,7 @@ function profileCommandsAnswer(task, { userId, workDir, chatId = null, audience 
       ru: 'russian', recruiter: 'russian', rr: 'russian', 'russian-recruiter': 'russian', x: 'max', ds: 'deepseek',
       ds_go: 'deepseek', deepseek_go: 'deepseek',
     };
-    // Pinning a profile to OpenRouter is gone (2026-09-27) — OpenRouter is only the deepseek
+    // Pinning a profile to OpenRouter is gone (2026-09-27) — OpenRouter is only the service
     // ladder's automatic last rung.
     if (rawAlias === 'ds_or' || rawAlias === 'deepseek_openrouter') return OPENROUTER_RETIRED_MSG;
     const raw = ALIASES[rawAlias] || rawAlias;
@@ -382,10 +382,10 @@ function profileCommandsAnswer(task, { userId, workDir, chatId = null, audience 
     // Rung order lives in the llm-ladder worker (#1687) — labels name the ladder, not models.
     const PROFILE_LABELS = {
       max:      'MAX — лестница doctor (сильнейшие модели Go)',
-      value:    'VALUE — лестница deepseek',
+      value:    'VALUE — лестница service',
       free:     'FREE — лестница free (дешёвые/бесплатные модели)',
-      russian:  'RUSSIAN — лестница deepseek + строгий русскоязычный рецензент',
-      deepseek: 'DEEPSEEK (дефолт) — лестница deepseek (Go → платный хвост OpenRouter)',
+      russian:  'RUSSIAN — лестница service + строгий русскоязычный рецензент',
+      deepseek: 'DEEPSEEK (дефолт) — лестница service (Go → платный хвост OpenRouter)',
     };
     const label = PROFILE_LABELS[raw] || raw;
     return `✅ OpenCode профиль → ${label}\n\nПрименён только для твоего профиля (другие юзеры VM не затронуты). Следующая задача в OpenCode подхватит новые модели.${engineNote}`;
@@ -399,7 +399,7 @@ function profileCommandsAnswer(task, { userId, workDir, chatId = null, audience 
     if (!workDir) return null;
     profiles.setOcProfile(workDir, 'deepseek');
     const engineNote = switchChatEngineToOpencode(workDir, chatId);
-    return `✅ OpenCode профиль → DEEPSEEK на Go (mimo-v2.6-flash → deepseek-v4.1-flash).${engineNote}`;
+    return `✅ OpenCode профиль → DEEPSEEK (лестница service) на Go (mimo-v2.6-flash → deepseek-v4.1-flash).${engineNote}`;
   }
   return undefined;
 }

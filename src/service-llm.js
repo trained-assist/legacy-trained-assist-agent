@@ -19,7 +19,7 @@
 // Research / presentation / vision calls deliberately stay on their own Gemini path (owner:
 // «gemini для рисеча и для презентаций он прямо гуд») — this is only for mechanical calls.
 
-const LADDER = 'deepseek';
+const LADDER = 'service'; // canonical ladder name (legacy alias 'deepseek' removed 2026-10-03)
 const LADDER_URL = () => (process.env.LLM_LADDER_URL || 'https://llm-ladder.trainedassist.store').replace(/\/+$/, '');
 // What the client keeps ON TOP of the worker's budget: enough to read the worker's answer (and its
 // x-ladder-attempts header) after the worker has already given up walking rungs. The worker must

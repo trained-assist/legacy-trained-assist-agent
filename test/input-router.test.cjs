@@ -105,7 +105,7 @@ test('routeInput: one OpenRouter call with json response_format, validated outpu
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].body.response_format.type, 'json_object');
   // service-llm sends the ladder name to the llm-ladder worker, which picks the rung.
-  assert.equal(f.calls[0].body.model, 'deepseek');
+  assert.equal(f.calls[0].body.model, 'service');
   assert.equal(out.route, 'agent');
   assert.deepEqual(out.tools_hint, ['engineering_spawn_workspace']);
   assert.deepEqual(out.usage, { in: 500, out: 60, cost: 0.0003 });

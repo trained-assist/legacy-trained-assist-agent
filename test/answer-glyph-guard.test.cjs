@@ -89,17 +89,17 @@ test('иероглифы: ответ переписывается по лест�
   assert.equal(res.action, 'rewritten');
   assert.equal(res.text, CLEAN);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].model, 'ladder/deepseek:general');
+  assert.equal(calls[0].model, 'ladder/service:general');
   assert.ok(calls[0].prompt.includes(DIRTY));
 });
 
 test('адрес переписывания — роль general стандартной лестницы профиля', () => {
-  assert.equal(resolveRung('deepseek'), 'ladder/deepseek:general');
+  assert.equal(resolveRung('deepseek'), 'ladder/service:general');
   assert.equal(resolveRung('free'), 'ladder/free:general');
-  assert.equal(resolveRung('value'), 'ladder/deepseek:general'); // value → deepseek (PR #1687)
+  assert.equal(resolveRung('value'), 'ladder/service:general'); // value → service (ladder rename, llm-ladder #49/#101)
   // Неизвестный профиль не даёт «лестницу не найдена»: worker сам уводит в дефолт.
-  assert.equal(resolveRung('no-such-profile'), 'ladder/deepseek:general');
-  assert.equal(resolveRung(''), 'ladder/deepseek:general');
+  assert.equal(resolveRung('no-such-profile'), 'ladder/service:general');
+  assert.equal(resolveRung(''), 'ladder/service:general');
 });
 
 test('знак замены: ответ переписывается, промпт просит восстановить слово', async () => {
@@ -118,7 +118,7 @@ test('знак замены: ответ переписывается, промп
   assert.equal(res.glyphs, 0);
   assert.equal(res.replacements, 2);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].model, 'ladder/deepseek:general');
+  assert.equal(calls[0].model, 'ladder/service:general');
   assert.ok(calls[0].prompt.includes(BROKEN), 'в промпт уходит исходный текст');
   assert.ok(calls[0].prompt.includes('U+FFFD'), 'промпт объясняет модели, что это знак замены');
   assert.ok(/восстанов/i.test(calls[0].prompt), 'промпт требует восстановить слово по контексту');
