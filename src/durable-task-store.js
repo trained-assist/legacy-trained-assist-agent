@@ -961,7 +961,7 @@ class DurableTaskStore {
       if (!item) return null;
       const now = nowMs();
       this._prep(`UPDATE task_items SET status = 'pending', due_at = NULL, wait_json = NULL,
-          wait_deadline_at = NULL, attempt_count = 0, last_error = ?,
+          wait_deadline_at = NULL, attempt_count = 0, infra_retries = 0, last_error = ?,
           last_recovery_action = 'manual_retry', updated_at = ? WHERE id = ?`)
         .run(reason, now, id);
       const task = this._prep('SELECT status FROM durable_tasks WHERE id = ?').get(item.task_id);
