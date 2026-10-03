@@ -93,13 +93,14 @@ test('иероглифы: ответ переписывается по лест�
   assert.ok(calls[0].prompt.includes(DIRTY));
 });
 
-test('адрес переписывания — роль general стандартной лестницы профиля', () => {
+test('адрес переписывания — роль general лестницы профиля', () => {
+  assert.equal(resolveRung('master'), 'ladder/general', 'master: the general role IS the general ladder (#2065)');
   assert.equal(resolveRung('service'), 'ladder/service:general');
-  assert.equal(resolveRung('free'), 'ladder/free:general');
+  assert.equal(resolveRung('free'), 'ladder/general', 'free: only build rides the $0 ladder, the rest are role ladders');
   assert.equal(resolveRung('value'), 'ladder/service:general'); // value → service (ladder rename, llm-ladder #49/#101)
   // Неизвестный профиль не даёт «лестницу не найдена»: worker сам уводит в дефолт.
   assert.equal(resolveRung('no-such-profile'), 'ladder/service:general');
-  assert.equal(resolveRung(''), 'ladder/service:general');
+  assert.equal(resolveRung(''), 'ladder/general', 'пустое имя → дефолт master (#2065)');
 });
 
 test('знак замены: ответ переписывается, промпт просит восстановить слово', async () => {
