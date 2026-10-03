@@ -935,6 +935,13 @@ async function evaluateItemValidations(item, { task = null, profileId = null, pr
  * Mode-aware evaluation (P3d-1b). `programmatic` is the P3d-1 path exactly.
  * In either +llm mode the deterministic validator runs first and only an
  * inconclusive verdict (including "no validator") is handed to `llmValidate`.
+ *
+ * Required checks (keys present in the registry — the same set that blocks
+ * finalization, `gtd-controller.js` `isBlockingCheck`) are deterministic:
+ * an inconclusive verdict on a required key is missing evidence, never a pass
+ * (#106 / R1). The LLM judge never upgrades a required key, so e.g.
+ * `ci_and_staging_green` with no verified staging stays inconclusive instead of
+ * being talked into `pass`. Semantic keys (not in the registry) keep the judge.
  */
 async function evaluateItemValidationsModeAware(item, {
   task = null, profileId = null, projectDir = null, registry = null,
@@ -946,13 +953,15 @@ async function evaluateItemValidationsModeAware(item, {
   const validation = parseValidation(raw);
   const entries = Object.entries(validation);
   const useLlm = mode !== 'programmatic' && entries.length > 0;
+  const reg = registry || getDefaultRegistry();
   let excerpts = null;
   let planEvidence;
   const results = [];
   for (const [key, value] of entries) {
     const ctx = { task, item, profileId, projectDir, validation: value, key, planText, executionId };
     let res = await evaluateValidation(key, ctx, registry);
-    if (useLlm && res.status === 'inconclusive') {
+    const required = Object.hasOwn(reg, key);
+    if (useLlm && res.status === 'inconclusive' && !required) {
       if (excerpts === null) excerpts = collectDocExcerpts(projectDir);
       if (planEvidence === undefined) planEvidence = collectPlanWorkspaceEvidence({ profileId, taskId: task && task.id });
       const llmCtx = { ...ctx, excerpts, mode, reply, planEvidence };
