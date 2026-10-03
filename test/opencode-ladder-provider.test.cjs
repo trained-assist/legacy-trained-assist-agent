@@ -11,17 +11,18 @@ const { DEFAULT_LEVEL_MAP } = require('../src/playbook-executor');
 const ROOT = path.join(__dirname, '..');
 
 test('profile → worker ladder table', () => {
+  // The ladder rename (llm-ladder #49/#101, no aliases): deepseek/value/russian all send `service`.
   assert.deepStrictEqual({ ...p.PROFILE_LADDER }, {
-    deepseek: 'deepseek', doctor: 'doctor', free: 'free',
-    max: 'doctor', value: 'deepseek', russian: 'deepseek', research: 'research',
+    deepseek: 'service', doctor: 'doctor', free: 'free',
+    max: 'doctor', value: 'service', russian: 'service', research: 'research',
   });
-  assert.strictEqual(p.ladderFor('no-such-profile'), 'deepseek', 'unknown profile → default ladder');
+  assert.strictEqual(p.ladderFor('no-such-profile'), 'service', 'unknown profile → default ladder');
 });
 
-test('playbook levels: bachelor/master → deepseek, doctor fallback (after claude → codex) → doctor', () => {
+test('playbook levels: bachelor/master → service, doctor fallback (after claude → codex) → doctor', () => {
   const ladderOf = lvl => p.ladderFor(lvl.ocProfile);
-  assert.strictEqual(ladderOf(DEFAULT_LEVEL_MAP.bachelor), 'deepseek');
-  assert.strictEqual(ladderOf(DEFAULT_LEVEL_MAP.master), 'deepseek');
+  assert.strictEqual(ladderOf(DEFAULT_LEVEL_MAP.bachelor), 'service');
+  assert.strictEqual(ladderOf(DEFAULT_LEVEL_MAP.master), 'service');
   const fb = DEFAULT_LEVEL_MAP.doctor.fallback;
   assert.deepStrictEqual(fb.map(r => r.engine), ['codex', 'opencode']);
   assert.strictEqual(ladderOf(fb[1]), 'doctor');
@@ -29,8 +30,8 @@ test('playbook levels: bachelor/master → deepseek, doctor fallback (after clau
 
 test('model id per role = ladder/<ladder>:<role>', () => {
   const o = p.buildOcProfileOverrides('deepseek');
-  assert.strictEqual(o.model, 'ladder/deepseek:build');
-  for (const role of p.ROLES) assert.strictEqual(o.agent[role].model, `ladder/deepseek:${role}`);
+  assert.strictEqual(o.model, 'ladder/service:build');
+  for (const role of p.ROLES) assert.strictEqual(o.agent[role].model, `ladder/service:${role}`);
   assert.strictEqual(p.modelFor('doctor', 'review'), 'ladder/doctor:review');
   assert.strictEqual(p.modelFor('free', 'plan'), 'ladder/free:plan');
 });

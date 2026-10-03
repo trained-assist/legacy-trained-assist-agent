@@ -3,7 +3,7 @@
 // image_label — overlays text annotations onto an image via sharp + SVG.
 // Supports two modes:
 //   1. Explicit: labels[] with x,y coordinates → direct application
-//   2. Auto (Vision pass): structures[] strings → Claude Vision detects positions → apply
+//   2. Auto (Vision pass): structures[] strings → Vision pass detects positions → apply
 // Iteration-friendly: stores last label state per image_url for adjustments.
 
 const fs    = require('fs');
@@ -11,7 +11,11 @@ const path  = require('path');
 const https = require('https');
 const http  = require('http');
 const os    = require('os');
-const { orHeaders } = require('../../or-attribution');
+// The vision pass goes through the llm-ladder worker (src/service-llm.js) like every other
+// LLM call in the agent — never a direct provider API. The worker owns the key pool, rung
+// failover and per-call attribution; a direct vendor call here would bypass all of that
+// (and no vendor key lives on the box any more — see tests/no-direct-provider-api.test.js).
+const { serviceChat } = require('../../service-llm');
 
 const HISTORY_FILE = path.join(os.homedir(), 'agent-data', 'label-history.json');
 
@@ -44,34 +48,9 @@ function fetchBuffer(url) {
   });
 }
 
-function postJson(url, headers, body) {
-  return new Promise((resolve, reject) => {
-    const data = JSON.stringify(body);
-    const opts = {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), ...headers },
-    };
-    const u = new (require('url').URL)(url);
-    const req = https.request({ hostname: u.hostname, path: u.pathname + u.search, ...opts }, res => {
-      const chunks = [];
-      res.on('data', d => chunks.push(d));
-      res.on('end', () => {
-        try { resolve({ status: res.statusCode, data: JSON.parse(Buffer.concat(chunks).toString()) }); }
-        catch { resolve({ status: res.statusCode, data: null }); }
-      });
-    });
-    req.on('error', reject);
-    req.write(data);
-    req.end();
-  });
-}
-
-// ── Claude Vision pass ────────────────────────────────────────────────────────
+// ── Vision pass (via the llm-ladder worker) ───────────────────────────────────
 
 async function detectPositionsViaVision(imageBuffer, structures, imageDescription) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new Error('OPENROUTER_API_KEY not set — Vision pass unavailable');
-
   const base64 = imageBuffer.toString('base64');
   const structureList = structures.map((s, i) => `${i + 1}. ${s}`).join('\n');
 
@@ -91,25 +70,22 @@ async function detectPositionsViaVision(imageBuffer, structures, imageDescriptio
     'If a structure is not visible in the image, set "visible": false.',
   ].join('\n');
 
-  const res = await postJson(
-    'https://openrouter.ai/api/v1/chat/completions',
-    orHeaders({ apiKey, app: 'label-vision' }),
-    {
-      model: 'anthropic/claude-haiku-4-5',
-      max_tokens: 1024,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
-          { type: 'text', text: prompt },
-        ],
-      }],
-    }
-  );
+  // The worker picks the rung (the service ladder carries multimodal models) and owns the key.
+  const r = await serviceChat({
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
+        { type: 'text', text: prompt },
+      ],
+    }],
+    json: true,
+    maxTokens: 1024,
+    source: 'label-vision',
+  });
+  if (!r) throw new Error('Vision pass unavailable — the llm-ladder worker returned no answer (no token / unreachable / every rung failed)');
 
-  if (res.status !== 200) throw new Error(`Vision API error ${res.status}: ${JSON.stringify(res.data)}`);
-
-  const text = res.data?.choices?.[0]?.message?.content || '';
+  const text = r.content || '';
   const match = text.match(/\[[\s\S]*\]/);
   if (!match) throw new Error(`Vision response not parseable: ${text.slice(0, 200)}`);
   return JSON.parse(match[0]);
@@ -207,7 +183,7 @@ module.exports = {
     description:
       'Add text annotations to an image in any language including Russian/Cyrillic. ' +
       'TWO MODES: ' +
-      '(1) AUTO: provide structures[] with label texts — Claude Vision detects positions automatically. ' +
+      '(1) AUTO: provide structures[] with label texts — Vision pass detects positions automatically. ' +
       '(2) MANUAL: provide labels[] with explicit x,y coordinates. ' +
       'Use AUTO first; if positions are wrong the user will say so and you can call again with adjusted labels[].',
     inputSchema: {
@@ -223,7 +199,7 @@ module.exports = {
           items: { type: 'string' },
           description:
             'AUTO MODE: list of structure names to label (e.g. ["Эпидермис","Дерма","Гиподерма"]). ' +
-            'Claude Vision will detect their positions automatically. Use this on first attempt.',
+            'The vision model will detect their positions automatically. Use this on first attempt.',
         },
         labels: {
           type: 'array',

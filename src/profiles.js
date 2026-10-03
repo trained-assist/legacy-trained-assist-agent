@@ -63,10 +63,11 @@ function setEngine(workDir, engine, chatId) {
 // instead of via a shared file.
 function getOcProfile(workDir) {
   const p = load(workDir);
-  // Default: the "deepseek" profile → the worker's deepseek ladder (owner 2026-09-27:
-  // "стандартный опенкод на дипсик 4.1 флеш").
+  // Default: the "deepseek" profile → the worker's service ladder (owner 2026-09-27:
+  // "стандартный опенкод на дипсик 4.1 флеш"; the ladder was renamed deepseek → service in
+  // llm-ladder #49/#101 — the profile name stays, see src/opencode-ladder-provider.js).
   // deepseek-go / deepseek-openrouter were the two halves of the removed VM-wide toggle
-  // (2026-09-27) — both now mean the single deepseek ladder (Go first, OpenRouter last rung).
+  // (2026-09-27) — both now mean the single service ladder (Go first, OpenRouter last rung).
   if (!p.ocProfile || p.ocProfile === 'deepseek-go' || p.ocProfile === 'deepseek-openrouter') return 'deepseek';
   return p.ocProfile;
 }
