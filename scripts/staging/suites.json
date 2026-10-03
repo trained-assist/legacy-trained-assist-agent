@@ -27,6 +27,10 @@
     "test/reproject-sandbox.test.cjs",
     "test/chat-pinned-project.test.cjs",
     "test/published-page-password.test.cjs",
-    "test/web-session-input.test.cjs"
+    "test/web-session-input.test.cjs",
+    "test/capability-relay.contract.test.cjs",
+    "test/capability-relay.protocol.test.cjs",
+    "test/capability-relay.parity.test.cjs",
+    "test/capability-relay.mount.test.cjs"
   ]
 }
