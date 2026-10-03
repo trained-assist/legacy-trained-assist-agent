@@ -106,20 +106,21 @@ function disabled() {
   return String(process.env.ANSWER_GLYPH_GUARD || '').toLowerCase() === 'off';
 }
 
-// Профиля дефолта нет: profiles.getOcProfile сам отдаёт 'service' (дефолт
-// владельца 2026-09-27), а ocLadder.ladderFor на неизвестное имя тоже ведёт в
-// 'service' — левый путь не должен давать «лестницу не найдена».
+// Профиля дефолта нет: profiles.getOcProfile сам отдаёт 'master' (дефолт
+// владельца 2026-10-03, #2065), а ocLadder.ladderFor на неизвестное имя ведёт в
+// service — левый путь не должен давать «лестницу не найдена».
 const DEFAULT_ROLE = 'general';
 
 // Модель и вся дальнейшая деградация по ступеням — на стороне worker'а
 // (llm-ladder): локального списка моделей в репо больше нет
 // (src/opencode-ladder-provider.js, #1687). Поэтому здесь ровно ОДИН адрес
-// вида `ladder/<лестница>:general` — «стандартная лестница» целиком, со всей
+// вида `ladder/<лестница>` (например `ladder/general` для дефолтного master,
+// `ladder/service:general` для одно-лестничных профилей) — лестница целиком, со всей
 // её внутренней деградацией, ротацией ключей и платным хвостом. Свою вторую
 // ступень не изобретаем: повтор того же адреса просто повторил бы тот же
 // вызов (и ту же ошибку).
 function resolveRung(profileName, role = DEFAULT_ROLE) {
-  return ocLadder.modelFor(profileName || 'service', role);
+  return ocLadder.modelFor(profileName || 'master', role);
 }
 
 function buildPrompt(text) {

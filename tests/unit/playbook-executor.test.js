@@ -24,13 +24,14 @@ describe('resolveStepExecution', () => {
 
   // 2026-10-01: researcher is no longer pinned to the Go `research` subscription (weekly cap
   // exhausted → silent hang); it goes through the llm-ladder like every level.
-  it('researcher goes through the llm-ladder (deepseek), explore role', () => {
+  // 2026-10-03 (#2065): the level is the `master` profile — one worker role ladder per role.
+  it('researcher goes through the llm-ladder (master profile), explore role', () => {
     expect(resolveStepExecution(agent({ executor_role: 'researcher', minimum_model_level: 'bachelor', current_model_level: 'bachelor' })))
-      .toMatchObject({ engine: 'opencode', ocProfile: 'service', ocRole: 'explore', modelLevel: 'bachelor' });
+      .toMatchObject({ engine: 'opencode', ocProfile: 'master', ocRole: 'explore', modelLevel: 'bachelor' });
   });
 
-  it('master → opencode Go deepseek too (owner 2026-09-27: value/max leaked to OpenRouter); developer maps to build', () => {
-    expect(resolveStepExecution(agent())).toMatchObject({ engine: 'opencode', ocProfile: 'service', ocRole: 'build' });
+  it('master → opencode on the master profile too (owner 2026-09-27: value/max leaked to OpenRouter); developer maps to build', () => {
+    expect(resolveStepExecution(agent())).toMatchObject({ engine: 'opencode', ocProfile: 'master', ocRole: 'build' });
   });
 
   it('doctor → claude, no opencode override', () => {
@@ -72,7 +73,7 @@ describe('resolveStepExecution', () => {
 
   it('researcher uses the level map by default and role map can override it', () => {
     expect(resolveStepExecution(agent({ executor_role: 'researcher', minimum_model_level: 'master', current_model_level: 'master' })))
-      .toMatchObject({ engine: 'opencode', ocProfile: 'service', ocRole: 'explore' });
+      .toMatchObject({ engine: 'opencode', ocProfile: 'master', ocRole: 'explore' });
     expect(resolveStepExecution(agent({ executor_role: 'researcher' }), {
       roleMap: { researcher: { engine: 'opencode', ocProfile: 'free' } },
     })).toMatchObject({ engine: 'opencode', ocProfile: 'free' });

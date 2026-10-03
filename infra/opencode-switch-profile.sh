@@ -2,7 +2,7 @@
 # opencode-switch-profile.sh — merge base + profile → ~/.config/opencode/opencode.json
 #
 # Usage:
-#   ./infra/opencode-switch-profile.sh [service|doctor|free|russian|research]
+#   ./infra/opencode-switch-profile.sh [master|phd|free|service|doctor|russian|research]
 #
 # Reads OPENCODE_PROFILE from secrets.env if no arg given.
 # Writes result to ~/.config/opencode/opencode.json on this machine.
@@ -10,10 +10,11 @@
 # This sets the machine-wide BASELINE for anything that talks to `opencode` outside the agent's
 # task runner (e.g. manual sanity checks on the VM). Per-task invocations get the same shape
 # per-invocation via OPENCODE_CONFIG (writeOpencodeMcpConfig in claude-runner.js). Both come from
-# src/opencode-ladder-provider.js: one `ladder` provider pointing at the llm-ladder, model
-# ids `ladder/<ladder>:<role>` (issue #1687). A profile IS an llm-ladder ladder — the agent
-# holds no provider keys, the llm-ladder owns the pools. The worker needs OPENCODE_LADDER_TOKEN
-# in the env.
+# src/opencode-ladder-provider.js: one `ladder` provider pointing at the llm-ladder, model ids
+# `ladder/<ladder>` — role ladders are named after the role (`ladder/build`), ladders with their
+# own role variants keep the suffix (`ladder/service:plan`) (issue #1687, per-role profiles #2065).
+# A profile maps to a worker ladder PER ROLE — the agent holds no provider keys, the llm-ladder
+# owns the pools. The worker needs OPENCODE_LADDER_TOKEN in the env.
 
 set -euo pipefail
 
@@ -38,7 +39,7 @@ fi
 # call keeps working — see LEGACY_PROFILE_LADDER in src/opencode-ladder-provider.js.
 case "$PROFILE" in
   ru|recruiter|rr|russian-recruiter) PROFILE="russian" ;;
-  m|q|ll|mimo|quality|lavish-luna) echo "opencode-switch-profile: '$PROFILE' was retired in #1061 Фаза 1 — pick service|doctor|free" >&2; exit 1 ;;
+  m|q|ll|mimo|quality|lavish-luna) echo "opencode-switch-profile: '$PROFILE' was retired in #1061 Фаза 1 — pick master|phd|free|service|doctor|russian" >&2; exit 1 ;;
   ds|deepseek|deepseek-go|deepseek-openrouter|value|v) PROFILE="service" ;;  # toggle halves + ladder's old name, removed 2026-09-27
   f)  PROFILE="free" ;;
   x|max) PROFILE="doctor" ;;
