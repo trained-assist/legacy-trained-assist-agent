@@ -12,7 +12,7 @@
     "check:domain-skill": "node scripts/check-domain-skill-repo.mjs",
     "check:playbooks": "node scripts/check-playbook-reachability.mjs",
     "test": "vitest run && npm run test:cjs",
-    "test:cjs": "node scripts/run-cjs-tests.js",
+    "test:cjs": "node test/stream-noise-filter.test.cjs && node scripts/run-cjs-tests.js",
     "test:watch": "vitest",
     "sandbox:speech": "node scripts/sandbox/speech-f0.mjs",
     "sandbox:playbook-s4": "node scripts/sandbox/playbook-authoring-s4.mjs",
