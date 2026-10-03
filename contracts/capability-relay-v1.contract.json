@@ -1,0 +1,69 @@
+{
+  "urn": "urn:trained-assist:capability-relay-contract:v1",
+  "version": 1,
+  "http": {
+    "invokePath": "/capabilities/{toolId}/invoke"
+  },
+  "errorCodes": [
+    "misconfigured",
+    "unauthorized",
+    "not_found",
+    "invalid_arguments",
+    "conflict",
+    "version_mismatch",
+    "upstream_unavailable",
+    "timeout"
+  ],
+  "tools": [
+    {
+      "toolId": "communication.prepare_message_draft",
+      "name": "capability_prepare_message_draft",
+      "description": "Prepare a candidate message draft through the canonical communication capability. Returns a draft for review; sends nothing.",
+      "mutates": false,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "hh",
+              "telegram"
+            ],
+            "description": "Where the draft is meant to be used."
+          },
+          "candidateRef": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "Opaque reference to the candidate (negotiation id, resume id, profile-local id)."
+          },
+          "vacancyRef": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Opaque reference to the vacancy."
+          },
+          "tone": {
+            "type": "string",
+            "enum": [
+              "formal",
+              "friendly",
+              "startup"
+            ]
+          },
+          "language": {
+            "type": "string",
+            "enum": [
+              "ru",
+              "en"
+            ]
+          }
+        },
+        "required": [
+          "channel",
+          "candidateRef"
+        ]
+      }
+    }
+  ]
+}
