@@ -4,9 +4,9 @@
 // routing (owner 2026-09-27: «такую же лестницу туда — контекст маленький, косты низкие, важна
 // надёжность»). A thin client of the trained-assist-llm-ladder Cloudflare Worker
 // (https://llm-ladder.trainedassist.store, repo trained-assist/trained-assist-llm-ladder), which
-// owns the ladder (OpenCode Go rungs → paid OpenRouter last), model health, Go key rotation and
-// the JSON guard. The in-process copy of the ladder was removed (owner: «перенесёшь вызовы на
-// него и из прода выпилишь») — one implementation, in the worker.
+// owns the ladder (per-role rung policies — see ROLE_SOURCES below), model health, Go key
+// rotation and the JSON guard. The in-process copy of the ladder was removed (owner: «перенесёшь
+// вызовы на него и из прода выпилишь») — one implementation, in the worker.
 //
 // Token: LLM_LADDER_TOKEN, else $AGENT_TOKENS_DIR/llm-ladder/token (GCP SM: LLM_LADDER_TOKEN).
 // Every caller is fail-soft: null here = "no LLM answer", callers keep their legacy path.
@@ -21,6 +21,52 @@
 
 const LADDER = 'service'; // canonical ladder name (legacy alias 'deepseek' removed 2026-10-03)
 const LADDER_URL = () => (process.env.LLM_LADDER_URL || 'https://llm-ladder.trainedassist.store').replace(/\/+$/, '');
+
+// #2057: which WORKER ROLE a caller belongs to. Sent as `model: 'service:<role>'`; a source that is
+// not listed falls back to the bare `service` ladder (= the default `build` role).
+//
+// Why this exists: the worker has published per-role rung policies (llm-ladder #100) — classify and
+// format are free-first, summarize/route/gate start on mimo, gate has a paid tail — but we sent the
+// bare name `service` for EVERY call, so every mechanical call went to the default role, whose
+// policy is Pareto-first with a PAID OpenCode Go rung (mimo) in front. Owner, 2026-10-03:
+// «в агентском репозитории вообще не то получилось — агент всё в service рубил». The `source`
+// argument already existed and was already sent as x-ladder-app; it just never reached `model`.
+//
+// Declared role-first because the worker's policies are defined per role, and the sources are
+// exactly those the callers pass (`grep -rhoE "source: '...'" src/`). Sources NOT listed — agent,
+// builtin, engine-db, llm, own, rule, shared, store — keep the default `service` ladder.
+const ROLE_SOURCES = {
+  // free-first in the worker (space-bunny → longcat → OR :free): a wrong label costs a retry, not money
+  classify: [
+    'classify', 'failure-classifier', 'plan-detect', 'menu-detect', 'gtd-intent',
+    'input-router', 'mainstream-decider', 'vacancy-publish-intent', 'durable-marker-judge',
+    'label-vision', 'project-match',
+  ],
+  summarize: ['session-summary', 'session-digest', 'project-summary'],
+  // free-first: mechanical rewriting of text we already have
+  format: ['tg-format', 'answer-format', 'answer-actions', 'content-rewrite'],
+  // mimo → free: picking WHICH path runs, not the answer itself
+  route: ['quick', 'workrun', 'quick-answer-verify', 'fanout-supervisor', 'profile', 'reproject', 'bugs-collector'],
+  // mimo → free → paid tail: a wrong answer here costs the user something, so the tail is allowed
+  gate: ['issue-fixer-gate', 'playbook-validator', 'intake-gate', 'orphan-checklist'],
+};
+
+// source → role. Built with fromEntries (a pair array is NOT a key/value object for
+// Object.assign — it would copy the indices '0'/'1' and every source would overwrite the last one)
+// and on a null prototype so an odd source string ('constructor', '__proto__') can never pick up an
+// Object.prototype member and turn into a bogus model name.
+const SOURCE_ROLE = Object.assign(
+  Object.create(null),
+  Object.fromEntries(
+    Object.entries(ROLE_SOURCES).flatMap(([role, sources]) => sources.map(src => [src, role])),
+  ),
+);
+
+// A listed source gets its role; anything else keeps the plain `service` ladder (default `build`).
+function _modelFor(source) {
+  const role = SOURCE_ROLE[source];
+  return role ? `${LADDER}:${role}` : LADDER;
+}
 // What the client keeps ON TOP of the worker's budget: enough to read the worker's answer (and its
 // x-ladder-attempts header) after the worker has already given up walking rungs. The worker must
 // stop first, otherwise we abort a request that is still being served.
@@ -104,7 +150,9 @@ function traceHeadersFor(ctx, source) {
  * @param {number} [o.timeoutMs=20000] per rung (worker-side)
  * @param {number} [o.totalTimeoutMs]  whole-ladder budget; defaults to timeoutMs * 4. ALWAYS sent
  *                                  to the worker, so it stops walking before we abort (see below)
- * @param {string} [o.source]       caller tag for logs
+ * @param {string} [o.source]       caller tag for logs + D1 x-ladder-app, AND the role selector:
+ *                                  a source in SOURCE_ROLE is sent as `service:<role>` to the
+ *                                  worker, an unknown one as the plain `service` ladder (#2057)
  * @param {object}[o.ctx]           optional trace ids for the worker's D1 log (#1917):
  *                                  {trace, run, user, session, app} → x-ladder-* headers
  *                                  (x-ladder-app = app || source). No ctx → no headers,
@@ -140,7 +188,7 @@ async function serviceChat({ messages, maxTokens = 800, temperature = 0, json = 
   // and returns a real `every rung failed` error, we keep a headroom to read that answer.
   const workerBudgetMs = totalTimeoutMs || timeoutMs * 4;
   const body = {
-    model: LADDER, messages, temperature, max_tokens: maxTokens,
+    model: _modelFor(source), messages, temperature, max_tokens: maxTokens,
     ladder_timeout_ms: timeoutMs,
     ladder_total_timeout_ms: workerBudgetMs,
     ...(json ? { response_format: { type: 'json_object' } } : {}),
@@ -223,4 +271,4 @@ async function serviceText({ system, user, ...rest }) {
   return r ? r.content : null;
 }
 
-module.exports = { serviceChat, serviceJson, serviceText, available, LADDER, LADDER_URL, ladderToken: _ladderToken };
+module.exports = { serviceChat, serviceJson, serviceText, available, LADDER, LADDER_URL, ROLE_SOURCES, SOURCE_ROLE, modelFor: _modelFor, ladderToken: _ladderToken };
