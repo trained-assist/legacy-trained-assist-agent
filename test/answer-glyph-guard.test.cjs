@@ -80,7 +80,7 @@ test('иероглифы: ответ переписывается по лест�
   const res = await rewriteAnswer({
     text: DIRTY,
     user: USER,
-    profileName: 'deepseek',
+    profileName: 'service',
     engineRun: async ({ prompt, model }) => {
       calls.push({ model, prompt });
       return { claudeResult: CLEAN };
@@ -94,7 +94,7 @@ test('иероглифы: ответ переписывается по лест�
 });
 
 test('адрес переписывания — роль general стандартной лестницы профиля', () => {
-  assert.equal(resolveRung('deepseek'), 'ladder/service:general');
+  assert.equal(resolveRung('service'), 'ladder/service:general');
   assert.equal(resolveRung('free'), 'ladder/free:general');
   assert.equal(resolveRung('value'), 'ladder/service:general'); // value → service (ladder rename, llm-ladder #49/#101)
   // Неизвестный профиль не даёт «лестницу не найдена»: worker сам уводит в дефолт.
@@ -107,7 +107,7 @@ test('знак замены: ответ переписывается, промп
   const res = await rewriteAnswer({
     text: BROKEN,
     user: USER,
-    profileName: 'deepseek',
+    profileName: 'service',
     engineRun: async ({ prompt, model }) => {
       calls.push({ model, prompt });
       return { claudeResult: BROKEN_FIXED };
@@ -129,7 +129,7 @@ test('модель оставила U+FFFD → исходник, без втор
   const res = await rewriteAnswer({
     text: BROKEN,
     user: USER,
-    profileName: 'deepseek',
+    profileName: 'service',
     engineRun: async ({ model }) => {
       seen.push(model);
       return { claudeResult: 'Сделаю резерв��ию по счёту.' };
@@ -145,7 +145,7 @@ test('модель вычистила U+FFFD, но оставила иерогл
   const res = await rewriteAnswer({
     text: BROKEN,
     user: USER,
-    profileName: 'deepseek',
+    profileName: 'service',
     engineRun: async () => ({ claudeResult: 'Сделаю 状態 по счёту на 15 минут.' }),
   });
   assert.equal(res.action, 'failed');
@@ -168,7 +168,7 @@ test('fenced-ответ движка разворачивается (в Telegram
   const res = await rewriteAnswer({
     text: DIRTY,
     user: USER,
-    profileName: 'deepseek',
+    profileName: 'service',
     engineRun: async () => ({ claudeResult: `\`\`\`\n${CLEAN}\n\`\`\`` }),
   });
   assert.equal(res.action, 'rewritten');
@@ -180,7 +180,7 @@ test('модель не вычистила иероглифы → исходни
   const res = await rewriteAnswer({
     text: DIRTY,
     user: USER,
-    profileName: 'deepseek',
+    profileName: 'service',
     engineRun: async ({ model }) => {
       seen.push(model);
       return { claudeResult: 'всё ещё 状态 мусор' };
@@ -198,7 +198,7 @@ test('потеря содержания отбраковывается, поль
   const res = await rewriteAnswer({
     text: DIRTY,
     user: USER,
-    profileName: 'deepseek',
+    profileName: 'service',
     engineRun: async () => ({ claudeResult: 'ок' }),
   });
   assert.equal(res.action, 'failed');
@@ -210,7 +210,7 @@ test('движок упал → исходник, ошибка в логе, бе
   const res = await rewriteAnswer({
     text: DIRTY,
     user: USER,
-    profileName: 'deepseek',
+    profileName: 'service',
     engineRun: async () => { throw new Error('spawn ENOENT opencode'); },
   });
   assert.equal(res.action, 'failed');
@@ -225,7 +225,7 @@ test('аварийный выключатель ANSWER_GLYPH_GUARD=off не тр
     const res = await rewriteAnswer({
       text: DIRTY,
       user: USER,
-      profileName: 'deepseek',
+      profileName: 'service',
       engineRun: async () => { throw new Error('движок не должен запускаться'); },
     });
     assert.equal(res.action, 'off');
@@ -281,14 +281,14 @@ test('wiring: чистый ответ не трогаем вообще', async (
 test('wiring: грязный ответ переписывается, сбой двигается в исходник', async () => {
   const runner = freshRunner();
   const ok = await runner._glyph.apply({
-    result: DIRTY, user: USER, profileName: 'deepseek', incomplete: false, internalGtd: false,
+    result: DIRTY, user: USER, profileName: 'service', incomplete: false, internalGtd: false,
     engineRun: async () => ({ claudeResult: CLEAN }),
   });
   assert.equal(ok.text, CLEAN);
   assert.equal(ok.guard.action, 'rewritten');
 
   const broken = await runner._glyph.apply({
-    result: DIRTY, user: USER, profileName: 'deepseek', incomplete: false, internalGtd: false,
+    result: DIRTY, user: USER, profileName: 'service', incomplete: false, internalGtd: false,
     engineRun: async () => { throw new Error('spawn ENOENT'); },
   });
   assert.equal(broken.text, DIRTY, 'ответ пользователю не теряется');
@@ -309,7 +309,7 @@ test('wiring: internalGtd и незавершённый ход не трогае
 test('wiring: «резерв��ением» доходит до переписывания через раннер (живой случай)', async () => {
   const runner = freshRunner();
   const out = await runner._glyph.apply({
-    result: BROKEN, user: USER, profileName: 'deepseek', incomplete: false, internalGtd: false,
+    result: BROKEN, user: USER, profileName: 'service', incomplete: false, internalGtd: false,
     engineRun: async () => ({ claudeResult: BROKEN_FIXED }),
   });
   assert.equal(out.text, BROKEN_FIXED);

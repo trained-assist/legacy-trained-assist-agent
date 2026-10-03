@@ -215,7 +215,7 @@ test('playbook researcher is not pinned to the Go `research` subscription profil
   for (const lvl of ['bachelor', 'master']) {
     const r = resolveStepExecution({ executor_role: 'researcher', minimum_model_level: lvl, current_model_level: lvl });
     assert.equal(r.engine, 'opencode');
-    assert.equal(r.ocProfile, 'deepseek', 'researcher goes through the llm-ladder');
+    assert.equal(r.ocProfile, 'service', 'researcher goes through the llm-ladder');
     assert.equal(r.ocRole, 'explore');
   }
 });

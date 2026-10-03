@@ -44,7 +44,7 @@ test('russian keeps its reviewer rolePrompt', () => {
 });
 
 test('unknown profile: exits non-zero and keeps the previous config', () => {
-  const prev = '{"model":"ladder/deepseek:build"}';
+  const prev = '{"model":"ladder/service:build"}';
   const { r, out } = run('nonexistent', { PRE: prev });
   assert.notStrictEqual(r.status, 0);
   assert.strictEqual(fs.readFileSync(out, 'utf8'), prev);

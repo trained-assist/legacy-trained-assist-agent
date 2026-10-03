@@ -53,22 +53,22 @@ function setEngine(workDir, engine, chatId) {
   return clean;
 }
 
-// Which OpenCode model profile (deepseek|doctor|free|max|value|russian|research — each mapped to an
-// llm-ladder worker ladder, see src/opencode-ladder-provider.js, issue #1687) this profile's
-// opencode tasks use. Profile-scoped only
-// (no per-chat level, unlike getEngine) — simplest fix that still satisfies "never shared across
-// users": each profile already maps 1:1 to a VM user, so this alone stops the old behaviour of
-// overwriting one machine-wide ~/.config/opencode/opencode.json for every profile on the box.
-// See writeOpencodeMcpConfig in claude-runner.js for how this gets applied per-invocation
+// Which OpenCode model profile (service|doctor|free|russian|research — each a worker ladder, see
+// src/opencode-ladder-provider.js, issue #1687) this profile's opencode tasks use. Profile-scoped
+// only (no per-chat level, unlike getEngine) — simplest fix that still satisfies "never shared
+// across users": each profile already maps 1:1 to a VM user, so this alone stops the old
+// behaviour of overwriting one machine-wide ~/.config/opencode/opencode.json for every profile on
+// the box. See writeOpencodeMcpConfig in claude-runner.js for how this gets applied per-invocation
 // instead of via a shared file.
 function getOcProfile(workDir) {
   const p = load(workDir);
-  // Default: the "deepseek" profile → the worker's service ladder (owner 2026-09-27:
-  // "стандартный опенкод на дипсик 4.1 флеш"; the ladder was renamed deepseek → service in
-  // llm-ladder #49/#101 — the profile name stays, see src/opencode-ladder-provider.js).
+  // Default: the `service` ladder (owner 2026-09-27: "стандартный опенкод на дипсик 4.1 флеш";
+  // the ladder was renamed deepseek → service in llm-ladder #49/#101 — profiles are named after
+  // the worker ladder, not the model family). A stored legacy name (deepseek/value/max) is left
+  // as-is and resolved by ladderFor, so a `max` profile still reaches `doctor`.
   // deepseek-go / deepseek-openrouter were the two halves of the removed VM-wide toggle
   // (2026-09-27) — both now mean the single service ladder (Go first, OpenRouter last rung).
-  if (!p.ocProfile || p.ocProfile === 'deepseek-go' || p.ocProfile === 'deepseek-openrouter') return 'deepseek';
+  if (!p.ocProfile || p.ocProfile === 'deepseek-go' || p.ocProfile === 'deepseek-openrouter') return 'service';
   return p.ocProfile;
 }
 

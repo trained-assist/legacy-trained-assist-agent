@@ -141,19 +141,18 @@ function buildAgentEnv(fullEnv, { userTokenNames = [], extra = {}, engineCredent
 }
 
 // Env names an engine reads its model-provider credentials from.
-// opencode: the built-in OpenRouter provider reads OPENROUTER_API_KEY; the built-in
-// OpenCode Go / Zen providers read OPENCODE_API_KEY (every profile routes through the
-// worker ladder now — this remains the credential for an explicit `opencode-go/…` model;
-// the box stores it as OPENCODE_GO_API_KEY[S], one key drawn per run in
-// runEngineProcess → goApiKey); and custom providers in its config files reference env
+// opencode: every profile routes through the `ladder` provider, whose credential is
+// OPENCODE_LADDER_TOKEN (admitted as an engine credential in runEngineProcess). The agent
+// holds NO OpenCode Go / Zen key — those pools live in the llm-ladder — so no
+// OPENCODE_API_KEY is admitted. Custom providers in opencode config files reference env
 // vars as {env:NAME} or ${NAME} (e.g. gigachat → ${GIGACHAT_TOKEN}); every such reference
-// is followed.
+// is followed, which is how the ladder token above is picked up too.
 // codex: OPENAI_API_KEY when it runs on an API key. claude: OAuth, nothing from env.
 const ENV_REF_RE = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 function engineCredentialNames(engine, { configFiles = [] } = {}) {
   if (engine === 'codex') return ['OPENAI_API_KEY'];
   if (engine !== 'opencode') return [];
-  const names = new Set(['OPENROUTER_API_KEY', 'OPENCODE_API_KEY']);
+  const names = new Set();
   for (const f of configFiles) {
     let text = '';
     try { text = fs.readFileSync(f, 'utf8'); } catch { continue; }

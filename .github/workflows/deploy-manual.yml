@@ -74,7 +74,7 @@ jobs:
             DEPLOY_TMP=$(mktemp -d)
             git archive "$DEPLOY_TARGET_COMMIT" scripts | tar -x -C "$DEPLOY_TMP"
             REPO_DIR=/home/vova/trained-assist-agent bash "$DEPLOY_TMP/scripts/deploy-preflight.sh" "$DEPLOY_TARGET_COMMIT"
-            printf 'AGENT_SECRET=%s\nINN_DADATA_TOKEN=%s\nINN_DADATA_SECRET=%s\nINN_CHECKO_KEY=%s\nOPENAI_API_KEY=%s\nFAL_KEY=%s\nIDEOGRAM_API_KEY=%s\nRECRAFT_API_KEY=%s\nOPENROUTER_API_KEY=%s\nZEROCREDS_ADMIN_TOKEN=%s\nGITHUB_ISSUES_TOKEN=%s\nCHECKLIST_API_KEY=%s\nOPENCODE_MODEL=%s\nOPENCODE_PROFILE=%s\nOPENCODE_GO_API_KEY=%s\nOPENCODE_GO_API_KEYS=%s\nCRED_ENCRYPTION_KEY=%s\nSERPER_API_KEY=%s\nSALES_BOT_TOKEN=%s\n' \
+            printf 'AGENT_SECRET=%s\nINN_DADATA_TOKEN=%s\nINN_DADATA_SECRET=%s\nINN_CHECKO_KEY=%s\nOPENAI_API_KEY=%s\nFAL_KEY=%s\nIDEOGRAM_API_KEY=%s\nRECRAFT_API_KEY=%s\nOPENROUTER_API_KEY=%s\nZEROCREDS_ADMIN_TOKEN=%s\nGITHUB_ISSUES_TOKEN=%s\nCHECKLIST_API_KEY=%s\nOPENCODE_MODEL=%s\nOPENCODE_PROFILE=%s\nCRED_ENCRYPTION_KEY=%s\nSERPER_API_KEY=%s\nSALES_BOT_TOKEN=%s\n' \
               '${{ secrets.AGENT_SECRET }}' \
               '${{ secrets.INN_DADATA_TOKEN }}' \
               '${{ secrets.INN_DADATA_SECRET }}' \
@@ -89,8 +89,6 @@ jobs:
               '${{ secrets.CHECKLIST_API_KEY }}' \
               '' \
               '${{ secrets.OPENCODE_PROFILE }}' \
-              '${{ secrets.OPENCODE_GO_API_KEY }}' \
-              '${{ secrets.OPENCODE_GO_API_KEYS }}' \
               '${{ secrets.CRED_ENCRYPTION_KEY }}' \
               '${{ secrets.SERPER_API_KEY }}' \
               '${{ secrets.SALES_BOT_TOKEN }}' \

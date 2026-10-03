@@ -106,9 +106,9 @@ function disabled() {
   return String(process.env.ANSWER_GLYPH_GUARD || '').toLowerCase() === 'off';
 }
 
-// Профиля дефолта нет: profiles.getOcProfile сам отдаёт 'deepseek' (дефолт
+// Профиля дефолта нет: profiles.getOcProfile сам отдаёт 'service' (дефолт
 // владельца 2026-09-27), а ocLadder.ladderFor на неизвестное имя тоже ведёт в
-// 'deepseek' — левый путь не должен давать «лестницу не найдена».
+// 'service' — левый путь не должен давать «лестницу не найдена».
 const DEFAULT_ROLE = 'general';
 
 // Модель и вся дальнейшая деградация по ступеням — на стороне worker'а
@@ -119,7 +119,7 @@ const DEFAULT_ROLE = 'general';
 // ступень не изобретаем: повтор того же адреса просто повторил бы тот же
 // вызов (и ту же ошибку).
 function resolveRung(profileName, role = DEFAULT_ROLE) {
-  return ocLadder.modelFor(profileName || 'deepseek', role);
+  return ocLadder.modelFor(profileName || 'service', role);
 }
 
 function buildPrompt(text) {

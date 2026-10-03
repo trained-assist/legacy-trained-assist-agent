@@ -131,7 +131,7 @@ describe('#1907 marker judge', () => {
     // escalates when the profile actually changes (default map bachelor=master=deepseek).
     process.env.PLAYBOOK_LEVEL_MAP = JSON.stringify({
       bachelor: { engine: 'opencode', ocProfile: 'free' },
-      master: { engine: 'opencode', ocProfile: 'deepseek' },
+      master: { engine: 'opencode', ocProfile: 'service' },
       doctor: { engine: 'claude', ocProfile: null },
     });
     try {
@@ -260,7 +260,7 @@ describe('#1910 execution attribution', () => {
     const executionId = 'exec-attr-1';
     store.startExecution({
       id: executionId, task_id: task.id, task_item_id: item.id,
-      engine: 'opencode', profile: 'deepseek', model_level: 'bachelor', executor_role: 'developer',
+      engine: 'opencode', profile: 'service', model_level: 'bachelor', executor_role: 'developer',
     });
     let row = store.getExecution(executionId);
     expect(row.attempt_number).toBe(1); // не NULL — аудит: колонка была пустой во всех 622 строках

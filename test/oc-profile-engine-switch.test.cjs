@@ -20,7 +20,7 @@ test('/oc_deepseek switches a codex-pinned chat to the opencode engine', () => {
   const wd = freshWorkDir();
   profiles.setEngine(wd, 'codex', '123');
   const reply = getQuickAnswer('/oc_deepseek', 'u1', wd, false, '123');
-  assert.equal(profiles.getOcProfile(wd), 'deepseek');
+  assert.equal(profiles.getOcProfile(wd), 'service');
   assert.equal(profiles.getEngine(wd, '123'), 'opencode');
   assert.match(reply, /Движок этого чата переключён с Codex CLI на OpenCode/);
 });

@@ -150,7 +150,7 @@ const HELP_INTENT           = /^\/help$|^\/start$|что.{0,10}умееш|чем
 // profile.json write or a canned reply, no Claude/session/network, so a quick command must
 // never queue behind a running task. (2026-09-26 bug report: "/oc_go вернул
 // «Ожидаю завершения предыдущей работы»").
-// OC_PROFILE_INTENT (/oc_max, /oc_deepseek, …) — same class again: getQuickAnswer handles it as
+// OC_PROFILE_INTENT (/oc_max, /oc_service, …) — same class again: getQuickAnswer handles it as
 // a sync profiles.json write (it also pins this chat's engine), so it rides the same whitelist.
 // Fuzzy natural-language info intents (HELP/USAGE/SECRETS_*/CONTEXT_*/MODEL_INFO) are
 // unanchored: they exist for a SHORT standalone question («что ты умеешь», «сколько я
