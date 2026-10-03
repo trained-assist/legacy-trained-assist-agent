@@ -505,6 +505,30 @@ class DurableTaskStore {
     return res;
   }
 
+  /**
+   * #122: give back the attempt a run consumed AND count it as an infra retry.
+   * Used for provider silence (class INFRA) and the marker judge's `uncertain`:
+   * neither is the step's fault, so the step's own attempt budget is preserved;
+   * the bounded `infra_retries` counter (INFRA_MAX_RETRIES, durable-recovery.js)
+   * is what stops a permanently broken provider from retrying forever. Re-pends
+   * the item due now (or after `dueAt`).
+   */
+  refundItemAttempt(id, profileId, { dueAt = null, lastError = null } = {}) {
+    return this.db.transaction(() => {
+      const item = this._itemOwnedBy(id, profileId);
+      if (!item) return null;
+      const now = nowMs();
+      const r = this._prep(`UPDATE task_items SET
+          status = 'pending', due_at = ?, last_error = ?, updated_at = ?,
+          attempt_count = MAX(0, attempt_count - 1),
+          infra_retries = infra_retries + 1
+          WHERE id = ?`).run(dueAt == null ? now : dueAt, lastError, now, id);
+      if (r.changes === 0) return null;
+      this._bump(item.task_id);
+      return this.getTaskItem(id);
+    })();
+  }
+
   /** Escalate current tier one step up (free→standard→strong). Idempotent at ceiling. */
   escalateItem(id, profileId) {
     return this.db.transaction(() => {

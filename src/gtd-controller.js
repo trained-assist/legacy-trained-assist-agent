@@ -1455,6 +1455,10 @@ async function _settleDurableReply(ctx, reply) {
           // Only a confident 'failed' buys the escalation ladder; 'uncertain'
           // (judge unavailable, short reply, inconclusive) retries at this level.
           escalateLevel: judged.verdict === 'failed',
+          // #122: an `uncertain` verdict is a protocol miss, not a step failure —
+          // refund the attempt and retry within the bounded infra budget. A
+          // confident 'failed' keeps the quality ladder (consumes the attempt).
+          refundAttempt: judged.verdict === 'uncertain',
         });
         store.finishExecution(executionId, {
           status: 'failed', error_class: rec.failureClass,

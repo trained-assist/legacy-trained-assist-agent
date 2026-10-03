@@ -48,6 +48,10 @@ module.exports = function migratePlan(db) {
           // the plan's execution_policy_json.validation_mode; a set value beats it.
           validation_mode: "TEXT CHECK(validation_mode IN ('programmatic','programmatic+llm','programmatic+llm-fastpass'))",
           attempt_count: 'INTEGER NOT NULL DEFAULT 0', max_attempts: 'INTEGER NOT NULL DEFAULT 3',
+          // #122: retries that did NOT consume the step's attempt budget — provider
+          // silence (class INFRA) and the marker judge's `uncertain`. Bounded by
+          // INFRA_MAX_RETRIES in durable-recovery.js; never a free infinite retry.
+          infra_retries: 'INTEGER NOT NULL DEFAULT 0',
           execution_timeout_seconds: 'INTEGER NOT NULL DEFAULT 600', wait_deadline_at: 'INTEGER', evidence_json: 'TEXT', completed_at: 'INTEGER',
           // P3c: observability of the last recovery decision (failure-classifier class
           // + recovery-policy action) so a stuck step can be diagnosed without replaying logs.
