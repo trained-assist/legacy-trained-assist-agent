@@ -366,7 +366,7 @@ function profileCommandsAnswer(task, { userId, workDir, chatId = null, audience 
     // profiles anymore), so those names get a helpful redirect instead of a raw 404.
     const RETIRED = new Set(['quality', 'mimo', 'lavish-luna', 'll', 'q']);
     if (RETIRED.has(rawAlias)) {
-      return `⚠️ Профиль '${rawAlias}' упразднён в #1061 (стал ступенью лестницы service/doctor) — выбери service|doctor|free|russian.`;
+      return `⚠️ Профиль '${rawAlias}' упразднён в #1061 (стал ступенью лестницы service/doctor) — выбери master|phd|free|service|doctor|russian.`;
     }
     // Profiles are named after the worker ladder (llm-ladder config/ladders.json), so the ladder
     // rename (#49/#101) renamed the profiles too. These aliases keep old muscle memory working —
@@ -386,9 +386,11 @@ function profileCommandsAnswer(task, { userId, workDir, chatId = null, audience 
     const engineNote = switchChatEngineToOpencode(workDir, chatId);
     // Rung order lives in the llm-ladder worker (#1687) — labels name the ladder, not models.
     const PROFILE_LABELS = {
-      service:  'SERVICE (дефолт) — стандартная лестница (Go → платный хвост OpenRouter)',
+      master:   'MASTER (дефолт) — ролевые лестницы: build/plan/explore/general/review (#2065)',
+      phd:      'PHD — build на продвинутой лестнице (mimo-first), остальные роли как у master',
+      free:     'FREE — build на бесплатной лестнице ($0), остальные роли как у master',
+      service:  'SERVICE — стандартная лестница на все роли (Go → платный хвост OpenRouter)',
       doctor:   'DOCTOR — сильнейшая лестница (модели Go)',
-      free:     'FREE — дешёвые/бесплатные модели',
       russian:  'RUSSIAN — лестница service + строгий русскоязычный рецензент',
       research: 'RESEARCH — исследовательская лестница (Go-first)',
     };
