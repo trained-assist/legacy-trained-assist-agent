@@ -55,7 +55,12 @@ function startRelay(env) {
     pending.set(id, m => { clearTimeout(timer); resolve(m); });
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
   });
-  return { child, request, close: () => new Promise(done => { child.on('exit', done); child.stdin.end(); }) };
+  return { child, request, close: () => new Promise(done => {
+    if (child.exitCode !== null || child.signalCode !== null) return done();
+    child.on('exit', done);
+    child.stdin.end();
+    setTimeout(() => { child.kill('SIGKILL'); done(); }, 2000).unref();
+  }) };
 }
 
 async function main() {
