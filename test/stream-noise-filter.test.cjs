@@ -105,4 +105,12 @@ assert.equal(stripLeakedToolMarkup('обычный ответ'), 'обычный
 // 11) idempotent: filtering filtered text changes nothing
 assert.equal(stripLeakedToolMarkup(stripLeakedToolMarkup(mixed)), mixedOut); pass++;
 
+// 12) REGRESSION: a short final message must survive a single push() with NO flush.
+// Codex/Claude snapshot lastAssistantMsg per delta, so withholding ordinary chars
+// (a blind tail) lost the answer — CI e2e "requires Codex turn completion" caught it.
+for (const msg of ['Ответ Codex', 'Готово: PR открыт.', 'x', 'a < b', 'см. <https://x.y>']) {
+  assert.equal(new StreamNoiseFilter().push(msg), msg, `short message withheld: ${msg}`);
+  pass++;
+}
+
 console.log(`stream-noise-filter: ${pass} assertions passed`);

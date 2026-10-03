@@ -33,10 +33,23 @@
 // human-authored line carries one.
 
 const ZWSP = '\u200b';
-// Longest marker fragment the next delta could still complete (`</tool_call>`,
-// 13 units with the ZWSP). Holding this tail is what makes a marker split across
-// two deltas detectable at all.
-const TAIL_HOLD = 16;
+// Openers, with and without the ZWSP the model injects after `<`.
+const OPENERS = ['<tool_call>', '<function=', '<parameter=', '<\u200btool_call>', '<\u200bfunction=', '<\u200bparameter='];
+// Longest marker fragment the next delta could still complete.
+const MAX_MARKER_PREFIX = Math.max(...OPENERS.map(o => o.length));
+
+// How many trailing chars could still become a marker opener. Holding a BLIND
+// tail here (the obvious first cut) swallowed the last chars of every short
+// message — and because Codex/Claude snapshot `lastAssistantMsg` per message, a
+// 12-char answer like "Ответ Codex" came out empty. Only a genuine marker prefix
+// may be withheld.
+function markerPrefixLen(buf) {
+  for (let len = Math.min(MAX_MARKER_PREFIX, buf.length); len >= 1; len--) {
+    const suffix = buf.slice(buf.length - len);
+    if (OPENERS.some(o => o.startsWith(suffix))) return len;
+  }
+  return 0;
+}
 // A block/orphan run with no terminator is runaway junk, not a slow stream: past
 // this size we drop it instead of buffering without bound.
 const MAX_HELD = 64 * 1024;
@@ -110,11 +123,12 @@ class StreamNoiseFilter {
       }
       const m = SUSPECT_RE.exec(this.buf);
       if (!m) {
-        // Nothing suspicious so far; keep only a short tail in case a marker
-        // starts in it and finishes in the next delta.
-        if (this.buf.length > TAIL_HOLD) {
-          out += this.buf.slice(0, this.buf.length - TAIL_HOLD);
-          this.buf = this.buf.slice(-TAIL_HOLD);
+        // Nothing suspicious so far; withhold only a genuine marker prefix, so
+        // ordinary text (including a short final answer) streams out in full.
+        const hold = markerPrefixLen(this.buf);
+        if (this.buf.length > hold) {
+          out += this.buf.slice(0, this.buf.length - hold);
+          this.buf = hold ? this.buf.slice(-hold) : '';
         }
         return out;
       }
