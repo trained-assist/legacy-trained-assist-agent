@@ -16,6 +16,7 @@ const { keepaliveFilePath, lastKeepaliveAt } = require('../mcp-keepalive');
 const { prepareEngineSpawn } = require('./engine-isolation');
 const { stopEngineProcess } = require('./engine-stop');
 const traceStore = require('../session-trace-store');
+const { StreamNoiseFilter, stripLeakedToolMarkup } = require('./stream-noise-filter');
 
 const STREAM_INTERVAL_MS = 3000;
 const HEARTBEAT_INTERVAL_MS = 3000;
@@ -224,30 +225,6 @@ function ocLadderTokenEnv() {
   const { TOKEN_ENV, ladderToken } = require('../opencode-ladder-provider');
   const token = ladderToken();
   return token ? { [TOKEN_ENV]: token } : {};
-}
-
-// One OpenCode Go key per run, drawn from the box's rotation list.
-//
-// The built-in `opencode-go` provider reads OPENCODE_API_KEY and passes it to the
-// upstream verbatim — so the VALUE must be exactly one `oc_sk_…`. Verified on the prod
-// VM 2026-09-28 with a clean HOME/OPENCODE_CONFIG_DIR (isolating the run from the stored
-// account credential that made an earlier, dirtier probe report success for everything):
-//   one valid key → OK · two keys comma-joined → FAIL · garbage → FAIL · garbage+valid → FAIL
-// and the raw API rejects the comma pair outright (401 "Invalid credential").
-// So OPENCODE_GO_API_KEYS (distinct `oc_sk_…` keys, infra/env-manifest.json) can never be
-// forwarded as-is. Picking ONE key per run still delivers the rotation the list is for:
-// when a key hits its weekly allowance, the next run draws the other.
-// An explicitly-set OPENCODE_API_KEY always wins (ops override).
-//
-// NOTE for opencode: its stored credential (.agent-home/…/opencode/auth.json) takes
-// precedence over this env var when present — src/runner/engine-isolation.js rewrites
-// that file with the drawn key so the rotation actually reaches the engine.
-function goApiKey(env = {}) {
-  if (env.OPENCODE_API_KEY) return env.OPENCODE_API_KEY;
-  const list = String(env.OPENCODE_GO_API_KEYS || '')
-    .split(',').map(s => s.trim()).filter(Boolean);
-  if (list.length) return list[Math.floor(Math.random() * list.length)];
-  return env.OPENCODE_GO_API_KEY || '';
 }
 
 // Reads opencode.json and returns agent-name -> shortened model-id map (for footer breakdown).
@@ -507,13 +484,10 @@ async function runEngineProcess(opts) {
       ...(engine === 'opencode' && (mcpConfig || ocProfileOverrides) ? { OPENCODE_CONFIG: writeOpencodeMcpConfig(user.workDir || os.tmpdir(), mcpConfig, ocProfileOverrides) } : {}),
       // Engine credential for the `ladder` provider (src/opencode-ladder-provider.js, #1687).
       ...(engine === 'opencode' ? ocLadderTokenEnv() : {}),
-      // OpenCode Go subscription key for the built-in `opencode-go` provider (used when a
-      // run is explicitly pointed at `opencode-go/…`; the profiles themselves all go
-      // through the `ladder` provider). Exactly one key, drawn per run from the rotation
-      // list — see goApiKey for why the list itself must never be forwarded. Read off
-      // cleanEnv (the env this run actually carries); empty when absent, and
-      // buildAgentEnv then skips the empty engineCredentialNames value.
-      ...(engine === 'opencode' ? { OPENCODE_API_KEY: goApiKey(cleanEnv) } : {}),
+      // No OpenCode Go / Zen key is set here on purpose: the agent holds none. Every run goes
+      // through the `ladder` provider, and the llm-ladder owns the provider key pools, rotation
+      // and health. A pinned `opencode-go/…` model (OPENCODE_MODEL) is therefore unsupported —
+      // point runs at a ladder instead.
       // OpenCode ships a built-in `websearch` tool, but registers it ONLY when the model's
       // provider is `opencode`/`opencode-go` or one of these flags is set — never for our
       // `openrouter`/`ladder` providers (verified in opencode 1.18.31: the registry gate is
@@ -572,6 +546,10 @@ async function runEngineProcess(opts) {
   let lastSent = '';
   let lineBuffer = '';
   let fullOutput = { text: '' };
+  // Single ingestion chokepoint for engine text across claude/codex/opencode:
+  // drops leaked tool-call markup before it can stream to the user or land in the
+  // transcript (src/runner/stream-noise-filter.js).
+  const noiseFilter = new StreamNoiseFilter();
   let claudeResult = null;  // text from result event
   let claudeErrorText = null; // result-event text ONLY when event.is_error — genuine provider error, never answer prose (#1227)
   let engineSessionId = null; // native CLI session id (claude session_id / codex thread_id / opencode sessionID) — for real --resume (#1234)
@@ -812,7 +790,11 @@ async function runEngineProcess(opts) {
         if (engine === 'opencode') {
           persistOpencodePart(user?.workDir, event.sessionID || engineSessionId, event, taskId);
           if (event.type === 'text' && typeof event.part?.text === 'string') {
-            fullOutput.text += event.part.text;
+            // Raw text may carry leaked tool-call markup → filter before it can reach
+            // fullOutput / the transcript. The loop guard below keeps using the RAW
+            // part: repetition is a model property, filtering must not hide it.
+            const ocText = noiseFilter.push(event.part.text);
+            fullOutput.text += ocText;
             lastAssistantMsg = fullOutput.text;
             // Loop guard (#1583): a stuck model repeats the SAME assistant text part
             // (e.g. "Публикую доку через publish_page.") over and over while emitting
@@ -926,10 +908,13 @@ async function runEngineProcess(opts) {
         }
         if (engine === 'codex') {
           if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
-            fullOutput.text += event.item.text;
-            lastAssistantMsg = event.item.text;
+            // All-junk input filters to '' → lastAssistantMsg stays empty, which is the
+            // honest "no coherent turn" signal the stuck-detector downstream relies on.
+            const codexText = noiseFilter.push(event.item.text);
+            fullOutput.text += codexText;
+            lastAssistantMsg = codexText;
             // A message alone is not proof that the turn completed.
-            if (outputCallback) try { outputCallback(event.item.text); } catch {}
+            if (codexText && outputCallback) try { outputCallback(codexText); } catch {}
             scheduleStream();
           } else if (event.type === 'item.started' && event.item?.type === 'command_execution') {
             lastAssistantMsg = '';
@@ -983,9 +968,10 @@ async function runEngineProcess(opts) {
           let turnText = '';
           for (const block of event.message.content) {
             if (block.type === 'text') {
-              fullOutput.text += block.text;
-              turnText += block.text;
-              if (outputCallback) try { outputCallback(block.text); } catch {}
+              const blockText = noiseFilter.push(block.text);
+              fullOutput.text += blockText;
+              turnText += blockText;
+              if (blockText && outputCallback) try { outputCallback(blockText); } catch {}
             } else if (block.type === 'tool_use') {
               countToolCall(block.name);
               lastActivity = formatToolActivity(block.name, block.input);
@@ -1163,6 +1149,21 @@ async function runEngineProcess(opts) {
     try { fs.unlinkSync(keepaliveFile); } catch {}
   }
 
+  // Release whatever the noise filter held back (stream-noise-filter.js). A tail
+  // that never terminated a tool-call block is dropped there, so this can only
+  // add legitimate text.
+  const noiseTail = noiseFilter.flush();
+  if (noiseTail) {
+    fullOutput.text += noiseTail;
+    if (outputCallback) try { outputCallback(noiseTail); } catch {}
+  }
+  // Defence in depth: whatever produced the final answer, it must not carry the
+  // markup. The OpenCode engine snapshots the whole scratchpad into
+  // claudeResult mid-run, so ingestion-time filtering alone can't be trusted
+  // to have covered this string.
+  claudeResult = stripLeakedToolMarkup(claudeResult);
+  lastAssistantMsg = stripLeakedToolMarkup(lastAssistantMsg);
+
   return {
     fullOutput, lastAssistantMsg, claudeResult, claudeErrorText, engineSessionId, terminalSuccess,
     claudeUsage, opencodeUsage, opencodeBreakdown, claudeModel,
@@ -1186,8 +1187,6 @@ module.exports = {
   codexMcpArgs,
   withCodexMcpEnvForwarding,
   writeOpencodeMcpConfig,
-  // exposed for tests — OpenCode Go key rotation (one key per run, never the comma list)
-  goApiKey,
   // exposed for tests — ⛔/➕ button delivery gate (issue: flag used to flip
   // before confirming the edit landed, permanently hiding buttons after one
   // 429/coalesce drop)

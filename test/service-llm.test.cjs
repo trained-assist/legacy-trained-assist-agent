@@ -19,7 +19,7 @@ test('sends the ladder name + JSON mode + time budgets to the worker with the be
   assert.equal(r.model, 'opencode-go/mimo-v2.6-flash');
   assert.match(seen.url, /\/v1\/chat\/completions$/);
   assert.equal(seen.init.headers.Authorization, `Bearer ${process.env.LLM_LADDER_TOKEN}`);
-  assert.equal(seen.body.model, 'deepseek');
+  assert.equal(seen.body.model, 'service'); // canonical ladder name (alias 'deepseek' removed 2026-10-03)
   assert.equal(seen.body.response_format.type, 'json_object');
   assert.equal(seen.body.ladder_timeout_ms, 4000);
   assert.equal(seen.body.ladder_total_timeout_ms, 6000);
@@ -138,6 +138,87 @@ test('a broken onDiagnose callback can never break the call', async () => {
     onDiagnose: () => { throw new Error('diagnostics exploded'); },
   });
   assert.deepEqual(r.value, { a: 1 });
+});
+
+// ── #2057: service:<role> routing ────────────────────────────────────────────
+// The bug: `serviceChat` sent the bare ladder name for EVERY call, so every mechanical call went to
+// the worker's DEFAULT role (build = Pareto-first, paid OpenCode Go rung mimo in front) while the
+// worker has had free-first / mimo-first per-role policies all along (llm-ladder #100).
+// Owner, 2026-10-03: «в агентском репозитории вообще не то получилось — агент всё в service рубил».
+
+test('a listed source sends service:<role> — the worker picks the rung policy, we pick the role', async () => {
+  const bodies = [];
+  const fetchImpl = async (url, init) => { bodies.push(JSON.parse(init.body)); return ok({ choices: [{ message: { content: 'ok' } }] }); };
+
+  await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], source: 'classify', fetchImpl });
+  await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], source: 'session-summary', fetchImpl });
+  await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], source: 'tg-format', fetchImpl });
+  await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], source: 'intake-gate', fetchImpl });
+
+  assert.deepEqual(bodies.map(b => b.model), ['service:classify', 'service:summarize', 'service:format', 'service:gate']);
+});
+
+test('serviceJson/serviceText route by role too (...rest forwards the source)', async () => {
+  const bodies = [];
+  const fetchImpl = async (url, init) => { bodies.push(JSON.parse(init.body)); return ok({ choices: [{ message: { content: '{"a":1}' } }] }); };
+
+  await s.serviceJson({ user: 'x', source: 'gtd-intent', json: true, fetchImpl });
+  await s.serviceText({ user: 'x', source: 'quick', fetchImpl });
+
+  assert.equal(bodies[0].model, 'service:classify');
+  assert.equal(bodies[1].model, 'service:route');
+});
+
+test('an unlisted source keeps the plain `service` ladder (default build role), not `service:undefined`', async () => {
+  const bodies = [];
+  const fetchImpl = async (url, init) => { bodies.push(JSON.parse(init.body)); return ok({ choices: [{ message: { content: 'ok' } }] }); };
+
+  // The sources the issue names as defaults, plus a genuinely unknown one and no source at all.
+  for (const source of ['agent', 'builtin', 'engine-db', 'llm', 'own', 'rule', 'shared', 'store', 'no-such-caller', undefined]) {
+    await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], source, fetchImpl });
+  }
+  await s.serviceText({ user: 'x', fetchImpl }); // the `source = 'service-llm'` default
+
+  assert.deepEqual(bodies.map(b => b.model), new Array(11).fill('service'));
+});
+
+test('a source cannot smuggle an Object.prototype member into the model name', async () => {
+  const bodies = [];
+  const fetchImpl = async (url, init) => { bodies.push(JSON.parse(init.body)); return ok({ choices: [{ message: { content: 'ok' } }] }); };
+
+  await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], source: 'constructor', fetchImpl });
+  await s.serviceChat({ messages: [{ role: 'user', content: 'x' }], source: '__proto__', fetchImpl });
+
+  assert.deepEqual(bodies.map(b => b.model), ['service', 'service']);
+});
+
+// The table is the contract with the worker, so pin its shape rather than each cell: a source
+// claimed by two roles would silently take the last one, and a role with no source is dead config.
+test('SOURCE_ROLE covers the issue table exactly, one role per source', () => {
+  // spread, not the raw map: deepStrictEqual compares prototypes and SOURCE_ROLE is null-prototype
+  assert.deepEqual({ ...s.SOURCE_ROLE }, {
+    // classify — free-first in the worker
+    classify: 'classify', 'failure-classifier': 'classify', 'plan-detect': 'classify',
+    'menu-detect': 'classify', 'gtd-intent': 'classify', 'input-router': 'classify',
+    'mainstream-decider': 'classify', 'vacancy-publish-intent': 'classify',
+    'durable-marker-judge': 'classify', 'label-vision': 'classify', 'project-match': 'classify',
+    // summarize — mimo → free
+    'session-summary': 'summarize', 'session-digest': 'summarize', 'project-summary': 'summarize',
+    // format — free-first
+    'tg-format': 'format', 'answer-format': 'format', 'answer-actions': 'format', 'content-rewrite': 'format',
+    // route — mimo → free
+    quick: 'route', workrun: 'route', 'quick-answer-verify': 'route', 'fanout-supervisor': 'route',
+    profile: 'route', reproject: 'route', 'bugs-collector': 'route',
+    // gate — mimo → free → paid tail
+    'issue-fixer-gate': 'gate', 'playbook-validator': 'gate', 'intake-gate': 'gate', 'orphan-checklist': 'gate',
+  });
+
+  const flat = Object.values(s.ROLE_SOURCES).flat();
+  assert.equal(flat.length, new Set(flat).size, 'a source listed under two roles would silently win by order');
+  assert.deepEqual(Object.keys(s.ROLE_SOURCES).sort(), ['classify', 'format', 'gate', 'route', 'summarize']);
+  for (const [role, sources] of Object.entries(s.ROLE_SOURCES)) {
+    assert.ok(sources.length, `role ${role} has no source — dead config on both sides`);
+  }
 });
 
 // ── #1917: D1 attribution ────────────────────────────────────────────────────

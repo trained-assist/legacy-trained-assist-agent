@@ -104,8 +104,10 @@ test('routeInput: one OpenRouter call with json response_format, validated outpu
   const out = await ir.routeInput('создай PR', { openrouterKey: 'k', fetchImpl: f });
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].body.response_format.type, 'json_object');
-  // service-llm sends the ladder name to the llm-ladder worker, which picks the rung.
-  assert.equal(f.calls[0].body.model, 'deepseek');
+  // service-llm sends the ladder name to the llm-ladder worker, which picks the rung. #2057: it
+  // also sends the caller's ROLE — `input-router` classifies, so the worker walks its free-first
+  // `service:classify` policy instead of the default build role's paid-first one.
+  assert.equal(f.calls[0].body.model, 'service:classify');
   assert.equal(out.route, 'agent');
   assert.deepEqual(out.tools_hint, ['engineering_spawn_workspace']);
   assert.deepEqual(out.usage, { in: 500, out: 60, cost: 0.0003 });

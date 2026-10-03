@@ -13,7 +13,7 @@ const { compilePlaybook } = require('./playbook-compiler');
 const { planLevelMap, resolveStepExecution } = require('./playbook-executor');
 
 const DEFAULT_LEVEL_MAP = Object.freeze({
-  doctor: { engine: 'opencode', ocProfile: 'deepseek' },
+  doctor: { engine: 'opencode', ocProfile: 'service' },
   master: { engine: 'opencode', ocProfile: 'free' },
   bachelor: { engine: 'opencode', ocProfile: 'free' },
 });

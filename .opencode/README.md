@@ -9,24 +9,32 @@ Real task runs get the same shape per-invocation through `OPENCODE_CONFIG`
 
 OpenCode runs use ONE provider, `ladder` — the trained-assist-llm-ladder Cloudflare Worker
 (`https://llm-ladder.trainedassist.store/v1`, openai-compatible, key `{env:OPENCODE_LADDER_TOKEN}`,
-which the runner injects per run). The model id per role is the worker's ladder id with the role:
-`ladder/deepseek:build`, `ladder/doctor:review`, `ladder/free:plan`.
+which the runner injects per run). The model id per role is the worker's ladder id — role ladders
+are named after the role (`ladder/build`), ladders that carry their own role variants keep the
+suffix (`ladder/service:plan`, `ladder/research:explore`).
 
 Rung order, failover, per-model health, OpenCode Go key rotation and the paid OpenRouter tail all
 live **only in the worker** (`config/ladders.json` in trained-assist/trained-assist-llm-ladder).
-This repo keeps no ladder: `src/opencode-ladder-provider.js` only maps a profile to a ladder name.
-If the worker is unreachable, the run fails with `worker_unreachable`; if every rung fails, with
-`ladder_exhausted` — no in-process fallback.
+This repo keeps no ladder: `src/opencode-ladder-provider.js` only maps a profile to a ladder name
+PER ROLE. If the worker is unreachable, the run fails with `worker_unreachable`; if every rung
+fails, with `ladder_exhausted` — no in-process fallback.
 
-| Profile | Worker ladder | Note |
-|---------|---------------|------|
-| `deepseek` | `deepseek` | default (`src/profiles.js`); playbook `bachelor`/`master` |
-| `doctor` | `doctor` | playbook `doctor` fallback after claude → codex |
-| `free` | `free` | cheap/free rungs |
-| `max` | `doctor` | the old "strongest Go models" ladder |
-| `value` | `deepseek` | the old cheap OpenRouter/GigaChat ladder |
-| `russian` | `deepseek` | GigaChat ladder dropped; keeps its strict Russian reviewer prompt |
-| `research` | `research` | `hermes_research`: worker ladder, Go-first + paid tail (llm-ladder #28); was a flat `opencode-go` pin until the 2026-10-01 weekly-cap incident |
+| Profile | Ladders per role | Note |
+|---------|------------------|------|
+| `master` | build→`build`, plan→`plan`, explore→`explore`, general→`general`, review→`review` | default (`src/profiles.js`); playbook `bachelor`/`master` (#2065) |
+| `phd` | build→`build advanced`, rest as master | advanced build ladder (mimo-first) |
+| `free` | build→`free`, rest as master | hard-$0 build ladder |
+| `service` | all roles → `service:<role>` | the standard ladder; `/oc_service`, `/oc_go`, `/oc_ds` |
+| `doctor` | all roles → `doctor:<role>` | playbook `doctor` fallback after claude → codex |
+| `russian` | all roles → `service:<role>` | service ladder + a strict Russian reviewer prompt |
+| `research` | build→`research`, others → `research:<role>` | `hermes_research`: worker ladder, Go-first + paid tail (llm-ladder #28); was a flat `opencode-go` pin until the 2026-10-01 weekly-cap incident |
+
+Profiles are named after the llm-ladder ladder (llm-ladder #49/#101). The retired names still
+resolve on read — `deepseek`/`value` → `service`, `max` → `doctor` (`LEGACY_PROFILE_LADDER` in
+`src/opencode-ladder-provider.js`) — and `/oc_<profile>` / `OPENCODE_PROFILE` accept them. Since
+#2065 a profile is a per-role ladder table, not one ladder for every role: the agent's default
+`master` walks the worker's role ladders, so D1 sees `build`/`plan`/`explore`/`general`/`review`
+traffic instead of everything on `service:*`.
 
 Switch: `/oc_<profile>` in Telegram (per profile, `src/runner/intent-engine.js`), or
 `./infra/opencode-switch-profile.sh <profile>` / `OPENCODE_PROFILE` for the machine baseline.
