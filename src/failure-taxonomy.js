@@ -12,6 +12,10 @@ const FAILURE_CLASSES = [
   // inactivity / hard cap). Its own recovery — backoff, not «the answer was bad»:
   // before this class the kill surfaced as UNKNOWN and burned quality attempts.
   'TIMEOUT',
+  // #122: the provider never answered (engine silence up to the inactivity
+  // watchdog) — infrastructure, not a model or step failure. Retried WITHOUT
+  // consuming the step's attempt budget (bounded by its own infra budget).
+  'INFRA',
 ];
 
 const EXECUTION_STATES = [

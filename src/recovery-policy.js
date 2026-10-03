@@ -28,6 +28,10 @@ const POLICY = {
   // time usually needs less scope, the retry sees the failure reasons), then one
   // rung up; never the quality ladder's doctor jump — a timeout is not a bad answer.
   TIMEOUT: ['backoff_retry_same', 'next_model'],
+  // #122: provider silence — retried by the durable executor without consuming the
+  // step's attempt budget (its own bounded infra budget). This entry is the fallback
+  // if that path is bypassed.
+  INFRA: ['retry_same'],
   UNKNOWN: ['conservative_retry', 'fallback', 'terminal'],
 };
 

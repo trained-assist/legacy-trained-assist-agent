@@ -99,11 +99,17 @@ const RULES = [
   // level, never the quality ladder (before this rule the kill text fell to UNKNOWN
   // and burned a quality attempt / escalated the model).
   { class: 'TIMEOUT', pattern: /step timeout: \d+s budget exhausted/i },
-  { class: 'TIMEOUT', pattern: /inactivity timeout: no output for/i },
   { class: 'TIMEOUT', pattern: /claude timed out after \d+s/i },
   { class: 'TIMEOUT', pattern: /timeout: (?:\d+min|40min) budget/i },
   { class: 'TIMEOUT', pattern: /Шаг не уложился в бюджет/i },
-  { class: 'TIMEOUT', pattern: /Движок молчал 5 мин/i },
+
+  // #122 — the provider never answered: the engine went silent up to the inactivity
+  // watchdog (or the reply text names that silence). Infrastructure, not the model
+  // and not the step: it must not consume the step's attempt budget (recovery refunds
+  // the attempt and bounds it with its own infra budget). Budget exhaustion above
+  // stays TIMEOUT — a step that genuinely ran out of time IS a step signal.
+  { class: 'INFRA', pattern: /inactivity timeout: no output for/i },
+  { class: 'INFRA', pattern: /Движок молчал 5 мин/i },
 ];
 
 // Failure classes CONFIG/USER_STOP are not worth retrying the SAME target — recovery-policy.js
