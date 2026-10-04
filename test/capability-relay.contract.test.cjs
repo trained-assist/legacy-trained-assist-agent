@@ -79,19 +79,30 @@ test('contract declares version 1, its urn and a single typed error enum', () =>
   assert.deepEqual([...contract.errorCodes].sort(), [...Object.keys(ERROR_CODES)].sort());
 });
 
-test('the canonical tool is the Worker\'s own name, description and schema — verbatim, aliases 0', () => {
+test('каждый инструмент несёт СВОЁ имя и СВОЮ схему дословно, дублей нет', () => {
+  // Инструментов теперь два: writer и resolve_user_intent (issue #10). Проверяем
+  // не количество, а то, что аддитивное расширение не меняет уже опубликованное:
+  // у каждого инструмента своё имя, своя схема, и ни один не является алиасом.
   const contract = loadContract();
-  assert.equal(contract.tools.length, 1, 'exactly one capability: a second name would be a second door');
-  const tool = contract.tools[0];
-  assert.equal(tool.toolId, TOOL_ID);
-  assert.equal(tool.name, WORKER_TOOL.name, 'MCP name must be the Worker TOOLS[0].name, never translated');
-  assert.equal(tool.description, WORKER_TOOL.description);
-  assert.deepEqual(tool.inputSchema, WORKER_TOOL.inputSchema, 'inputSchema must be doslovno from protocol.mjs');
-  assert.equal(tool.mutates, false, 'generation prepares a draft; it sends nothing');
-  // Aliases: the contract exposes one name; nothing else may resolve to this tool.
-  const names = contract.tools.map(t => t.name);
+  const names = contract.tools.map((t) => t.name);
   assert.equal(new Set(names).size, names.length, 'no duplicate names');
-  assert.equal(findTool(contract, WORKER_TOOL.name), tool);
+
+  const writer = contract.tools.find((t) => t.name === WORKER_TOOL.name);
+  assert.ok(writer, 'writer обязан остаться в контракте первым и дословным');
+  assert.equal(writer.toolId, TOOL_ID);
+  assert.equal(writer.description, WORKER_TOOL.description);
+  assert.deepEqual(writer.inputSchema, WORKER_TOOL.inputSchema, 'inputSchema must be doslovno from protocol.mjs');
+  assert.equal(writer.mutates, false, 'generation prepares a draft; it sends nothing');
+
+  const resolver = contract.tools.find((t) => t.name === 'resolve_user_intent');
+  assert.ok(resolver, 'resolve_user_intent обязан быть в контракте');
+  assert.equal(resolver.toolId, 'communication.resolve_user_intent');
+  assert.equal(resolver.mutates, false, 'resolver выбирает id; он ничего не исполняет');
+  assert.deepEqual(resolver.inputSchema.required, ['input_bundle', 'recipient', 'decision_options']);
+  assert.equal(resolver.invoke.path, '/v1/intents/resolve');
+  assert.equal(resolver.invoke.endpoint_env, 'COMMUNICATION_API_URL');
+  assert.equal(findTool(contract, WORKER_TOOL.name), writer);
+  assert.equal(findTool(contract, 'resolve_user_intent'), resolver);
 });
 
 test('the capability carries its own HTTP door: path, raw-args body, handler version pin, env binding', () => {
