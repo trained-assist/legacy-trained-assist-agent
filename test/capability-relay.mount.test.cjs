@@ -145,6 +145,29 @@ test('the communication toggle alone mounts the relay with exactly the communica
   }
 });
 
+test('a profile whose communication section is off does not get the relay, even with the toggle on (#2034)', () => {
+  // The toggle says the FEATURE may run; the section says this PROFILE runs it.
+  // Both gates must hold: an env var alone must not mount a capability the profile's
+  // catalog sections never enabled (the relay's own env is already minimal).
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-nosection-'));
+  fs.writeFileSync(path.join(dir, 'skills.json'), JSON.stringify({ enabled: ['recruiting'] }));
+  process.env.CAPABILITY_RELAY_COMMUNICATION = '1';
+  process.env.COMMUNICATION_API_URL = 'https://communication.example';
+  process.env.COMMUNICATION_TOKEN = 'comm-caller-credential';
+  try {
+    const off = buildMcpConfig(dir, 'tester');
+    assert.equal(RELAY_ID in off.mcpServers, false, 'section off → relay not mounted');
+    fs.writeFileSync(path.join(dir, 'skills.json'), JSON.stringify({ enabled: ['recruiting', 'communication'] }));
+    const on = buildMcpConfig(dir, 'tester');
+    assert.ok(RELAY_ID in on.mcpServers, 'section on → relay mounted');
+  } finally {
+    delete process.env.CAPABILITY_RELAY_COMMUNICATION;
+    delete process.env.COMMUNICATION_API_URL;
+    delete process.env.COMMUNICATION_TOKEN;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ── R14: the relay is a separate process whose only input is the contract ──────
 
 function requireGraph(dir) {

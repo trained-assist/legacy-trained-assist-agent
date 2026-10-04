@@ -51,7 +51,7 @@
     },
     "communication": {
       "title": "Общий writer сообщений (communication capability)",
-      "siblings": ["capability-relay"],
+      "relays": ["capability-relay"],
       "promptDomains": ["communication"]
     },
     "marketing": {

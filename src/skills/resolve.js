@@ -140,13 +140,21 @@ function resolve(catalog, profileSkills, readiness, opts = {}) {
       (moduleReady(server, file, readiness) === false ? setupOnly : modules).add(`${server}/${file}`);
     }
     for (const sib of section.siblings || []) {
+      // `siblings` means a REPO CHECKOUT — the only thing that can carry a domain
+      // section manifest (contracts/skill-sections.schema.json). A relay server has no
+      // checkout and no manifest; it arrives through `section.relays` below, so a
+      // relay listed here is a catalog error, not a mount.
       const srv = servers[sib];
-      // A relay server (#2034) is mounted by browser.js under its own feature toggle,
-      // not as a sibling checkout: it can be ATTACHED (mounted this run) without ever
-      // becoming part of the `siblings` output other consumers resolve as repos.
-      if (srv && srv.kind === 'relay') { if (readiness[sib] === true) relays.add(sib); continue; }
       if (!srv || srv.kind !== 'sibling') continue;
       if (serverAttached(sib, readiness)) siblings.add(sib);
+    }
+    // Relay servers (#2034 capability-relay): mounted by browser.js under their own
+    // feature toggle, so «attached» means mounted in this run's .mcp.json — which is
+    // exactly what buildReadiness() probes. They never appear in `siblings`: consumers
+    // of that list (deploy.sh, section manifests, shadow diff) resolve repos on disk.
+    for (const relay of section.relays || []) {
+      if (!servers[relay] || servers[relay].kind !== 'relay') continue;
+      if (readiness[relay] === true) relays.add(relay);
     }
     for (const d of section.promptDomains || []) domainNames.add(d);
     for (const [server, tools] of Object.entries(section.pinned || {})) {
@@ -184,6 +192,7 @@ function resolve(catalog, profileSkills, readiness, opts = {}) {
   out.modules = [...modules].sort();
   out.setupOnly = [...setupOnly].sort();
   out.siblings = [...siblings].sort();
+  out.relays = [...relays].sort();
   return out;
 }
 

@@ -285,10 +285,12 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
   // deliberately NOT mcpToolEnv — because §5 of the issue keeps CF_API_TOKEN, provider
   // keys and bot tokens away from the relay. No CAPABILITY_RELAY_ENDPOINT and no
   // CAPABILITY_RELAY_COMMUNICATION in the service env → no key in mcpServers at all:
-  // revert = drop the variables, no code deploy. A profile whose communication section
-  // is off (#2034) does not get the relay either.
-  const relayHidden = skillsPlan && skillsPlan.hidden.siblings.includes('capability-relay');
-  if (!relayHidden && (relayConfigured(process.env) || truthy(process.env.CAPABILITY_RELAY_COMMUNICATION))) {
+  // revert = drop the variables, no code deploy. A profile whose section that names a
+  // relay is off (#2034) does not get that relay either: enforce keeps relays in their
+  // own hidden channel, because a relay is not a sibling checkout.
+  const hiddenRelays = new Set(skillsPlan ? (skillsPlan.hidden.relays || []) : []);
+  if (!hiddenRelays.has('capability-relay')
+      && (relayConfigured(process.env) || truthy(process.env.CAPABILITY_RELAY_COMMUNICATION))) {
     config.mcpServers['capability-relay'] = {
       command: 'node',
       args: [path.join(__dirname, 'capability-relay', 'index.js')],

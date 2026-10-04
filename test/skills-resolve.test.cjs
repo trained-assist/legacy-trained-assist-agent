@@ -64,7 +64,8 @@ test('catalog is well-formed: parents exist, siblings declared, every prompt dom
   for (const [id, s] of Object.entries(catalog.sections)) {
     const parent = id.includes('/') ? id.slice(0, id.lastIndexOf('/')) : null;
     if (parent) assert.ok(catalog.sections[parent], `${id}: parent ${parent} missing`);
-    for (const sib of s.siblings || []) assert.ok(['sibling', 'relay'].includes(catalog.servers[sib]?.kind), `${id}: ${sib} must be a sibling or relay server`);
+    for (const sib of s.siblings || []) assert.strictEqual(catalog.servers[sib]?.kind, 'sibling', `${id}: ${sib} must be a sibling repo (a relay belongs in 'relays')`);
+    for (const relay of s.relays || []) assert.strictEqual(catalog.servers[relay]?.kind, 'relay', `${id}: ${relay} must be a relay server (a repo belongs in 'siblings')`);
     for (const srv of Object.keys(s.pinned || {})) assert.ok(catalog.servers[srv], `${id}: pinned server ${srv}`);
     for (const d of s.promptDomains || []) {
       assert.ok(catalog.domains[d], `${id}: no src/prompt-domains/${d}.md`);
@@ -76,8 +77,12 @@ test('catalog is well-formed: parents exist, siblings declared, every prompt dom
   assert.deepStrictEqual(orphan, [], `prompt domains in no section: ${orphan.join(', ')}`);
   for (const [d, meta] of Object.entries(catalog.domains)) {
     const sec = catalog.sections[owners[d]];
+    // A domain gated by a relay server is owned through the `relays` channel (#2034):
+    // the relay's tool module is not a sibling module and never appears in `modules`.
     const own = meta.server === 'trained-skills' ? (sec.modules || []).includes(meta.module)
-      : (sec.siblings || []).includes(meta.server) || (sec.modules || []).includes(`${meta.server}/${meta.module}`);
+      : (sec.relays || []).includes(meta.server)
+        || (sec.siblings || []).includes(meta.server)
+        || (sec.modules || []).includes(`${meta.server}/${meta.module}`);
     assert.ok(own, `${d}: gated by ${meta.server}/${meta.module}, which section ${owners[d]} doesn't own`);
   }
 });

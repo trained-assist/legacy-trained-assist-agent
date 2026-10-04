@@ -126,8 +126,16 @@ test('computePlan: disabled child, unknown sections, unlisted things never hidde
   assert.deepStrictEqual(p.hidden.siblings, ['documents-skills', 'engineering-skills', 'freelance-skills', 'marketing-skills']);
   assert.ok(p.hidden.modules.includes('hh-skills/90-hh.js') && !p.hidden.modules.includes('hh-skills/97-candidate-client-report.js'));
   assert.ok(p.hidden.domains.includes('hh') && !p.hidden.domains.includes('cron'));
+  // #2034: a relay server travels in its own hidden channel, and it IS gated per
+  // section — a profile without the communication section must not mount the relay
+  // (browser.js reads hidden.relays), while a sibling stays listed as a sibling.
+  assert.deepStrictEqual(p.hidden.relays, ['capability-relay']);
+  assert.ok(!p.hidden.siblings.includes('capability-relay'), 'a relay is never hidden as a sibling');
+  assert.deepStrictEqual(computePlan(catalog, { enabled: ['recruiting', 'communication'] }).hidden.relays, []);
   const all = computePlan(catalog, { enabled: Object.keys(catalog.sections) });
-  assert.deepStrictEqual(all.hidden, { siblings: [], modules: [], domains: [] });
+  // `relays` is its own hidden channel since #2034: a relay server is not a sibling
+  // checkout, so it is neither hidden as one nor can it be un-hidden as one.
+  assert.deepStrictEqual(all.hidden, { siblings: [], relays: [], modules: [], domains: [] });
   const u = computePlan(catalog, { enabled: ['nope'] });
   assert.deepStrictEqual(u.unknown, ['nope']);
 });
