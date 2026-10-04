@@ -115,7 +115,36 @@ function resolveInputs(playbook, vars, goalText) {
   return resolved;
 }
 
-function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null, user_value = null } = {}) {
+// #120 fast path: the requirements source is ALREADY an approved specification (an
+// issue/PR with sign-off, or a docs/spec.md). The framing stages then collapse into ONE
+// cheap verification step: the spec is checked against the framing checklist and only
+// the gaps are re-opened. This compresses the frame, it never skips the work — the
+// delivery gates (sandbox as declared, PR/CI/merge/deploy/verify-real/archive) are
+// compiled exactly as before, and the checklist step can open a gap with task_item_add.
+const FRAMING_STAGE_IDS = new Set(['frame', 'propose', 'design']);
+const SPEC_CHECK_STEP = {
+  title: 'Сверка одобренной спецификации',
+  execution_kind: 'agent',
+  executor_role: 'reviewer',
+  minimum_model_level: 'bachelor',
+  context_budget: 'small',
+  validation: { spec_checklist_covered_or_gaps_listed: true },
+  max_attempts: 2,
+  execution_timeout_seconds: 300,
+};
+
+function specCheckInstructions(specRef) {
+  return [
+    `Источник требований уже одобрен: ${specRef}`,
+    'НЕ выводи заново то, что в спецификации уже есть. Сверь её с чек-листом рамки и по каждому пункту скажи, ГДЕ он закрыт (ссылка на секцию/строку):',
+    '1) ценность и шаги пользователя (EARS/Given-When-Then), 2) контекст репозитория с file:line, 3) требования с флагами и решения по ним,',
+    '4) дизайн: наименьшее изменение, срезы, 5) план проверки (чем проверяем каждый шаг), 6) риски и откат.',
+    'Итог: таблица «пункт → где закрыт». Пробелы — только недостающие: добавь их шагами через task_item_add(after_item_id: "<id этого шага>") с конкретным содержанием, а не переписывай заново закрытое.',
+    'Если спецификация формально есть, а содержательно неполна — это и есть результат этого шага: список пробелов и созданные шаги.',
+  ].join('\n');
+}
+
+function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null, user_value = null, spec_ref = null } = {}) {
   if (!playbook || typeof playbook !== 'object') {
     throw playbookError('COMPILE_INVALID', 'плейбук не передан');
   }
@@ -128,7 +157,21 @@ function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null
   const defaults = playbook.defaults || {};
 
   const items = [];
-  for (const stage of playbook.stages || []) {
+  const specRef = typeof spec_ref === 'string' && spec_ref.trim() ? spec_ref.trim() : null;
+  const stages = playbook.stages || [];
+  // Only a playbook that actually HAS framing stages can take the fast path; for
+  // `ci-run`/`ci-setup` there is nothing to collapse and a spec-check step would be noise.
+  const framingStages = specRef ? stages.filter(s => FRAMING_STAGE_IDS.has(s.id)) : [];
+  if (framingStages.length) {
+    validateItem({ ...SPEC_CHECK_STEP, stage: framingStages[0].id });
+    items.push({
+      ...SPEC_CHECK_STEP,
+      stage: framingStages[0].id,
+      instructions: specCheckInstructions(specRef),
+    });
+  }
+  for (const stage of stages) {
+    if (framingStages.includes(stage)) continue;
     const steps = stage.steps || [];
     // Unknown hook type is a compile error, never a silently dropped hook.
     validateHooks({ on_enter: stage.on_enter, on_exit: stage.on_exit },
