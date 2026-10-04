@@ -263,6 +263,25 @@ rm -f "$DATA_DIR/maintenance.json.drain" "$DATA_DIR/maintenance.json.recipients"
 echo "==> Applying OpenCode profile..."
 bash "$RELEASE_DIR/infra/opencode-switch-profile.sh" || echo "opencode-switch-profile: skipped (jq missing or no profile set)"
 
+# Engine binary = the owner's opencode fork (kobzevvv/opencode-forever), pinned in
+# scripts/engine-forever.sh. It is MACHINE-level: switching releases (git) never
+# touches it, so without this re-assert a rebuilt or re-provisioned box silently
+# runs stock opencode and the two machines diverge again — which is how the fork
+# ended up living only in hand-run ~/build scripts (2026-10-04).
+# Runs BEFORE the downtime window: if the binary has to be built (~90 s) the old
+# service is still serving. RU never gets here (deploy-ru-edge.sh; issue #1288: no
+# runner, no OpenCode on that box), hence the gcp guard.
+# Non-fatal on purpose: a provision failure leaves whatever engine is already
+# installed and stock opencode still works — failing the deploy instead would take
+# the whole agent down over engine packaging. The ⚠️ line makes it visible, not silent.
+if [ "$DEPLOY_ENV" = "gcp" ]; then
+  if bash "$RELEASE_DIR/scripts/engine-forever.sh" install; then
+    echo "  engine: opencode fork pinned"
+  else
+    echo "  ⚠️  engine-forever install FAILED — engine stays as installed; opencode falls back to stock"
+  fi
+fi
+
 # ── Downtime window starts here ──────────────────────────────────────────────────────
 
 echo "==> Stopping service..."
