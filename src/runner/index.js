@@ -3008,7 +3008,21 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // and the progress edits; this block interprets its result: on timeout →
   // auto-continuation (needs runTask recursion, so it stays in the runner),
   // otherwise the post-processing below (retry, incomplete detection, usage).
-  const engineResult = await runEngineProcess({
+  // #143/#136: periodic durable save checkpoints while the engine runs. An end-of-run
+  // check cannot help if the process crashes mid-run — the last checkpoint must already
+  // be on disk. Durable steps checkpoint their PLAN workspace (identity via resumeSink),
+  // chat runs their code cwd. stop() runs in the finally below.
+  const checkpointLoop = require('../run-checkpoint').startCheckpointLoop({
+    profileId: user.username,
+    taskId,
+    sessionId: activeSessionId,
+    planTaskId: (resumeSink && resumeSink.kind === 'durable') ? resumeSink.taskId : null,
+    codeCwd,
+    intervalMs: Number(process.env.RUN_CHECKPOINT_INTERVAL_MS) || undefined,
+  });
+  let engineResult;
+  try {
+    engineResult = await runEngineProcess({
     engine, taskId, chatId, thinkingStart, msgId, BOT_TOKEN, secrets, user, threadId,
     cleanEnv, userTokens, sessionFilePath, sessionId: activeSessionId,
     restartShutdown: () => restartShutdown,
@@ -3038,7 +3052,10 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     // (мягкий сигнал «заверши и выведи итог» раньше) + тул-бюджет.
     timeoutMs: stepTimeoutMs || (wrapUp ? answerRouter.WRAP_UP_TIMEOUT_MS : null),
     ...(wrapUp ? { warnTimeoutMs: answerRouter.WRAP_UP_WARN_MS, maxToolCalls: answerRouter.WRAP_UP_MAX_TOOL_CALLS } : {}),
-  });
+    });
+  } finally {
+    checkpointLoop.stop();
+  }
   const {
     fullOutput, lastAssistantMsg, claudeResult, claudeErrorText, engineSessionId, terminalSuccess,
     claudeUsage, opencodeUsage, opencodeBreakdown, claudeModel,
