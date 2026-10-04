@@ -119,8 +119,8 @@ check('C1', 'US-CRED-01 реестр config/credentials.json валиден, р�
   registry = reg.load(rel('config', 'credentials.json'));
   const all = registry.credentials;
   const has = (canon, alias) => all.some(c => (c.env || []).includes(canon) && (!alias || (c.aliases || []).includes(alias)));
-  need(has('DEEPGRAM_API_KEY', 'DEEPGRAM_KEY'), 'нет записи deepgram DEEPGRAM_API_KEY + alias DEEPGRAM_KEY');
-  need(has('CLOUDFLARE_API_TOKEN', 'CF_API_TOKEN'), 'нет записи cloudflare CLOUDFLARE_API_TOKEN + alias CF_API_TOKEN');
+  need(has('SYSTEM_DEEPGRAM_API_KEY', 'DEEPGRAM_API_KEY'), 'нет записи deepgram SYSTEM_DEEPGRAM_API_KEY + alias DEEPGRAM_API_KEY');
+  need(has('ADMIN_CLOUDFLARE_API_TOKEN', 'CF_API_TOKEN'), 'нет записи cloudflare ADMIN_CLOUDFLARE_API_TOKEN + alias CF_API_TOKEN');
   need(all.some(c => (c.files || []).some(f => f.endsWith('.inn-config.json'))), 'нет записи dadata с .inn-config.json');
   need(!fs.existsSync(rel('config', 'mcp-provider-env.json')), 'мёртвый config/mcp-provider-env.json не удалён');
   return { note: `${all.length} записей` };
@@ -229,8 +229,8 @@ check('C6', 'US-CRED-03 profile-migrate: dry-run/apply/verify, было→не �
 check('C7', 'US-CRED-04 alias: DEEPGRAM_KEY / CF_API_TOKEN засчитываются', () => {
   const r = scan({ DEEPGRAM_KEY: SECRETS.deepgram, CF_API_TOKEN: SECRETS.cf });
   need(r.code === 0, `фаза ${PHASE}: exit ${r.code}: ${tail(r.out)}`);
-  const cf = find(r.creds, 'CLOUDFLARE_API_TOKEN') || find(r.creds, 'cloudflare');
-  need(cf && cf.reachable === true, 'CLOUDFLARE_API_TOKEN не reachable через alias CF_API_TOKEN');
+  const cf = find(r.creds, 'ADMIN_CLOUDFLARE_API_TOKEN') || find(r.creds, 'cloudflare');
+  need(cf && cf.reachable === true, 'ADMIN_CLOUDFLARE_API_TOKEN не reachable через alias CF_API_TOKEN');
   need(cf.source === 'CF_API_TOKEN', `source ожидали CF_API_TOKEN, получили ${cf && cf.source}`);
   need(!leaks(r.out).length, 'в выводе значение ключа');
 });

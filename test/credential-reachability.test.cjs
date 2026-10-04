@@ -31,8 +31,8 @@ test('buildMcpToolEnv is exported and is exactly the env buildMcpConfig hands to
 test('config/credentials.json is valid and carries the three regression cases', () => {
   const reg = require('../src/credential-registry.js').load();
   const has = (canon, alias) => reg.credentials.some(c => (c.env || []).includes(canon) && (!alias || (c.aliases || []).includes(alias)));
-  assert.ok(has('DEEPGRAM_API_KEY', 'DEEPGRAM_KEY'), 'deepgram');
-  assert.ok(has('CLOUDFLARE_API_TOKEN', 'CF_API_TOKEN'), 'cloudflare');
+  assert.ok(has('SYSTEM_DEEPGRAM_API_KEY', 'DEEPGRAM_API_KEY'), 'deepgram');
+  assert.ok(has('ADMIN_CLOUDFLARE_API_TOKEN', 'CF_API_TOKEN'), 'cloudflare canonical + legacy alias');
   assert.ok(reg.credentials.some(c => c.filesRoot === 'profile' && (c.files || []).includes('.inn-config.json')), 'dadata');
   assert.ok(!fs.existsSync(path.join(ROOT, 'config', 'mcp-provider-env.json')), 'dead mcp-provider-env.json is gone');
 });
@@ -68,8 +68,8 @@ const contract = (...args) => {
 test('contract is green on the tree (HH_CLIENT_*, AGENT_TOKENS_DIR reach MCP; no homedir token paths)', () => {
   const r = contract();
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /HH_CLIENT_SECRET ← mcp/);
-  assert.match(r.out, /CLOUDFLARE_API_TOKEN ← bridge/);
+  assert.match(r.out, /SYSTEM_HEADHUNTER_CLIENT_SECRET ← mcp/);
+  assert.match(r.out, /ADMIN_CLOUDFLARE_API_TOKEN ← bridge/);
 });
 
 test('contract fails on a declared name no host provides, naming it', () => {
@@ -108,7 +108,7 @@ test('phase scan: aliases count, dadata .inn-config.json without env, values nev
   const profileRoot = fs.mkdtempSync(path.join(TMP, 'profile-'));
   fs.writeFileSync(path.join(profileRoot, '.inn-config.json'), JSON.stringify({ dadata_token: 'v-dadata' }));
   const reg = validate({ version: 1, credentials: [
-    { consumer: 'core:cloudflare', scope: 'platform', host: 'bridge', env: ['CLOUDFLARE_API_TOKEN'], aliases: ['CF_API_TOKEN'] },
+    { consumer: 'core:cloudflare', scope: 'platform', host: 'bridge', env: ['ADMIN_CLOUDFLARE_API_TOKEN'], aliases: ['CF_API_TOKEN'] },
     { consumer: 'sales-skill:dadata', scope: 'profile', host: 'mcp', env: ['INN_DADATA_TOKEN'], aliases: ['DADATA_TOKEN'], files: ['.inn-config.json'], filesRoot: 'profile' },
     { consumer: 'x:missing', scope: 'profile', files: ['nope.json'], filesRoot: 'profile' },
   ] });
@@ -116,7 +116,7 @@ test('phase scan: aliases count, dadata .inn-config.json without env, values nev
   const byName = items => Object.fromEntries(items.map(i => [i.name, i]));
 
   let r = byName(phase.scanWith(ctx, reg, { CF_API_TOKEN: 'v-cf' }));
-  assert.deepEqual([r.CLOUDFLARE_API_TOKEN.reachable, r.CLOUDFLARE_API_TOKEN.source, r.CLOUDFLARE_API_TOKEN.invariant], [true, 'CF_API_TOKEN', false]);
+  assert.deepEqual([r.ADMIN_CLOUDFLARE_API_TOKEN.reachable, r.ADMIN_CLOUDFLARE_API_TOKEN.source, r.ADMIN_CLOUDFLARE_API_TOKEN.invariant], [true, 'CF_API_TOKEN', false]);
   assert.equal(r.INN_DADATA_TOKEN.reachable, true);
   assert.equal(r.INN_DADATA_TOKEN.source, 'file:profile/.inn-config.json');
   assert.match(r.INN_DADATA_TOKEN.sha256, /^[0-9a-f]{64}$/);
