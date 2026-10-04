@@ -46,7 +46,7 @@ async function extractImageText({ filePath, mimeType, timeoutMs = 20000 }) {
   const b64 = buf.toString('base64');
 
   // Распознавание идёт тем же клиентом, что и остальной агент: serviceChat сам берёт
-  // per-run токен лестницы и пишет атрибуцию. Прямого обращения к openrouter.ai нет.
+  // per-run токен лестницы и пишет атрибуцию. Прямого обращения к провайдеру нет.
   async function attempt() {
     let out;
     try {
