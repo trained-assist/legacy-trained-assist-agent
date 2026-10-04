@@ -303,6 +303,17 @@ USERS_DIR="${USERS_DIR:-$HOME/users}" AGENT_DATA_DIR="${AGENT_DATA_DIR:-$HOME/ag
   || echo "  ⚠️  workspace migration reported issues — re-run scripts/migrate-workspaces.mjs (see ledger)"
 
 echo "==> Activating release (atomic symlink swap)..."
+# The invariant, enforced at the last possible moment: a pointer may only ever be
+# flipped at a release that STILL verifies. Everything above (npm ci, Playwright,
+# sibling sync, nginx, unit files) takes minutes — the snapshot has to be whole
+# here, not only when it was built. A verification failure here aborts before the
+# swap, so the previous release keeps serving (prod incident 2026-10-04: the
+# pointer was repointed at a snapshot that had already lost its files, and the
+# service restarted onto it).
+if ! release_verify_release "$RELEASE_DIR" "$TARGET" || ! release_verify "$RELEASE_DIR" "$TARGET"; then
+  echo "❌ $RELEASE_DIR no longer verifies — NOT activating. Previous release keeps serving." >&2
+  exit 1
+fi
 release_set_link "$CURRENT_LINK" "$RELEASE_DIR"
 
 echo "==> Starting service..."
@@ -375,6 +386,8 @@ else
 fi
 
 echo "==> Garbage-collecting old releases..."
-release_gc "$RELEASES_DIR" 3
+# The live release is protected explicitly: after a rollback it is OLDER than the
+# three newest, and "newest N" alone would delete the release prod is running.
+release_gc "$RELEASES_DIR" 3 "$RELEASE_DIR"
 
 echo "==> Deploy complete ✅"
