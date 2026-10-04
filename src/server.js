@@ -1591,7 +1591,7 @@ async function main() {
         // (owner 29.09: «продолжай» counts only when the previous answer makes the
         // continuation obvious). Missing username/chatId → text-only, conservative.
         const lastAssistant = loadLastAssistant({ username, chatId, threadId });
-        const result = await checkCompleteness(text, secrets.OPENROUTER_API_KEY, { lastAssistant });
+        const result = await checkCompleteness(text, { lastAssistant });
         routerShadow.record({ completeness: result?.level || null, complete: !!result?.complete });
         // #1856: wrap_up судьи (в т.ч. LLM-вердикт по неоднозначной фразе) доводим до
         // рана — шлюз передаёт в /run только текст, runner заберёт подсказку по нему.

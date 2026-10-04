@@ -1,6 +1,5 @@
 {
   "_doc": "Single source of truth for all secrets and env vars. Run 'node scripts/check-env-sync.js' to validate ci.yml matches this.",
-
   "vms": {
     "gcp": {
       "vm_name": "gcp-main",
@@ -24,111 +23,441 @@
       "_note": "Thin RU-IP edge (src/ru-edge.js, issue #1288) — no Claude Code, no runner, no MCP. Runs nalog.ru/ESIA login, /playwright-fetch, and vacancy pages. Formerly a full assist-agent instance (systemd/assist-agent-ru.service, retired)."
     }
   },
-
   "bots": {
     "_doc": "Bot registry (epic #1342) — the ONE source of truth for Telegram bots. Adding a bot = 1 entry here + its token in GCP Secret Manager + the name in src/secrets.js OPTIONAL. gateway_url = that bot's gateway Worker (run-finished / held-messages callbacks must reach the gateway that dispatched the run; default uses env MEDIA_GATEWAY_URL). A bot with NO gateway of our tg-bot family MUST set gateway_absence_reason to a non-empty explanation instead of leaving gateway_url silently empty — enforced by src/bot-registry.js botsMissingGatewayDeclaration() and test/gateway-callback.test.cjs. botId/audience come from the transport (webhook path / bot token), never from message text or LLM args. check-env-sync.js validates every entry; scripts/check-bot-secrets.js --live probes Secret Manager after each GCP deploy; src/secrets.js alerts the operator at boot when an enabled bot's token is missing.",
     "registry": [
-      { "botId": "default",   "audience": "default",   "token_secret_name": "TELEGRAM_BOT_TOKEN",  "enabled": true, "commands_profile": "classic",   "media_profile": "full", "gateway_env": "trained-assist-tg-bot" },
-      { "botId": "recruiter", "audience": "recruiter", "token_secret_name": "RECRUITER_BOT_TOKEN", "enabled": true, "commands_profile": "recruiter", "media_profile": "full", "gateway_env": "trained-assist-tg-bot-recruiter", "gateway_url": "https://trained-assist-tg-bot-recruiter.skillset-apply.workers.dev" },
-      { "botId": "freelance", "audience": "freelance", "token_secret_name": "FREELANCE_BOT_TOKEN", "enabled": true, "commands_profile": "freelance", "media_profile": "full", "gateway_env": "trained-assist-tg-bot-freelance", "gateway_url": "https://tg-freelance.trainedassist.store" },
-      { "botId": "sales", "audience": "sales", "token_secret_name": "SALES_BOT_TOKEN", "enabled": true, "commands_profile": "classic", "media_profile": "full", "gateway_env": null, "gateway_url": null, "gateway_absence_reason": "Внешний сейлс-бот @cmr_management_bot = Cloudflare Worker flexi-telegram-deal-bot (репо kobzevvv/flexi-exhibition-deal-bot), НЕ экземпляр trained-assist-tg-bot. Он зовёт агента POST /run и ждёт ответа в своём чате: держать busy-холд и слушать /internal/run-finished ему нечем, поэтому агент шлёт финальный текст напрямую через sendMessage токеном SALES_BOT_TOKEN. Регистрация обязательна: без своей аудитории агент отвечал токеном классического бота, которого в группах нет (выгнут из -1004485888030) → sendMessage 403 ПОСЛЕ 202, и оператор видел только «⏳ Передаю ассистенту…» навсегда. Воркер обязан передавать audience: sales." }
+      {
+        "botId": "default",
+        "audience": "default",
+        "token_secret_name": "TELEGRAM_BOT_TOKEN",
+        "enabled": true,
+        "commands_profile": "classic",
+        "media_profile": "full",
+        "gateway_env": "trained-assist-tg-bot"
+      },
+      {
+        "botId": "recruiter",
+        "audience": "recruiter",
+        "token_secret_name": "RECRUITER_BOT_TOKEN",
+        "enabled": true,
+        "commands_profile": "recruiter",
+        "media_profile": "full",
+        "gateway_env": "trained-assist-tg-bot-recruiter",
+        "gateway_url": "https://trained-assist-tg-bot-recruiter.skillset-apply.workers.dev"
+      },
+      {
+        "botId": "freelance",
+        "audience": "freelance",
+        "token_secret_name": "FREELANCE_BOT_TOKEN",
+        "enabled": true,
+        "commands_profile": "freelance",
+        "media_profile": "full",
+        "gateway_env": "trained-assist-tg-bot-freelance",
+        "gateway_url": "https://tg-freelance.trainedassist.store"
+      },
+      {
+        "botId": "sales",
+        "audience": "sales",
+        "token_secret_name": "SALES_BOT_TOKEN",
+        "enabled": true,
+        "commands_profile": "classic",
+        "media_profile": "full",
+        "gateway_env": null,
+        "gateway_url": null,
+        "gateway_absence_reason": "Внешний сейлс-бот @cmr_management_bot = Cloudflare Worker flexi-telegram-deal-bot (репо kobzevvv/flexi-exhibition-deal-bot), НЕ экземпляр trained-assist-tg-bot. Он зовёт агента POST /run и ждёт ответа в своём чате: держать busy-холд и слушать /internal/run-finished ему нечем, поэтому агент шлёт финальный текст напрямую через sendMessage токеном SALES_BOT_TOKEN. Регистрация обязательна: без своей аудитории агент отвечал токеном классического бота, которого в группах нет (выгнут из -1004485888030) → sendMessage 403 ПОСЛЕ 202, и оператор видел только «⏳ Передаю ассистенту…» навсегда. Воркер обязан передавать audience: sales."
+      }
     ]
   },
-
   "github_actions_secrets": {
     "_doc": "All secrets that must exist in GitHub repo Settings → Secrets and variables → Actions",
     "infra": [
-      { "name": "VM_HOST",          "description": "GCP VM IP (136.65.7.197)",                  "used_by": ["deploy-gcp"] },
-      { "name": "VM_USER",          "description": "GCP VM SSH user (vova)",                     "used_by": ["deploy-gcp"] },
-      { "name": "VM_SSH_KEY",       "description": "Private SSH key for GCP VM",                 "used_by": ["deploy-gcp"] },
-      { "name": "VM_RU_HOST",       "description": "RU VM IP (178.212.14.192)",                  "used_by": ["deploy-ru"] },
-      { "name": "VM_RU_USER",       "description": "RU VM SSH user (vova)",                      "used_by": ["deploy-ru"] },
-      { "name": "VM_RU_PASSWORD",   "description": "RU VM SSH password",                         "used_by": ["deploy-ru"] }
+      {
+        "name": "VM_HOST",
+        "description": "GCP VM IP (136.65.7.197)",
+        "used_by": [
+          "deploy-gcp"
+        ]
+      },
+      {
+        "name": "VM_USER",
+        "description": "GCP VM SSH user (vova)",
+        "used_by": [
+          "deploy-gcp"
+        ]
+      },
+      {
+        "name": "VM_SSH_KEY",
+        "description": "Private SSH key for GCP VM",
+        "used_by": [
+          "deploy-gcp"
+        ]
+      },
+      {
+        "name": "VM_RU_HOST",
+        "description": "RU VM IP (178.212.14.192)",
+        "used_by": [
+          "deploy-ru"
+        ]
+      },
+      {
+        "name": "VM_RU_USER",
+        "description": "RU VM SSH user (vova)",
+        "used_by": [
+          "deploy-ru"
+        ]
+      },
+      {
+        "name": "VM_RU_PASSWORD",
+        "description": "RU VM SSH password",
+        "used_by": [
+          "deploy-ru"
+        ]
+      }
     ],
     "app": [
-      { "name": "TELEGRAM_BOT_TOKEN", "required": true,  "written_to": ["ru"],         "gcp_sm": true,  "description": "Telegram bot token (@BotFather). RU: ru-edge needs it for /apply and nalog.ru Telegram notifications." },
-      { "name": "ANTHROPIC_API_KEY",  "required": false, "written_to": [],             "gcp_sm": true,  "description": "Anthropic Claude API key. No longer written anywhere (issue #1288 removed RU's Claude Code instance; GCP never needed it, Claude Code there uses OAuth)." },
-      { "name": "AGENT_SECRET",       "required": true,  "written_to": ["gcp", "ru"],  "gcp_sm": true,  "description": "Shared bearer secret between tg-bot and agent. RU: ru-edge's own auth gate, plus calling GCP's /nalog/token-store back." },
-      { "name": "DEEPGRAM_API_KEY",   "required": false, "written_to": [],             "gcp_sm": true,  "description": "Deepgram voice transcription API key. GCP gets it via Secret Manager automatically; no longer written to RU (ru-edge has no Claude sessions to transcribe voice for, issue #1288)." },
-      { "name": "BOT_SECRET",         "required": false, "written_to": [],             "gcp_sm": true,  "description": "Chrome extension token relay shared secret. No longer written to RU (issue #1288)." },
-      { "name": "INN_DADATA_TOKEN",   "required": false, "written_to": ["gcp"],        "gcp_sm": false, "description": "DaData API token for company/INN lookup — GCP only, MCP tool (issue #1288: ru-edge has no MCP)." },
-      { "name": "INN_DADATA_SECRET",  "required": false, "written_to": ["gcp"],        "gcp_sm": false, "description": "DaData API secret for company/INN lookup — GCP only, MCP tool (issue #1288: ru-edge has no MCP)." },
-      { "name": "INN_CHECKO_KEY",     "required": false, "written_to": ["gcp"],        "gcp_sm": false, "description": "Checko API key for company enrichment — GCP only, MCP tool (issue #1288: ru-edge has no MCP)." },
-      { "name": "OPENAI_API_KEY",    "required": false, "written_to": ["gcp"],  "gcp_sm": true,  "description": "OpenAI API key for DALL-E 3 image generation — GCP only (issue #1288: ru-edge has no MCP)." },
-      { "name": "FAL_KEY",           "required": false, "written_to": ["gcp"],  "gcp_sm": true,  "description": "fal.ai API key for FLUX image generation — GCP only (issue #1288: ru-edge has no MCP)." },
-      { "name": "IDEOGRAM_API_KEY",  "required": false, "written_to": ["gcp"],  "gcp_sm": true,  "description": "Ideogram API key for text-in-image illustration — GCP only (issue #1288: ru-edge has no MCP)." },
-      { "name": "RECRAFT_API_KEY",   "required": false, "written_to": ["gcp"],  "gcp_sm": true,  "description": "Recraft v3 API key for vector-style illustration — GCP only (issue #1288: ru-edge has no MCP)." },
-      { "name": "OPENROUTER_API_KEY",      "required": false, "written_to": ["gcp"],  "gcp_sm": true,  "description": "OpenRouter API key for /classify (Gemini Flash Lite) and OpenCode engine — GCP only (issue #1288: ru-edge has no Claude/OpenCode)." },
-      { "name": "OPENCODE_MODEL",    "required": false, "written_to": ["gcp"],  "gcp_sm": false, "description": "OpenCode primary model (fallback when no per-role override; default: openrouter/deepseek/deepseek-v4-flash-0731:free) — GCP only (issue #1288: ru-edge has no OpenCode)." },
-      { "name": "OPENCODE_PROFILE", "required": false, "written_to": ["gcp"],  "gcp_sm": false, "description": "Machine-wide OpenCode profile baseline (service|doctor|free|russian|research), written to ~/.config/opencode/opencode.json by infra/opencode-switch-profile.sh on deploy. A profile IS an llm-ladder ladder (src/opencode-ladder-provider.js, issue #1687) — the agent holds no provider keys, the llm-ladder owns the Go/Zen/OpenRouter pools and rotation. Default: service. GCP only (issue #1288: ru-edge has no OpenCode)." },
-      { "name": "ZEROCREDS_ADMIN_TOKEN",  "required": false, "written_to": ["gcp"],  "gcp_sm": false, "description": "Shared admin token for zerocreds-server /api/session/create (read by user-tokens.js via process.env) — GCP only (issue #1288: all connect-link generation now happens on GCP)." },
-      { "name": "GITHUB_ISSUES_TOKEN",   "required": false, "written_to": ["gcp"],  "gcp_sm": true,  "description": "GitHub fine-grained PAT (issues:write on trained-assist/trained-assist-agent) — used by POST /report to create user-report issues. GCP only (issue #1288: /report is not a ru-edge route)." },
-      { "name": "CHECKLIST_API_KEY",     "required": false, "written_to": ["gcp"],        "gcp_sm": false, "description": "Bearer key for checklist.trainedassist.store's agent auth path — gtd-controller.js mirrors GTD auto-tracking checklists there. GCP only (that's the live instance); best-effort, silently skipped if unset." },
-      { "name": "CRED_ENCRYPTION_KEY",   "required": false, "written_to": ["gcp"],        "gcp_sm": false, "description": "AES-256-GCM master key for the encrypted credential store (epic #1789 P0 C4). 64 hex chars (openssl rand -hex 32), read from process.env by src/credential-store.js; unset = store stays plaintext with a warning (safe default). GCP only — that is where agent-tokens lives." },
-      { "name": "SERPER_API_KEY",        "required": false, "written_to": ["gcp"],        "gcp_sm": false, "description": "Serper (Google SERP) key for the search_serper MCP tool — the backup web-search engine of epic #1792, shipped by the trained-assist-search-skill sibling. GCP only (issue #1288: ru-edge has no MCP); bypasses src/secrets.js like INN_* and reaches the MCP child via browser.js mcpToolEnv." },
-      { "name": "SALES_BOT_TOKEN",       "required": true,  "written_to": ["gcp"],        "gcp_sm": true,  "description": "Telegram bot token of @cmr_management_bot — reply credential for the external flexi-telegram-deal-bot worker (bots.registry botId=sales). REQUIRED, not optional: an enabled bot whose token cannot be resolved makes scripts/check-bot-secrets.js fail, which closes the pre-deploy gate (scripts/check-deploy-secrets-gate.js) and freezes EVERY release — the 01.10.2026 incident that pinned prod to a1d8410. It also used to be declared ONLY in gcp_secret_manager_only, i.e. it had no automated path into the host at all: the deploy job rewrites /home/vova/secrets.env from GitHub Secrets, so a value that exists only in nobody's hands can never reach prod, and the gate reads the host env as fallback. Now delivered like every other GCP secret (GitHub Secret SALES_BOT_TOKEN → ci.yml/deploy-manual.yml printf → secrets.env), Secret Manager still wins when it has a value. Never fall back to the classic bot token — it is not a member of the sales groups (sendMessage 403 AFTER 202, operator sees «⏳ Передаю ассистенту…» forever). Not written to RU (ru-edge has no runner/bot-delivery)." }
+      {
+        "name": "TELEGRAM_BOT_TOKEN",
+        "required": true,
+        "written_to": [
+          "ru"
+        ],
+        "gcp_sm": true,
+        "description": "Telegram bot token (@BotFather). RU: ru-edge needs it for /apply and nalog.ru Telegram notifications."
+      },
+      {
+        "name": "ANTHROPIC_API_KEY",
+        "required": false,
+        "written_to": [],
+        "gcp_sm": true,
+        "description": "Anthropic Claude API key. No longer written anywhere (issue #1288 removed RU's Claude Code instance; GCP never needed it, Claude Code there uses OAuth)."
+      },
+      {
+        "name": "AGENT_SECRET",
+        "required": true,
+        "written_to": [
+          "gcp",
+          "ru"
+        ],
+        "gcp_sm": true,
+        "description": "Shared bearer secret between tg-bot and agent. RU: ru-edge's own auth gate, plus calling GCP's /nalog/token-store back."
+      },
+      {
+        "name": "DEEPGRAM_API_KEY",
+        "required": false,
+        "written_to": [],
+        "gcp_sm": true,
+        "description": "Deepgram voice transcription API key. GCP gets it via Secret Manager automatically; no longer written to RU (ru-edge has no Claude sessions to transcribe voice for, issue #1288)."
+      },
+      {
+        "name": "BOT_SECRET",
+        "required": false,
+        "written_to": [],
+        "gcp_sm": true,
+        "description": "Chrome extension token relay shared secret. No longer written to RU (issue #1288)."
+      },
+      {
+        "name": "INN_DADATA_TOKEN",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": false,
+        "description": "DaData API token for company/INN lookup — GCP only, MCP tool (issue #1288: ru-edge has no MCP)."
+      },
+      {
+        "name": "INN_DADATA_SECRET",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": false,
+        "description": "DaData API secret for company/INN lookup — GCP only, MCP tool (issue #1288: ru-edge has no MCP)."
+      },
+      {
+        "name": "INN_CHECKO_KEY",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": false,
+        "description": "Checko API key for company enrichment — GCP only, MCP tool (issue #1288: ru-edge has no MCP)."
+      },
+      {
+        "name": "OPENAI_API_KEY",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": true,
+        "description": "OpenAI API key for DALL-E 3 image generation — GCP only (issue #1288: ru-edge has no MCP)."
+      },
+      {
+        "name": "FAL_KEY",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": true,
+        "description": "fal.ai API key for FLUX image generation — GCP only (issue #1288: ru-edge has no MCP)."
+      },
+      {
+        "name": "IDEOGRAM_API_KEY",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": true,
+        "description": "Ideogram API key for text-in-image illustration — GCP only (issue #1288: ru-edge has no MCP)."
+      },
+      {
+        "name": "RECRAFT_API_KEY",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": true,
+        "description": "Recraft v3 API key for vector-style illustration — GCP only (issue #1288: ru-edge has no MCP)."
+      },
+      {
+        "name": "OPENCODE_MODEL",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": false,
+        "description": "OpenCode primary model (fallback when no per-role override; default: openrouter/deepseek/deepseek-v4-flash-0731:free) — GCP only (issue #1288: ru-edge has no OpenCode)."
+      },
+      {
+        "name": "OPENCODE_PROFILE",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": false,
+        "description": "Machine-wide OpenCode profile baseline (service|doctor|free|russian|research), written to ~/.config/opencode/opencode.json by infra/opencode-switch-profile.sh on deploy. A profile IS an llm-ladder ladder (src/opencode-ladder-provider.js, issue #1687) — the agent holds no provider keys, the llm-ladder owns the Go/Zen/OpenRouter pools and rotation. Default: service. GCP only (issue #1288: ru-edge has no OpenCode)."
+      },
+      {
+        "name": "ZEROCREDS_ADMIN_TOKEN",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": false,
+        "description": "Shared admin token for zerocreds-server /api/session/create (read by user-tokens.js via process.env) — GCP only (issue #1288: all connect-link generation now happens on GCP)."
+      },
+      {
+        "name": "GITHUB_ISSUES_TOKEN",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": true,
+        "description": "GitHub fine-grained PAT (issues:write on trained-assist/trained-assist-agent) — used by POST /report to create user-report issues. GCP only (issue #1288: /report is not a ru-edge route)."
+      },
+      {
+        "name": "CHECKLIST_API_KEY",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": false,
+        "description": "Bearer key for checklist.trainedassist.store's agent auth path — gtd-controller.js mirrors GTD auto-tracking checklists there. GCP only (that's the live instance); best-effort, silently skipped if unset."
+      },
+      {
+        "name": "CRED_ENCRYPTION_KEY",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": false,
+        "description": "AES-256-GCM master key for the encrypted credential store (epic #1789 P0 C4). 64 hex chars (openssl rand -hex 32), read from process.env by src/credential-store.js; unset = store stays plaintext with a warning (safe default). GCP only — that is where agent-tokens lives."
+      },
+      {
+        "name": "SERPER_API_KEY",
+        "required": false,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": false,
+        "description": "Serper (Google SERP) key for the search_serper MCP tool — the backup web-search engine of epic #1792, shipped by the trained-assist-search-skill sibling. GCP only (issue #1288: ru-edge has no MCP); bypasses src/secrets.js like INN_* and reaches the MCP child via browser.js mcpToolEnv."
+      },
+      {
+        "name": "SALES_BOT_TOKEN",
+        "required": true,
+        "written_to": [
+          "gcp"
+        ],
+        "gcp_sm": true,
+        "description": "Telegram bot token of @cmr_management_bot — reply credential for the external flexi-telegram-deal-bot worker (bots.registry botId=sales). REQUIRED, not optional: an enabled bot whose token cannot be resolved makes scripts/check-bot-secrets.js fail, which closes the pre-deploy gate (scripts/check-deploy-secrets-gate.js) and freezes EVERY release — the 01.10.2026 incident that pinned prod to a1d8410. It also used to be declared ONLY in gcp_secret_manager_only, i.e. it had no automated path into the host at all: the deploy job rewrites /home/vova/secrets.env from GitHub Secrets, so a value that exists only in nobody's hands can never reach prod, and the gate reads the host env as fallback. Now delivered like every other GCP secret (GitHub Secret SALES_BOT_TOKEN → ci.yml/deploy-manual.yml printf → secrets.env), Secret Manager still wins when it has a value. Never fall back to the classic bot token — it is not a member of the sales groups (sendMessage 403 AFTER 202, operator sees «⏳ Передаю ассистенту…» forever). Not written to RU (ru-edge has no runner/bot-delivery)."
+      }
     ]
   },
-
   "gcp_secret_manager_only": {
     "_doc": "Available on GCP VM only (via Secret Manager). NOT in GitHub Secrets, NOT on RU VM.",
     "secrets": [
-      { "name": "RECRUITER_BOT_TOKEN", "description": "Optional recruiter reply credential; Secret Manager or host env fallback. Never use classic bot as fallback." },
-      { "name": "FREELANCE_BOT_TOKEN", "description": "Optional freelance-bot reply credential (issue #1302 PR-A1); Secret Manager or host env fallback. Never use classic bot as fallback. Not written to RU (ru-edge has no runner/bot-delivery)." },
-      { "name": "CF_API_TOKEN",             "description": "Cloudflare API token" },
-      { "name": "OPERATOR_CHAT_ID",         "description": "Telegram chat ID for operator notifications" },
-      { "name": "GOOGLE_OAUTH_CLIENT_ID",   "description": "Google OAuth2 client ID (GDrive/GetCourse)" },
-      { "name": "GOOGLE_OAUTH_CLIENT_SECRET", "description": "Google OAuth2 client secret" },
-      { "name": "HH_CLIENT_ID",            "description": "HeadHunter OAuth2 app client ID" },
-      { "name": "HH_CLIENT_SECRET",        "description": "HeadHunter OAuth2 app client secret" },
-      { "name": "WEB_JWT_SECRET",          "description": "JWT signing secret for web UI cookie auth (GCP only — web UI not deployed on RU VM)" },
-      { "name": "WEB_VERIFY_SECRET",       "description": "Bearer secret gating POST /web/verify stateless password delegation (GCP only; falls back to AGENT_SECRET if unset)" }
+      {
+        "name": "RECRUITER_BOT_TOKEN",
+        "description": "Optional recruiter reply credential; Secret Manager or host env fallback. Never use classic bot as fallback."
+      },
+      {
+        "name": "FREELANCE_BOT_TOKEN",
+        "description": "Optional freelance-bot reply credential (issue #1302 PR-A1); Secret Manager or host env fallback. Never use classic bot as fallback. Not written to RU (ru-edge has no runner/bot-delivery)."
+      },
+      {
+        "name": "CF_API_TOKEN",
+        "description": "Cloudflare API token"
+      },
+      {
+        "name": "OPERATOR_CHAT_ID",
+        "description": "Telegram chat ID for operator notifications"
+      },
+      {
+        "name": "GOOGLE_OAUTH_CLIENT_ID",
+        "description": "Google OAuth2 client ID (GDrive/GetCourse)"
+      },
+      {
+        "name": "GOOGLE_OAUTH_CLIENT_SECRET",
+        "description": "Google OAuth2 client secret"
+      },
+      {
+        "name": "HH_CLIENT_ID",
+        "description": "HeadHunter OAuth2 app client ID"
+      },
+      {
+        "name": "HH_CLIENT_SECRET",
+        "description": "HeadHunter OAuth2 app client secret"
+      },
+      {
+        "name": "WEB_JWT_SECRET",
+        "description": "JWT signing secret for web UI cookie auth (GCP only — web UI not deployed on RU VM)"
+      },
+      {
+        "name": "WEB_VERIFY_SECRET",
+        "description": "Bearer secret gating POST /web/verify stateless password delegation (GCP only; falls back to AGENT_SECRET if unset)"
+      }
     ]
   },
-
   "systemd_env_vars": {
     "_doc": "Static env vars baked into systemd unit files (not secrets). Update systemd/*.service files directly.",
     "gcp": [
-      { "name": "MEDIA_GATEWAY_URL", "value": "https://trained-assist-tg-bot.skillset-apply.workers.dev", "description": "Trusted R2 media reader endpoint; references never supply a URL" },
-      { "name": "NODE_ENV",        "value": "production" },
-      { "name": "PORT",            "value": "8080" },
-      { "name": "AGENT_DATA_DIR",  "value": "/home/vova/agent-data" },
-      { "name": "AGENT_PUBLIC_URL","value": "https://recruiter-assistant.ru" },
-      { "name": "HH_PLATFORM_URL",          "value": "https://platform.recruiter-assistant.ru" },
-      { "name": "VACANCY_REMOTE_STORE_URL", "value": "https://platform.recruiter-assistant.ru", "description": "RU edge URL — vacancy pages are forwarded here from GCP for storage and serving" },
-      { "name": "RU_EDGE_URL",              "value": "https://platform.recruiter-assistant.ru", "description": "RU-IP edge service (issue #1288) — nalog.ru login delegation (POST /nalog/start-login) and the lknpd.nalog.ru API relay (POST /nalog-api-relay). Same host as VACANCY_REMOTE_STORE_URL." },
-      { "name": "VM_NAME",                  "value": "gcp-main" },
-      { "name": "ZEROCREDS_URL",            "value": "http://localhost:3456", "description": "Local zerocreds-server (runs on same VM, not exposed publicly)" },
-      { "name": "ANTHROPIC_MODEL",          "value": "claude-opus-5-5", "description": "Claude model used by Claude Code agent" },
-      { "name": "GCS_BUCKET",               "value": "trained-assist-workspaces", "description": "Bucket src/session-blob-store.js archives sessions/transcripts into (epic #1784 M2, issue #1916). Code default is the same value, so an unset var is safe. GCP only — the VM service account needs storage.objectAdmin on it; auth is ADC via the metadata server, no key file on disk." }
+      {
+        "name": "MEDIA_GATEWAY_URL",
+        "value": "https://trained-assist-tg-bot.skillset-apply.workers.dev",
+        "description": "Trusted R2 media reader endpoint; references never supply a URL"
+      },
+      {
+        "name": "NODE_ENV",
+        "value": "production"
+      },
+      {
+        "name": "PORT",
+        "value": "8080"
+      },
+      {
+        "name": "AGENT_DATA_DIR",
+        "value": "/home/vova/agent-data"
+      },
+      {
+        "name": "AGENT_PUBLIC_URL",
+        "value": "https://recruiter-assistant.ru"
+      },
+      {
+        "name": "HH_PLATFORM_URL",
+        "value": "https://platform.recruiter-assistant.ru"
+      },
+      {
+        "name": "VACANCY_REMOTE_STORE_URL",
+        "value": "https://platform.recruiter-assistant.ru",
+        "description": "RU edge URL — vacancy pages are forwarded here from GCP for storage and serving"
+      },
+      {
+        "name": "RU_EDGE_URL",
+        "value": "https://platform.recruiter-assistant.ru",
+        "description": "RU-IP edge service (issue #1288) — nalog.ru login delegation (POST /nalog/start-login) and the lknpd.nalog.ru API relay (POST /nalog-api-relay). Same host as VACANCY_REMOTE_STORE_URL."
+      },
+      {
+        "name": "VM_NAME",
+        "value": "gcp-main"
+      },
+      {
+        "name": "ZEROCREDS_URL",
+        "value": "http://localhost:3456",
+        "description": "Local zerocreds-server (runs on same VM, not exposed publicly)"
+      },
+      {
+        "name": "ANTHROPIC_MODEL",
+        "value": "claude-opus-5-5",
+        "description": "Claude model used by Claude Code agent"
+      },
+      {
+        "name": "GCS_BUCKET",
+        "value": "trained-assist-workspaces",
+        "description": "Bucket src/session-blob-store.js archives sessions/transcripts into (epic #1784 M2, issue #1916). Code default is the same value, so an unset var is safe. GCP only — the VM service account needs storage.objectAdmin on it; auth is ADC via the metadata server, no key file on disk."
+      }
     ],
     "ru": [
-      { "name": "NODE_ENV",           "value": "production" },
-      { "name": "PORT",               "value": "8080" },
-      { "name": "USERS_DIR",          "value": "/home/vova/users", "description": "Vacancy drafts + applications live here (no Claude workspaces on ru-edge)" },
-      { "name": "AGENT_TOKENS_DIR",   "value": "/home/vova/agent-tokens", "description": "Only .chatid files are read here (Telegram notifications) — ru-edge never writes a nalog token to this VM, see NALOG_TOKEN_SINK_URL" },
-      { "name": "TELEGRAM_API_URL",   "value": "https://136-65-7-197.sslip.io/tg-proxy" },
-      { "name": "NALOG_TOKEN_SINK_URL", "value": "https://recruiter-assistant.ru", "description": "GCP URL a completed nalog.ru login is pushed to (POST /nalog/token-store) — GCP is where 10-nalog.js and the expiry scheduler read the token from, since that's where Claude runs" },
-      { "name": "SECRETS_SOURCE",     "value": "env" },
-      { "name": "VM_NAME",            "value": "ru-vm" }
+      {
+        "name": "NODE_ENV",
+        "value": "production"
+      },
+      {
+        "name": "PORT",
+        "value": "8080"
+      },
+      {
+        "name": "USERS_DIR",
+        "value": "/home/vova/users",
+        "description": "Vacancy drafts + applications live here (no Claude workspaces on ru-edge)"
+      },
+      {
+        "name": "AGENT_TOKENS_DIR",
+        "value": "/home/vova/agent-tokens",
+        "description": "Only .chatid files are read here (Telegram notifications) — ru-edge never writes a nalog token to this VM, see NALOG_TOKEN_SINK_URL"
+      },
+      {
+        "name": "TELEGRAM_API_URL",
+        "value": "https://136-65-7-197.sslip.io/tg-proxy"
+      },
+      {
+        "name": "NALOG_TOKEN_SINK_URL",
+        "value": "https://recruiter-assistant.ru",
+        "description": "GCP URL a completed nalog.ru login is pushed to (POST /nalog/token-store) — GCP is where 10-nalog.js and the expiry scheduler read the token from, since that's where Claude runs"
+      },
+      {
+        "name": "SECRETS_SOURCE",
+        "value": "env"
+      },
+      {
+        "name": "VM_NAME",
+        "value": "ru-vm"
+      }
     ]
   },
-
   "static_values_in_secrets_env": {
     "_doc": "Values written to secrets.env during deploy but NOT from GitHub Secrets — they are static config values hardcoded in ci.yml.",
     "ru": []
   },
-
   "env_vars_bypassing_secrets_js": {
     "_doc": "Written to secrets.env from GitHub Secrets and passed directly to Claude Code env in browser.js — they bypass src/secrets.js intentionally.",
     "secrets": [
-      { "name": "INN_DADATA_TOKEN",  "description": "DaData API token for INN/company lookup (injected into Claude env)" },
-      { "name": "INN_DADATA_SECRET", "description": "DaData API secret (injected into Claude env)" },
-      { "name": "INN_CHECKO_KEY",    "description": "Checko API key for company enrichment (injected into Claude env)" },
-      { "name": "SERPER_API_KEY",    "description": "Serper Google SERP key — search_serper tool of the search-skills MCP sibling (injected into the MCP server env)" }
+      {
+        "name": "INN_DADATA_TOKEN",
+        "description": "DaData API token for INN/company lookup (injected into Claude env)"
+      },
+      {
+        "name": "INN_DADATA_SECRET",
+        "description": "DaData API secret (injected into Claude env)"
+      },
+      {
+        "name": "INN_CHECKO_KEY",
+        "description": "Checko API key for company enrichment (injected into Claude env)"
+      },
+      {
+        "name": "SERPER_API_KEY",
+        "description": "Serper Google SERP key — search_serper tool of the search-skills MCP sibling (injected into the MCP server env)"
+      }
     ]
   },
-
   "checklist_add_new_secret": [
     "1. Add to src/secrets.js — REQUIRED or OPTIONAL array + return object",
     "2. Add to infra/env-manifest.json — github_actions_secrets.app with written_to and gcp_sm fields",

@@ -1,11 +1,10 @@
 'use strict';
 
 const fs = require('fs');
-const { orHeaders } = require('./or-attribution');
+const { serviceChat } = require('./service-llm');
 
 // Verified live 01.10.2026 on a real key: this model reads images (1024x768 → 1072 prompt tokens,
 // $0.000304) CHEAPER than 2.5-flash (1297 tokens, $0.000457) and returns the same one-line text.
-const VISION_MODEL = 'google/gemini-3.1-flash-lite-preview';
 
 // Vision OCR/description for image attachments, for engines whose underlying model
 // has no multimodal input (OpenCode's minimax/GigaChat/DeepSeek profiles — unlike
@@ -38,44 +37,35 @@ const RETRY_DELAY_MS = 1000;
 // (refusal/empty/bad_json/4xx) — retrying those only adds latency.
 const isRetryable = reason => reason === 'network_error' || /^http_(429|5\d\d)$/.test(reason || '');
 
-async function extractImageText({ filePath, mimeType, openrouterKey, fetchImpl = fetch, timeoutMs = 20000 }) {
-  if (!openrouterKey) return { ok: false, text: '', reason: 'no_key' };
+async function extractImageText({ filePath, mimeType, timeoutMs = 20000 }) {
+  // Ключа у агента нет и не должно быть: весь LLM идёт через llm-ladder (#2092).
   let buf;
   try { buf = fs.readFileSync(filePath); } catch { return { ok: false, text: '', reason: 'read_error' }; }
 
   const mime = (mimeType || 'image/jpeg').split(';')[0];
   const b64 = buf.toString('base64');
 
-  // Overridable for test mocking — same convention as HH_API_BASE_URL in src/hh-utils.js.
-  const base = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai';
-
+  // Распознавание идёт тем же клиентом, что и остальной агент: serviceChat сам берёт
+  // per-run токен лестницы и пишет атрибуцию. Прямого обращения к openrouter.ai нет.
   async function attempt() {
-    let r;
+    let out;
     try {
-      r = await fetchImpl(`${base}/api/v1/chat/completions`, {
-        method: 'POST',
-        headers: orHeaders({ apiKey: openrouterKey, app: 'media-vision' }),
-        body: JSON.stringify({
-          model: VISION_MODEL,
-          // Bounded output (#1844): recognition is a transcription, not prose —
-          // a runaway reply only burns latency on the /run accept path.
-          max_tokens: 8192,
-          messages: [{ role: 'user', content: [
-            { type: 'text', text: PROMPT },
-            { type: 'image_url', image_url: { url: `data:${mime};base64,${b64}` } },
-          ] }],
-        }),
-        signal: AbortSignal.timeout(timeoutMs),
+      out = await serviceChat({
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: PROMPT },
+          { type: 'image_url', image_url: { url: `data:${mime};base64,${b64}` } },
+        ] }],
+        // Bounded output (#1844): recognition is a transcription, not prose —
+        // a runaway reply only burns latency on the /run accept path.
+        maxTokens: 8192,
+        timeoutMs,
+        source: 'media-vision',
       });
     } catch (e) {
       const timedOut = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
       return { ok: false, text: '', reason: timedOut ? 'timeout' : 'network_error' };
     }
-    if (!r.ok) return { ok: false, text: '', reason: `http_${r.status}` };
-
-    let d;
-    try { d = await r.json(); } catch { return { ok: false, text: '', reason: 'bad_json' }; }
-    const t = (d.choices?.[0]?.message?.content || '').trim();
+    const t = String(out?.content || '').trim();
     if (isRefusal(t)) return { ok: false, text: '', reason: 'refusal' };
     if (!t) return { ok: false, text: '', reason: 'empty' };
     return { ok: true, text: t };
