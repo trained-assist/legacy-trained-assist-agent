@@ -99,10 +99,15 @@ function resolveStepToggles(items, steps) {
   return off;
 }
 
-const STEPS_HINT = 'steps — все шаги плана с enabled. Шаги, которые к этой цели не относятся (исследование для ' +
-  'однострочного фикса, дизайн для очевидной правки и т.п.), выключай сразу: в playbook_run — steps:[{step, ' +
-  'enabled:false, reason}], для уже созданного плана — task_item_skip(item_id, reason). protected=true (CI/staging/' +
-  'мерж) не выключаются. Ожидания (wait) настраиваются в шаге: poll_every_sec/timeout_sec.';
+const STEPS_HINT = 'steps — все шаги плана с enabled. Шаги, которые к этой цели не относятся ' +
+  '(исследование для однострочного фикса, дизайн для очевидной правки, ПЕСОЧНИЦА отдельным шагом для фичи с ' +
+  'red-tests-first — цикл вплетается в implement, отдельный шаг выключай сразу), выключай сразу: в playbook_run — ' +
+  'steps:[{step, enabled:false, reason}], для уже созданного плана — task_item_skip(item_id, reason). protected=true ' +
+  '(CI/staging/мерж) не выключаются. Ожидания (wait) настраиваются в шаге: poll_every_sec/timeout_sec. ' +
+  'Если требования уже приведены к одобренной спецификации (issue/PR с приёмкой, docs/spec.md) — передай ' +
+  'spec_ref: рамка (сценарий/контекст/требования/дизайн/план проверки) тогда НЕ переписывается заново, а ' +
+  'сворачивается в один дешёвый шаг «Сверка одобренной спецификации», и открываются только пробелы. ' +
+  'Гейты доставки (PR/CI/merge/deploy/verify-real/archive) при этом не сокращаются никогда.';
 
 // ── Guide mode (#1887 п.1, #1894) ──────────────────────────────────────────
 // Which run mode applies — decided here, deterministically (owner decision 29.09), not by
@@ -386,6 +391,14 @@ module.exports = {
           },
           project_id: { type: 'string', description: 'Optional project to bind the plan (and its checklist.md projection) to' },
           session_id: { type: 'string', description: 'Optional session to attach the plan to' },
+          spec_ref: {
+            type: 'string',
+            description: 'Approved specification this run implements (issue/PR URL or docs/spec.md path). When given, the ' +
+              'framing stages (scenario, context, requirements, design, verification plan) are NOT re-derived: they ' +
+              'collapse into one cheap step «Сверка одобренной спецификации», which opens only the genuine gaps. ' +
+              'Delivery gates (PR/CI/merge/deploy/verify-real/archive) are unchanged. Omit it for a raw goal — the ' +
+              'full framing runs as usual.',
+          },
           steps: {
             type: 'array',
             description: 'Step switches, applied before the plan starts: [{step: "<exact title>" | <1-based number>, ' +
@@ -403,11 +416,11 @@ module.exports = {
           },
         },
       },
-      handler: safe(async ({ playbook_id, goal, version, user_value, acceptance_criteria, vars, project_id, session_id, approve_hooks, escalate_to_doctor, activate, steps, mode }, ctx) => {
+      handler: safe(async ({ playbook_id, goal, version, user_value, acceptance_criteria, vars, project_id, session_id, approve_hooks, escalate_to_doctor, activate, steps, mode, spec_ref }, ctx) => {
         const profileId = requireUser(ctx);
         const playbook = new PlaybookStore({ profileId }).get(playbook_id, version);
         if (!playbook) throw playbookError('PLAYBOOK_NOT_FOUND', `плейбук «${playbook_id}» не найден`);
-        const compiled = compilePlaybook(playbook, { goal, vars, acceptance_criteria, user_value });
+        const compiled = compilePlaybook(playbook, { goal, vars, acceptance_criteria, user_value, spec_ref });
         const off = resolveStepToggles(compiled.items, steps);
         const chosen = chooseRunMode({ profileId, mode, activate, project_id });
         if (chosen.mode === 'guide') return runGuide({ profileId, playbook, compiled, off, chosen });
