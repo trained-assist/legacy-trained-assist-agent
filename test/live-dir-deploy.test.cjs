@@ -151,6 +151,13 @@ test('deploy.sh provisions every sibling in SKILL_SIBLINGS (checkout + releases 
   assert.match(body, /ln -sfn "\$dir" "\$RELEASES_DIR\/\$repo"/);
   const { SKILL_SIBLINGS } = require('../src/skill-siblings');
   for (const { repo } of SKILL_SIBLINGS) {
+    if (repo === 'trained-assist-hh-skill') {
+      assert.match(body, /source "\$SCRIPT_DIR\/hh-pinned-deploy\.sh"/);
+      assert.match(body, /ensure_hh_sibling/);
+      const helper = fs.readFileSync(path.resolve(__dirname, '../scripts/hh-pinned-deploy.sh'), 'utf8');
+      assert.match(helper, /ensure_sibling trained-assist-hh-skill "\$HH_SKILL_DIR"/);
+      continue;
+    }
     assert.match(body, new RegExp(`ensure_sibling ${repo} "\\$[A-Z_]+_DIR"`), `deploy.sh must ensure ${repo}`);
   }
 });
