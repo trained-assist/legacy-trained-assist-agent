@@ -14,44 +14,65 @@ SUDO="${SUDO-sudo}"
 
 # release_verify <dir> [expected-sha]
 #
-# The invariant this file exists for: a release directory is a WHOLE immutable
-# snapshot, and a pointer may only ever be flipped at a snapshot that verifies.
+# SERVABILITY — the invariant for a POINTER. A pointer may only ever be aimed at
+# something that can actually serve: the directory exists, the entrypoint is there,
+# dependencies are installed. If the directory records a revision (.release-sha),
+# it must be the one we asked for.
 #
-# `.release-complete` alone was not enough. It is one file: a snapshot whose other
-# contents were removed still passes the "already built" check, so a deploy would
-# happily report success and repoint ~/agent-master at a directory that no longer
-# exists. The service then starts, keeps serving from modules it already loaded,
-# and every lazy require() fails — a live-looking process on dead files, with
-# /readiness answering 500 (prod incident 2026-10-04).
+# Deliberately does NOT require the build markers: the documented bootstrap and
+# rollback paths point ~/agent-master at the live worktree ($REPO_DIR), which is a
+# servable checkout, not a built release. Demanding markers there would break the
+# escape hatch that exists for exactly the case this invariant is about.
 #
-# So a release is verified by what it must CONTAIN, not by a marker:
-#   • the directory exists and is a real directory;
-#   • .release-complete marks the build as finished;
-#   • .release-sha names the revision (and matches the one we asked for);
-#   • the entrypoint is present — a snapshot without it cannot serve anything;
-#   • node_modules is present unless deps were explicitly skipped.
+# `.release-complete` alone was never enough either — it is one file, so a snapshot
+# whose contents were removed still passed the "already built" check and a deploy
+# would repoint at a directory that no longer exists. The service then runs on
+# already-loaded modules while every lazy require() fails and /readiness answers
+# 500 (prod incident 2026-10-04). Use release_verify_release for built releases.
 release_verify() {
   local dir="$1" expected="${2:-}" missing=()
-  [ -d "$dir" ] || missing+=("каталог отсутствует")
-  [ -L "$dir" ] && [ ! -d "$dir" ] && missing+=("ссылка битая")
-  if [ -d "$dir" ]; then
-    [ -f "$dir/.release-complete" ] || missing+=("нет .release-complete")
-    [ -f "$dir/.release-sha" ] || missing+=("нет .release-sha")
-    if [ -n "$expected" ] && [ -f "$dir/.release-sha" ]; then
-      [ "$(tr -d '[:space:]' < "$dir/.release-sha")" = "$expected" ] ||
-        missing+=(".release-sha=$(
-          tr -d '[:space:]' < "$dir/.release-sha"
-        ) ожидался $expected")
-    fi
-    [ -f "$dir/src/server.js" ] || missing+=("нет точки входа src/server.js")
-    if [ "${RELEASE_SKIP_DEPS:-}" != "1" ] && [ ! -d "$dir/node_modules" ]; then
-      missing+=("нет node_modules")
-    fi
+  [ -d "$dir" ] || { printf '❌ %s: каталога нет\n' "$dir" >&2; return 1; }
+  [ -f "$dir/src/server.js" ] || missing+=("нет точки входа src/server.js")
+  if [ "${RELEASE_SKIP_DEPS:-}" != "1" ] && [ ! -d "$dir/node_modules" ]; then
+    missing+=("нет node_modules")
   fi
   if [ "${#missing[@]}" -gt 0 ]; then
-    printf '❌ release неполон: %s\n' "$dir" >&2
+    printf '❌ %s не может обслуживать трафик:\n' "$dir" >&2
     printf '   - %s\n' "${missing[@]}" >&2
     return 1
+  fi
+  if [ -n "$expected" ] && [ -f "$dir/.release-sha" ]; then
+    [ "$(tr -d '[:space:]' < "$dir/.release-sha")" = "$expected" ] || {
+      printf '❌ %s: .release-sha=%s ожидался %s\n' "$dir" \\
+        "$(tr -d '[:space:]' < "$dir/.release-sha")" "$expected" >&2
+      return 1
+    }
+  fi
+  return 0
+}
+
+# release_verify_release <dir> [expected-sha]
+#
+# COMPLETENESS — "is this a FINISHED build of the revision I asked for?". Release
+# mechanics are generic (git archive + npm ci + markers) and are exercised against
+# synthetic repositories that have no app entrypoint, so this check is about the
+# BUILD, not about the application: the marker is there and the recorded revision
+# is the one requested. Point at an app-shaped tree and the pointer-level
+# release_verify additionally requires it to be able to serve.
+release_verify_release() {
+  local dir="$1" expected="${2:-}"
+  [ -d "$dir" ] || { printf '❌ %s: каталога нет\n' "$dir" >&2; return 1; }
+  [ -f "$dir/.release-complete" ] || {
+    printf '❌ %s: нет .release-complete — сборка не завершена\n' "$dir" >&2
+    return 1
+  }
+  [ -f "$dir/.release-sha" ] || { printf '❌ %s: нет .release-sha\n' "$dir" >&2; return 1; }
+  if [ -n "$expected" ]; then
+    [ "$(tr -d '[:space:]' < "$dir/.release-sha")" = "$expected" ] || {
+      printf '❌ %s: собран %s, а требовался %s\n' "$dir" \
+        "$(tr -d '[:space:]' < "$dir/.release-sha")" "$expected" >&2
+      return 1
+    }
   fi
   return 0
 }
@@ -69,7 +90,7 @@ release_build() {
   # and moved into the root-owned releases dir.
   local staging="$HOME/.agent-release-staging-$target-$$"
 
-  if release_verify "$dir" "$target"; then
+  if release_verify_release "$dir" "$target"; then
     echo "release $dir already built and verified" >&2
     return 0
   fi
@@ -104,7 +125,7 @@ release_build() {
 
   # What landed in place must verify, not just what we built in staging: the
   # invariant is about the directory a pointer will be flipped at.
-  release_verify "$dir" "$target"
+  release_verify_release "$dir" "$target"
 }
 
 # release_set_link <link> <target-dir>

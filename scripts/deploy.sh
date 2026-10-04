@@ -308,7 +308,7 @@ echo "==> Activating release (atomic symlink swap)..."
 # swap, so the previous release keeps serving (prod incident 2026-10-04: the
 # pointer was repointed at a snapshot that had already lost its files, and the
 # service restarted onto it).
-if ! release_verify "$RELEASE_DIR" "$TARGET"; then
+if ! release_verify_release "$RELEASE_DIR" "$TARGET" || ! release_verify "$RELEASE_DIR" "$TARGET"; then
   echo "❌ $RELEASE_DIR no longer verifies — NOT activating. Previous release keeps serving." >&2
   exit 1
 fi
