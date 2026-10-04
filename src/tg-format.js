@@ -173,13 +173,16 @@ async function formatForTelegram(text, opts = {}) {
 function makeLlmFixer(orKey) {
   const serviceLlm = require('./service-llm');
   if (!serviceLlm.available(orKey)) return null;
-  return async (html, reason) => {
+  // ctx is a PER-CALL argument, not a factory argument: tg-stream caches ONE fixer for the
+  // whole process (makeLlmFixer(process.env.OPENROUTER_API_KEY)), so a factory-level ctx would
+  // be whichever chat formatted first. The caller binds it per send/edit instead.
+  return async (html, reason, ctx = null) => {
     let out = await serviceLlm.serviceText({
       system: 'You repair Telegram-flavored HTML. Output ONLY the corrected HTML, no commentary, no code fences. '
         + 'Allowed tags: b, i, u, s, a (with href), code, pre, blockquote, tg-spoiler. '
         + 'Close every tag, drop any disallowed tag while keeping its text, and escape stray < > & as &lt; &gt; &amp;.',
       user: `Problem: ${reason}\n\nHTML to fix:\n${html}`,
-      maxTokens: 2048, timeoutMs: 8000, apiKey: orKey, source: 'tg-format',
+      maxTokens: 2048, timeoutMs: 8000, apiKey: orKey, source: 'tg-format', ctx,
     });
     if (!out) return null;
     out = out.replace(/^```(?:html)?\s*\n?/i, '').replace(/\n?```$/i, '').trim();

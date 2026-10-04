@@ -99,7 +99,7 @@ function normalizeVerdict(obj, reason) {
  *   'uncertain' with a machine reason is returned WITHOUT any LLM call for the
  *   empty/too-short/no-provider cases — the caller then retries at the same level.
  */
-async function judgeMarkerlessReply({ said, item, task, timeoutMs = 15000, serviceLlm = null } = {}) {
+async function judgeMarkerlessReply({ said, item, task, timeoutMs = 15000, serviceLlm = null, ctx = null } = {}) {
   const text = String(said || '');
   // Engine/infra failures are decided deterministically — never by the judge (#1908).
   if (looksLikeEngineFailure(text)) return { verdict: 'failed', reason: 'engine-failure-text' };
@@ -117,6 +117,9 @@ async function judgeMarkerlessReply({ said, item, task, timeoutMs = 15000, servi
       timeoutMs,
       totalTimeoutMs: timeoutMs + 5000,
       source: 'durable-marker-judge',
+      // Attribution: the verdict decides whether a durable step passed, so the rung trace
+      // belongs to that step — `item`/`task` identify it even with no surrounding request.
+      ctx: ctx || { trace: (item && (item.id || item.itemId)) || task || null },
     });
     if (!r) return { verdict: 'uncertain', reason: 'llm-unavailable' };
     // serviceJson returns the PARSED VALUE already (service-llm.js unwraps `value`

@@ -102,12 +102,12 @@ function gatherSessions(profileRoot, opts = {}) {
 
 // ── Cheap model call (service-LLM ladder, src/service-llm.js) ─────────────────
 
-async function callModel({ system, user, apiKey, timeoutMs = 60000 }) {
+async function callModel({ system, user, apiKey, timeoutMs = 60000, ctx = null }) {
   const serviceLlm = require('./service-llm');
   if (!serviceLlm.available(apiKey)) throw new Error('no LLM key (OpenCode Go / OPENROUTER_API_KEY) — cheap-model classification unavailable');
   const r = await serviceLlm.serviceChat({
     messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-    json: true, maxTokens: 4000, timeoutMs, apiKey, source: 'reproject',
+    json: true, maxTokens: 4000, timeoutMs, apiKey, source: 'reproject', ctx,
   });
   if (!r) throw new Error('reproject: no service-llm rung answered');
   return r.value;
@@ -151,7 +151,7 @@ async function clusterSessions(sessions, criteria, opts = {}) {
       'Сессии:',
       ...chunk.map(s => `--- id=${s.id} (msgs=${s.messageCount})\ntopic: ${s.topic}\n${s.digest}`),
     ].join('\n');
-    const out = await callModel({ system: CLUSTER_SYSTEM, user, model: opts.model || DEFAULT_MODEL, apiKey: opts.apiKey });
+    const out = await callModel({ system: CLUSTER_SYSTEM, user, model: opts.model || DEFAULT_MODEL, apiKey: opts.apiKey, ctx: opts.ctx || null });
     for (const a of (out.assignments || [])) {
       if (a && a.id) assignments.push(a);
     }
@@ -202,7 +202,7 @@ async function consolidateClusters(assignments, sessions = [], criteria = '', op
   ].join('\n');
   let out;
   try {
-    out = await callModel({ system: CONSOLIDATE_SYSTEM, user, model: opts.model || CONSOLIDATE_MODEL, apiKey: opts.apiKey });
+    out = await callModel({ system: CONSOLIDATE_SYSTEM, user, model: opts.model || CONSOLIDATE_MODEL, apiKey: opts.apiKey, ctx: opts.ctx || null });
   } catch {
     out = null; // consolidation is best-effort; fall back to identity
   }
@@ -710,11 +710,13 @@ function loadState(profileRoot) {
 
 // ── One full preview cycle (gather → cluster → consolidate → plan) ────────────
 
-async function preview(profileRoot, { criteria, apiKey, model, now = Date.now() } = {}) {
+async function preview(profileRoot, { criteria, apiKey, model, now = Date.now(), ctx = null } = {}) {
   const sessions = gatherSessions(profileRoot);
   if (!sessions.length) return { error: 'no sessions found for this profile' };
-  const assignments = await clusterSessions(sessions, criteria, { apiKey, model });
-  const consolidation = await consolidateClusters(assignments, sessions, criteria, { apiKey });
+  // Attribution: the cluster/consolidate calls are the expensive part of a rebuild and run
+  // against a whole profile's transcript — ctx is the only thing that says whose it was.
+  const assignments = await clusterSessions(sessions, criteria, { apiKey, model, ctx });
+  const consolidation = await consolidateClusters(assignments, sessions, criteria, { apiKey, ctx });
   const plan = buildPlan(profileRoot, sessions, assignments, consolidation);
   plan.generatedAt = now;
   const state = { criteria: criteria || null, at: now, plan, assignments };

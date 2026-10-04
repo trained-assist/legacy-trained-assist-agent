@@ -205,7 +205,10 @@ async function llmIssue({ entry, profile, input, apiKey, model = MODEL }) {
   ].join('\n');
 
   // Service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
-  const content = await require('./service-llm').serviceText({ system, user, maxTokens: 2000, temperature: 0.2, timeoutMs: 45_000, apiKey, source: 'bugs-collector' });
+  // Attribution: a cross-profile cron has no request to inherit from, but it DOES have the
+  // profile it is collecting for and the report id — without them this call was anonymous in
+  // ladder_calls and nobody could tell which profile's issue drafting ran on which model.
+  const content = await require('./service-llm').serviceText({ system, user, maxTokens: 2000, temperature: 0.2, timeoutMs: 45_000, apiKey, source: 'bugs-collector', ctx: { trace: entry && entry.id || null, user: profile || null } });
   if (content == null) throw new Error('bugs-collector: no service-llm rung answered');
   const parsed = extractJson(content);
   if (!parsed || !parsed.title || !parsed.body) throw new Error('model returned no usable title/body');
