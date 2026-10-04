@@ -2922,6 +2922,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // resolveEngineCwd. This is what keeps `-C` and the actual process cwd from
   // silently diverging once a distinct per-run code cwd (workspace/A2) exists.
   const codeCwd = resolveEngineCwd(user);
+  // #143 rule 6: remember the pre-run save state of the code cwd so the end-of-run
+  // check reports only work THIS run left unpushed — never pre-existing local commits.
+  const saveCheckBefore = (() => {
+    try { return require('../run-end-save-check').gitSaveState(codeCwd); } catch { return null; }
+  })();
   // ── PR-C: native resume needs the transcript back first (#1916) ─────────────
   // `claude --resume <id>` looks for <HOME>/.claude/projects/<cwd-slug>/<id>.jsonl
   // (HOME=<profile>/.agent-home), and between runs those jsonl files are in GCS,
@@ -3758,6 +3763,19 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // #1542 P3: a wall of text is re-split into paragraphs (word-coverage guarded, fail-soft).
   if (!internalGtd && !incomplete && process.env.ANSWER_FORMAT !== '0') {
     result = await answerActions.paragraphize(result, secrets.OPENROUTER_API_KEY, { ctx: answerLadderCtx });
+  }
+  // #143 rule 6: a coding run that left NEW unpushed commits in its code cwd is a
+  // local-only result — say so, never let it read as saved/done. Best-effort, bounded,
+  // chat runs only: a durable step's reply is parsed by the settle, so it is never
+  // touched here (the plan path is enforced in settleTaskCompletion instead).
+  if (!internalGtd && !incomplete && saveCheckBefore && saveCheckBefore.isRepo) {
+    try {
+      const after = require('../run-end-save-check').gitSaveState(codeCwd);
+      const beforeAhead = saveCheckBefore.ahead || 0;
+      if (after.isRepo && after.ahead != null && after.ahead > beforeAhead) {
+        result += `\n\n⚠️ В ${after.branch} появились незапушенные коммиты (${after.ahead - beforeAhead}) — запушь, иначе работа только локальная (${after.dir}).`;
+      }
+    } catch (e) { console.warn('[runner] save check:', e.message); }
   }
   const final = (result + costFooter).slice(-MAX_MSG_LEN) + gtdFooter;
 
