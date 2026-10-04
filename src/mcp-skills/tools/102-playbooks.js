@@ -13,7 +13,7 @@
 
 const { PlaybookStore, renderPlaybook, playbookError } = require('../../playbook-store');
 const { createPlaybookAuthoring } = require('../../playbook-authoring');
-const { compilePlaybook } = require('../../playbook-compiler');
+const { compilePlaybook, specRefHint } = require('../../playbook-compiler');
 const { suggestPlaybookForAudience } = require('../../audience-default-playbook');
 
 const fs = require('fs');
@@ -421,6 +421,16 @@ module.exports = {
         const playbook = new PlaybookStore({ profileId }).get(playbook_id, version);
         if (!playbook) throw playbookError('PLAYBOOK_NOT_FOUND', `плейбук «${playbook_id}» не найден`);
         const compiled = compilePlaybook(playbook, { goal, vars, acceptance_criteria, user_value, spec_ref });
+        // #120 hint: an approved-spec reference in the goal, no spec_ref passed. Suggest,
+        // never auto-apply — a wrong guess would silently skip the whole frame.
+        const specHint = compiled.fast_path ? null : specRefHint(goal);
+        if (compiled.fast_path) {
+          const fp = compiled.fast_path;
+          console.log(`[playbook_run] fast path: ${fp.collapsed_stages.join('+')} ` +
+            `(${fp.collapsed_steps} steps) → 1 «${fp.check_step}» ≤${fp.check_timeout_seconds}s (spec: ${fp.spec_ref})`);
+        } else if (specHint) {
+          console.log(`[playbook_run] approved-spec reference in the goal (${specHint}) but no spec_ref — full framing will run`);
+        }
         const off = resolveStepToggles(compiled.items, steps);
         const chosen = chooseRunMode({ profileId, mode, activate, project_id });
         if (chosen.mode === 'guide') return runGuide({ profileId, playbook, compiled, off, chosen });
@@ -482,6 +492,10 @@ module.exports = {
             ...(isProtectedStep(compiled.items[n]) ? { protected: true } : {}),
           })),
           steps_hint: STEPS_HINT,
+          // #120: what the fast path collapsed (null when the full frame ran), and a
+          // suggestion when the goal looks like an approved spec but spec_ref was omitted.
+          spec_ref_fast_path: compiled.fast_path,
+          ...(specHint ? { spec_ref_hint: specHint } : {}),
           projection: persisted.projection,
           projection_warning: persisted.projection_warning,
           playbook: { id: playbook.id, version: playbook.version, scope: playbook.scope, source: playbook.source },

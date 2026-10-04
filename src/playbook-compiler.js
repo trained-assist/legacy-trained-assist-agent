@@ -122,13 +122,19 @@ function resolveInputs(playbook, vars, goalText) {
 // delivery gates (sandbox as declared, PR/CI/merge/deploy/verify-real/archive) are
 // compiled exactly as before, and the checklist step can open a gap with task_item_add.
 const FRAMING_STAGE_IDS = new Set(['frame', 'propose', 'design']);
+// The check step must leave a machine-checkable artifact: the coverage table it is
+// supposed to produce (which framing checklist item is covered where). Without this the
+// step's only check was semantic — i.e. exactly the 86%-unreachable class this whole
+// work is about. `file_exists` is a registry validator, so the step cannot be marked
+// done without the table; it resolves relative to the plan's artifact dir.
+const SPEC_CHECK_ARTIFACT = 'spec-check/coverage.md';
 const SPEC_CHECK_STEP = {
   title: 'Сверка одобренной спецификации',
   execution_kind: 'agent',
   executor_role: 'reviewer',
   minimum_model_level: 'bachelor',
   context_budget: 'small',
-  validation: { spec_checklist_covered_or_gaps_listed: true },
+  validation: { spec_checklist_covered_or_gaps_listed: true, file_exists: SPEC_CHECK_ARTIFACT },
   max_attempts: 2,
   execution_timeout_seconds: 300,
 };
@@ -139,10 +145,30 @@ function specCheckInstructions(specRef) {
     'НЕ выводи заново то, что в спецификации уже есть. Сверь её с чек-листом рамки и по каждому пункту скажи, ГДЕ он закрыт (ссылка на секцию/строку):',
     '1) ценность и шаги пользователя (EARS/Given-When-Then), 2) контекст репозитория с file:line, 3) требования с флагами и решения по ним,',
     '4) дизайн: наименьшее изменение, срезы, 5) план проверки (чем проверяем каждый шаг), 6) риски и откат.',
+    `Таблицу покрытия «пункт → где закрыт» положи в файл ${SPEC_CHECK_ARTIFACT} (относительно папки артефактов плана из промпта) — проверка этого шага требует его наличия, без файла шаг не закроется.`,
     'Итог: таблица «пункт → где закрыт». Пробелы — только недостающие: добавь их шагами через task_item_add(after_item_id: "<id этого шага>") с конкретным содержанием, а не переписывай заново закрытое.',
     'Если спецификация формально есть, а содержательно неполна — это и есть результат этого шага: список пробелов и созданные шаги.',
   ].join('\n');
 }
+
+// #120 hint (never auto-applied): a goal that carries an approved-spec reference
+// (issue/PR URL or `owner/repo#N`) AND approval wording is exactly the case the fast
+// path was built for. Guessing here is worse than asking — so the tool only SUGGESTS
+// `spec_ref`; the caller decides.
+const SPEC_REF_URL_RE = /https?:\/\/github\.com\/[^\s)\]"'<>]+\/(?:issues|pull)\/\d+/i;
+const SPEC_REF_SHORT_RE = /\b[\w.-]+\/[\w.-]+#\d+\b/;
+// «issue #2061», «PR #42», «задача #7» — a bare #N is ambiguous (could be any repo), so
+// it only counts next to an explicit word; the hint is a suggestion, never applied.
+const SPEC_REF_WORDED_RE = /\b(?:issue|pr|pull\s*request|задач[аиу]|тикет|карточк[аиу])\s*#\d+\b/i;
+const SPEC_APPROVED_RE = /одобрен|утвержд|согласован|принят[аоы]?\b|архитектур|спецификац|приёмк|acceptance|approved/i;
+function specRefHint(goal) {
+  const text = String(goal || '');
+  const ref = text.match(SPEC_REF_URL_RE) || text.match(SPEC_REF_SHORT_RE) || text.match(SPEC_REF_WORDED_RE);
+  if (!ref) return null;
+  if (!SPEC_APPROVED_RE.test(text)) return null;
+  return ref[0].trim();
+}
+
 
 function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null, user_value = null, spec_ref = null } = {}) {
   if (!playbook || typeof playbook !== 'object') {
@@ -162,6 +188,9 @@ function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null
   // Only a playbook that actually HAS framing stages can take the fast path; for
   // `ci-run`/`ci-setup` there is nothing to collapse and a spec-check step would be noise.
   const framingStages = specRef ? stages.filter(s => FRAMING_STAGE_IDS.has(s.id)) : [];
+  // The measurement of the fast path (#120): what was collapsed, so a run's effect is
+  // visible in the response/log instead of being asserted on faith.
+  let fastPath = null;
   if (framingStages.length) {
     validateItem({ ...SPEC_CHECK_STEP, stage: framingStages[0].id });
     items.push({
@@ -169,6 +198,14 @@ function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null
       stage: framingStages[0].id,
       instructions: specCheckInstructions(specRef),
     });
+    fastPath = {
+      spec_ref: specRef,
+      collapsed_stages: framingStages.map(s => s.id),
+      collapsed_steps: framingStages.reduce((n, s) => n + (s.steps || []).length, 0),
+      check_step: SPEC_CHECK_STEP.title,
+      check_artifact: SPEC_CHECK_ARTIFACT,
+      check_timeout_seconds: SPEC_CHECK_STEP.execution_timeout_seconds,
+    };
   }
   for (const stage of stages) {
     if (framingStages.includes(stage)) continue;
@@ -245,6 +282,8 @@ function compilePlaybook(playbook, { goal, vars = {}, acceptance_criteria = null
     // Task-level hooks, resolved at compile time and pinned with the plan's
     // playbook_version. Null when the playbook declares none.
     hooks: compileTaskHooks(playbook),
+    // #120: non-null only when an approved spec collapsed the framing stages.
+    fast_path: fastPath,
   };
 }
 
@@ -254,6 +293,8 @@ module.exports = {
   compileItemHooks,
   compileTaskHooks,
   deriveGithubRepo,
+  specRefHint,
+  SPEC_CHECK_ARTIFACT,
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_TIMEOUT_SECONDS,
 };
