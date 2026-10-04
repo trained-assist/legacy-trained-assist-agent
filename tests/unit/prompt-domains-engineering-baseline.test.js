@@ -30,7 +30,12 @@ function mcpConfig({ hiddenDomains = null } = {}) {
     env.SKILLS_RESOLVED = resolved;
   }
   writeFileSync(file, JSON.stringify({
-    mcpServers: { 'trained-skills': { command: 'node', args: ['/x/src/mcp-skills/index.js'] }, 'engineering-skills': { command: 'node', args: ['/y/src/mcp-skills/index.js'] } },
+    mcpServers: {
+      // SKILLS_RESOLVED must ride INSIDE the trained-skills server env — that is where
+      // buildDomainBlock reads it from (prompt-domains/index.js).
+      'trained-skills': { command: 'node', args: ['/x/src/mcp-skills/index.js'], env },
+      'engineering-skills': { command: 'node', args: ['/y/src/mcp-skills/index.js'] },
+    },
   }));
   return file;
 }
