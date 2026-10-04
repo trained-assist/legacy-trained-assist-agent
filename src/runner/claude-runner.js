@@ -199,6 +199,22 @@ function resolveEngineCwd(user = {}) {
 // opencode-switch-profile.sh, which overwrote the one shared ~/.config/opencode/opencode.json
 // for every profile on the VM. Deep merge means agent.review's base fields (prompt/permission/
 // etc., only present in the global file) survive; only .model gets overridden per profile.
+
+// The engine-side half of the leaked tool-call filter (issue #2082). opencode persists each
+// assistant text part BEFORE the runner sees it and rebuilds the next LLM context from those
+// parts, so a runner-only filter leaves the markup in the engine store and feeds it back to the
+// model. The plugin hooks the engine's own write/read path — see the file for why .mjs and a
+// single named export. Absolute path: opencode resolves `plugin` entries as file specs
+// (isPathPluginSpec accepts absolute paths, verified in 1.18.31) and the release tree is
+// readable by the run-as slots.
+//
+// Returns null when the file is absent (a partial deploy must not break every opencode run —
+// opencode would only report the plugin error, but the runs would proceed unfiltered anyway).
+function opencodeNoisePluginSpec() {
+  const pluginPath = path.join(__dirname, 'opencode-plugins', 'strip-leaked-tool.mjs');
+  return fs.existsSync(pluginPath) ? [pluginPath] : null;
+}
+
 function writeOpencodeMcpConfig(configDir, mcpConfig, ocProfileOverrides) {
   const servers = loadMcpServers(mcpConfig);
   const mcp = {};
@@ -217,7 +233,11 @@ function writeOpencodeMcpConfig(configDir, mcpConfig, ocProfileOverrides) {
   // hermes_research died there 11/11 times (2026-09-27). experimental.mcp_timeout is the
   // tool-call timeout; per-server `timeout` covers the other MCP requests.
   const experimental = { ...(ocProfileOverrides?.experimental || {}), mcp_timeout: MCP_TOOL_TIMEOUT_MS };
-  fs.writeFileSync(configPath, JSON.stringify({ mcp, ...ocProfileOverrides, experimental }, null, 2));
+  // Omit the key entirely when there is no plugin (partial deploy) — `plugin: null` is not
+  // what the config schema expects.
+  const plugin = opencodeNoisePluginSpec();
+  const config = { mcp, ...ocProfileOverrides, experimental, ...(plugin ? { plugin } : {}) };
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   return configPath;
 }
 
