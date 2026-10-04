@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const { tokensRoot } = require('./data-paths');
-const { serviceChat } = require('./service-llm');
+const serviceLlm = require('./service-llm');
 const {
   slugFor,
   saveSiteConfig,
@@ -366,7 +366,7 @@ ${JSON.stringify(summary, null, 2)}
 
     let text = '';
     try {
-      const out = await serviceChat({
+      const out = await serviceLlm.serviceChat({
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 1200,
         timeoutMs: 30000,

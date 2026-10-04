@@ -10,7 +10,7 @@
 const { chatSessions } = require('./chat-history');
 const { sessionsDirPath } = require('./data-paths');
 const { classifyClosure } = require('./closure-intent');
-const { serviceChat } = require('./service-llm');
+const serviceLlm = require('./service-llm');
 
 const GATE_MODEL = process.env.INTAKE_GATE_MODEL || 'service';
 
@@ -92,7 +92,7 @@ ${contextBlock}
 ${trimmed.length <= 6000 ? trimmed : trimmed.slice(0, 3000) + '\n[середина опущена]\n' + trimmed.slice(-3000)}`;
 
   // Ключа у агента нет: весь LLM идёт через llm-ladder (#2092).
-  const answer = (await serviceChat({
+  const answer = (await serviceLlm.serviceChat({
     messages: [{ role: 'user', content: prompt }],
     maxTokens: 16,
     timeoutMs: 8000,

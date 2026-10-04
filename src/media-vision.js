@@ -1,7 +1,7 @@
 'use strict';
 
 const fs = require('fs');
-const { serviceChat } = require('./service-llm');
+const serviceLlm = require('./service-llm');
 
 // Verified live 01.10.2026 on a real key: this model reads images (1024x768 → 1072 prompt tokens,
 // $0.000304) CHEAPER than 2.5-flash (1297 tokens, $0.000457) and returns the same one-line text.
@@ -50,7 +50,7 @@ async function extractImageText({ filePath, mimeType, timeoutMs = 20000 }) {
   async function attempt() {
     let out;
     try {
-      out = await serviceChat({
+      out = await serviceLlm.serviceChat({
         messages: [{ role: 'user', content: [
           { type: 'text', text: PROMPT },
           { type: 'image_url', image_url: { url: `data:${mime};base64,${b64}` } },
