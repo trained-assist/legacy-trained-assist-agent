@@ -17,7 +17,7 @@ const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-mount-'));
 // so the invariant is "the relay changes nothing else" — measured against the config
 // built here with the feature off, never against a hard-coded whitelist.
 const saved = {};
-for (const key of ['CAPABILITY_RELAY_ENDPOINT', 'CAPABILITY_RELAY_TOKEN', 'CAPABILITY_RELAY_CONTRACT_VERSION', 'CAPABILITY_RELAY_TIMEOUT_MS', 'USER_ID', 'AGENT_RUN_ID', 'CF_API_TOKEN', 'OPENROUTER_API_KEY', 'TELEGRAM_BOT_TOKEN', 'AGENT_SECRET', 'DEEPGRAM_API_KEY']) {
+for (const key of ['CAPABILITY_RELAY_ENDPOINT', 'CAPABILITY_RELAY_TOKEN', 'CAPABILITY_RELAY_CONTRACT_VERSION', 'CAPABILITY_RELAY_TIMEOUT_MS', 'CAPABILITY_RELAY_COMMUNICATION', 'COMMUNICATION_API_URL', 'COMMUNICATION_TOKEN', 'USER_ID', 'AGENT_RUN_ID', 'CF_API_TOKEN', 'OPENROUTER_API_KEY', 'TELEGRAM_BOT_TOKEN', 'AGENT_SECRET', 'DEEPGRAM_API_KEY']) {
   saved[key] = process.env[key];
   delete process.env[key];
 }
@@ -102,11 +102,47 @@ test('relayEnvFrom drops everything outside the allowlist, whatever the caller p
   const env = relayEnvFrom({
     CAPABILITY_RELAY_ENDPOINT: 'http://127.0.0.1:1',
     CAPABILITY_RELAY_TOKEN: 'tok',
-    CF_API_TOKEN: 'x', OPENROUTER_API_KEY: 'y', AGENT_SECRET: 'z',
-    RANDOM_SERVICE_FLAG: 'on', PATH: '/usr/bin',
+    CAPABILITY_RELAY_COMMUNICATION: '1',
+    COMMUNICATION_API_URL: 'https://cap.example',
+    COMMUNICATION_TOKEN: 'comm-tok',
+    CF_API_TOKEN: 'x', OPENROUTER_API_KEY: 'y', AGENT_SECRET: 'z', HH_TOKEN: 'hh',
+    LLM_LADDER_URL: 'https://ladder', RANDOM_SERVICE_FLAG: 'on', PATH: '/usr/bin',
   });
-  assert.deepEqual(Object.keys(env).sort(), ['CAPABILITY_RELAY_ENDPOINT', 'CAPABILITY_RELAY_TOKEN'].sort());
-  assert.equal(leaksForbidden(env).length, 0);
+  assert.deepEqual(Object.keys(env).sort(), ['CAPABILITY_RELAY_COMMUNICATION', 'CAPABILITY_RELAY_ENDPOINT',
+    'CAPABILITY_RELAY_TOKEN', 'COMMUNICATION_API_URL', 'COMMUNICATION_TOKEN'].sort());
+  assert.equal(leaksForbidden(env).length, 0, 'HH_*/LLM_LADDER_* must never reach the relay');
+});
+
+test('the communication toggle alone mounts the relay with exactly the communication env (#2034)', () => {
+  const baselineKeys = Object.keys(buildMcpConfig(workDir, 'tester').mcpServers).sort();
+  assert.equal(baselineKeys.includes(RELAY_ID), false, 'the baseline itself must not carry the relay');
+  process.env.CAPABILITY_RELAY_COMMUNICATION = '1';
+  process.env.COMMUNICATION_API_URL = 'https://communication.example';
+  process.env.COMMUNICATION_TOKEN = 'comm-caller-credential';
+  process.env.CF_API_TOKEN = 'cf-secret';
+  process.env.HH_TOKEN = 'hh-secret';
+  process.env.LLM_LADDER_TOKEN = 'ladder-secret';
+  try {
+    const config = buildMcpConfig(workDir, 'tester');
+    assert.ok(RELAY_ID in config.mcpServers, 'toggle switches the feature on — no default-door endpoint needed');
+    const spec = config.mcpServers[RELAY_ID];
+    assert.deepEqual(spec.args, [path.resolve(__dirname, '..', 'src', 'capability-relay', 'index.js')]);
+    assert.deepEqual(Object.keys(spec.env).sort(),
+      ['CAPABILITY_RELAY_COMMUNICATION', 'COMMUNICATION_API_URL', 'COMMUNICATION_TOKEN'].sort(),
+      'only the communication allowlist — no CF/HH/ladder secret');
+    assert.deepEqual(leaksForbidden(spec.env), []);
+    assert.equal(JSON.stringify(spec.env).includes('hh-secret'), false);
+    assert.equal(JSON.stringify(spec.env).includes('ladder-secret'), false);
+    assert.deepEqual(Object.keys(config.mcpServers).filter(k => k !== RELAY_ID).sort(), baselineKeys,
+      'the relay must not add, drop or rename any other server');
+  } finally {
+    delete process.env.CAPABILITY_RELAY_COMMUNICATION;
+    delete process.env.COMMUNICATION_API_URL;
+    delete process.env.COMMUNICATION_TOKEN;
+    delete process.env.CF_API_TOKEN;
+    delete process.env.HH_TOKEN;
+    delete process.env.LLM_LADDER_TOKEN;
+  }
 });
 
 // ── R14: the relay is a separate process whose only input is the contract ──────
@@ -114,7 +150,11 @@ test('relayEnvFrom drops everything outside the allowlist, whatever the caller p
 function requireGraph(dir) {
   const repoRoot = path.resolve(__dirname, '..');
   const seen = new Set();
-  const stack = [...fs.readdirSync(dir).filter(f => f.endsWith('.js')).map(f => path.join(dir, f))];
+  // recursive: subdirectories (tools/) are part of the relay's graph too (#2034).
+  const tops = fs.readdirSync(dir, { recursive: true })
+    .filter(f => f.endsWith('.js'))
+    .map(f => path.join(dir, String(f)));
+  const stack = [...tops];
   while (stack.length) {
     const file = stack.pop();
     if (seen.has(file) || !fs.existsSync(file)) continue;

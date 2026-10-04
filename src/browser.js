@@ -6,7 +6,7 @@ const { SKILL_SIBLINGS, siblingPaths: siblingPathsOf } = require('./skill-siblin
 const { engineeringWorkspaceRoot, engineeringMirrorsRoot, tokensRoot } = require('./data-paths');
 const { atomicJson } = require('./atomic-json');
 const { readCredentialFile, masterKeyHex } = require('./credential-store');
-const { relayConfigured, relayEnvFrom } = require('./capability-relay/env');
+const { relayConfigured, relayEnvFrom, truthy } = require('./capability-relay/env');
 
 // Services whose cookies we know how to inject into Playwright
 const COOKIE_DOMAINS = {
@@ -283,9 +283,12 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
 
   // Capability relay (#2061 PR1): opt-in, default-off. Its env is its own allowlist —
   // deliberately NOT mcpToolEnv — because §5 of the issue keeps CF_API_TOKEN, provider
-  // keys and bot tokens away from the relay. No CAPABILITY_RELAY_ENDPOINT in the service
-  // env → no key in mcpServers at all: revert = drop the variable, no code deploy.
-  if (relayConfigured(process.env)) {
+  // keys and bot tokens away from the relay. No CAPABILITY_RELAY_ENDPOINT and no
+  // CAPABILITY_RELAY_COMMUNICATION in the service env → no key in mcpServers at all:
+  // revert = drop the variables, no code deploy. A profile whose communication section
+  // is off (#2034) does not get the relay either.
+  const relayHidden = skillsPlan && skillsPlan.hidden.siblings.includes('capability-relay');
+  if (!relayHidden && (relayConfigured(process.env) || truthy(process.env.CAPABILITY_RELAY_COMMUNICATION))) {
     config.mcpServers['capability-relay'] = {
       command: 'node',
       args: [path.join(__dirname, 'capability-relay', 'index.js')],

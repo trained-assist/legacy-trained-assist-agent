@@ -1,0 +1,22 @@
+{
+  "manifest_version": 1,
+  "contract": {
+    "urn": "urn:trained-assist:capability-relay-contract:v1",
+    "version": 1
+  },
+  "handler_release": {
+    "capability": "communication",
+    "contract_version": "v1",
+    "prompt_version": "p1"
+  },
+  "capabilities": {
+    "communication": {
+      "tools": [
+        "generate_next_message_to_conversation_partner"
+      ],
+      "endpoint_env": "COMMUNICATION_API_URL",
+      "token_env": "COMMUNICATION_TOKEN",
+      "toggle_env": "CAPABILITY_RELAY_COMMUNICATION"
+    }
+  }
+}

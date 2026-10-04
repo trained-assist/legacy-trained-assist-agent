@@ -123,6 +123,7 @@ function resolve(catalog, profileSkills, readiness, opts = {}) {
   const modules = new Set();
   const setupOnly = new Set();
   const siblings = new Set();
+  const relays = new Set();
   const domainNames = new Set();
 
   for (const [id, section] of Object.entries(sections)) {
@@ -139,7 +140,12 @@ function resolve(catalog, profileSkills, readiness, opts = {}) {
       (moduleReady(server, file, readiness) === false ? setupOnly : modules).add(`${server}/${file}`);
     }
     for (const sib of section.siblings || []) {
-      if (!servers[sib] || servers[sib].kind !== 'sibling') continue;
+      const srv = servers[sib];
+      // A relay server (#2034) is mounted by browser.js under its own feature toggle,
+      // not as a sibling checkout: it can be ATTACHED (mounted this run) without ever
+      // becoming part of the `siblings` output other consumers resolve as repos.
+      if (srv && srv.kind === 'relay') { if (readiness[sib] === true) relays.add(sib); continue; }
+      if (!srv || srv.kind !== 'sibling') continue;
       if (serverAttached(sib, readiness)) siblings.add(sib);
     }
     for (const d of section.promptDomains || []) domainNames.add(d);
@@ -164,7 +170,7 @@ function resolve(catalog, profileSkills, readiness, opts = {}) {
 
   // Prompt domains: mirror src/prompt-domains selectDomains() exactly, restricted to
   // domains owned by enabled sections whose server is attached for this run.
-  const attached = new Set([LOCAL, ...siblings]);
+  const attached = new Set([LOCAL, ...siblings, ...relays]);
   for (const name of Object.keys(domains).sort()) {
     if (!domainNames.has(name)) continue;
     const d = domains[name];

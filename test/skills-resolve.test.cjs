@@ -64,7 +64,7 @@ test('catalog is well-formed: parents exist, siblings declared, every prompt dom
   for (const [id, s] of Object.entries(catalog.sections)) {
     const parent = id.includes('/') ? id.slice(0, id.lastIndexOf('/')) : null;
     if (parent) assert.ok(catalog.sections[parent], `${id}: parent ${parent} missing`);
-    for (const sib of s.siblings || []) assert.strictEqual(catalog.servers[sib]?.kind, 'sibling', `${id}: ${sib}`);
+    for (const sib of s.siblings || []) assert.ok(['sibling', 'relay'].includes(catalog.servers[sib]?.kind), `${id}: ${sib} must be a sibling or relay server`);
     for (const srv of Object.keys(s.pinned || {})) assert.ok(catalog.servers[srv], `${id}: pinned server ${srv}`);
     for (const d of s.promptDomains || []) {
       assert.ok(catalog.domains[d], `${id}: no src/prompt-domains/${d}.md`);
@@ -168,6 +168,32 @@ test('software-engineering pins spawn/release workspace and carries engineering.
 test('unknown section ids are reported, not fatal', () => {
   const res = resolve(catalog, { enabled: ['recruiting', 'nope'], disabled: ['also/nope'] }, readiness());
   assert.deepStrictEqual(res.unknown, ['nope', 'also/nope']);
+});
+
+test('communication relay section (#2034): off unless enabled, attached only when mounted, never a sibling repo', () => {
+  // Section off → the domain is hidden even when the relay is mounted.
+  const off = resolve(catalog, { enabled: ['recruiting'] }, readiness({
+    'capability-relay': true, 'capability-relay/communication.js': true,
+  }));
+  assert.ok(!off.sections.includes('communication'));
+  assert.ok(!off.promptDomains.includes('communication'));
+  assert.ok(!off.siblings.includes('capability-relay'), 'a relay is never a sibling checkout');
+  // Section on + relay mounted + probe ready → domain present, still not a sibling.
+  const on = resolve(catalog, { enabled: ['recruiting', 'communication'] }, readiness({
+    'capability-relay': true, 'capability-relay/communication.js': true,
+  }));
+  assert.ok(on.sections.includes('communication'));
+  assert.ok(on.promptDomains.includes('communication'));
+  assert.ok(!on.siblings.includes('capability-relay'));
+  // Section on but the relay not mounted this run → no domain, no readiness claim.
+  const unmounted = resolve(catalog, { enabled: ['recruiting', 'communication'] }, readiness());
+  assert.ok(!unmounted.promptDomains.includes('communication'));
+  // Mounted but probe unknown (null) → fail open, like selectDomains does.
+  const unprobeable = resolve(catalog, { enabled: ['communication'] },
+    readiness({ 'capability-relay': true, 'capability-relay/*': null }));
+  assert.ok(unprobeable.promptDomains.includes('communication'));
+  // The recruiter audience default keeps the section for its profiles.
+  assert.ok(catalog.audienceDefaults.recruiter.enabled.includes('communication'));
 });
 
 test('shadow: legacy profile → diff=0, writes .skills-resolved.json, audience preview', () => {

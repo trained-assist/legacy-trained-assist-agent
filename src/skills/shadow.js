@@ -14,6 +14,9 @@ function buildReadiness(catalog, { probe, siblingExists } = {}) {
   const exists = siblingExists || (p => !!p && fs.existsSync(p));
   const readiness = {};
   for (const [id, s] of Object.entries(catalog.servers || {})) {
+    // A relay (#2034 capability-relay) has no checkout to stat: attached = mounted in
+    // this run's .mcp.json, which is exactly what the prompt-domain probe reports.
+    if (s.kind === 'relay') { readiness[id] = Boolean(probe && Object.hasOwn(probe, id)); continue; }
     if (s.kind !== 'sibling') continue;
     readiness[id] = exists(siblingIndexPath(catalog, id));
   }

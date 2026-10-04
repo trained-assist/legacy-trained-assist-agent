@@ -56,6 +56,14 @@ function estimateToolTokens(mcpServers, { plan } = {}) {
       // Core defs carry `module`; hidden entries for core are bare file names.
       const tools = coreStaticTools().filter(t => !t.module || !hidden.has(t.module));
       tokens = estimateTokens(JSON.stringify(tools));
+    } else if (serverId === 'capability-relay') {
+      // The relay is not a registry sibling: its tool surface IS the contract file —
+      // the same projection tools/list serves (readiness not filtered, same deliberate
+      // upper-bound approximation as the sibling branch above; #2034).
+      try {
+        const { listTools, loadContract } = require('./capability-relay/contract.js');
+        tokens = estimateTokens(JSON.stringify(listTools(loadContract())));
+      } catch { tokens = null; }
     } else {
       const tools = siblingStaticTools(serverId);
       if (tools) tokens = estimateTokens(JSON.stringify(tools));

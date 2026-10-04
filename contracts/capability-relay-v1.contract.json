@@ -16,52 +16,199 @@
   ],
   "tools": [
     {
-      "toolId": "communication.prepare_message_draft",
-      "name": "capability_prepare_message_draft",
-      "description": "Prepare a candidate message draft through the canonical communication capability. Returns a draft for review; sends nothing.",
+      "toolId": "communication.generate_next_message_to_conversation_partner",
+      "name": "generate_next_message_to_conversation_partner",
+      "description": "Drafts ONE next outgoing message from the specified sender to the specified interlocutor, using their profile, dialog history and communication goal. Returns a draft; does not send it. Never re-asks a settled question, never ignores an open question from the interlocutor, and returns no_message_needed when the interlocutor asked to stop being contacted. After generating, the draft is checked by the guard and regenerated within the shared retry budget (2 attempts total).",
       "mutates": false,
+      "invoke": {
+        "path": "/v1/dialogs/next-message",
+        "body": "arguments",
+        "version_header": "x-contract-version",
+        "contract_version": "v1",
+        "endpoint_env": "COMMUNICATION_API_URL",
+        "token_env": "COMMUNICATION_TOKEN",
+        "toggle_env": "CAPABILITY_RELAY_COMMUNICATION"
+      },
       "inputSchema": {
         "type": "object",
-        "additionalProperties": false,
         "properties": {
-          "channel": {
-            "type": "string",
-            "enum": [
-              "hh",
-              "telegram"
-            ],
-            "description": "Where the draft is meant to be used."
+          "goal": {
+            "type": "object",
+            "description": "Цель ЭТОГО сообщения: что должен сделать следующий ход. Не стратегия кампании.",
+            "properties": {
+              "instruction": {
+                "type": "string",
+                "description": "Что именно должно быть в сообщении."
+              },
+              "required_points": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Пункты, которые обязаны быть в сообщении; каждый должен опираться на подтверждённый факт, иначе needs_context."
+              },
+              "forbidden_points": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Чего сообщение не должно касаться."
+              }
+            },
+            "required": [
+              "instruction"
+            ]
           },
-          "candidateRef": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 200,
-            "description": "Opaque reference to the candidate (negotiation id, resume id, profile-local id)."
-          },
-          "vacancyRef": {
-            "type": "string",
-            "maxLength": 200,
-            "description": "Opaque reference to the vacancy."
-          },
-          "tone": {
-            "type": "string",
-            "enum": [
-              "formal",
-              "friendly",
-              "startup"
+          "communication_style": {
+            "type": "object",
+            "description": "Только голос, тон, обращение, степень формальности. Не может менять цель или добавлять требования.",
+            "properties": {
+              "instructions": {
+                "type": "string"
+              },
+              "examples": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "instructions"
             ]
           },
           "language": {
             "type": "string",
-            "enum": [
-              "ru",
-              "en"
+            "description": "Явный код языка сообщения: ru, en. Неявных переключений по языку резюме нет."
+          },
+          "conversation_history": {
+            "type": "object",
+            "description": "Tagged union. {format:\"messages\", messages:[{id?, speaker:\"sender\"|\"partner\"|\"other\", text, timestamp?, speaker_name?}]} — порядок авторитетен, пустой массив = первое сообщение; либо {format:\"text\", text, speaker_labels:{sender,partner}, timezone?} — при неясных ролях возвращается needs_context, роли не выдумываются.",
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "messages",
+                  "text"
+                ]
+              },
+              "messages": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "speaker": {
+                      "type": "string",
+                      "enum": [
+                        "sender",
+                        "partner",
+                        "other"
+                      ]
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "timestamp": {
+                      "type": "string"
+                    },
+                    "speaker_name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "speaker",
+                    "text"
+                  ]
+                }
+              },
+              "text": {
+                "type": "string"
+              },
+              "speaker_labels": {
+                "type": "object",
+                "properties": {
+                  "sender": {
+                    "type": "string"
+                  },
+                  "partner": {
+                    "type": "string"
+                  }
+                }
+              },
+              "timezone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "format"
             ]
+          },
+          "partner_profile": {
+            "type": "object",
+            "description": "Профиль собеседника: {format:\"text\", text} или структурированные факты. Пустой профиль допустим и обозначается явно. Резюме — один вид профиля."
+          },
+          "sender_profile": {
+            "type": "object",
+            "description": "Имя, роль, организация, подпись отправителя. Без имени не представляться вымышленным."
+          },
+          "context": {
+            "type": "object",
+            "description": "Подтверждённые условия: вакансия/предложение, доступные слоты, ссылки, факты диалога, нерешённые вопросы. Только подтверждённое — отсюда берутся факты для сообщения."
+          },
+          "constraints": {
+            "type": "object",
+            "description": "Ограничения сильнее стиля и цели: max_characters, max_questions, forbidden_claims, required_verbatim_blocks, preserve_links, channel_format.",
+            "properties": {
+              "max_characters": {
+                "type": "number"
+              },
+              "max_questions": {
+                "type": "number"
+              },
+              "forbidden_claims": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "required_verbatim_blocks": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "preserve_links": {
+                "type": "boolean"
+              },
+              "channel_format": {
+                "type": "string"
+              }
+            }
+          },
+          "request_id": {
+            "type": "string",
+            "description": "Корреляция; возвращается в ответе."
+          },
+          "trace_id": {
+            "type": "string"
+          },
+          "context_revision": {
+            "type": "string",
+            "description": "Защита от устаревшего черновика: возвращается как есть."
+          },
+          "model_profile": {
+            "type": "string",
+            "description": "Только серверный allowlist (R8); произвольные модели/ключи не принимаются."
           }
         },
         "required": [
-          "channel",
-          "candidateRef"
+          "goal",
+          "communication_style",
+          "language",
+          "conversation_history"
         ]
       }
     }

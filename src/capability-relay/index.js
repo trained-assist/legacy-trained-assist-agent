@@ -10,10 +10,10 @@
 // never a dead process — the engine must stay usable with the feature switched off.
 
 const readline = require('readline');
-const { loadContract, listTools, findTool, checkResponseVersion } = require('./contract.js');
+const { loadContract, toolView, findTool, checkResponseVersion } = require('./contract.js');
 const { createRelayClient, DEFAULT_TIMEOUT_MS } = require('./client.js');
 const { RelayError, isRelayError } = require('./errors.js');
-const { relayEnvFrom } = require('./env.js');
+const { relayEnvFrom, toolReady } = require('./env.js');
 const { stderrLogger } = require('./telemetry.js');
 
 // The engine's MCP version (src/mcp-skills/index.js) — not ours to choose; R7 exists
@@ -33,18 +33,30 @@ function respondError(id, code, message, data) {
   send({ jsonrpc: '2.0', id, error: data ? { code, message, data } : { code, message } });
 }
 
-/** Build the client from the relay's own minimal env. Throws a typed error when unconfigured. */
-function buildClient(env = process.env) {
+/** Build the client for ONE tool from the relay's own minimal env. Throws a typed error when unconfigured. */
+function buildClient(tool, env = process.env) {
   const relayEnv = relayEnvFrom(env);
   const contract = loadContract();
   const pin = relayEnv.CAPABILITY_RELAY_CONTRACT_VERSION;
   if (pin) {
     checkResponseVersion(contract.version, Number(pin), { contract, source: 'CAPABILITY_RELAY_CONTRACT_VERSION' });
   }
+  // Endpoint and credential are named per capability (invoke binding) — a bound door
+  // never silently falls back to the default door's env.
+  const binding = tool && tool.invoke;
+  const endpoint = binding ? relayEnv[binding.endpoint_env] : relayEnv.CAPABILITY_RELAY_ENDPOINT;
+  const token = binding ? relayEnv[binding.token_env] : relayEnv.CAPABILITY_RELAY_TOKEN;
+  if (!endpoint || !token) {
+    const names = binding ? `${binding.endpoint_env} / ${binding.token_env}` : 'CAPABILITY_RELAY_ENDPOINT / CAPABILITY_RELAY_TOKEN';
+    throw new RelayError('misconfigured', {
+      message: `capability ${tool.toolId} is not configured: ${names} missing in the relay env`,
+      contractVersion: contract.version,
+    });
+  }
   return createRelayClient({
     fetchImpl: (...args) => fetch(...args),
-    endpoint: relayEnv.CAPABILITY_RELAY_ENDPOINT,
-    token: relayEnv.CAPABILITY_RELAY_TOKEN,
+    endpoint,
+    token,
     timeoutMs: relayEnv.CAPABILITY_RELAY_TIMEOUT_MS || DEFAULT_TIMEOUT_MS,
     contract,
     onEvent: stderrLogger(),
@@ -66,8 +78,11 @@ function handle(id, method, params) {
   }
 
   if (method === 'tools/list') {
-    // Verbatim projection of the contract — the same name/schema a REST caller sees.
-    respond(id, { tools: listTools(loadContract()) });
+    // Verbatim projection of the contract — the same name/schema a REST caller sees —
+    // minus tools that are not ready (#2034: no credentials → no entry, never a claim
+    // of readiness we cannot back).
+    const contract = loadContract();
+    respond(id, { tools: contract.tools.filter(t => toolReady(t, process.env)).map(toolView) });
     return;
   }
 
@@ -82,7 +97,15 @@ function handle(id, method, params) {
         contractVersion: contract.version,
       });
     }
-    const client = buildClient();
+    if (!toolReady(tool, process.env)) {
+      // Called anyway (not in tools/list, but the contract knows it): an explicit
+      // misconfigured, never a dead process and never a silent empty success.
+      throw new RelayError('misconfigured', {
+        message: `capability ${tool.toolId} is not ready: feature toggle off or endpoint/credential missing in the relay env`,
+        contractVersion: contract.version,
+      });
+    }
+    const client = buildClient(tool);
     return client
       .invoke({ toolId: tool.toolId, arguments: args || {}, authContext: meta.authContext, timeoutMs: meta.timeoutMs })
       .then(result => respond(id, { content: [{ type: 'text', text: JSON.stringify(result) }], isError: false }))

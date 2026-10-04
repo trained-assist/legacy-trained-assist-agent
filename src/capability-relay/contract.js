@@ -66,6 +66,21 @@ function loadContract({ file = CONTRACT_FILE, useCache = true } = {}) {
     if (!tool.inputSchema || tool.inputSchema.type !== 'object') {
       throw misconfigured(`capability tool ${tool.name} needs an object inputSchema`);
     }
+    // Per-capability HTTP door (#2061 PR2): transport mapping to a handler that does
+    // not expose the default envelope endpoint. Fully specified or absent — no partial
+    // binding that would make the relay guess.
+    if (tool.invoke !== undefined) {
+      const b = tool.invoke;
+      if (!b || typeof b !== 'object' || Array.isArray(b)) throw misconfigured(`capability tool ${tool.name}: invoke must be an object`);
+      for (const key of ['path', 'version_header', 'contract_version', 'endpoint_env', 'token_env', 'toggle_env']) {
+        if (typeof b[key] !== 'string' || !b[key]) throw misconfigured(`capability tool ${tool.name}: invoke.${key} must be a non-empty string`);
+      }
+      if (!b.path.startsWith('/') || b.path.includes('{')) throw misconfigured(`capability tool ${tool.name}: invoke.path must be a plain absolute path`);
+      if (b.body !== 'arguments' && b.body !== 'envelope') throw misconfigured(`capability tool ${tool.name}: invoke.body must be "arguments" or "envelope"`);
+      for (const key of ['endpoint_env', 'token_env', 'toggle_env']) {
+        if (!/^[A-Z][A-Z0-9_]*$/.test(b[key])) throw misconfigured(`capability tool ${tool.name}: invoke.${key} must be an env var name`);
+      }
+    }
     if (seenName.has(tool.name)) throw misconfigured(`duplicate capability tool name: ${tool.name}`);
     if (seenId.has(tool.toolId)) throw misconfigured(`duplicate capability toolId: ${tool.toolId}`);
     seenName.add(tool.name);
