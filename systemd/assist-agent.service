@@ -39,7 +39,20 @@ Environment=AGENT_DATA_DIR=/home/vova/agent-data
 # silently relocate them (identity ≠ location). See src/data-paths.js.
 Environment=USERS_DIR=/home/vova/users
 Environment=AGENT_TOKENS_DIR=/home/vova/agent-tokens
+# Machine origin — the agent box itself. OAuth /connect/* callbacks, /tokens,
+# /api/* and /tg-proxy are answered only here, so this must NOT become the
+# branded domain: recruiter-assistant.ru falls through to the RU edge, which
+# 401s /connect/gdrive/callback and would break Google OAuth.
 Environment=AGENT_PUBLIC_URL=https://136-65-7-197.sslip.io/agent
+# Pages origin — the branded domain of the area, for links a human opens
+# (instant-publish /p/*, every HH page). Page links naming a legacy origin are
+# repointed here on the way out (src/public-links.js); /health reports which
+# origin is in effect and whether this var was ignored.
+Environment=AGENT_PAGES_URL=https://recruiter-assistant.ru
+# HH page + ATS-editor base, same machine origin as AGENT_PUBLIC_URL. Stays here
+# on purpose: /hh/* links are repointed to AGENT_PAGES_URL as they are emitted,
+# and platform.recruiter-assistant.ru must not be used — it is the vacancy
+# vhost and answers /hh/* with 401.
 Environment=HH_PLATFORM_URL=https://136-65-7-197.sslip.io/agent
 Environment=VACANCY_REMOTE_STORE_URL=https://platform.recruiter-assistant.ru
 # RU-IP edge service (src/ru-edge.js, issue #1288) — nalog.ru login delegation
