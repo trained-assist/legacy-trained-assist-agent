@@ -405,14 +405,36 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
   it('soft finalization: semantic checks the judge rejects do not block — logged as unconfirmed', async () => {
     const G = require('../../src/gtd-controller.js');
     const { readDefects } = require('../../src/playbook-defects-log.js');
+    const { isMaterialValidator } = require('../../src/playbook-material');
     const { task } = startPlan(G, 'feature');
+    // R2: MATERIAL result criteria block even in soft mode, so this case keeps testing
+    // what soft mode still means — a rejected ADVISORY semantic check. The judge rejects
+    // everything except the material result keys (which the next case covers).
     const t = await drive(G, task.id, { runTask: scriptedEngine({ calls: [] }), registry: fakeGitHub(),
-      llmValidate: async () => ({ status: 'fail', subject: null, evidence: { reason: 'judge says no' } }) });
+      llmValidate: async (ctx) => (isMaterialValidator(ctx.key)
+        ? { status: 'pass', reason: 'delivered' }
+        : { status: 'fail', subject: null, evidence: { reason: 'judge says no' } }) });
     expect(t.status).toBe('done'); // red checks (pr_opened, ci_green, merged…) passed deterministically
     const d = readDefects({ taskId: task.id });
     expect(d.length).toBeGreaterThan(0);
     expect(d.every(x => x.kind === 'unconfirmed')).toBe(true);
     expect(d.map(x => x.validator)).not.toContain('ci_green');
+  }, 30_000);
+
+  it('soft finalization: a rejected MATERIAL result criterion blocks the plan (R2)', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { readDefects } = require('../../src/playbook-defects-log.js');
+    const { task } = startPlan(G, 'feature');
+    // The judge rejects everything, including «verified in real environment» / «docs
+    // landed». Deterministic checks still passed — but nothing was delivered, so the
+    // plan must not report done.
+    const t = await drive(G, task.id, { runTask: scriptedEngine({ calls: [] }), registry: fakeGitHub(),
+      llmValidate: async () => ({ status: 'fail', subject: null, evidence: { reason: 'judge says no' } }) });
+    expect(t.status).toBe('blocked');
+    expect(G.durableStore().getTask(task.id, PROFILE).blocker_reason).toMatch(/материальный результат не подтверждён/);
+    const mat = readDefects({ taskId: task.id, kind: 'material_unmet' });
+    expect(mat.length).toBeGreaterThan(0);
+    expect(mat.map(x => x.validator)).toContain('user_scenario_verified_in_real_environment');
   }, 30_000);
 
   it('strict finalization: the same run is blocked (never a silent stall) and the owner is told', async () => {
@@ -432,8 +454,10 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
       llmValidate: async () => ({ status: 'fail', subject: null, evidence: { reason: 'judge says no' } }),
       notify: async ({ text }) => { told.push(text); } });
     expect(t.status).toBe('blocked');
-    expect(store.getTask(task.id, PROFILE).blocker_reason).toMatch(/unmet checks/);
-    expect(told.some(x => /unmet checks/.test(x))).toBe(true);
+    // R2: material criteria are reported in their own words; everything else stays as before.
+    expect(store.getTask(task.id, PROFILE).blocker_reason)
+      .toMatch(/материальный результат не подтверждён|unmet checks/);
+    expect(told.some(x => /материальный результат не подтверждён|unmet checks/.test(x))).toBe(true);
     expect(readDefects({ taskId: task.id, kind: 'blocked' }).length).toBeGreaterThan(0);
   }, 30_000);
 

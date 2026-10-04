@@ -61,7 +61,7 @@ function activeContractTask(G, { goal, items, sessionId, executionPolicy }) {
     const item = store.listTaskItems(taskId, 'u1')[0];
     ok(fired === 1, `durable: one item fired (got ${fired})`);
     ok(/step one/.test(prompted) && /DURABLE: done/.test(prompted), 'durable: prompt carries step + completion marker');
-    ok(firedOpts.stepTimeoutMs === 2400 * 1000, `durable: a 600s step is floored at the 40-min run cap (got ${firedOpts && firedOpts.stepTimeoutMs})`);
+    ok(firedOpts.stepTimeoutMs === 600 * 1000, `durable: the declared 600s step budget is honoured as written (got ${firedOpts && firedOpts.stepTimeoutMs})`);
     ok(firedOpts.engine === 'opencode' && firedOpts.ocProfile === 'master',
       `durable: bachelor contract item resolves to opencode/master (got ${firedOpts && firedOpts.engine}/${firedOpts && firedOpts.ocProfile})`);
     ok(firedOpts.user && /users[/\\]u1$/.test(firedOpts.user.workDir),
