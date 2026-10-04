@@ -1156,7 +1156,6 @@ async function main() {
           const prepared = await materializeFileRefs({
             workDir, username, fileRefs, task: effectiveText,
             engine: profiles.getEngine(workDir, chatId ?? 0),
-            openrouterKey: secrets.OPENROUTER_API_KEY,
             gatewayUrl: process.env.MEDIA_GATEWAY_URL, agentSecret: secrets.AGENT_SECRET,
           });
           effectiveText = prepared.task;
@@ -1313,7 +1312,6 @@ async function main() {
             try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
             const fileNote = await buildFileNote({
               filePath, mimeType: fileMimeType, engine: runEngine,
-              openrouterKey: secrets.OPENROUTER_API_KEY,
             });
             effectiveTask = effectiveTask ? `${fileNote}\n\n${effectiveTask}` : fileNote;
           } catch (e) {

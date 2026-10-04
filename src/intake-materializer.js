@@ -15,11 +15,12 @@ function fsyncPath(filePath) {
   try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
 }
 
-async function buildFileNote({ filePath, mimeType, engine, openrouterKey, vision = mediaVision }) {
+async function buildFileNote({ filePath, mimeType, engine, vision = mediaVision }) {
   const typeNote = mimeType ? ` (${mimeType})` : '';
   let note = `[Файл сохранён: ${filePath}${typeNote}. Временное медиа: TTL 48 часов. Если файл нужен проекту надолго, сохрани его в артефакты проекта.]`;
-  if (engine === 'opencode' && mimeType?.startsWith('image/') && openrouterKey) {
-    const result = await vision.extractImageText({ filePath, mimeType, openrouterKey });
+  // Ключа у агента нет: распознавание идёт через llm-ladder (#2092).
+  if (engine === 'opencode' && mimeType?.startsWith('image/')) {
+    const result = await vision.extractImageText({ filePath, mimeType });
     if (result.ok) note += `\n[Распознано на изображении:\n${result.text}]`;
     // A silent failure left the 29.09 04:02 screenshot with no block and no way to
     // tell why (credits? network? refusal?) — the reason now reaches journalctl.
@@ -29,7 +30,7 @@ async function buildFileNote({ filePath, mimeType, engine, openrouterKey, vision
 }
 
 async function materializeFileRefs({
-  workDir, username, fileRefs, task = '', engine, openrouterKey,
+  workDir, username, fileRefs, task = '', engine,
   gatewayUrl, agentSecret, vision = mediaVision, r2 = require('./r2-media'),
 }) {
   if (!Array.isArray(fileRefs) || !fileRefs.length) return { task, fileRefs: [] };
@@ -67,9 +68,7 @@ async function materializeFileRefs({
     // Compressor (gateway marks it): a transcribed voice/audio ref is pure noise
     // for the model — copy it and release the pin, but withhold the file note.
     if (ref.note !== false) {
-      const note = await buildFileNote({
-        filePath, mimeType: mime, engine, openrouterKey, vision,
-      });
+      const note = await buildFileNote({ filePath, mimeType: mime, engine, vision });
       effectiveTask = effectiveTask ? `${note}\n\n${effectiveTask}` : note;
     }
     normalized.push({ ...ref, id: ref.id, name, mime });
