@@ -33,6 +33,7 @@ ensure_hh_sibling() {
     echo "Pinned HH release $revision is missing/incomplete; refusing host deploy" >&2
     return 1
   }
+  node "$target/scripts/check-hh-route-ownership.cjs" "$RELEASE_DIR" || return 1
   node "$RELEASE_DIR/scripts/check-mcp-conformance.js" "$target" || return 1
   node "$RELEASE_DIR/scripts/check-skill-schedule.js" "$target" || return 1
   link="$RELEASES_DIR/trained-assist-hh-skill"
