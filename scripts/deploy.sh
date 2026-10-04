@@ -14,6 +14,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=release-lib.sh
 source "$SCRIPT_DIR/release-lib.sh"
+source "$SCRIPT_DIR/hh-pinned-deploy.sh"
 
 case "${DEPLOY_ENV:-}" in
   gcp) UNIT_VARIANT="" ;;
@@ -63,7 +64,8 @@ export PREV_RELEASE
 # 10 merges → 20 hard restarts; group chats died mid-answer twice per merge). FORCE_DEPLOY=1 opts out.
 if [ "${FORCE_DEPLOY:-}" != 1 ] && [ -n "$PREV_RELEASE" ] \
    && [ "$(basename "$PREV_RELEASE")" = "$TARGET" ] \
-   && $SUDO systemctl is-active --quiet "$SERVICE"; then
+   && $SUDO systemctl is-active --quiet "$SERVICE" \
+   && hh_pin_matches_current; then
   echo "==> $TARGET is already live and $SERVICE is active — skipping restart (FORCE_DEPLOY=1 to override)"
   exit 0
 fi
@@ -158,7 +160,7 @@ ensure_sibling() {
   $SUDO mkdir -p "$RELEASES_DIR"
   $SUDO ln -sfn "$dir" "$RELEASES_DIR/$repo"
 }
-ensure_sibling trained-assist-hh-skill "$HH_SKILL_DIR"
+ensure_hh_sibling || { echo "Pinned HH gate failed; previous agent remains live" >&2; exit 1; }
 ensure_sibling trained-assist-engineering "$ENGINEERING_DIR"
 ensure_sibling trained-assist-freelance-skill "$FREELANCE_SKILL_DIR"
 ensure_sibling trained-assist-sales-skill "$SALES_SKILL_DIR"
