@@ -11,42 +11,25 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { readCredentialFile } = require('./credential-store');
-const { orHeaders } = require('./or-attribution');
+const { serviceChat } = require('./service-llm');
 
 // ─── OpenRouter (fallback) ────────────────────────────────────────────────────
 
-// `app` is the analytics identity of the call (OpenRouter "Application" cut is keyed by the
-// HTTP-Referer URL, see src/or-attribution.js). Without it every request lands in "Unknown"
-// and the spend cannot be attributed to a caller.
-function llmCall(apiKey, model, messages, maxTokens = 2000, temperature = 0.1, { app = 'llm-client', title } = {}) {
-  return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ model, messages, temperature, max_tokens: maxTokens });
-    const req = https.request({
-      hostname: 'openrouter.ai',
-      path: '/api/v1/chat/completions',
-      method: 'POST',
-      headers: orHeaders({
-        apiKey,
-        app,
-        title,
-        extra: { 'Content-Length': Buffer.byteLength(body) },
-      }),
-    }, (res) => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          if (parsed.error) reject(new Error(parsed.error.message || JSON.stringify(parsed.error)));
-          else resolve(parsed.choices[0].message.content);
-        } catch (e) { reject(e); }
-      });
-    });
-    req.setTimeout(20_000, () => req.destroy(new Error('openrouter timeout')));
-    req.on('error', reject);
-    req.write(body);
-    req.end();
+// Прямого обращения к провайдеру больше нет (#2092): fallback идёт через llm-ladder,
+// который владеет пулом ключей OpenRouter, failover'ами по rung'ам и атрибуцией
+// (`source` =  former `app` — analytics-имя вызывающего инструмента).
+// `apiKey`/`model` сохранены в сигнатуре для совместимости вызовов, но не используются:
+// модель выбирает лестница.
+async function llmCall(_apiKey, _model, messages, maxTokens = 2000, temperature = 0.1, { app = 'llm-client' } = {}) {
+  const out = await serviceChat({
+    messages,
+    maxTokens,
+    temperature,
+    timeoutMs: 20000,
+    source: app,
   });
+  if (!out?.content) throw new Error('llm-ladder returned no content');
+  return out.content;
 }
 
 // ─── GigaChat (primary) ───────────────────────────────────────────────────────
