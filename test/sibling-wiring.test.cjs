@@ -37,7 +37,14 @@ test('skill-siblings.js and catalog.servers list the same sibling servers, same 
 test('deploy.sh ensure_sibling covers every skill sibling', () => {
   const deploy = fs.readFileSync(path.join(ROOT, 'scripts', 'deploy.sh'), 'utf8')
     .split('\n').filter(l => !/^\s*#/.test(l)).join('\n'); // a commented-out call is not a call
-  const called = new Set([...deploy.matchAll(/ensure_sibling\s+(\S+)/g)].map(m => m[1]));
+  let wiring = deploy;
+  if (/source "\$SCRIPT_DIR\/hh-pinned-deploy\.sh"/.test(deploy) && /(?:^|\n)ensure_hh_sibling\b/.test(deploy)) {
+    const helper = fs.readFileSync(path.join(ROOT, 'scripts', 'hh-pinned-deploy.sh'), 'utf8')
+      .split('\n').filter(l => !/^\s*#/.test(l)).join('\n');
+    assert.match(helper, /function\s+ensure_hh_sibling|ensure_hh_sibling\(\)/, 'the delegated HH provisioner must exist');
+    wiring += '\n' + helper;
+  }
+  const called = new Set([...wiring.matchAll(/ensure_sibling\s+(\S+)/g)].map(m => m[1]));
   for (const sib of SKILL_SIBLINGS) {
     assert.ok(
       called.has(sib.repo),
