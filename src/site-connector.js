@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const { tokensRoot } = require('./data-paths');
-const { orHeaders } = require('./or-attribution');
+const serviceLlm = require('./service-llm');
 const {
   slugFor,
   saveSiteConfig,
@@ -329,8 +329,7 @@ async function runBackgroundCrawl(browser, context, page, username, slug, config
 // ── Claude Haiku analysis ────────────────────────────────────────────────────
 
 async function analyzeAndGenerateIntents(url, pages, apiEndpoints, forms) {
-  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-  if (!OPENROUTER_API_KEY) return defaultIntents(url);
+  // Ключа у агента нет: весь LLM идёт через llm-ladder (#2092).
 
   try {
     let hostname;
@@ -365,20 +364,18 @@ ${JSON.stringify(summary, null, 2)}
 - Навигация/поиск по сайту
 Используй в паттернах hostname или ключевые слова из названия сайта.`;
 
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: orHeaders({ apiKey: OPENROUTER_API_KEY, app: 'site-connector' }),
-      body: JSON.stringify({
-        model: 'google/gemini-3.1-flash-lite-preview',
-        max_tokens: 1200,
+    let text = '';
+    try {
+      const out = await serviceLlm.serviceChat({
         messages: [{ role: 'user', content: prompt }],
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
-
-    if (!res.ok) throw new Error(`OpenRouter API ${res.status}`);
-    const data = await res.json();
-    const text = data.choices?.[0]?.message?.content || '';
+        maxTokens: 1200,
+        timeoutMs: 30000,
+        source: 'site-connector',
+      });
+      text = String(out?.content || '');
+    } catch (e) {
+      throw new Error(e?.message || 'service-llm failed');
+    }
     const match = text.match(/\[[\s\S]*\]/);
     if (match) {
       const parsed = JSON.parse(match[0]);
