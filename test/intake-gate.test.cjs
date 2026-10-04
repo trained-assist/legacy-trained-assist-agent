@@ -7,10 +7,16 @@ const serviceLlm = require('../src/service-llm');
 // через llm-ladder, поэтому мокаем serviceChat, а не fetch.
 function withLadder(content, fn) {
   const real = serviceLlm.serviceChat;
+  const realAvailable = serviceLlm.available;
+  // В CI нет файла токена — без этого сработает fail-closed и судья не позовётся.
+  serviceLlm.available = () => true;
   serviceLlm.serviceChat = async () => ({ content });
   return Promise.resolve()
     .then(fn)
-    .finally(() => { serviceLlm.serviceChat = real; });
+    .finally(() => {
+      serviceLlm.serviceChat = real;
+      serviceLlm.available = realAvailable;
+    });
 }
 function fakeFetch(content) {
   return async () => ({
