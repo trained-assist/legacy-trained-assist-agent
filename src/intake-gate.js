@@ -64,6 +64,9 @@ async function checkCompleteness(text, _openrouterKey, { lastAssistant = null } 
   const closure = classifyClosure(trimmed);
   if (closure === 'stop') return stopVerdict();
   if (closure === 'wrap_up') return wrapUpVerdict();
+  // Без токена лестницы судья не зовётся — держим ввод (тот же fail-closed,
+  // что раньше давал отсутствующий ключ).
+  if (!serviceLlm.available()) return hold();
   // A named link lookup is already actionable; retrieving account context is
   // the assistant's job, not a reason to demand a deep session. Keep incomplete
   // and multi-line requests with the model gate.
@@ -92,12 +95,15 @@ ${contextBlock}
 ${trimmed.length <= 6000 ? trimmed : trimmed.slice(0, 3000) + '\n[середина опущена]\n' + trimmed.slice(-3000)}`;
 
   // Ключа у агента нет: весь LLM идёт через llm-ladder (#2092).
-  const answer = (await serviceLlm.serviceChat({
+  // Сначала await, потом .content: `await f()?.content` разбирается как
+  // `await (f()?.content)`, а у промиса нет .content — ответ был бы всегда пустым.
+  const ladderAnswer = await serviceLlm.serviceChat({
     messages: [{ role: 'user', content: prompt }],
     maxTokens: 16,
     timeoutMs: 8000,
     source: 'intake-gate',
-  })?.content || '').toLowerCase();
+  });
+  const answer = (ladderAnswer?.content || '').toLowerCase();
   const match = answer.match(/\b(clear|likely|insufficient|continue|wrap_up|stop)\b/);
   const level = match ? match[1] : 'insufficient';
   if (level === 'wrap_up') return wrapUpVerdict();
