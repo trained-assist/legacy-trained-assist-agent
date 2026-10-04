@@ -54,7 +54,7 @@ function loadLastAssistant({ username, chatId, threadId, sessionsDir } = {}) {
   return null;
 }
 
-async function checkCompleteness(_openrouterKey, { lastAssistant = null } = {}) {
+async function checkCompleteness(text, _openrouterKey, { lastAssistant = null } = {}) {
   const trimmed = (text || '').trim();
   // Explicit waiting must dominate shortcuts and model optimism.
   if (/(?:подожди|погоди|не запускай|не начинай|ещ[её] (?:допишу|пришлю|добавлю)|сейчас (?:пришлю|допишу)|я ещ[её] (?:пишу|не закончил)|wait|hold on|don['’]t start)/i.test(trimmed)) return hold();
