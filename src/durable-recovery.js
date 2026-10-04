@@ -35,6 +35,27 @@ const QUALITY_MAX_ATTEMPTS = 3;
 // terminal, just after this many free retries instead of burning max_attempts).
 const INFRA_MAX_RETRIES = 5;
 
+// R3: the engine's own hard wall-clock cap (claude-runner.js CLAUDE_TIMEOUT_MS).
+// A step budget can never buy more than this, so escalation stops here.
+const ENGINE_HARD_CAP_SEC = 40 * 60;
+
+/**
+ * R3 — a hard timeout is a STEP signal (the work did not fit the budget), not a model
+ * failure. But re-running it with the SAME budget just kills it again — that is what the
+ * 2026-10-01 incident burned three retries on. So the retry gets twice the time, capped
+ * at the engine's hard cap: attempt 1 runs the declared budget honestly, attempt 2 gets
+ * 2×, attempt 3 gets 4× (or the cap). The attempt itself is still spent — this only makes
+ * the next attempt meaningfully different.
+ */
+function escalateStepBudget(store, itemId, profileId, item) {
+  const current = Number(item && item.execution_timeout_seconds) || 0;
+  if (current <= 0) return null; // no declared budget (legacy item) — nothing to grow
+  const next = Math.min(ENGINE_HARD_CAP_SEC, current * 2);
+  if (next === current) return current;
+  const updated = store.updateTaskItem(itemId, { execution_timeout_seconds: next }, profileId);
+  return (updated && updated.execution_timeout_seconds) || next;
+}
+
 // Which policy action re-pends the same target (the pre-P3c path).
 const RETRY_ACTIONS = new Set(['retry_same', 'conservative_retry', 'execution_retry', 'tool_specific_retry']);
 // Which action bumps the step's model level (bachelor→master→doctor; the engine at the top).
@@ -196,6 +217,15 @@ async function recoverDurableItem({
   let move = action;
   let delayMs = retryDelayMs;
 
+  // R3: a hard timeout retry gets a BIGGER budget, so it is not the same run again
+  // (the declared budget is honoured on attempt 1 — gtd-controller.js). The attempt
+  // itself is still spent: this only changes what the next attempt is allowed to take.
+  let budgetSec = null;
+  if (failureClass === 'TIMEOUT') {
+    budgetSec = escalateStepBudget(store, itemId, profileId, item);
+    if (budgetSec) console.log(`[durable-recovery] timeout retry ${itemId.slice(0, 8)}: budget → ${budgetSec}s`);
+  }
+
   if (MODEL_ACTIONS.has(action)) {
     // One rung up, but never an automatic jump onto Claude/Codex (#1899): a level that
     // resolves to a paid engine stays out of reach unless the plan declared it as minimum.
@@ -218,10 +248,10 @@ async function recoverDurableItem({
   store.updateTaskItem(itemId, {
     last_failure_class: failureClass, last_recovery_action: move,
   }, profileId);
-  return { recovered: true, failureClass, action: move, attempts: r.attempts, maxAttempts: r.maxAttempts, reason: 'repended' };
+  return { recovered: true, failureClass, action: move, attempts: r.attempts, maxAttempts: r.maxAttempts, reason: 'repended', budgetSec };
 }
 
 module.exports = {
   recoverDurableItem, retryFailedItem,
-  RETRY_ACTIONS, MODEL_ACTIONS, INFRA_MAX_RETRIES,
+  RETRY_ACTIONS, MODEL_ACTIONS, INFRA_MAX_RETRIES, ENGINE_HARD_CAP_SEC, escalateStepBudget,
 };
