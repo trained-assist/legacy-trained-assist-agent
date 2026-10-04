@@ -5,6 +5,11 @@
 # ~/agent-master -> ~/agent-releases/<sha>, built from the commit, never from
 # the session worktree. Unlike the full agent there is no task-queue, no Claude,
 # no MCP, no workspace migration and no HH sibling checkout — a plain restart.
+#
+# No engine on this box, by design (#1288): ru-edge never spawns opencode/claude,
+# so scripts/engine-forever.sh (the pinned opencode fork) is deliberately NOT run
+# here and must not be — there is no engine to provision. Verified 2026-10-04 on
+# the live box: no opencode package, no engine processes, no engine database.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
