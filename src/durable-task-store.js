@@ -463,7 +463,10 @@ class DurableTaskStore {
                      // P3c: recovery observability (set by durable-recovery.js)
                      'last_failure_class', 'last_recovery_action',
                      // quality escalation (durable-recovery): the level the next attempt runs at
-                     'current_model_level'];
+                     'current_model_level',
+                     // R3: budget escalation — a TIMEOUT retry doubles the step's own
+                     // wall-clock budget (capped at the engine hard cap in durable-recovery.js)
+                     'execution_timeout_seconds'];
     const sets = [];
     const args = [];
     for (const k of allowed) {

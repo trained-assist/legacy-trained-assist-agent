@@ -643,14 +643,19 @@ async function fireTaskHooks(store, task, event, vars, sinks, approved) {
   }
 }
 
-// Step wall-clock floor (owner 2026-10-01): a declared 600/900s budget killed real
-// steps (scenario/research on OpenCode) mid-work and burned retries on a TIMEOUT that
-// was never a quality failure. Every durable step now gets at least the engine's
-// 40-min run cap; a longer declared budget is still clamped to that cap by the runner.
-// Overridable with DURABLE_STEP_MIN_TIMEOUT_SEC (0 = honour the declared budget as-is).
+// Step wall-clock budget (R3, #106). The declared `execution_timeout_seconds` is
+// honoured as written. A flat floor added 2026-10-01 (to stop a declared 600/900s
+// budget killing real steps mid-work) also NEUTRALISED every declaration — the floor
+// equalled the engine's hard cap, so all 73 shipped steps got exactly 2400s and a
+// 5-minute "spec check" step could not be declared short. What that incident actually
+// needed — «a too-small budget must not be killed three times identically» — is now
+// budget ESCALATION on retry instead (durable-recovery.js: a TIMEOUT retry gets twice
+// the time, capped at the engine's hard cap), so the first attempt stays honest and
+// the later ones get room.
+// DURABLE_STEP_MIN_TIMEOUT_SEC stays as an explicit operator floor (default 0 = off).
 const DURABLE_STEP_MIN_TIMEOUT_SEC = (() => {
   const v = Number(process.env.DURABLE_STEP_MIN_TIMEOUT_SEC);
-  return Number.isFinite(v) && v >= 0 ? v : 40 * 60;
+  return Number.isFinite(v) && v >= 0 ? v : 0;
 })();
 function effectiveStepTimeoutMs(declaredSec, floorSec = DURABLE_STEP_MIN_TIMEOUT_SEC) {
   const declared = Number.isFinite(declaredSec) && declaredSec > 0 ? declaredSec : 0;
