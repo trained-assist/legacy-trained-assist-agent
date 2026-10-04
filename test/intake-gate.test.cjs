@@ -91,13 +91,18 @@ test('a short continuation fast-path needs the previous assistant message', asyn
 test('the assistant context reaches the classifier prompt', async () => {
   let prompt;
   const real = serviceLlm.serviceChat;
+  const realAvailable = serviceLlm.available;
+  serviceLlm.available = () => true;
   serviceLlm.serviceChat = async (args) => {
     prompt = args.messages[0].content;
     return { content: 'continue' };
   };
   try {
     await checkCompleteness('продолжай', null, { lastAssistant: 'ASSISTANT-SAID-THIS' });
-  } finally { serviceLlm.serviceChat = real; }
+  } finally {
+    serviceLlm.serviceChat = real;
+    serviceLlm.available = realAvailable;
+  }
   assert.ok(prompt.includes('ASSISTANT-SAID-THIS'));
 });
 
@@ -131,13 +136,18 @@ test('wait instructions dominate named-link shortcuts and optimistic model answe
 test('keeps the end of long input where waiting instructions or task details arrive', async () => {
   let prompt;
   const real = serviceLlm.serviceChat;
+  const realAvailable = serviceLlm.available;
+  serviceLlm.available = () => true;
   serviceLlm.serviceChat = async (args) => {
     prompt = args.messages[0].content;
     return { content: 'likely' };
   };
   try {
     await checkCompleteness('a'.repeat(7000) + ' LAST DETAIL');
-  } finally { serviceLlm.serviceChat = real; }
+  } finally {
+    serviceLlm.serviceChat = real;
+    serviceLlm.available = realAvailable;
+  }
   assert.ok(prompt.includes('LAST DETAIL'));
 });
 
