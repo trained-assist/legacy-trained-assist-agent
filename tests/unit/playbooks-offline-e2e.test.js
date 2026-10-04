@@ -461,6 +461,50 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     expect(readDefects({ taskId: task.id, kind: 'blocked' }).length).toBeGreaterThan(0);
   }, 30_000);
 
+  it('#120 replay: an approved spec runs ONE framing step, every delivery gate still runs', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { PlaybookStore } = require('../../src/playbook-store.js');
+    const { compilePlaybook } = require('../../src/playbook-compiler.js');
+    const pb = new PlaybookStore({ profileId: PROFILE }).get('feature');
+    const c = compilePlaybook(pb, {
+      goal: 'offline e2e: todo-cli', vars: { repo: 'acme/todo-cli' },
+      spec_ref: 'trained-assist/agent#2061',
+    });
+    const store = G.durableStore();
+    const { task } = store.createPlan({
+      profile_id: PROFILE, goal: c.goal, user_value: c.user_value,
+      acceptance_criteria: c.acceptance_criteria, items: c.items, hooks: c.hooks,
+      playbook_id: pb.id, playbook_version: pb.version,
+      execution_policy: { level_map: LEVEL_MAP, hooks_approved: true },
+    });
+    store.updateTask(task.id, PROFILE, { status: 'active' });
+    const calls = [];
+    const t = await drive(G, task.id, { runTask: scriptedEngine({ calls }), registry: fakeGitHub() });
+
+    const ran = re => calls.some(x => re.test(x.title));
+    // The acceptance of #120: ≤1 framing step before apply, artefacts reference the spec
+    // sections instead of re-deriving them.
+    expect(calls.filter(x => /^Сверка одобренной спецификации/.test(x.title))).toHaveLength(1);
+    for (const skipped of [/^Сценарий пользователя/, /^Исследование/, /^Сложность требований/,
+      /^Предложение изменения/, /^Декларация плана/]) {
+      expect(ran(skipped), `framing step must not run on the fast path: ${skipped}`).toBe(false);
+    }
+    // …and the fast path removes ONLY the framing: every non-framing step of the plain
+    // plan is still in the compiled plan, programmatic ones included (`PR смержен` never
+    // spawns a model, so it can only be asserted on the plan, not on the calls).
+    const plain = compilePlaybook(pb, { goal: 'offline e2e: todo-cli', vars: { repo: 'acme/todo-cli' } });
+    const fastTitles = c.items.map(i => i.title);
+    const nonFraming = plain.items.filter(i => !['frame', 'propose', 'design'].includes(i.stage));
+    expect(nonFraming.length).toBeGreaterThan(5);
+    for (const item of nonFraming) expect(fastTitles, `kept: ${item.title}`).toContain(item.title);
+    // And the agent-run delivery gates actually executed.
+    for (const gate of [/^Песочница/, /^Реализация/, /^Полная локальная проверка/, /^Открыть PR/,
+      /^CI зел/, /^Деплой/, /^Проверка сценария/, /^Архивация/]) {
+      expect(ran(gate), `delivery gate must still run: ${gate}`).toBe(true);
+    }
+    expect(t.status).toBe('done');
+  });
+
   it('an agent may close its current step as an exception — no judge, logged, plan goes on', async () => {
     const G = require('../../src/gtd-controller.js');
     const { readDefects } = require('../../src/playbook-defects-log.js');
