@@ -66,12 +66,15 @@ describe('engineering-baseline core domain', () => {
 
 describe('buildDomainBlock keeps the baseline when the engineering domain is hidden', () => {
   it('the misclassified coding turn: intent narrowed onto another section', () => {
+    // Note: CI checks the sibling out fresh, a stale local clone does not have it — so the
+    // negative assertion below is meaningful in CI and merely true locally. It is written
+    // against the sibling domain's OWN HEADING, never a tool name: other domains may
+    // legitimately mention repo_map.
     const file = mcpConfig({ hiddenDomains: ['engineering', 'github.setup', 'spec-generation'] });
     const block = buildDomainBlock(file, { probe: PROBE });
     expect(block).toContain('Coding discipline');
     expect(block).toContain('draft PR');
-    // the section-specific domain is still gone — the baseline does not resurrect it
-    expect(block).not.toContain('repo_map');
+    expect(block).not.toContain('Software engineering — workspace and PRs');
   });
 
   it('a legacy run with no skills plan keeps it too', () => {
