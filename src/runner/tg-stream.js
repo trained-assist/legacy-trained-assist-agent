@@ -44,10 +44,14 @@ function tgFixer() {
   return _tgFixer;
 }
 
-async function tgFormat(text, extra) {
+async function tgFormat(text, extra, ctx = null) {
   text = canonicalizePublicLinks(text);
   if (extra && extra.parse_mode) return { text, extra };
-  const { text: out, parse_mode } = await formatForTelegram(text, { llmFix: tgFixer() });
+  // Bind the identity per call around the cached fixer — the format rung is a service-llm call,
+  // and without it it lands in ladder_calls anonymous (chat_id was never sent from service-llm).
+  const fixer = tgFixer();
+  const llmFix = fixer ? (html, reason) => fixer(html, reason, ctx) : null;
+  const { text: out, parse_mode } = await formatForTelegram(text, { llmFix });
   return { text: out, extra: parse_mode ? { ...extra, parse_mode } : extra };
 }
 
@@ -123,7 +127,7 @@ async function tgSend(token, chatId, text, extra = {}, threadId = null) {
   if (!hasTelegramChat(chatId)) return NO_TELEGRAM_CHAT;
   const suppressed = _suppressForLogChat(chatId, 'send', text);
   if (suppressed) return suppressed;
-  const f = await tgFormat(text, extra);
+  const f = await tgFormat(text, extra, { chat: chatId });
   const body = { chat_id: chatId, text: f.text, ...f.extra };
   if (Number.isInteger(threadId) && threadId > 0) body.message_thread_id = threadId;
   const res = await fetch(`${TG_API}/bot${token}/sendMessage`, {
@@ -217,7 +221,7 @@ async function tgEdit(token, chatId, messageId, text, extra = {}, opts = {}) {
   if (suppressed) return suppressed;
   const deliveryKey = `${String(token).split(':')[0]}:${chatId}`;
   const { retries = 3, bestEffort = false, coalesce = false } = opts;
-  const f = await tgFormat(text, extra);
+  const f = await tgFormat(text, extra, { chat: chatId });
   // A message that's been dropped MAX_STARVE_STREAK times in a row (coalesce-skip
   // or best-effort 429-drop) is forced through below: skip coalescing, and if it
   // still 429s, actually wait it out instead of dropping — see MAX_STARVE_STREAK.

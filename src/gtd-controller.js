@@ -1505,7 +1505,11 @@ async function _settleDurableReply(ctx, reply) {
         await fireTaskHooks(store, task, 'task_failed', hookVars({ error: errText }), sinks, hooksApproved);
       }
     } else {
-      const judged = await (ctx.markerJudge || judgeMarkerlessReply)({ said, item: itemSnap, task });
+      // Attribution: the judge decides whether a durable step passed, so its rung trace must
+      // name the profile and the item. task.profile_id IS the username (see settleCtx above).
+      const judged = await (ctx.markerJudge || judgeMarkerlessReply)({ said, item: itemSnap, task, ctx: {
+        trace: (itemSnap && itemSnap.id) || null, user: (task && task.profile_id) || null,
+      } });
       // The judge call is the longest async window in a settle (up to ~15 s) —
       // the step may have been re-claimed while it ran.
       if (isStaleAttempt(ctx)) { refuseStaleAttempt(ctx, 'marker-judge'); return; }

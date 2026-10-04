@@ -245,11 +245,13 @@ function extractJson(raw) {
 
 // Issue triage gate on the service-LLM ladder (src/service-llm.js: Go rungs → OpenRouter last).
 // Name kept for callers/tests.
-async function openrouterClassify(issue, goalsContext, { apiKey = null } = {}) {
+async function openrouterClassify(issue, goalsContext, { apiKey = null, ctx = null } = {}) {
   const serviceLlm = require('./service-llm');
   if (!serviceLlm.available(apiKey)) throw new Error('no LLM key (OpenCode Go / OPENROUTER_API_KEY)');
   const { system, user } = buildGateMessages(issue, goalsContext);
-  const out = await serviceLlm.serviceText({ system, user, maxTokens: 800, timeoutMs: 30_000, apiKey, source: 'issue-fixer-gate' });
+  // Attribution: this gate decides whether an issue may be auto-fixed at all, so its rung
+  // trace must name the issue it judged — `issue.number` is the id a human would quote.
+  const out = await serviceLlm.serviceText({ system, user, maxTokens: 800, timeoutMs: 30_000, apiKey, source: 'issue-fixer-gate', ctx: ctx || { trace: issue && (issue.number != null ? `issue#${issue.number}` : issue.id) || null } });
   if (out == null) throw new Error('issue-fixer gate: no service-llm rung answered');
   return extractJson(out.trim());
 }

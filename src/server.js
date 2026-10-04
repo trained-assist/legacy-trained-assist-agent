@@ -22,6 +22,7 @@ const { handleWebRoute } = require('./web-routes');
 const { handleConnect } = require('./handlers/connect');
 const { handleWeb } = require('./handlers/web');
 const { handleInternal } = require('./handlers/internal');
+const { handleMcp, handleMcpToken } = require('./handlers/mcp-http');
 const { handleApi } = require('./handlers/api');
 const { runTokenFromAuthHeader } = require('./agent-run-tokens');
 const { runTask, generateConnectLink, getQuickAnswer, getPendingTasks, clearPendingTask, interruptForRestart, reconcileSoftContinuations, MAX_RESUME_ATTEMPTS } = require('./runner');
@@ -745,6 +746,13 @@ async function main() {
       return json(res, 200, result);
     }
 
+    // ── POST /mcp — trained-skills over HTTP for engines that are NOT on this host
+    // (GitHub Actions). Mounted BEFORE the gate because it authenticates with a
+    // run-scoped token, never AGENT_SECRET: this is the endpoint a public-CI job
+    // reaches, and AGENT_SECRET is full-server access (issue #73, see
+    // src/handlers/mcp-http.js).
+    if (await handleMcp(req, url, res, { json, readBody, readBodyBuffer }) !== false) return;
+
     // ── Auth: all endpoints require Bearer token ──────────────────────────────
     const auth = req.headers['authorization'] || '';
     // Exception (wait-latency a61bb2c5): the durable kick route is a pure "poll
@@ -758,6 +766,10 @@ async function main() {
     }
 
     // /internal/* — machine-to-machine routes (handlers/internal.js).
+    // POST /mcp/token — mint a run-scoped token for a remote engine (GHA). Behind the
+    // gate on purpose: minting is the privileged side, using the token is not.
+    if (await handleMcpToken(req, url, res, { json, readBody }) !== false) return;
+
     if (url.pathname.startsWith('/internal/') &&
         await handleInternal(req, url, res, { json, readBody, readBodyBuffer, BASE_USERS_DIR, getGtdTickNow: () => gtdTickNow }) !== false) return;
 
