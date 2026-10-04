@@ -4,7 +4,7 @@
 // their own, unlike Claude Code whose Read tool already hands images to the
 // model natively, so a photo is otherwise just an opaque path to that engine.
 //
-// This suite deliberately runs the server WITHOUT OPENROUTER_API_KEY set, so it
+// This suite deliberately runs the server WITHOUT a provider key set, so it
 // only proves the wiring (note shape, no crash, engine gating) without making a
 // real network call — src/media-vision.js's own OCR behavior (success, refusal,
 // HTTP/network errors) is covered by tests/unit/media-vision.test.js with an
@@ -55,7 +55,7 @@ function startServer(env) {
 beforeAll(async () => {
   usersDir = mkdtempSync(join(tmpdir(), 'oc-image-users-'));
   dataDir = mkdtempSync(join(tmpdir(), 'oc-image-data-'));
-  // Deliberately no OPENROUTER_API_KEY — see file header.
+  // Deliberately no LLM_LADDER_TOKEN — see file header.
   const { proc, port } = await startServer({
     PORT: '13581',
     SECRETS_SOURCE: 'env',
@@ -103,7 +103,7 @@ function pendingTaskFor(username) {
   return null;
 }
 
-describe('/run image attachment note (no OPENROUTER_API_KEY configured)', () => {
+describe('/run image attachment note (no ladder token configured)', () => {
   it('OpenCode engine: base file note only, no recognition block, no crash', async () => {
     mkdirSync(join(usersDir, USERNAME_OPENCODE), { recursive: true });
     writeFileSync(join(usersDir, USERNAME_OPENCODE, 'profile.json'), JSON.stringify({ engine: 'opencode' }));
@@ -124,11 +124,11 @@ describe('/run image attachment note (no OPENROUTER_API_KEY configured)', () => 
   });
 });
 
-// Second server instance, with an OpenRouter key configured and OPENROUTER_BASE_URL
-// pointed at a local stand-in (see src/media-vision.js — same test-mocking convention
-// as HH_API_BASE_URL in src/hh-utils.js), to prove the success path end-to-end: the
-// recognition block actually lands in the task text OpenCode's model reads.
-describe('/run image attachment note (OpenRouter mocked, success path)', () => {
+// Second server instance, with the llm-ladder pointed at a local stand-in
+// (LLM_LADDER_URL + LLM_LADDER_TOKEN — src/media-vision.js ходит через llm-ladder,
+// прямого OPENROUTER_BASE_URL больше нет, #2092). Цель — доказать success path
+// сквозь: блок распознавания реально попадает в текст задачи, который читает OpenCode.
+describe('/run image attachment note (llm-ladder mocked, success path)', () => {
   const USERNAME = 'oc-image-test-success';
   let mockServer, mockPort, serverProc2, serverPort2, usersDir2, dataDir2;
 
@@ -157,8 +157,8 @@ describe('/run image attachment note (OpenRouter mocked, success path)', () => {
       USERS_DIR: usersDir2,
       AGENT_DATA_DIR: dataDir2,
       NODE_ENV: 'test',
-      OPENROUTER_API_KEY: 'test-openrouter-key',
-      OPENROUTER_BASE_URL: `http://127.0.0.1:${mockPort}`,
+      LLM_LADDER_URL: `http://127.0.0.1:${mockPort}`,
+      LLM_LADDER_TOKEN: 'test-ladder-token',
     });
     serverProc2 = proc;
     serverPort2 = port;
