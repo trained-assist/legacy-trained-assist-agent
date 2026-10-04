@@ -64,9 +64,6 @@ async function checkCompleteness(text, _openrouterKey, { lastAssistant = null } 
   const closure = classifyClosure(trimmed);
   if (closure === 'stop') return stopVerdict();
   if (closure === 'wrap_up') return wrapUpVerdict();
-  // Без токена лестницы судья не зовётся — держим ввод (тот же fail-closed,
-  // что раньше давал отсутствующий ключ).
-  if (!serviceLlm.available()) return hold();
   // A named link lookup is already actionable; retrieving account context is
   // the assistant's job, not a reason to demand a deep session. Keep incomplete
   // and multi-line requests with the model gate.
@@ -75,6 +72,10 @@ async function checkCompleteness(text, _openrouterKey, { lastAssistant = null } 
   if (trimmed.length < 250 && !trimmed.includes('\n') && linkLookup.test(trimmed) && !unfinished.test(trimmed)) {
     return standard();
   }
+
+  // Без токена лестницы судья не зовётся — держим ввод (тот же fail-closed,
+  // что раньше давал отсутствующий ключ). После regex-сокращений: они не зовут модель.
+  if (!serviceLlm.available()) return hold();
 
   const contextBlock = lastAssistant
     ? lastAssistant.length <= 2000 ? lastAssistant : lastAssistant.slice(0, 2000)
