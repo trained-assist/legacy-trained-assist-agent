@@ -3236,7 +3236,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         errorText: inactivityKill
           ? 'inactivity timeout: no output for 5min'
           : `step timeout: ${Math.round(stepTimeoutMs / 1000)}s budget exhausted`,
-        action: 'step_failed',
+        // R3: the three causes are different events. Silence = the provider/engine went
+        // away — the durable executor classifies it INFRA and REFUNDS the attempt (#122),
+        // so recording it as `step_failed` would make the metric «attempts spent on infra»
+        // non-zero and hide that split. A real budget kill stays a step failure.
+        action: inactivityKill ? 'infra_silence' : 'step_failed',
       });
       executionHistory.finalizeExecution(executionId, 'FAILED');
       return timeoutMsg;
