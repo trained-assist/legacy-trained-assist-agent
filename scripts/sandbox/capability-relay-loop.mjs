@@ -73,6 +73,14 @@ function startRelay(env) {
   }) };
 }
 
+// Схема второго инструмента берётся из контракта, а не дублируется строкой:
+// смоук обязан проверять то, что реально опубликовано, иначе он проверяет свою
+// же копию и зеленеет при расхождении.
+const INTENT_INPUT_SCHEMA = (() => {
+  const t = loadContract().tools.find((x) => x.name === 'resolve_user_intent');
+  return t ? t.inputSchema : null;
+})();
+
 async function main() {
   const contract = loadContract();
   const tool = contract.tools[0];
@@ -92,11 +100,21 @@ async function main() {
     check('initialize → contract version', init.result?.capabilities?.contract?.version === contract.version);
 
     const list = await relay.request('tools/list', {});
-    const listed = list.result?.tools?.[0];
-    check('tools/list → the canonical Worker name, untranslated',
-      list.result?.tools?.length === 1 && listed?.name === tool.name
-        && JSON.stringify(listed?.inputSchema) === JSON.stringify(tool.inputSchema),
-      `saw ${JSON.stringify((list.result?.tools || []).map(t => t.name))}`);
+    // Инструментов теперь два (writer + resolve_user_intent, issue #10). Проверяем
+    // не количество, а то, что каждый несёт СВОЁ имя и СВОЮ схему дословно:
+    // аддитивное расширение контракта не должно менять ни порядок, ни содержимое
+    // уже опубликованного инструмента.
+    const listed = list.result?.tools || [];
+    const byName = new Map(listed.map((t) => [t.name, t]));
+    const canonical = byName.get(tool.name);
+    check('tools/list → канонический инструмент с дословным именем и схемой',
+      listed.length >= 1 && !!canonical
+        && JSON.stringify(canonical.inputSchema) === JSON.stringify(tool.inputSchema),
+      `saw ${JSON.stringify(listed.map((t) => t.name))}`);
+    check('tools/list → второй инструмент resolve_user_intent с дословной схемой',
+      byName.has('resolve_user_intent')
+        && JSON.stringify(byName.get('resolve_user_intent').inputSchema) === JSON.stringify(INTENT_INPUT_SCHEMA),
+      `saw ${JSON.stringify(listed.map((t) => t.name))}`);
 
     const call = await relay.request('tools/call', {
       name: tool.name,

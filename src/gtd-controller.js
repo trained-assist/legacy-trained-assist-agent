@@ -108,6 +108,7 @@ const {
   parseWait, isActiveWait, startWait, decidePoll, nextDueAt, escalateTimeout, summarizeResults, resumeNote,
 } = require('./durable-wait');
 const { isMaterialValidator } = require('./playbook-material');
+const { planWorkspaceSaveState, formatUnsaved } = require('./run-end-save-check');
 const { declaredValidations } = require('./durable-task-plan');
 
 // ── Разумные дефолты (небольшие, но осмысленные) ────────────────────────────
@@ -385,6 +386,21 @@ function settleTaskCompletion(store, task) {
   const fmt = list => (list || []).map(m => `${m.validator}=${m.got == null ? 'missing' : m.got}`).join(', ');
   const base = { profile_id: task.profile_id, task_id: task.id, playbook: task.playbook_id || null };
   if (res.finalized) {
+    // #143 rule 6: every declared check passed, but the plan's workspace may still hold
+    // modified tracked files or unpushed commits — local-only work must not be reported
+    // as delivered. Read-only check; the workspace is retained (release refuses dirty),
+    // so the recovery refs are real.
+    const save = planWorkspaceSaveState(task.profile_id, task.id);
+    if (save && save.unsaved) {
+      const reason = formatUnsaved(save) || 'unsaved work in the plan workspace';
+      if (task.status !== 'blocked') {
+        try { store.updateTask(task.id, task.profile_id, { status: 'blocked' }); } catch { /* status enum */ }
+        try { store.db.prepare('UPDATE durable_tasks SET blocker_reason = ? WHERE id = ?').run(reason.slice(0, 1000), task.id); } catch { /* column */ }
+        logDefect({ ...base, kind: 'save_incomplete', validator: 'workspace_saved', got: `${save.modifiedCount} modified, ${save.ahead == null ? 'no upstream' : `${save.ahead} unpushed`}` });
+      }
+      console.warn(`[gtd-durable] ${task.id.slice(0, 8)} ${reason}`);
+      return 'blocked';
+    }
     for (const m of res.unconfirmed || []) logDefect({ ...base, kind: 'unconfirmed', validator: m.validator, criterion_id: m.criterion_id, got: m.got });
     console.log(`[gtd-durable] task complete: ${task.id.slice(0, 8)}${(res.unconfirmed || []).length ? ` — 🟡 unconfirmed: ${fmt(res.unconfirmed)}` : ''}`);
     return 'done';

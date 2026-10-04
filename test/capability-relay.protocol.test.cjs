@@ -46,15 +46,21 @@ test('initialize answers the engine protocol version and exposes the contract ve
   assert.equal('LLM_LADDER_URL' in env, false);
 });
 
-test('tools/list returns exactly contract.tools[] — the canonical Worker name, no translation (SR-02)', async t => {
+test('tools/list returns exactly contract.tools[] — имена и схемы дословно, без перевода (SR-02)', async t => {
   const relay = startRelay(env);
   t.after(() => relay.close());
   const { result } = await relay.request('tools/list', {});
+  // 1:1 с контрактом — это инвариант, а не число инструментов. Их теперь два
+  // (writer + resolve_user_intent, issue #10), и добавление второго не должно
+  // менять ни порядок, ни содержимое первого.
   assert.deepEqual(result.tools, listTools(loadContract()));
-  assert.equal(result.tools.length, 1);
+  assert.equal(result.tools.length, 2);
   assert.equal(result.tools[0].name, TOOL_NAME);
   assert.equal(typeof result.tools[0].inputSchema, 'object');
   assert.ok(result.tools[0].inputSchema.required.includes('conversation_history'));
+  // Второй инструмент обязан нести СВОЮ схему, а не схему writer'а.
+  assert.equal(result.tools[1].name, 'resolve_user_intent');
+  assert.deepEqual(result.tools[1].inputSchema.required, ['input_bundle', 'recipient', 'decision_options']);
 });
 
 test('tools/call reaches the handler and returns its body as text content', async t => {
