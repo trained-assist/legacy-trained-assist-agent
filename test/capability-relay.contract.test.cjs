@@ -1,9 +1,10 @@
 'use strict';
-// Issue #2061 PR1, slices T1 (contract) + T2 (error mapping) + T6 (telemetry).
+// Issue #2061 PR1 → #2034 PR2: slices T1 (contract + manifest) + T2 (error mapping) + T6 (telemetry, no tokens in the repo).
 // No network: every HTTP outcome comes from an injected fetchImpl.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const path = require('path');
 
 const Ajv = require('ajv');
 const contractMod = require('../src/capability-relay/contract.js');
@@ -13,9 +14,13 @@ const { FIELDS, formatEvent } = require('../src/capability-relay/telemetry.js');
 
 const { loadContract, listTools, findTool, invokeUrl, checkResponseVersion, CONTRACT_FILE, SCHEMA_FILE, schema } = contractMod;
 
+const ROOT = path.resolve(__dirname, '..');
+const WORKER_TOOL = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'communication-worker-tool.json'), 'utf8'));
+const MANIFEST_FILE = path.join(ROOT, 'contracts', 'capability-relay-v1', 'manifest.json');
+const TOOL_ID = 'communication.generate_next_message_to_conversation_partner';
+
 const ENDPOINT = 'http://127.0.0.1:9';
 const TOKEN = 'relay-test-token';
-const TOOL_ID = 'communication.prepare_message_draft';
 
 function fakeFetch({ status = 200, body = {}, headers = {} } = {}) {
   const calls = [];
@@ -41,6 +46,23 @@ function client(fetchImpl, extra = {}) {
   });
 }
 
+// The default (envelope) door stays in the contract for future capabilities (#2061
+// §6 PR3). The deployed contract has no tool on it anymore, so those tests carry
+// their own synthetic tool — the transport is exercised without pretending the
+// communication Worker serves an envelope it does not serve.
+function genericContract() {
+  return {
+    ...loadContract(),
+    tools: [{
+      toolId: 'demo.write_thing',
+      name: 'demo_write_thing',
+      description: 'synthetic tool on the default envelope door',
+      mutates: false,
+      inputSchema: { type: 'object' },
+    }],
+  };
+}
+
 // ── T1: the contract file ────────────────────────────────────────────────────
 
 test('contract file is valid against its own schema', () => {
@@ -57,6 +79,37 @@ test('contract declares version 1, its urn and a single typed error enum', () =>
   assert.deepEqual([...contract.errorCodes].sort(), [...Object.keys(ERROR_CODES)].sort());
 });
 
+test('the canonical tool is the Worker\'s own name, description and schema — verbatim, aliases 0', () => {
+  const contract = loadContract();
+  assert.equal(contract.tools.length, 1, 'exactly one capability: a second name would be a second door');
+  const tool = contract.tools[0];
+  assert.equal(tool.toolId, TOOL_ID);
+  assert.equal(tool.name, WORKER_TOOL.name, 'MCP name must be the Worker TOOLS[0].name, never translated');
+  assert.equal(tool.description, WORKER_TOOL.description);
+  assert.deepEqual(tool.inputSchema, WORKER_TOOL.inputSchema, 'inputSchema must be doslovno from protocol.mjs');
+  assert.equal(tool.mutates, false, 'generation prepares a draft; it sends nothing');
+  // Aliases: the contract exposes one name; nothing else may resolve to this tool.
+  const names = contract.tools.map(t => t.name);
+  assert.equal(new Set(names).size, names.length, 'no duplicate names');
+  assert.equal(findTool(contract, WORKER_TOOL.name), tool);
+});
+
+test('the capability carries its own HTTP door: path, raw-args body, handler version pin, env binding', () => {
+  const tool = loadContract().tools[0];
+  const b = tool.invoke;
+  assert.ok(b, 'PR2 registers the binding to the Worker\'s existing door');
+  assert.equal(b.path, '/v1/dialogs/next-message');
+  assert.equal(b.body, 'arguments');
+  assert.equal(b.version_header, 'x-contract-version');
+  assert.equal(b.contract_version, 'v1', "the Worker's CONTRACT_VERSION");
+  assert.equal(b.endpoint_env, 'COMMUNICATION_API_URL');
+  assert.equal(b.token_env, 'COMMUNICATION_TOKEN');
+  assert.equal(b.toggle_env, 'CAPABILITY_RELAY_COMMUNICATION');
+  for (const key of ['endpoint_env', 'token_env', 'toggle_env']) {
+    assert.match(b[key], /^[A-Z][A-Z0-9_]*$/);
+  }
+});
+
 test('tools/list is a 1:1 projection of contract.tools — names and schemas are not translated', () => {
   const contract = loadContract();
   const listed = listTools(contract);
@@ -68,13 +121,39 @@ test('tools/list is a 1:1 projection of contract.tools — names and schemas are
       inputSchema: contract.tools[i].inputSchema,
     });
   }
-  const demo = contract.tools.find(t => t.toolId === TOOL_ID);
-  assert.ok(demo, 'the demo capability from §3 of the issue must be in the contract');
-  assert.equal(demo.name, 'capability_prepare_message_draft');
-  assert.equal(typeof demo.mutates, 'boolean');
-  assert.deepEqual(listTools(contract).find(t => t.name === demo.name), {
-    name: demo.name, description: demo.description, inputSchema: demo.inputSchema,
-  });
+});
+
+test('manifest pins what the contract serves — contract version, handler release, env binding (no drift)', () => {
+  const contract = loadContract();
+  const manifest = JSON.parse(fs.readFileSync(MANIFEST_FILE, 'utf8'));
+  assert.equal(manifest.contract.urn, contract.urn);
+  assert.equal(manifest.contract.version, contract.version);
+  assert.equal(manifest.handler_release.capability, 'communication');
+  const cap = manifest.capabilities.communication;
+  assert.deepEqual(cap.tools, contract.tools.map(t => t.name));
+  const binding = contract.tools[0].invoke;
+  assert.equal(cap.endpoint_env, binding.endpoint_env);
+  assert.equal(cap.token_env, binding.token_env);
+  assert.equal(cap.toggle_env, binding.toggle_env);
+  assert.equal(manifest.handler_release.contract_version, binding.contract_version);
+});
+
+test('no credential material in the contract, the manifest or the relay source (T6 grep gate)', () => {
+  const files = [
+    CONTRACT_FILE, MANIFEST_FILE,
+    ...['env.js', 'client.js', 'contract.js', 'index.js', 'errors.js', 'telemetry.js', 'tools/communication.js']
+      .map(f => path.join(ROOT, 'src', 'capability-relay', f)),
+  ];
+  const envName = /^[A-Z][A-Z0-9_]*$/;
+  for (const file of files) {
+    const raw = fs.readFileSync(file, 'utf8');
+    // Values of token/secret/credential-ish keys must be env var names or booleans,
+    // never literals that look like a credential.
+    for (const m of raw.matchAll(/"(?:token|secret|credential|password|api_?key)"\s*:\s*"([^"]*)"/gi)) {
+      assert.ok(envName.test(m[1]), `${path.relative(ROOT, file)}: credential-shaped value ${m[1].slice(0, 12)}…`);
+    }
+    assert.doesNotMatch(raw, /Bearer\s+[A-Za-z0-9_-]{20,}/, `${path.relative(ROOT, file)}: literal bearer token`);
+  }
 });
 
 test('a foreign contract version is an explicit version_mismatch, never a silent switch', () => {
@@ -88,15 +167,20 @@ test('a foreign contract version is an explicit version_mismatch, never a silent
   assert.throws(() => checkResponseVersion(1, 1.5, { contract: loadContract() }), e => e.code === 'version_mismatch');
 });
 
-test('tool lookup resolves by MCP name and by canonical toolId, and the invoke URL is built from the contract', () => {
+test('tool lookup resolves by MCP name and by canonical toolId; the two doors build different URLs', () => {
   const contract = loadContract();
-  const byName = findTool(contract, 'capability_prepare_message_draft');
+  const byName = findTool(contract, WORKER_TOOL.name);
   const byId = findTool(contract, TOOL_ID);
   assert.equal(byName, byId);
   assert.equal(findTool(contract, 'nope'), null);
-  const url = invokeUrl(contract, TOOL_ID, 'https://cap.example/');
-  assert.equal(url, `https://cap.example/capabilities/${TOOL_ID}/invoke`);
+  // The default door: template from the contract, toolId substituted.
+  const generic = genericContract();
+  assert.equal(invokeUrl(generic, 'demo.write_thing', 'https://cap.example/'),
+    'https://cap.example/capabilities/demo.write_thing/invoke');
   assert.equal(contract.http.invokePath.includes('{toolId}'), true);
+  // The bound door: no template, the path the handler actually serves.
+  const base = 'https://cap.example/';
+  assert.equal(`${base.replace(/\/+$/, '')}${contract.tools[0].invoke.path}`, 'https://cap.example/v1/dialogs/next-message');
   assert.ok(fs.existsSync(CONTRACT_FILE) && fs.existsSync(SCHEMA_FILE));
 });
 
@@ -142,12 +226,12 @@ test('the RPC error data is uniform: code, safeReason, contractVersion, outcomeU
 
 test('safeReason exposes only allowlisted envelope fields — payload, secrets and bodies never surface', () => {
   const body = {
-    error: { code: 'invalid_arguments', message: 'bad channel' },
+    error: { code: 'invalid_arguments', message: 'bad input' },
     output: { draft: 'candidate phone +7900 SECRET-CONTENT', token: 'CF_SECRET_TOKEN' },
     html: 'x'.repeat(5000),
   };
   const reason = safeReason(body, 400);
-  assert.equal(reason, 'invalid_arguments: bad channel');
+  assert.equal(reason, 'invalid_arguments: bad input');
   assert.doesNotMatch(reason, /SECRET-CONTENT|CF_SECRET_TOKEN|x{50}/);
   // A body without an envelope still yields something bounded and single-line.
   const fallback = safeReason({ notice: 'Internal Server Error' }, 500);
@@ -169,7 +253,7 @@ test('a read capability reports outcomeUnknown=false on upstream failure, a muta
   assert.equal(readErr.code, 'upstream_unavailable');
   assert.equal(readErr.outcomeUnknown, false);
 
-  const contract = { ...loadContract(), tools: [{ ...loadContract().tools[0], toolId: 'demo.write_thing', name: 'demo_write_thing', mutates: true }] };
+  const contract = { ...genericContract(), tools: [{ ...genericContract().tools[0], mutates: true }] };
   const writeTool = fakeFetch({ status: 500, body: {} });
   const writeErr = await client(writeTool, { contract }).invoke({ toolId: 'demo.write_thing', arguments: {} }).then(() => null, e => e);
   assert.equal(writeErr.outcomeUnknown, true);
@@ -192,33 +276,63 @@ test('an exceeded deadline is a typed timeout with outcomeUnknown=true and an ab
   assert.ok(Date.now() - started < 5000, 'the deadline must actually cut the call short');
 });
 
-test('a success returns the API body untouched (SR-03 parity premise)', async () => {
-  const body = { contractVersion: 1, output: { draftRef: 'abc', nested: [1, { deep: true }] }, echo: { authContextDigest: 'd1' } };
-  const fetchImpl = fakeFetch({ status: 200, body });
-  const got = await client(fetchImpl).invoke({ toolId: TOOL_ID, arguments: { channel: 'hh' }, authContext: { profileId: 'p1', runId: 'r1' } });
+test('bound door: raw arguments in the body, correlation in headers, handler version from its own header (SR-03)', async () => {
+  const body = { status: 'generated', message_text: 'draft', nested: [1, { deep: true }] };
+  const fetchImpl = fakeFetch({ status: 200, body, headers: { 'x-contract-version': 'v1' } });
+  const args = { goal: { instruction: 'next step' }, language: 'ru' };
+  const got = await client(fetchImpl).invoke({
+    toolId: TOOL_ID, arguments: args,
+    authContext: { profileId: 'p1', runId: 'r1', taskId: 't1', operationId: 'op-1' },
+  });
   assert.deepEqual(got, body, 'the relay must not reshape the handler response');
+  assert.equal(fetchImpl.calls[0].url, `${ENDPOINT}/v1/dialogs/next-message`);
+  assert.equal(fetchImpl.calls[0].init.body, JSON.stringify(args), 'raw arguments — no envelope a real door does not accept');
+  const sent = JSON.parse(fetchImpl.calls[0].init.body);
+  assert.equal('contractVersion' in sent, false);
+  assert.equal('authContext' in sent, false);
+  const h = fetchImpl.calls[0].init.headers;
+  assert.equal(h.Authorization, `Bearer ${TOKEN}`);
+  assert.equal(h['X-Relay-Run-Id'], 'r1');
+  assert.equal(h['X-Relay-Profile-Id'], 'p1');
+  assert.equal(h['X-Relay-Task-Id'], 't1');
+  assert.equal(h['X-Relay-Operation-Id'], 'op-1');
+  assert.equal(fetchImpl.calls[0].init.body.includes(TOKEN), false, 'the credential stays in the header');
+});
+
+test('default door (future capability): the envelope body still travels as PR1 defined it', async () => {
+  const body = { contractVersion: 1, output: { draftRef: 'abc' }, echo: { authContextDigest: 'd1' } };
+  const fetchImpl = fakeFetch({ status: 200, body });
+  const got = await client(fetchImpl, { contract: genericContract() })
+    .invoke({ toolId: 'demo.write_thing', arguments: { channel: 'hh' }, authContext: { profileId: 'p1', runId: 'r1' } });
+  assert.deepEqual(got, body);
+  assert.equal(fetchImpl.calls[0].url, `${ENDPOINT}/capabilities/demo.write_thing/invoke`);
   const sent = JSON.parse(fetchImpl.calls[0].init.body);
   assert.equal(sent.contractVersion, 1);
   assert.deepEqual(sent.arguments, { channel: 'hh' });
   assert.deepEqual(sent.authContext, { profileId: 'p1', runId: 'r1' });
-  assert.equal(fetchImpl.calls[0].init.headers.Authorization, `Bearer ${TOKEN}`);
   assert.equal(fetchImpl.calls[0].init.headers['X-Relay-Contract-Version'], '1');
-  assert.equal(fetchImpl.calls[0].init.headers['X-Relay-Run-Id'], 'r1');
 });
 
-test('a response carrying another (or no) contract version is rejected as version_mismatch', async () => {
-  const foreign = await client(fakeFetch({ status: 200, body: { contractVersion: 2, output: {} } }))
+test('a response carrying another (or no) handler version is rejected as version_mismatch — both doors', async () => {
+  const bound = await client(fakeFetch({ status: 200, body: { status: 'generated' }, headers: { 'x-contract-version': 'v2' } }))
     .invoke({ toolId: TOOL_ID, arguments: {} }).then(() => null, e => e);
-  assert.equal(foreign.code, 'version_mismatch');
-  assert.equal(foreign.rpcCode, -32015);
+  assert.equal(bound.code, 'version_mismatch');
+  assert.equal(bound.rpcCode, -32015);
 
-  const missing = await client(fakeFetch({ status: 200, body: { output: {} }, headers: {} }))
+  const boundMissing = await client(fakeFetch({ status: 200, body: { status: 'generated' }, headers: {} }))
     .invoke({ toolId: TOOL_ID, arguments: {} }).then(() => null, e => e);
-  assert.equal(missing.code, 'version_mismatch');
+  assert.equal(boundMissing.code, 'version_mismatch', 'no version header = no silent pass');
 
-  const viaHeader = await client(fakeFetch({ status: 200, body: { output: {} }, headers: { 'x-relay-contract-version': '1' } }))
+  const boundOk = await client(fakeFetch({ status: 200, body: { status: 'generated' }, headers: { 'x-contract-version': 'v1' } }))
     .invoke({ toolId: TOOL_ID, arguments: {} });
-  assert.deepEqual(viaHeader, { output: {} }, 'the version may ride a header when the body omits it');
+  assert.deepEqual(boundOk, { status: 'generated' });
+
+  const genericForeign = await client(fakeFetch({ status: 200, body: { contractVersion: 2 } }), { contract: genericContract() })
+    .invoke({ toolId: 'demo.write_thing', arguments: {} }).then(() => null, e => e);
+  assert.equal(genericForeign.code, 'version_mismatch');
+  const genericViaHeader = await client(fakeFetch({ status: 200, body: {}, headers: { 'x-relay-contract-version': '1' } }), { contract: genericContract() })
+    .invoke({ toolId: 'demo.write_thing', arguments: {} });
+  assert.deepEqual(genericViaHeader, {}, 'the default door may ride the header');
 });
 
 test('an unknown toolId and a missing env are typed, not generic failures', async () => {
@@ -233,10 +347,10 @@ test('an unknown toolId and a missing env are typed, not generic failures', asyn
     e.code === 'misconfigured');
 });
 
-test('only allowlisted auth-context fields are forwarded; identity stays opaque and the token stays out of the body', async () => {
+test('only allowlisted auth-context fields are forwarded (default door, envelope); identity stays opaque', async () => {
   const fetchImpl = fakeFetch({ status: 200, body: { contractVersion: 1 } });
-  await client(fetchImpl).invoke({
-    toolId: TOOL_ID,
+  await client(fetchImpl, { contract: genericContract() }).invoke({
+    toolId: 'demo.write_thing',
     arguments: {},
     authContext: {
       identity: 'host-issued-opaque', profileId: 'p1', runId: 'r1', taskId: 't1', operationId: 'op-1',
@@ -257,7 +371,7 @@ test('one telemetry event per call, carrying the correlation fields and no paylo
   const events = [];
   const fetchImpl = fakeFetch({ status: 500, body: { output: { draft: 'PAYLOAD-DRAFT' } } });
   await client(fetchImpl, { onEvent: e => events.push(e) })
-    .invoke({ toolId: TOOL_ID, arguments: { channel: 'hh', candidateRef: 'ARGUMENT-VALUE' }, authContext: { profileId: 'p1', runId: 'r1', taskId: 't9', operationId: 'op-9' } })
+    .invoke({ toolId: TOOL_ID, arguments: { language: 'ru' }, authContext: { profileId: 'p1', runId: 'r1', taskId: 't9', operationId: 'op-9' } })
     .catch(() => {});
   assert.equal(events.length, 1);
   const event = events[0];
@@ -266,14 +380,14 @@ test('one telemetry event per call, carrying the correlation fields and no paylo
   }
   assert.equal(event.toolId, TOOL_ID);
   assert.equal(event.code, 'upstream_unavailable');
-  const line = formatEvent({ ts: '2026-10-04T00:00:00.000Z', ...event, arguments: { channel: 'hh' }, token: TOKEN });
-  assert.doesNotMatch(line, /ARGUMENT-VALUE|PAYLOAD-DRAFT|relay-test-token/);
+  const line = formatEvent({ ts: '2026-10-04T00:00:00.000Z', ...event, arguments: { language: 'ru' }, token: TOKEN });
+  assert.doesNotMatch(line, /PAYLOAD-DRAFT|relay-test-token/);
   for (const key of FIELDS) assert.match(line, new RegExp(`"${key}"`));
 });
 
 test('telemetry never breaks a call, even when the consumer throws', async () => {
-  const fetchImpl = fakeFetch({ status: 200, body: { contractVersion: 1, output: {} } });
+  const fetchImpl = fakeFetch({ status: 200, body: { status: 'generated' }, headers: { 'x-contract-version': 'v1' } });
   const got = await client(fetchImpl, { onEvent: () => { throw new Error('telemetry consumer blew up'); } })
     .invoke({ toolId: TOOL_ID, arguments: {} });
-  assert.deepEqual(got, { contractVersion: 1, output: {} });
+  assert.deepEqual(got, { status: 'generated' });
 });

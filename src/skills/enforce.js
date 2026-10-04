@@ -14,6 +14,8 @@
 //                                    SKILLS_RESOLVED=<path> in the MCP servers' env
 //   src/mcp-skills/registry.js      → readHidden(process.env.SKILLS_RESOLVED).modules
 //   src/prompt-domains buildDomainBlock → readHidden(<trained-skills env>).domains
+//   src/browser.js writeMcpConfig  → skips hidden.relays (a disabled section must not
+//                                    mount its relay server, #2034)
 const fs = require('fs');
 const path = require('path');
 const { resolve } = require('./resolve');
@@ -30,6 +32,9 @@ function union(sections, ids, key) {
 
 // A section's sibling servers: listed ones plus the owners of its sibling modules
 // ('<server>/<file>' entries — a domain repo's modules gated per section, #1470).
+// Relay servers (#2034) are NOT siblings: they have no checkout and no domain
+// manifest, but they ARE gated per section (a disabled section must not mount its
+// relay), so they travel in their own hidden channel.
 function sectionSiblings(sections, ids) {
   const out = union(sections, ids, 'siblings');
   for (const m of union(sections, ids, 'modules')) if (m.includes('/')) out.add(m.split('/')[0]);
@@ -37,7 +42,7 @@ function sectionSiblings(sections, ids) {
 }
 
 // Pure: catalog + profileSkills + optional turn intent (#76 L1) →
-// { sections, unknown, mode, intent, hidden: {siblings, modules, domains} }.
+// { sections, unknown, mode, intent, hidden: {siblings, relays, modules, domains} }.
 function computePlan(catalog, profileSkills, { intent = null } = {}) {
   const sections = catalog.sections || {};
   const all = Object.keys(sections);
@@ -57,6 +62,7 @@ function computePlan(catalog, profileSkills, { intent = null } = {}) {
     intent: r.intent,
     hidden: {
       siblings: minus(sectionSiblings(sections, all), sectionSiblings(sections, on)),
+      relays: minus(union(sections, all, 'relays'), union(sections, on, 'relays')),
       modules: minus(union(sections, all, 'modules'), union(sections, on, 'modules')),
       domains: minus(union(sections, all, 'promptDomains'), union(sections, on, 'promptDomains')),
     },
@@ -113,13 +119,14 @@ function writeEffective(workDir, plan, { warn = console.warn, file = null } = {}
   }
 }
 
-// SKILLS_RESOLVED file → {modules:Set, domains:Set} | null (unset/unreadable → null = no filter).
+// SKILLS_RESOLVED file → {modules:Set, domains:Set, siblings:Set, relays:Set} | null
+// (unset/unreadable → null = no filter).
 function readHidden(file, { warn = console.warn } = {}) {
   if (!file) return null;
   try {
     const h = JSON.parse(fs.readFileSync(file, 'utf8')).hidden || {};
     const set = v => new Set(Array.isArray(v) ? v.filter(x => typeof x === 'string') : []);
-    return { modules: set(h.modules), domains: set(h.domains), siblings: set(h.siblings) };
+    return { modules: set(h.modules), domains: set(h.domains), siblings: set(h.siblings), relays: set(h.relays) };
   } catch (e) {
     warn(`[skills] SKILLS_RESOLVED=${file}: ${e.message} — no filter`);
     return null;

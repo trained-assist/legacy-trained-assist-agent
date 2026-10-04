@@ -97,6 +97,60 @@
                 "const": "object"
               }
             }
+          },
+          "invoke": {
+            "description": "Per-capability HTTP door, for a handler that does not expose the contract's default envelope endpoint (the communication Worker serves POST /v1/dialogs/next-message). Absent = the default door (http.invokePath, envelope body). Transport mapping only — no business logic.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "body",
+              "version_header",
+              "contract_version",
+              "endpoint_env",
+              "token_env",
+              "toggle_env"
+            ],
+            "properties": {
+              "path": {
+                "description": "Request path appended to the capability endpoint.",
+                "type": "string",
+                "pattern": "^/[^{]*$"
+              },
+              "body": {
+                "description": "\"arguments\" = the tool arguments POSTed as-is; \"envelope\" = {contractVersion, arguments, authContext} (the default door).",
+                "type": "string",
+                "enum": [
+                  "arguments",
+                  "envelope"
+                ]
+              },
+              "version_header": {
+                "description": "Response header carrying the handler's own contract version.",
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              },
+              "contract_version": {
+                "description": "The handler's contract version this capability is pinned to; any other value is an explicit version_mismatch.",
+                "type": "string",
+                "minLength": 1
+              },
+              "endpoint_env": {
+                "description": "Environment variable supplying the endpoint base URL.",
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$"
+              },
+              "token_env": {
+                "description": "Environment variable supplying the caller credential for that endpoint.",
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$"
+              },
+              "toggle_env": {
+                "description": "Feature toggle (default-off). Truthy = this capability may appear in tools/list.",
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$"
+              }
+            }
           }
         }
       }

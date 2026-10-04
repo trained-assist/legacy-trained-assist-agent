@@ -86,7 +86,12 @@ function createRelayClient({
     }
 
     const deadlineMs = clampTimeout(callTimeoutMs || defaultTimeout);
-    const url = invokeUrl(contract, toolId, endpoint);
+    // Two doors, one client (#2061 §2): the default envelope endpoint from the
+    // contract, or the per-capability `invoke` binding when the handler serves a
+    // path of its own (the communication Worker). Transport mapping only.
+    const binding = tool.invoke || null;
+    const base = String(endpoint).replace(/\/+$/, '');
+    const url = binding ? `${base}${binding.path}` : invokeUrl(contract, toolId, endpoint);
     const context = pickAuthContext(authContext);
     const headers = {
       'Content-Type': 'application/json',
@@ -94,6 +99,16 @@ function createRelayClient({
     };
     if (token) headers.Authorization = `Bearer ${token}`;
     if (context.runId) headers['X-Relay-Run-Id'] = String(context.runId);
+    if (binding) {
+      // The bound door takes raw arguments, so correlation rides headers instead of
+      // the body — same rule: forwarded, never inspected or logged.
+      if (context.profileId) headers['X-Relay-Profile-Id'] = String(context.profileId);
+      if (context.taskId) headers['X-Relay-Task-Id'] = String(context.taskId);
+      if (context.operationId) headers['X-Relay-Operation-Id'] = String(context.operationId);
+    }
+    const body = binding && binding.body === 'arguments'
+      ? JSON.stringify(args)
+      : JSON.stringify({ contractVersion: contract.version, arguments: args, authContext: context });
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), deadlineMs);
@@ -103,7 +118,7 @@ function createRelayClient({
       res = await fetchImpl(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ contractVersion: contract.version, arguments: args, authContext: context }),
+        body,
         signal: controller.signal,
       });
     } catch (e) {
@@ -128,14 +143,31 @@ function createRelayClient({
     try { json = await res.json(); } catch { /* non-JSON body handled below */ }
 
     if (res && res.ok) {
-      const reported = (json && json.contractVersion !== undefined)
-        ? json.contractVersion
-        : (res.headers && typeof res.headers.get === 'function' ? res.headers.get('x-relay-contract-version') : null);
-      try {
-        checkResponseVersion(contract.version, reported, { contract });
-      } catch (e) {
-        emit(baseEvent({ tool, contract, context, latencyMs, outcome: 'error', code: e.code, outcomeUnknown: false }));
-        throw e;
+      if (binding) {
+        // The bound handler pins its OWN contract version (e.g. Worker's 'v1') in a
+        // header of its choosing — string equality, no numeric coercion: 'v1' is not 1.
+        const reported = (res.headers && typeof res.headers.get === 'function' ? res.headers.get(binding.version_header) : null)
+          ?? (json && json.contractVersion !== undefined ? String(json.contractVersion) : null);
+        if (reported === null || String(reported) !== binding.contract_version) {
+          const e = new RelayError('version_mismatch', {
+            message: `capability ${toolId} handler reports contract version ${reported === null ? 'none' : reported}, relay is pinned to ${binding.contract_version}`,
+            safeReason: `handler_version_mismatch: ${reported === null ? 'none' : reported} != ${binding.contract_version}`,
+            contractVersion: contract.version,
+            detail: { source: binding.version_header },
+          });
+          emit(baseEvent({ tool, contract, context, latencyMs, outcome: 'error', code: e.code, outcomeUnknown: false }));
+          throw e;
+        }
+      } else {
+        const reported = (json && json.contractVersion !== undefined)
+          ? json.contractVersion
+          : (res.headers && typeof res.headers.get === 'function' ? res.headers.get('x-relay-contract-version') : null);
+        try {
+          checkResponseVersion(contract.version, reported, { contract });
+        } catch (e) {
+          emit(baseEvent({ tool, contract, context, latencyMs, outcome: 'error', code: e.code, outcomeUnknown: false }));
+          throw e;
+        }
       }
       emit(baseEvent({ tool, contract, context, latencyMs, outcome: 'ok', code: null, outcomeUnknown: false }));
       // SR-03: the body is the result — not a re-typed copy of it.

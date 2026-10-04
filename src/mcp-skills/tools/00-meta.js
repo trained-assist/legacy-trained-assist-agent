@@ -9,6 +9,12 @@
 
 const SKILLS = [
   {
+    id: 'communication',
+    name: 'Общий writer сообщений (communication capability)',
+    description: 'Генерация следующего сообщения кандидату/собеседнику облачной capability через capability-relay: один handler для чата, UI и бота. Черновик без отправки; guard внутри Worker. Не путать с content_rewrite и HH writer-v3.',
+    requires: 'Toggle CAPABILITY_RELAY_COMMUNICATION + COMMUNICATION_API_URL/COMMUNICATION_TOKEN. Без кредов тул не в tools/list — честно, а не «готов».',
+  },
+  {
     id: 'cron',
     name: 'Cron — расписание задач',
     description: 'Создаёт повторяющиеся задачи через Google Cloud Scheduler. Задача запускается по расписанию с полным доступом ко всем скилам.',
