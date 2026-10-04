@@ -25,6 +25,12 @@ if [[ "$DEPLOY_ENV" == gcp ]]; then
   sites=(relay agent-trainedassist-store)
 elif [[ "${DEPLOY_RECRUITER_APEX:-}" == 1 || -e "$NGINX_ROOT/sites-enabled/recruiter-assistant" ]]; then
   sites=(recruiter-assistant)
+  # Exhibition catalogs on <event_key>.sales-manager-assistant.ru. Separate
+  # flag and separate gate: this config must never be installed on GCP, and it
+  # needs a certificate that covers the wildcard.
+  if [[ "${DEPLOY_SALES_APEX:-}" == 1 || -e "$NGINX_ROOT/sites-enabled/sales-manager-assistant" ]]; then
+    sites+=(sales-manager-assistant)
+  fi
 fi
 if (( ${#sites[@]} )); then
   # Both public hostnames must accept the same media sizes. The stable tunnel
