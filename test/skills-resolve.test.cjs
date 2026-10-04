@@ -41,9 +41,26 @@ test('catalog covers every local MCP module, and only real ones', () => {
   assert.deepStrictEqual(missing, [], `modules not in config/skill-catalog.json: ${missing.join(', ')}`);
   const ghost = [...listed].filter(m => !localModules.includes(m));
   assert.deepStrictEqual(ghost, [], `catalog lists modules that don't exist: ${ghost.join(', ')}`);
-  // A sibling whose modules the catalog addresses ('<server>/<file>') must be addressed
-  // completely — an unlisted module could never be hidden (#1470). Checked for the
-  // siblings checked out here (CI clones hh + sales).
+
+  // Duplicates are core's own bug and stay fatal — but name the module and the section,
+  // not just a schema keyword (splitCatalog throws the same message; early net). Per
+  // SECTION: the same module in two sections is legitimate (mergeManifests unions).
+  const dupes = [];
+  for (const [id, s] of Object.entries(catalog.sections)) {
+    const seen = new Set();
+    for (const m of s.modules || []) {
+      if (seen.has(m)) dupes.push(`${id}: ${m}`);
+      seen.add(m);
+    }
+  }
+  assert.deepStrictEqual(dupes, [], `module listed twice in one section of config/skill-catalog.json: ${dupes.join(', ')}`);
+
+  // A SIBLING's module set is the sibling's business: resolve() already mounts every
+  // module readiness reports and the catalog does not address (src/skills/resolve.js
+  // "Sibling modules not addressed by any section come from readiness"), so a tool
+  // added upstream is live in MCP without any core change. Listing it is still useful
+  // documentation/pinning, so report the gap — but do NOT redden every core PR for a
+  // sibling's release cadence (#1753 owns making the sibling describe itself).
   const { SKILL_SIBLINGS, siblingPaths } = require('../src/skill-siblings');
   const addressed = new Set(all.filter(m => m.includes('/')).map(m => m.split('/')[0]));
   for (const server of addressed) {
@@ -53,9 +70,14 @@ test('catalog covers every local MCP module, and only real ones', () => {
     if (!fs.existsSync(dir)) continue;
     const files = fs.readdirSync(dir).filter(f => f.endsWith('.js'));
     const unlisted = files.filter(f => !all.includes(`${server}/${f}`));
-    assert.deepStrictEqual(unlisted, [], `${server} modules missing from config/skill-catalog.json`);
+    if (unlisted.length) {
+      console.log(`[catalog] ${server}: ${unlisted.length} module(s) not listed (still mounted via readiness): `
+        + unlisted.map(f => `"${server}/${f}"`).join(', '));
+    }
     const gone = all.filter(m => m.startsWith(server + '/') && !files.includes(m.split('/')[1]));
-    assert.deepStrictEqual(gone, [], `catalog lists ${server} modules that don't exist`);
+    if (gone.length) {
+      console.log(`[catalog] ${server}: ${gone.length} stale entr(y/ies) — module no longer shipped: ${gone.join(', ')}`);
+    }
   }
 });
 
