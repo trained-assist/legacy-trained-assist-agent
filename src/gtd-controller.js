@@ -58,7 +58,7 @@ function pickUsableTarget(store, item, step, engineHealth) {
   const hardRows = store.db.prepare(`SELECT engine, profile FROM executions
       WHERE task_item_id = ? AND engine IS NOT NULL AND error_class IN ('AUTH','CONFIG')`)
     .all(item.id);
-  // OpenCode rungs differ by ladder profile: an exhausted `deepseek` ladder must not rule out the
+  // OpenCode rungs differ by ladder profile: an exhausted `service` ladder must not rule out the
   // `free` ladder fallback (#1899). Other engines are hard-failed as a whole.
   const failedOn = c => hardRows.some(r => r.engine === c.engine
     && (c.engine !== 'opencode' || (r.profile || null) === (c.ocProfile || null)));
@@ -107,6 +107,8 @@ const {
 const {
   parseWait, isActiveWait, startWait, decidePoll, nextDueAt, escalateTimeout, summarizeResults, resumeNote,
 } = require('./durable-wait');
+const { isMaterialValidator } = require('./playbook-material');
+const { declaredValidations } = require('./durable-task-plan');
 
 // ── Разумные дефолты (небольшие, но осмысленные) ────────────────────────────
 const DEFAULT_ETA_MIN = 60;   // через сколько минут после завершения проверить
@@ -340,6 +342,36 @@ function isBlockingCheck(key) {
   return Object.hasOwn(getDefaultRegistry(), key);
 }
 
+// R2 (#106, owner: «мягкое по формату, твёрдо по результату»): a MATERIAL result key
+// blocks too. The registry decides what can be CHECKED; this decides what counts as
+// DELIVERED. `pr_opened`/`ci_green`/`merged` passing never proves the change is live,
+// the docs landed or the scenario works — those keys do. Everything else stays advisory,
+// and every explicit closure path (judge verdict, task_item_exception with a reason,
+// strict mode) keeps working: no new demand is placed on any individual step.
+function isBlockingFinalizationCheck(key) {
+  return isBlockingCheck(key) || isMaterialValidator(key);
+}
+
+// Material criteria of a plan that no step has passed yet — the same list the gate
+// uses. Shown to the step so the acceptance step can still catch what an earlier
+// submit did not provide (and so every step knows what "done" ultimately means).
+function outstandingMaterial(store, task) {
+  let declared;
+  let rows;
+  try {
+    declared = declaredValidations(task);
+    rows = store.listValidations(task.id, task.profile_id);
+  } catch { return []; }
+  const got = new Map();
+  for (const r of rows || []) got.set(`${r.criterion_id}|${r.validator}`, r.status);
+  const out = new Set();
+  for (const d of declared || []) {
+    if (!isMaterialValidator(d.validator)) continue;
+    if (got.get(`${d.criterion_id}|${d.validator}`) !== 'pass') out.add(d.validator);
+  }
+  return [...out];
+}
+
 function settleTaskCompletion(store, task) {
   const progress = store.progressSummary(task.id, task.profile_id);
   if (!(progress.total > 0 && progress.finished >= progress.total)) return null;
@@ -349,7 +381,7 @@ function settleTaskCompletion(store, task) {
     return 'done';
   }
   const strict = (parsePolicy(task) || {}).finalization === 'strict';
-  const res = store.finalizePlan(task.id, task.profile_id, { blocking: strict ? null : isBlockingCheck });
+  const res = store.finalizePlan(task.id, task.profile_id, { blocking: strict ? null : isBlockingFinalizationCheck });
   const fmt = list => (list || []).map(m => `${m.validator}=${m.got == null ? 'missing' : m.got}`).join(', ');
   const base = { profile_id: task.profile_id, task_id: task.id, playbook: task.playbook_id || null };
   if (res.finalized) {
@@ -358,11 +390,19 @@ function settleTaskCompletion(store, task) {
     return 'done';
   }
   // Never a silent stall: all steps finished but a red check is unmet → blocked, logged.
-  const reason = `finalization blocked — unmet checks: ${fmt(res.missing)}`;
+  // An unmet MATERIAL criterion says so in its own words: the work is not delivered, as
+  // opposed to «a check did not pass».
+  const materialMissing = (res.missing || []).filter(m => isMaterialValidator(m.validator));
+  const otherMissing = (res.missing || []).filter(m => !isMaterialValidator(m.validator));
+  const reason = materialMissing.length
+    ? `finalization blocked — материальный результат не подтверждён: ${fmt(materialMissing)}`
+    + (otherMissing.length ? `; прочие проверки: ${fmt(otherMissing)}` : '')
+    : `finalization blocked — unmet checks: ${fmt(res.missing)}`;
   if (task.status !== 'blocked') {
     try { store.updateTask(task.id, task.profile_id, { status: 'blocked' }); } catch { /* status enum */ }
     try { store.db.prepare('UPDATE durable_tasks SET blocker_reason = ? WHERE id = ?').run(reason.slice(0, 1000), task.id); } catch { /* column */ }
-    for (const m of res.missing || []) logDefect({ ...base, kind: 'blocked', validator: m.validator, criterion_id: m.criterion_id, got: m.got });
+    for (const m of materialMissing || []) logDefect({ ...base, kind: 'material_unmet', validator: m.validator, criterion_id: m.criterion_id, got: m.got });
+    for (const m of otherMissing || []) logDefect({ ...base, kind: 'blocked', validator: m.validator, criterion_id: m.criterion_id, got: m.got });
   }
   console.warn(`[gtd-durable] ${task.id.slice(0, 8)} ${reason}`);
   return 'blocked';
@@ -643,14 +683,19 @@ async function fireTaskHooks(store, task, event, vars, sinks, approved) {
   }
 }
 
-// Step wall-clock floor (owner 2026-10-01): a declared 600/900s budget killed real
-// steps (scenario/research on OpenCode) mid-work and burned retries on a TIMEOUT that
-// was never a quality failure. Every durable step now gets at least the engine's
-// 40-min run cap; a longer declared budget is still clamped to that cap by the runner.
-// Overridable with DURABLE_STEP_MIN_TIMEOUT_SEC (0 = honour the declared budget as-is).
+// Step wall-clock budget (R3, #106). The declared `execution_timeout_seconds` is
+// honoured as written. A flat floor added 2026-10-01 (to stop a declared 600/900s
+// budget killing real steps mid-work) also NEUTRALISED every declaration — the floor
+// equalled the engine's hard cap, so all 73 shipped steps got exactly 2400s and a
+// 5-minute "spec check" step could not be declared short. What that incident actually
+// needed — «a too-small budget must not be killed three times identically» — is now
+// budget ESCALATION on retry instead (durable-recovery.js: a TIMEOUT retry gets twice
+// the time, capped at the engine's hard cap), so the first attempt stays honest and
+// the later ones get room.
+// DURABLE_STEP_MIN_TIMEOUT_SEC stays as an explicit operator floor (default 0 = off).
 const DURABLE_STEP_MIN_TIMEOUT_SEC = (() => {
   const v = Number(process.env.DURABLE_STEP_MIN_TIMEOUT_SEC);
-  return Number.isFinite(v) && v >= 0 ? v : 40 * 60;
+  return Number.isFinite(v) && v >= 0 ? v : 0;
 })();
 function effectiveStepTimeoutMs(declaredSec, floorSec = DURABLE_STEP_MIN_TIMEOUT_SEC) {
   const declared = Number.isFinite(declaredSec) && declaredSec > 0 ? declaredSec : 0;
@@ -1138,6 +1183,9 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     const resumed = resumeNote(parseWait(freshForPrompt), now);
     const digest = task.acceptance_criteria_json ? priorStepsDigest(store, task, item) : '';
     const future = futureStepsOutline(store, task, item);
+    // R2: what the plan still needs as a DELIVERED result. The acceptance step reads
+    // this and can still catch what an earlier submit did not provide.
+    const material = task.acceptance_criteria_json ? outstandingMaterial(store, task) : [];
     const prompt = [
       '[DURABLE TASK — auto-execution]',
       resumed,
@@ -1158,6 +1206,8 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       item.instructions ? `\nInstructions: ${item.instructions}` : '',
       item.validation_json
         ? `\nValidation (must pass before completion): ${item.validation_json}` : '',
+      material.length
+        ? `\nМатериальные критерии плана, ещё НЕ подтверждённые (план не станет done, пока они не пройдут): ${material.join(', ')}. Если твой шаг закрывает какой-то из них — закрой и назови это в ИТОГЕ ШАГА. Не закрывай «по виду»: проверка должна быть настоящей, иначе приёмка плана скажет об этом честно.` : '',
       '\nПроверка шага (validation_mode). Текущий режим шага: ' + validationMode + '.',
       'Ты можешь выбрать режим для этого шага через task_item_update(item_id: "<Step id>", validation_mode: "...").',
       'Режимы: "programmatic" — только детерминированные проверки; "programmatic+llm" — детерминированные + дешёвый LLM-судья; "programmatic+llm-fastpass" — самый мягкий.',
@@ -1455,6 +1505,10 @@ async function _settleDurableReply(ctx, reply) {
           // Only a confident 'failed' buys the escalation ladder; 'uncertain'
           // (judge unavailable, short reply, inconclusive) retries at this level.
           escalateLevel: judged.verdict === 'failed',
+          // #122: an `uncertain` verdict is a protocol miss, not a step failure —
+          // refund the attempt and retry within the bounded infra budget. A
+          // confident 'failed' keeps the quality ladder (consumes the attempt).
+          refundAttempt: judged.verdict === 'uncertain',
         });
         store.finishExecution(executionId, {
           status: 'failed', error_class: rec.failureClass,
@@ -2665,6 +2719,8 @@ module.exports = {
   _ghToken, _ghFetch,
   durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
   resumeDurableReply, resumeDurableCrash, planWorkspaceLabel, kickDurable, durableBudget, _setKickDeps,
+  // R2: material result criteria (playbook-material.js) — exported for the gate test.
+  settleTaskCompletion, outstandingMaterial, isBlockingFinalizationCheck, isMaterialValidator,
   _operatorTarget: operatorTarget,
   runWaitTick,
   tickHeartbeat, countOpenLegacy, durableItemCounts, firstFailureNotice, planLabel, bgStepText,

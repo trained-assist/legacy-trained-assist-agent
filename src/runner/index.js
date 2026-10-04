@@ -141,7 +141,7 @@ const MAX_MSG_LEN = 3500;
 // Telegram cards report token usage only; monetary estimates are not displayed.
 //
 // Owner decision 29.09.2026: the card must not leak internal engine/model slugs
-// ("deepseek:build") and must read as plain language. The wording below is the
+// ("service:build") and must read as plain language. The wording below is the
 // owner's own dictation, kept verbatim:
 //   «ИИ натренированный на рабочие вопросы. Расход токенов: вход: X, обработка: Y, ответ: Z»
 //   вход      — prompt tokens read for the FIRST time this step (fresh input + cache write);
@@ -1823,7 +1823,7 @@ function buildContextCard(username, workDir, chatId, actualModel = null, threadI
     // ~/.config/opencode/.current-profile file — that file is machine-wide and went stale
     // once #1045 scoped /oc_* switching to each profile individually.
     const ocProfile = profiles.getOcProfile(workDir);
-    // The llm-ladder worker model id this profile runs on (issue #1687), e.g. ladder/deepseek:build.
+    // The llm-ladder worker model id this profile runs on (issue #1687), e.g. ladder/service:build.
     const ocModel = process.env.OPENCODE_MODEL || ocLadder.modelFor(ocProfile);
     lines.push(`⚙️ OpenCode · ${ocProfile}${ocModel ? ` (${ocModel})` : ''}`);
   } else if (eng === 'codex') {
@@ -2105,7 +2105,7 @@ function _logOcLadderCall(ocProfileName, ocRole, model, outcome, errorText) {
   try {
     require('../ladder-log').logCall({
       source: `runner:${ocProfileName}`,
-      ladder: ocLadder.ladderFor(ocProfileName) || ocProfileName,
+      ladder: ocLadder.ladderFor(ocProfileName, ocRole) || ocProfileName,
       rungsTotal: null,
       outcome,
       attempts: [{
@@ -3236,7 +3236,11 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
         errorText: inactivityKill
           ? 'inactivity timeout: no output for 5min'
           : `step timeout: ${Math.round(stepTimeoutMs / 1000)}s budget exhausted`,
-        action: 'step_failed',
+        // R3: the three causes are different events. Silence = the provider/engine went
+        // away — the durable executor classifies it INFRA and REFUNDS the attempt (#122),
+        // so recording it as `step_failed` would make the metric «attempts spent on infra»
+        // non-zero and hide that split. A real budget kill stays a step failure.
+        action: inactivityKill ? 'infra_silence' : 'step_failed',
       });
       executionHistory.finalizeExecution(executionId, 'FAILED');
       return timeoutMsg;
@@ -3506,7 +3510,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   const workerFailure = engine === 'opencode' && ocActiveModel?.startsWith(`${ocLadder.PROVIDER_ID}/`)
     ? ocLadder.classifyWorkerFailure(preLadderText) : null;
   if (workerFailure) {
-    const ladderName = ocLadder.ladderFor(ocProfileName) || ocProfileName;
+    const ladderName = ocLadder.ladderFor(ocProfileName, ocRole) || ocProfileName;
     console.warn(`[${taskId}] opencode ${workerFailure} (ladder ${ladderName}): ${String(preLadderText || '').slice(0, 300)}`);
 
     // #1899 п.2: «каждая ступень отказала» is not «попробуй позже» — it is «переходим на

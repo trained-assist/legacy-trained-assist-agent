@@ -42,7 +42,7 @@ Each agent step declares:
 
 Objective checks are `execution_kind: programmatic` (no engine). The runtime resolves role/level/
 budget to a concrete `{engine, ocProfile, ocRole}` (`src/playbook-executor.js`): with the default
-level map **bachelor and master both run opencode `deepseek`** (owner 2026-09-27 — the old
+level map **bachelor and master both run opencode `service`** (owner 2026-09-27 — the old
 `value`/`max` profiles led to paid OpenRouter), doctor → claude with a cross-engine fallback
 (claude → codex → opencode `doctor`). `checklist.md` renders each item as
 `[role/level/budget]` (or `[programmatic]`).
@@ -53,7 +53,7 @@ level map **bachelor and master both run opencode `deepseek`** (owner 2026-09-27
   `skipModels: []`; the field is validated and rendered but does not yet select models
   (open question of executor P3b). Do not rely on it to shrink a step's context.
 - **Level escalation needs a distinct rung.** `nextDistinctLevel` only bumps the level when the
-  resolved engine/profile actually changes; with the default map bachelor = master = `deepseek`
+  resolved engine/profile actually changes; with the default map bachelor = master = `service`
   and doctor resolves to Claude (never auto-spent, #1899), so quality escalation on the default
   map retries at the same rung. Plans that want a real bump override `execution_policy.level_map`.
 - **OpenCode ignores the role as an agent selector.** `researcher→explore` / `reviewer|verifier→review`

@@ -15,6 +15,15 @@ function foreignServer(mod) {
   return i < 0 ? null : mod.slice(0, i);
 }
 
+// A module repeated INSIDE one section is a catalog-authoring mistake, and it used to
+// surface much later as a bare `uniqueItems` schema error on the reconstructed manifest
+// — with no indication of WHICH module or WHICH section. Say it here instead. (The same
+// module in two different sections is fine: mergeManifests unions sections.)
+function duplicateMessage(key, section) {
+  return `config/skill-catalog.json: section '${section}' lists module '${key}' twice. `
+    + 'List it once per section.';
+}
+
 // catalog + names of core's own prompt domains → { core, manifests: {server → manifest} }.
 // A prompt domain that core doesn't ship goes to the section's only foreign server;
 // a section with no single foreign owner for such a domain is a catalog error.
@@ -28,9 +37,15 @@ function splitCatalog(catalog, coreDomains) {
     delete local.modules; delete local.siblings; delete local.promptDomains; delete local.pinned;
     const payload = {};
     const at = server => payload[server] || (payload[server] = {});
+    // Duplicates are per SECTION (a module may legitimately belong to several sections —
+    // mergeManifests unions them). Inside one section's list a repeat is an authoring
+    // mistake that used to surface much later as a bare `uniqueItems` schema error.
+    const inSection = new Set();
 
     const localModules = [];
     for (const mod of section.modules || []) {
+      if (inSection.has(mod)) throw new Error(duplicateMessage(mod, id));
+      inSection.add(mod);
       const server = foreignServer(mod);
       if (!server) { localModules.push(mod); continue; }
       (at(server).modules || (at(server).modules = [])).push(mod.slice(server.length + 1));

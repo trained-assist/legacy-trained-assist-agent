@@ -41,7 +41,7 @@ describe('runDueDurable with a plan level map', () => {
     const r = store.createPlan({
       profile_id: 'u1', goal: 'g', user_value: 'uv', acceptance_criteria: [{ id: 'c', description: 'c' }],
       execution_policy: { validation_mode: 'programmatic', level_map: {
-        doctor: { engine: 'opencode', ocProfile: 'deepseek' }, master: { engine: 'opencode', ocProfile: 'free' } } },
+        doctor: { engine: 'opencode', ocProfile: 'service' }, master: { engine: 'opencode', ocProfile: 'free' } } },
       items: [
         { title: 'm', execution_kind: 'agent', executor_role: 'developer', minimum_model_level: 'master', context_budget: 'small', validation: { ok: true } },
         { title: 'd', execution_kind: 'agent', executor_role: 'reviewer', minimum_model_level: 'doctor', context_budget: 'small', validation: { ok: true } },
@@ -57,12 +57,12 @@ describe('runDueDurable with a plan level map', () => {
     await tick(); await new Promise(res => setTimeout(res, 30));
     expect(calls).toEqual([
       { engine: 'opencode', ocProfile: 'free', ocRole: 'build' },
-      { engine: 'opencode', ocProfile: 'deepseek', ocRole: 'review' },
+      { engine: 'opencode', ocProfile: 'service', ocRole: 'review' },
     ]);
     const ex = store.db.prepare('SELECT engine, profile, model_level, executor_role FROM executions WHERE task_id = ? ORDER BY started_at').all(r.task.id);
     expect(ex).toEqual([
       { engine: 'opencode', profile: 'free', model_level: 'master', executor_role: 'developer' },
-      { engine: 'opencode', profile: 'deepseek', model_level: 'doctor', executor_role: 'reviewer' },
+      { engine: 'opencode', profile: 'service', model_level: 'doctor', executor_role: 'reviewer' },
     ]);
   });
 });

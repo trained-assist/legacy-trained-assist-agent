@@ -159,7 +159,6 @@ Connects [trained-assist/pr-autofix](https://github.com/trained-assist/pr-autofi
 | Secret | Value |
 |--------|-------|
 | `LLM_LADDER_TOKEN` | trained-assist-llm-ladder worker token (org secret in trained-assist; GCP SM `LLM_LADDER_TOKEN`) |
-| `OPENCODE_GO_API_KEY` | Optional — OpenCode Go key; primary provider when set, OpenRouter becomes fallback |
 
 Optionally add `AUTOFIX_PAT` (Fine-Grained PAT with contents+pull_requests write) if your org restricts workflow write permissions.
 

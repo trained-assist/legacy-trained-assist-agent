@@ -13,6 +13,21 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { classifyClosure, closureVerdict, latestMessage, rememberClosure, recallClosure, _hints } = require('../src/closure-intent');
+const serviceLlm = require('../src/service-llm');
+
+function withLadder(content, text) {
+  const real = serviceLlm.serviceChat;
+  const realAvailable = serviceLlm.available;
+  serviceLlm.available = () => true;
+  serviceLlm.serviceChat = async () => ({ content });
+  return Promise.resolve()
+    .then(() => checkCompleteness(text))
+    .finally(() => {
+      serviceLlm.serviceChat = real;
+      serviceLlm.available = realAvailable;
+    });
+}
+
 const { checkCompleteness, DELAY_CONTINUE_MS, DELAY_CLOSURE_STOP_MS } = require('../src/intake-gate');
 const answerRouter = require('../src/answer-router');
 const { buildEngineCommand, computeEngineTimeoutMs, runEngineProcess } = require('../src/runner/claude-runner');
@@ -57,7 +72,7 @@ const failFetch = async () => { throw new Error('LLM must not be called for a cl
 
 test('intake-gate: явный wrap_up решается без модели — короткая пауза + честный анонс', async () => {
   for (const t of ['ты нашел уже всё', 'достаточно, давай итог']) {
-    const r = await checkCompleteness(t, 'key', { fetchImpl: failFetch });
+    const r = await withLadder('wrap_up', t);
     assert.equal(r.level, 'wrap_up', t);
     assert.equal(r.closure, 'wrap_up');
     assert.equal(r.complete, true);
@@ -65,33 +80,41 @@ test('intake-gate: явный wrap_up решается без модели — �
     assert.match(r.announce, /без новых поисков/);
   }
   // и без ключа OpenRouter (раньше — hold)
-  assert.equal((await checkCompleteness('ты уже всё нашёл', '')).level, 'wrap_up');
+  assert.equal((await withLadder('wrap_up', 'ты уже всё нашёл')).level, 'wrap_up');
 });
 
 test('intake-gate: явный stop — ран доходит до runner-а (он гасит и отвечает одной строкой)', async () => {
-  const r = await checkCompleteness('хватит, не надо', 'key', { fetchImpl: failFetch });
+  const r = await withLadder('stop', 'хватит, не надо');
   assert.deepEqual(r, { level: 'stop', closure: 'stop', complete: true, delayMs: DELAY_CLOSURE_STOP_MS, announce: null });
 });
 
 test('intake-gate: «хватит искать X, найди Y» идёт обычным путём к судье', async () => {
-  const r = await checkCompleteness('хватит искать вакансии, найди резюме', 'key', { fetchImpl: fakeFetch('clear') });
+  const r = await withLadder('clear', 'хватит искать вакансии, найди резюме');
   assert.equal(r.level, 'clear');
 });
 
 test('intake-gate: LLM-вердикты wrap_up/stop для неоднозначных фраз', async () => {
-  const w = await checkCompleteness('ну всё, по-моему материала уже хватает', 'key', { fetchImpl: fakeFetch('wrap_up') });
+  const w = await withLadder('wrap_up', 'ну всё, по-моему материала уже хватает');
   assert.equal(w.level, 'wrap_up');
   assert.equal(w.complete, true);
   // LLM-«стоп» без явной фразы ничего не гасит и не запускает — держим ввод.
-  const s = await checkCompleteness('ладно, забудь про это пока', 'key', { fetchImpl: fakeFetch('stop') });
+  const s = await withLadder('stop', 'ладно, забудь про это пока');
   assert.equal(s.level, 'stop');
   assert.equal(s.complete, false);
   assert.equal(s.delayMs, null);
 });
 
 test('intake-gate: падение судьи — прежнее поведение (ошибка на HTTP-границу), не stop', async () => {
-  const fetchImpl = async () => ({ ok: false, status: 500, text: async () => 'boom' });
-  await assert.rejects(() => checkCompleteness('ну всё, по-моему материала уже хватает', 'key', { fetchImpl }));
+  const real = serviceLlm.serviceChat;
+  const realAvailable = serviceLlm.available;
+  serviceLlm.available = () => true;
+  serviceLlm.serviceChat = async () => { throw new Error('boom'); };
+  try {
+    await assert.rejects(() => checkCompleteness('ну всё, по-моему материала уже хватает'));
+  } finally {
+    serviceLlm.serviceChat = real;
+    serviceLlm.available = realAvailable;
+  }
 });
 
 // ── мост судья → runner ──────────────────────────────────────────────────────

@@ -41,9 +41,26 @@ test('catalog covers every local MCP module, and only real ones', () => {
   assert.deepStrictEqual(missing, [], `modules not in config/skill-catalog.json: ${missing.join(', ')}`);
   const ghost = [...listed].filter(m => !localModules.includes(m));
   assert.deepStrictEqual(ghost, [], `catalog lists modules that don't exist: ${ghost.join(', ')}`);
-  // A sibling whose modules the catalog addresses ('<server>/<file>') must be addressed
-  // completely — an unlisted module could never be hidden (#1470). Checked for the
-  // siblings checked out here (CI clones hh + sales).
+
+  // Duplicates are core's own bug and stay fatal — but name the module and the section,
+  // not just a schema keyword (splitCatalog throws the same message; early net). Per
+  // SECTION: the same module in two sections is legitimate (mergeManifests unions).
+  const dupes = [];
+  for (const [id, s] of Object.entries(catalog.sections)) {
+    const seen = new Set();
+    for (const m of s.modules || []) {
+      if (seen.has(m)) dupes.push(`${id}: ${m}`);
+      seen.add(m);
+    }
+  }
+  assert.deepStrictEqual(dupes, [], `module listed twice in one section of config/skill-catalog.json: ${dupes.join(', ')}`);
+
+  // A SIBLING's module set is the sibling's business: resolve() already mounts every
+  // module readiness reports and the catalog does not address (src/skills/resolve.js
+  // "Sibling modules not addressed by any section come from readiness"), so a tool
+  // added upstream is live in MCP without any core change. Listing it is still useful
+  // documentation/pinning, so report the gap — but do NOT redden every core PR for a
+  // sibling's release cadence (#1753 owns making the sibling describe itself).
   const { SKILL_SIBLINGS, siblingPaths } = require('../src/skill-siblings');
   const addressed = new Set(all.filter(m => m.includes('/')).map(m => m.split('/')[0]));
   for (const server of addressed) {
@@ -53,9 +70,14 @@ test('catalog covers every local MCP module, and only real ones', () => {
     if (!fs.existsSync(dir)) continue;
     const files = fs.readdirSync(dir).filter(f => f.endsWith('.js'));
     const unlisted = files.filter(f => !all.includes(`${server}/${f}`));
-    assert.deepStrictEqual(unlisted, [], `${server} modules missing from config/skill-catalog.json`);
+    if (unlisted.length) {
+      console.log(`[catalog] ${server}: ${unlisted.length} module(s) not listed (still mounted via readiness): `
+        + unlisted.map(f => `"${server}/${f}"`).join(', '));
+    }
     const gone = all.filter(m => m.startsWith(server + '/') && !files.includes(m.split('/')[1]));
-    assert.deepStrictEqual(gone, [], `catalog lists ${server} modules that don't exist`);
+    if (gone.length) {
+      console.log(`[catalog] ${server}: ${gone.length} stale entr(y/ies) — module no longer shipped: ${gone.join(', ')}`);
+    }
   }
 });
 
@@ -64,7 +86,8 @@ test('catalog is well-formed: parents exist, siblings declared, every prompt dom
   for (const [id, s] of Object.entries(catalog.sections)) {
     const parent = id.includes('/') ? id.slice(0, id.lastIndexOf('/')) : null;
     if (parent) assert.ok(catalog.sections[parent], `${id}: parent ${parent} missing`);
-    for (const sib of s.siblings || []) assert.strictEqual(catalog.servers[sib]?.kind, 'sibling', `${id}: ${sib}`);
+    for (const sib of s.siblings || []) assert.strictEqual(catalog.servers[sib]?.kind, 'sibling', `${id}: ${sib} must be a sibling repo (a relay belongs in 'relays')`);
+    for (const relay of s.relays || []) assert.strictEqual(catalog.servers[relay]?.kind, 'relay', `${id}: ${relay} must be a relay server (a repo belongs in 'siblings')`);
     for (const srv of Object.keys(s.pinned || {})) assert.ok(catalog.servers[srv], `${id}: pinned server ${srv}`);
     for (const d of s.promptDomains || []) {
       assert.ok(catalog.domains[d], `${id}: no src/prompt-domains/${d}.md`);
@@ -76,8 +99,12 @@ test('catalog is well-formed: parents exist, siblings declared, every prompt dom
   assert.deepStrictEqual(orphan, [], `prompt domains in no section: ${orphan.join(', ')}`);
   for (const [d, meta] of Object.entries(catalog.domains)) {
     const sec = catalog.sections[owners[d]];
+    // A domain gated by a relay server is owned through the `relays` channel (#2034):
+    // the relay's tool module is not a sibling module and never appears in `modules`.
     const own = meta.server === 'trained-skills' ? (sec.modules || []).includes(meta.module)
-      : (sec.siblings || []).includes(meta.server) || (sec.modules || []).includes(`${meta.server}/${meta.module}`);
+      : (sec.relays || []).includes(meta.server)
+        || (sec.siblings || []).includes(meta.server)
+        || (sec.modules || []).includes(`${meta.server}/${meta.module}`);
     assert.ok(own, `${d}: gated by ${meta.server}/${meta.module}, which section ${owners[d]} doesn't own`);
   }
 });
@@ -168,6 +195,32 @@ test('software-engineering pins spawn/release workspace and carries engineering.
 test('unknown section ids are reported, not fatal', () => {
   const res = resolve(catalog, { enabled: ['recruiting', 'nope'], disabled: ['also/nope'] }, readiness());
   assert.deepStrictEqual(res.unknown, ['nope', 'also/nope']);
+});
+
+test('communication relay section (#2034): off unless enabled, attached only when mounted, never a sibling repo', () => {
+  // Section off → the domain is hidden even when the relay is mounted.
+  const off = resolve(catalog, { enabled: ['recruiting'] }, readiness({
+    'capability-relay': true, 'capability-relay/communication.js': true,
+  }));
+  assert.ok(!off.sections.includes('communication'));
+  assert.ok(!off.promptDomains.includes('communication'));
+  assert.ok(!off.siblings.includes('capability-relay'), 'a relay is never a sibling checkout');
+  // Section on + relay mounted + probe ready → domain present, still not a sibling.
+  const on = resolve(catalog, { enabled: ['recruiting', 'communication'] }, readiness({
+    'capability-relay': true, 'capability-relay/communication.js': true,
+  }));
+  assert.ok(on.sections.includes('communication'));
+  assert.ok(on.promptDomains.includes('communication'));
+  assert.ok(!on.siblings.includes('capability-relay'));
+  // Section on but the relay not mounted this run → no domain, no readiness claim.
+  const unmounted = resolve(catalog, { enabled: ['recruiting', 'communication'] }, readiness());
+  assert.ok(!unmounted.promptDomains.includes('communication'));
+  // Mounted but probe unknown (null) → fail open, like selectDomains does.
+  const unprobeable = resolve(catalog, { enabled: ['communication'] },
+    readiness({ 'capability-relay': true, 'capability-relay/*': null }));
+  assert.ok(unprobeable.promptDomains.includes('communication'));
+  // The recruiter audience default keeps the section for its profiles.
+  assert.ok(catalog.audienceDefaults.recruiter.enabled.includes('communication'));
 });
 
 test('shadow: legacy profile → diff=0, writes .skills-resolved.json, audience preview', () => {

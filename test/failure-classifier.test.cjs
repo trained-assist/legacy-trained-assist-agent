@@ -203,11 +203,17 @@ test('#1899: chat ladder_exhausted fallback path never targets Claude/Codex', ()
 // (previously this text fell to UNKNOWN and burned a quality attempt / escalated level).
 test('deterministic: step/inactivity/hard timeouts classify as TIMEOUT', () => {
   assert.equal(classifyDeterministic('step timeout: 600s budget exhausted').class, 'TIMEOUT');
-  assert.equal(classifyDeterministic('inactivity timeout: no output for 5min').class, 'TIMEOUT');
   assert.equal(classifyDeterministic('claude timed out after 2400s').class, 'TIMEOUT');
   assert.equal(classifyDeterministic('timeout: 40min budget').class, 'TIMEOUT');
   assert.equal(classifyDeterministic('no DURABLE terminal marker in reply: ⏱ Шаг не уложился в бюджет: 600с.').class, 'TIMEOUT');
-  assert.equal(classifyDeterministic('no DURABLE terminal marker in reply: ⏱ Движок молчал 5 мин (завис…) — шаг прерван.').class, 'TIMEOUT');
+});
+
+// #122: provider silence (the engine never answered up to the inactivity watchdog) is
+// infrastructure, not a step signal — class INFRA, refunded by the durable executor
+// without consuming the step's attempt budget. Budget exhaustion above stays TIMEOUT.
+test('deterministic: provider silence classifies as INFRA (not TIMEOUT)', () => {
+  assert.equal(classifyDeterministic('inactivity timeout: no output for 5min').class, 'INFRA');
+  assert.equal(classifyDeterministic('no DURABLE terminal marker in reply: ⏱ Движок молчал 5 мин (завис…) — шаг прерван.').class, 'INFRA');
 });
 
 test('playbook researcher is not pinned to the Go `research` subscription profile (2026-10-01)', () => {
@@ -215,7 +221,7 @@ test('playbook researcher is not pinned to the Go `research` subscription profil
   for (const lvl of ['bachelor', 'master']) {
     const r = resolveStepExecution({ executor_role: 'researcher', minimum_model_level: lvl, current_model_level: lvl });
     assert.equal(r.engine, 'opencode');
-    assert.equal(r.ocProfile, 'deepseek', 'researcher goes through the llm-ladder');
+    assert.equal(r.ocProfile, 'master', 'researcher goes through the llm-ladder');
     assert.equal(r.ocRole, 'explore');
   }
 });

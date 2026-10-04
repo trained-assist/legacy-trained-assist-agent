@@ -103,7 +103,7 @@ stops on `done` / `failed` / stall, prints the report, and can `--record out.jso
 **ticks inside the server process** (`/internal/gtd/tick`), so a local run needs the server
 running; `kick` forces a tick.
 
-**Default level map is deliberately the cheap one:** `doctor → opencode deepseek`,
+**Default level map is deliberately the cheap one:** `doctor → opencode service`,
 `master → opencode free`, `bachelor → opencode free`. The e2e goal is that the *process* runs
 end to end and every failure is visible — the quality of what the agents build is not the
 point. Override per run with `--level-map '{…}'` or profile-wide with `PLAYBOOK_LEVEL_MAP`.

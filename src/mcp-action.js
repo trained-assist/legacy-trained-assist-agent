@@ -26,9 +26,27 @@ const registry = require('./mcp-skills/registry');
 const { buildToolCatalog } = require('./action-tool-catalog');
 const { presentSiblings } = require('./skill-siblings');
 const { planFor } = require('./skills/enforce');
+const { toolPlatformEnv } = require('./secrets');
 
 const INDEX_PATH = path.join(__dirname, 'mcp-skills', 'index.js');
 const DEFAULT_TIMEOUT_MS = 45_000;
+
+// Per-tool budgets. DEFAULT_TIMEOUT_MS fits fast command-shaped tools (quick
+// answers, HH lookups); tools that legitimately take longer get their own entry
+// instead of silently inheriting the default and dying at 45s (#2043).
+// speech_transcribe must stay >= the gateway's own transcription budget
+// (trained-assist-tg-bot/src/media-jobs.js: AbortSignal.timeout(120000)) — a
+// shorter value here would be a regression that only shows up on long voice.
+const TOOL_TIMEOUT_MS = {
+  speech_transcribe: 120_000,
+};
+
+// An explicit caller-supplied timeoutMs always wins: the caller knows its own
+// deadline (a Durable Object watchdog, a cron budget).
+function timeoutForTool(tool, timeoutMs) {
+  if (timeoutMs !== undefined) return timeoutMs;
+  return TOOL_TIMEOUT_MS[tool] || DEFAULT_TIMEOUT_MS;
+}
 
 // Sibling skill providers (hh, freelance, engineering — src/skill-siblings.js) are
 // discovered from their checkouts. Duplicate names across any two sources are
@@ -94,7 +112,7 @@ function resolveToolSource(tool, localNames, siblingNames = {}) {
 }
 
 async function runMcpTool({
-  tool, params, username, workDir, timeoutMs = DEFAULT_TIMEOUT_MS,
+  tool, params, username, workDir, timeoutMs,
   siblings: siblingList,
 }) {
   if (!tool || typeof tool !== 'string') throw Object.assign(new Error('tool required'), { code: 'bad_request' });
@@ -110,7 +128,7 @@ async function runMcpTool({
   const indexPath = owner.kind === 'local'
     ? INDEX_PATH
     : list.find(s => s.id === owner.id).indexPath;
-  return spawnToolCall({ indexPath, tool, params, username, workDir, timeoutMs, hostAction: false });
+  return spawnToolCall({ indexPath, tool, params, username, workDir, timeoutMs: timeoutForTool(tool, timeoutMs), hostAction: false });
 }
 
 // Host-only actions (epic #1470 P1.3, HH first): deterministic quick answers the
@@ -138,6 +156,27 @@ function runHostAction({ tool, params, username, workDir, timeoutMs = DEFAULT_TI
   return spawnToolCall({ indexPath: owners[0].sibling.indexPath, tool, params, username, workDir, timeoutMs, hostAction: true });
 }
 
+// Env for a spawned MCP server process. Exported for tests: the failure it prevents
+// (platform keys invisible to tools on /action, issue #2049) is invisible from the
+// outside — a tool just answers key_missing — so it needs a unit-level assertion.
+function buildSpawnEnv({ username, workDir, hostAction }) {
+  return {
+    ...process.env,
+    // Platform keys the tool servers need (DEEPGRAM_API_KEY, CLOUDFLARE_API_TOKEN,
+    // HH_CLIENT_*, the bot tokens) live in memory after loadSecrets() — never in
+    // process.env (prod: GCP Secret Manager). The session path hands them over via
+    // browser.js → toolPlatformEnv(); this path was missed, so on /action every tool
+    // depending on a platform key answered key_missing for profiles without a personal
+    // key file — speech_transcribe for all but 4 profiles, which is exactly what blocked
+    // the gateway migration (trained-assist-tg-bot#319). Same helper, same allowlist:
+    // the two paths must not drift (#1892, issue #2049).
+    ...toolPlatformEnv(),
+    USER_ID: String(username || ''),
+    WORK_DIR: workDir || '',
+    MCP_HOST_ACTION: hostAction ? '1' : '',
+  };
+}
+
 // `indexPath` of a core/sibling MCP server (or a `command`+`args` descriptor);
 // single-call stdio protocol.
 function spawnToolCall({ indexPath, command, args, tool, params, username, workDir, timeoutMs, hostAction }) {
@@ -150,7 +189,7 @@ function spawnToolCall({ indexPath, command, args, tool, params, username, workD
       // cwd matters, not just WORK_DIR: tools like context-store resolve paths off
       // process.cwd() (inherited from Claude Code's own cwd today), not the env var.
       cwd: workDir || process.cwd(),
-      env: { ...process.env, USER_ID: String(username || ''), WORK_DIR: workDir || '', MCP_HOST_ACTION: hostAction ? '1' : '' },
+      env: buildSpawnEnv({ username, workDir, hostAction }),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -201,5 +240,5 @@ function spawnToolCall({ indexPath, command, args, tool, params, username, workD
 
 module.exports = {
   runMcpTool, runHostAction, listHostActions, listActionTools, resolveToolSource,
-  buildCatalogForProfile,
+  buildCatalogForProfile, timeoutForTool, buildSpawnEnv, TOOL_TIMEOUT_MS, DEFAULT_TIMEOUT_MS,
 };

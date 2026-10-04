@@ -38,7 +38,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const drain = (ms = 20) => new Promise(r => setTimeout(r, ms));
+const drain = (ms = 50) => new Promise(r => setTimeout(r, ms));
 const tick = (G, opts) => G.runDueDurable({
   secrets: {}, now: Date.now(), isTaskRunning: () => false, ...opts,
 });
@@ -106,23 +106,35 @@ describe('#1907 marker judge', () => {
     expect(String(after.last_error)).toMatch(/command_exit_zero|validation/i);
   });
 
-  it("judge 'uncertain' retries at the SAME level and never escalates (no doctor burn)", async () => {
+  it("judge 'uncertain' refunds the attempt (no doctor burn), bounded by the infra budget (#122)", async () => {
     const G = require('../../src/gtd-controller.js');
+    const { INFRA_MAX_RETRIES } = require('../../src/durable-recovery.js');
     const { store, item } = plan(G);
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    // Every `uncertain` is a protocol miss, not a step failure: the attempt is
+    // refunded (attempt_count stays 0), the move is `infra_retry`, and the model
+    // level never leaves bachelor. Bounded by INFRA_MAX_RETRIES, not max_attempts.
+    for (let i = 0; i < INFRA_MAX_RETRIES; i++) {
       await tick(G, {
-        runTask: async () => `короткий ответ без деталей, попытка ${attempt}`,
+        runTask: async () => `короткий ответ без деталей, попытка ${i + 1}`,
         markerJudge: async () => ({ verdict: 'uncertain', reason: 'too-short' }),
       });
       await drain();
       const after = store.getTaskItem(item.id);
       expect(after.current_model_level).toBe('bachelor'); // никогда не ушёл в doctor
-      if (attempt < 3) {
-        expect(after.status).toBe('pending');
-        expect(after.last_recovery_action).toBe('retry_same_with_reasons');
-      }
+      expect(after.status).toBe('pending');
+      expect(after.last_recovery_action).toBe('infra_retry');
+      expect(after.attempt_count).toBe(0); // попытка возвращена
     }
-    expect(store.getTaskItem(item.id).status).toBe('failed'); // bounded, не вечный ретрай
+    // One more exceeds the infra budget → terminal, so «no attempt spent» is not
+    // «retry forever».
+    await tick(G, {
+      runTask: async () => 'короткий ответ ещё раз',
+      markerJudge: async () => ({ verdict: 'uncertain', reason: 'too-short' }),
+    });
+    await drain();
+    const after = store.getTaskItem(item.id);
+    expect(after.status).toBe('failed');
+    expect(after.last_recovery_action).toBe('terminal');
   });
 
   it("judge 'failed' keeps the quality ladder (attempt 3 escalates)", async () => {
@@ -131,7 +143,7 @@ describe('#1907 marker judge', () => {
     // escalates when the profile actually changes (default map bachelor=master=deepseek).
     process.env.PLAYBOOK_LEVEL_MAP = JSON.stringify({
       bachelor: { engine: 'opencode', ocProfile: 'free' },
-      master: { engine: 'opencode', ocProfile: 'deepseek' },
+      master: { engine: 'opencode', ocProfile: 'service' },
       doctor: { engine: 'claude', ocProfile: null },
     });
     try {
@@ -260,7 +272,7 @@ describe('#1910 execution attribution', () => {
     const executionId = 'exec-attr-1';
     store.startExecution({
       id: executionId, task_id: task.id, task_item_id: item.id,
-      engine: 'opencode', profile: 'deepseek', model_level: 'bachelor', executor_role: 'developer',
+      engine: 'opencode', profile: 'service', model_level: 'bachelor', executor_role: 'developer',
     });
     let row = store.getExecution(executionId);
     expect(row.attempt_number).toBe(1); // не NULL — аудит: колонка была пустой во всех 622 строках

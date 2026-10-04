@@ -1,7 +1,7 @@
-const { missingBotTokens } = require('./bot-registry');
+const { BOTS, missingBotTokens } = require('./bot-registry');
 
 const REQUIRED = ['TELEGRAM_BOT_TOKEN', 'AGENT_SECRET'];
-const OPTIONAL = ['RECRUITER_BOT_TOKEN', 'FREELANCE_BOT_TOKEN', 'SALES_BOT_TOKEN', 'ANTHROPIC_API_KEY', 'DEEPGRAM_API_KEY', 'BOT_SECRET', 'CF_API_TOKEN', 'OPERATOR_CHAT_ID', 'GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET', 'HH_CLIENT_ID', 'HH_CLIENT_SECRET', 'OPENAI_API_KEY', 'FAL_KEY', 'IDEOGRAM_API_KEY', 'RECRAFT_API_KEY', 'OPENROUTER_API_KEY', 'GITHUB_ISSUES_TOKEN', 'WEB_JWT_SECRET', 'WEB_VERIFY_SECRET', 'CHECKLIST_API_KEY'];
+const OPTIONAL = ['RECRUITER_BOT_TOKEN', 'FREELANCE_BOT_TOKEN', 'SALES_BOT_TOKEN', 'ANTHROPIC_API_KEY', 'DEEPGRAM_API_KEY', 'BOT_SECRET', 'CF_API_TOKEN', 'OPERATOR_CHAT_ID', 'GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET', 'HH_CLIENT_ID', 'HH_CLIENT_SECRET', 'OPENAI_API_KEY', 'FAL_KEY', 'IDEOGRAM_API_KEY', 'RECRAFT_API_KEY', 'GITHUB_ISSUES_TOKEN', 'WEB_JWT_SECRET', 'WEB_VERIFY_SECRET', 'CHECKLIST_API_KEY'];
 
 // GCP Secret Manager — used when running on GCP with ADC available
 async function loadFromGcp() {
@@ -97,6 +97,14 @@ async function loadSecrets({ auditBots = true } = {}) {
 
   return {
     MISSING_BOTS: missingBots.map(b => b.botId),
+    // Delivery reads `secrets[b.token_secret_name]` per registry entry (bot-delivery.js),
+    // so a hand-maintained key list below silently breaks EVERY bot added after it: on
+    // 02.10.2026 SALES_BOT_TOKEN was loaded correctly from Secret Manager/env and still
+    // absent here — every sales run (flexi-consult) died with "sales Telegram delivery
+    // is not configured" (503), while the boot audit saw nothing missing. Derive the
+    // token keys from the registry instead: a new bot now works by construction, and
+    // test/secrets-bot-tokens.test.cjs fails the build if it ever stops doing so.
+    ...Object.fromEntries(BOTS.map(b => [b.token_secret_name, values[b.token_secret_name] || null])),
     BOT_TOKEN: values.TELEGRAM_BOT_TOKEN,
     RECRUITER_BOT_TOKEN: values.RECRUITER_BOT_TOKEN,
     FREELANCE_BOT_TOKEN: values.FREELANCE_BOT_TOKEN,
@@ -114,8 +122,7 @@ async function loadSecrets({ auditBots = true } = {}) {
     FAL_KEY: values.FAL_KEY,
     IDEOGRAM_API_KEY: values.IDEOGRAM_API_KEY,
     RECRAFT_API_KEY: values.RECRAFT_API_KEY,
-    OPENROUTER_API_KEY: values.OPENROUTER_API_KEY,
-    GITHUB_ISSUES_TOKEN: values.GITHUB_ISSUES_TOKEN,
+      GITHUB_ISSUES_TOKEN: values.GITHUB_ISSUES_TOKEN,
     WEB_JWT_SECRET: values.WEB_JWT_SECRET,
     WEB_VERIFY_SECRET: values.WEB_VERIFY_SECRET,
     CHECKLIST_API_KEY: values.CHECKLIST_API_KEY,

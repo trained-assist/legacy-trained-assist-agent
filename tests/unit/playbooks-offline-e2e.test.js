@@ -31,7 +31,7 @@ const KEYS = ['USERS_DIR', 'AGENT_DATA_DIR', 'AGENT_TOKENS_DIR', 'AGENT_TOKENS_R
 const PROFILE = 'e2e';
 const PR_URL = 'https://github.com/o/sandbox/pull/7';
 const LEVEL_MAP = {
-  doctor: { engine: 'opencode', ocProfile: 'deepseek' },
+  doctor: { engine: 'opencode', ocProfile: 'service' },
   master: { engine: 'opencode', ocProfile: 'free' },
   bachelor: { engine: 'opencode', ocProfile: 'free' },
 };
@@ -157,7 +157,7 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
       const ex = store.db.prepare('SELECT model_level, engine, profile FROM executions WHERE task_id = ? AND engine IS NOT NULL').all(task.id);
       expect(ex.length).toBeGreaterThan(0);
       for (const e of ex) expect([e.model_level, e.engine, e.profile]).toEqual([e.model_level, 'opencode', LEVEL_MAP[e.model_level].ocProfile]);
-      if (items.some(i => i.minimum_model_level === 'doctor')) expect(ex.some(e => e.profile === 'deepseek')).toBe(true);
+      if (items.some(i => i.minimum_model_level === 'doctor')) expect(ex.some(e => e.profile === 'service')).toBe(true);
 
       // one workspace label for the whole plan
       const labels = new Set(calls.map(c => c.label));
@@ -331,7 +331,7 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     const t = await drive(G, task.id, { runTask, registry: fakeGitHub() });
     expect(t.status).toBe('done');
     const impl = calls.filter(c => /^Реализация/.test(c.title));
-    expect(impl.map(c => `${c.engine}/${c.ocProfile}`)).toEqual(['opencode/free', 'opencode/free', 'opencode/deepseek']);
+    expect(impl.map(c => `${c.engine}/${c.ocProfile}`)).toEqual(['opencode/free', 'opencode/free', 'opencode/service']);
     expect(prompts[0]).not.toContain('ПРОШЛЫЕ ПОПЫТКИ');
     expect(prompts[1]).toContain('ПРОШЛЫЕ ПОПЫТКИ');
     expect(prompts[1]).toContain('попытка 1');
@@ -405,14 +405,36 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
   it('soft finalization: semantic checks the judge rejects do not block — logged as unconfirmed', async () => {
     const G = require('../../src/gtd-controller.js');
     const { readDefects } = require('../../src/playbook-defects-log.js');
+    const { isMaterialValidator } = require('../../src/playbook-material');
     const { task } = startPlan(G, 'feature');
+    // R2: MATERIAL result criteria block even in soft mode, so this case keeps testing
+    // what soft mode still means — a rejected ADVISORY semantic check. The judge rejects
+    // everything except the material result keys (which the next case covers).
     const t = await drive(G, task.id, { runTask: scriptedEngine({ calls: [] }), registry: fakeGitHub(),
-      llmValidate: async () => ({ status: 'fail', subject: null, evidence: { reason: 'judge says no' } }) });
+      llmValidate: async (ctx) => (isMaterialValidator(ctx.key)
+        ? { status: 'pass', reason: 'delivered' }
+        : { status: 'fail', subject: null, evidence: { reason: 'judge says no' } }) });
     expect(t.status).toBe('done'); // red checks (pr_opened, ci_green, merged…) passed deterministically
     const d = readDefects({ taskId: task.id });
     expect(d.length).toBeGreaterThan(0);
     expect(d.every(x => x.kind === 'unconfirmed')).toBe(true);
     expect(d.map(x => x.validator)).not.toContain('ci_green');
+  }, 30_000);
+
+  it('soft finalization: a rejected MATERIAL result criterion blocks the plan (R2)', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { readDefects } = require('../../src/playbook-defects-log.js');
+    const { task } = startPlan(G, 'feature');
+    // The judge rejects everything, including «verified in real environment» / «docs
+    // landed». Deterministic checks still passed — but nothing was delivered, so the
+    // plan must not report done.
+    const t = await drive(G, task.id, { runTask: scriptedEngine({ calls: [] }), registry: fakeGitHub(),
+      llmValidate: async () => ({ status: 'fail', subject: null, evidence: { reason: 'judge says no' } }) });
+    expect(t.status).toBe('blocked');
+    expect(G.durableStore().getTask(task.id, PROFILE).blocker_reason).toMatch(/материальный результат не подтверждён/);
+    const mat = readDefects({ taskId: task.id, kind: 'material_unmet' });
+    expect(mat.length).toBeGreaterThan(0);
+    expect(mat.map(x => x.validator)).toContain('user_scenario_verified_in_real_environment');
   }, 30_000);
 
   it('strict finalization: the same run is blocked (never a silent stall) and the owner is told', async () => {
@@ -432,10 +454,56 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
       llmValidate: async () => ({ status: 'fail', subject: null, evidence: { reason: 'judge says no' } }),
       notify: async ({ text }) => { told.push(text); } });
     expect(t.status).toBe('blocked');
-    expect(store.getTask(task.id, PROFILE).blocker_reason).toMatch(/unmet checks/);
-    expect(told.some(x => /unmet checks/.test(x))).toBe(true);
+    // R2: material criteria are reported in their own words; everything else stays as before.
+    expect(store.getTask(task.id, PROFILE).blocker_reason)
+      .toMatch(/материальный результат не подтверждён|unmet checks/);
+    expect(told.some(x => /материальный результат не подтверждён|unmet checks/.test(x))).toBe(true);
     expect(readDefects({ taskId: task.id, kind: 'blocked' }).length).toBeGreaterThan(0);
   }, 30_000);
+
+  it('#120 replay: an approved spec runs ONE framing step, every delivery gate still runs', async () => {
+    const G = require('../../src/gtd-controller.js');
+    const { PlaybookStore } = require('../../src/playbook-store.js');
+    const { compilePlaybook } = require('../../src/playbook-compiler.js');
+    const pb = new PlaybookStore({ profileId: PROFILE }).get('feature');
+    const c = compilePlaybook(pb, {
+      goal: 'offline e2e: todo-cli', vars: { repo: 'acme/todo-cli' },
+      spec_ref: 'trained-assist/agent#2061',
+    });
+    const store = G.durableStore();
+    const { task } = store.createPlan({
+      profile_id: PROFILE, goal: c.goal, user_value: c.user_value,
+      acceptance_criteria: c.acceptance_criteria, items: c.items, hooks: c.hooks,
+      playbook_id: pb.id, playbook_version: pb.version,
+      execution_policy: { level_map: LEVEL_MAP, hooks_approved: true },
+    });
+    store.updateTask(task.id, PROFILE, { status: 'active' });
+    const calls = [];
+    const t = await drive(G, task.id, { runTask: scriptedEngine({ calls }), registry: fakeGitHub() });
+
+    const ran = re => calls.some(x => re.test(x.title));
+    // The acceptance of #120: ≤1 framing step before apply, artefacts reference the spec
+    // sections instead of re-deriving them.
+    expect(calls.filter(x => /^Сверка одобренной спецификации/.test(x.title))).toHaveLength(1);
+    for (const skipped of [/^Сценарий пользователя/, /^Исследование/, /^Сложность требований/,
+      /^Предложение изменения/, /^Декларация плана/]) {
+      expect(ran(skipped), `framing step must not run on the fast path: ${skipped}`).toBe(false);
+    }
+    // …and the fast path removes ONLY the framing: every non-framing step of the plain
+    // plan is still in the compiled plan, programmatic ones included (`PR смержен` never
+    // spawns a model, so it can only be asserted on the plan, not on the calls).
+    const plain = compilePlaybook(pb, { goal: 'offline e2e: todo-cli', vars: { repo: 'acme/todo-cli' } });
+    const fastTitles = c.items.map(i => i.title);
+    const nonFraming = plain.items.filter(i => !['frame', 'propose', 'design'].includes(i.stage));
+    expect(nonFraming.length).toBeGreaterThan(5);
+    for (const item of nonFraming) expect(fastTitles, `kept: ${item.title}`).toContain(item.title);
+    // And the agent-run delivery gates actually executed.
+    for (const gate of [/^Песочница/, /^Реализация/, /^Полная локальная проверка/, /^Открыть PR/,
+      /^CI зел/, /^Деплой/, /^Проверка сценария/, /^Архивация/]) {
+      expect(ran(gate), `delivery gate must still run: ${gate}`).toBe(true);
+    }
+    expect(t.status).toBe('done');
+  });
 
   it('an agent may close its current step as an exception — no judge, logged, plan goes on', async () => {
     const G = require('../../src/gtd-controller.js');

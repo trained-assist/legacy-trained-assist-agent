@@ -29,6 +29,33 @@ const QUALITY_CLASSES = new Set(['UNKNOWN', 'TOOL_ERROR']);
 const HARD_ENGINE_CLASSES = new Set(['AUTH', 'CONFIG']);
 const QUALITY_MAX_ATTEMPTS = 3;
 
+// #122: how many provider-silence / judge-`uncertain` retries a step may spend
+// WITHOUT consuming its attempt budget. Bounded on purpose — «no attempt spent»
+// must never mean «retry forever» (a permanently broken provider still ends
+// terminal, just after this many free retries instead of burning max_attempts).
+const INFRA_MAX_RETRIES = 5;
+
+// R3: the engine's own hard wall-clock cap (claude-runner.js CLAUDE_TIMEOUT_MS).
+// A step budget can never buy more than this, so escalation stops here.
+const ENGINE_HARD_CAP_SEC = 40 * 60;
+
+/**
+ * R3 — a hard timeout is a STEP signal (the work did not fit the budget), not a model
+ * failure. But re-running it with the SAME budget just kills it again — that is what the
+ * 2026-10-01 incident burned three retries on. So the retry gets twice the time, capped
+ * at the engine's hard cap: attempt 1 runs the declared budget honestly, attempt 2 gets
+ * 2×, attempt 3 gets 4× (or the cap). The attempt itself is still spent — this only makes
+ * the next attempt meaningfully different.
+ */
+function escalateStepBudget(store, itemId, profileId, item) {
+  const current = Number(item && item.execution_timeout_seconds) || 0;
+  if (current <= 0) return null; // no declared budget (legacy item) — nothing to grow
+  const next = Math.min(ENGINE_HARD_CAP_SEC, current * 2);
+  if (next === current) return current;
+  const updated = store.updateTaskItem(itemId, { execution_timeout_seconds: next }, profileId);
+  return (updated && updated.execution_timeout_seconds) || next;
+}
+
 // Which policy action re-pends the same target (the pre-P3c path).
 const RETRY_ACTIONS = new Set(['retry_same', 'conservative_retry', 'execution_retry', 'tool_specific_retry']);
 // Which action bumps the step's model level (bachelor→master→doctor; the engine at the top).
@@ -41,11 +68,18 @@ const MODEL_ACTIONS = new Set(['next_model', 'next_model_or_provider', 'compact_
 // because startExecution already bumped attempt_count. `escalate` is false for
 // engine/env crashes: a crash is not an item-quality signal, so it retries at
 // the same tier until the attempt budget is spent.
-function retryFailedItem(store, itemId, profileId, { retryDelayMs = 0, escalate = true } = {}) {
+function retryFailedItem(store, itemId, profileId, { retryDelayMs = 0, escalate = true, refundAttempt = false } = {}) {
   const item = store.getTaskItem(itemId);
   if (!item) return { retried: false, attempts: 0, maxAttempts: 0 };
   const attempts = item.attempt_count || 0;
   const maxAttempts = item.max_attempts || 1;
+  // #122: an infra refund does not check the attempt budget — the whole point is
+  // that the attempt is given back; the bound lives in recoverDurableItem's
+  // infra-retries budget.
+  if (refundAttempt) {
+    const r = store.refundItemAttempt(itemId, profileId, { dueAt: Date.now() + retryDelayMs });
+    return { retried: !!r, attempts: r ? (r.attempt_count || 0) : attempts, maxAttempts };
+  }
   if (attempts >= maxAttempts) return { retried: false, attempts, maxAttempts };
   if (escalate) store.escalateItem(itemId, profileId); // legacy tier ladder; also sets pending
   store.updateTaskItem(itemId, { status: 'pending', due_at: Date.now() + retryDelayMs }, profileId);
@@ -92,6 +126,9 @@ async function recoverDurableItem({
   store, task, itemId, errorText = '',
   classifier = classifyDeterministic, budget = DEFAULT_RECOVERY_BUDGET,
   escalate = true, retryDelayMs = 0, quality = false, escalateLevel = true,
+  // #122: provider silence (class INFRA) and the marker judge's `uncertain` are not
+  // the step's fault — refund the attempt and spend the bounded infra budget instead.
+  refundAttempt = false,
 } = {}) {
   const profileId = task.profile_id;
   const item = store.getTaskItem(itemId) || { id: itemId, attempt_count: 0, max_attempts: 1 };
@@ -120,6 +157,22 @@ async function recoverDurableItem({
     }, profileId);
     return { recovered: false, failureClass, action: null, attempts, maxAttempts, reason };
   };
+
+  // #122 — infra refund, checked BEFORE the attempt-budget terminal: provider
+  // silence (class INFRA) or an explicit refund (marker judge `uncertain`) does
+  // not consume the step's attempt budget. It is bounded by the item's own
+  // `infra_retries` instead (INFRA_MAX_RETRIES), so a permanently broken provider
+  // still ends terminal — just after free retries, not after burning max_attempts.
+  if (failureClass === 'INFRA' || refundAttempt) {
+    const infraRetries = item.infra_retries || 0;
+    if (infraRetries >= INFRA_MAX_RETRIES) return terminal('infra-retries-exhausted');
+    const r = retryFailedItem(store, itemId, profileId, { retryDelayMs, escalate: false, refundAttempt: true });
+    if (!r.retried) return terminal('infra-refund-failed');
+    store.updateTaskItem(itemId, {
+      last_failure_class: failureClass, last_recovery_action: 'infra_retry',
+    }, profileId);
+    return { recovered: true, failureClass, action: 'infra_retry', attempts: r.attempts, maxAttempts: r.maxAttempts, reason: 'refunded' };
+  }
 
   // Bound: the item's own attempt budget AND the recovery budget. nextAction()
   // already returns null past `budget`, at 'terminal', or when the class's own
@@ -164,6 +217,15 @@ async function recoverDurableItem({
   let move = action;
   let delayMs = retryDelayMs;
 
+  // R3: a hard timeout retry gets a BIGGER budget, so it is not the same run again
+  // (the declared budget is honoured on attempt 1 — gtd-controller.js). The attempt
+  // itself is still spent: this only changes what the next attempt is allowed to take.
+  let budgetSec = null;
+  if (failureClass === 'TIMEOUT') {
+    budgetSec = escalateStepBudget(store, itemId, profileId, item);
+    if (budgetSec) console.log(`[durable-recovery] timeout retry ${itemId.slice(0, 8)}: budget → ${budgetSec}s`);
+  }
+
   if (MODEL_ACTIONS.has(action)) {
     // One rung up, but never an automatic jump onto Claude/Codex (#1899): a level that
     // resolves to a paid engine stays out of reach unless the plan declared it as minimum.
@@ -186,10 +248,10 @@ async function recoverDurableItem({
   store.updateTaskItem(itemId, {
     last_failure_class: failureClass, last_recovery_action: move,
   }, profileId);
-  return { recovered: true, failureClass, action: move, attempts: r.attempts, maxAttempts: r.maxAttempts, reason: 'repended' };
+  return { recovered: true, failureClass, action: move, attempts: r.attempts, maxAttempts: r.maxAttempts, reason: 'repended', budgetSec };
 }
 
 module.exports = {
   recoverDurableItem, retryFailedItem,
-  RETRY_ACTIONS, MODEL_ACTIONS,
+  RETRY_ACTIONS, MODEL_ACTIONS, INFRA_MAX_RETRIES, ENGINE_HARD_CAP_SEC, escalateStepBudget,
 };

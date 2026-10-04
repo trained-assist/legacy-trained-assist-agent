@@ -1,0 +1,159 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:trained-assist:capability-relay-contract:v1",
+  "title": "Capability relay contract v1 — the single source of tools/schema for the REST API and the MCP relay",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "urn",
+    "version",
+    "http",
+    "errorCodes",
+    "tools"
+  ],
+  "properties": {
+    "urn": {
+      "const": "urn:trained-assist:capability-relay-contract:v1"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "http": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invokePath"
+      ],
+      "properties": {
+        "invokePath": {
+          "description": "Path template of the canonical invoke endpoint; {toolId} is replaced by the tool's toolId.",
+          "type": "string",
+          "pattern": "^/.*\\{toolId\\}.*$"
+        }
+      }
+    },
+    "errorCodes": {
+      "description": "Typed error codes. The relay maps each of them to a fixed JSON-RPC code; the API may return any of them in its envelope.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "misconfigured",
+          "unauthorized",
+          "not_found",
+          "invalid_arguments",
+          "conflict",
+          "version_mismatch",
+          "upstream_unavailable",
+          "timeout"
+        ]
+      }
+    },
+    "tools": {
+      "description": "Cloud capabilities exposed to the engine. Additive: a capability is one more entry, the contract version does not change.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "toolId",
+          "name",
+          "description",
+          "mutates",
+          "inputSchema"
+        ],
+        "properties": {
+          "toolId": {
+            "description": "Canonical capability id, used as the path segment of the invoke endpoint. Owned by the capability (Cloudflare) side.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$",
+            "maxLength": 200
+          },
+          "name": {
+            "description": "MCP tool name, exposed verbatim in tools/list. Never translated — REST and MCP must agree by construction.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "maxLength": 120
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "mutates": {
+            "description": "true = the call changes remote state, so a deadline on it leaves the outcome unknown (outcomeUnknown=true) and must not be retried automatically.",
+            "type": "boolean"
+          },
+          "inputSchema": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "object"
+              }
+            }
+          },
+          "invoke": {
+            "description": "Per-capability HTTP door, for a handler that does not expose the contract's default envelope endpoint (the communication Worker serves POST /v1/dialogs/next-message). Absent = the default door (http.invokePath, envelope body). Transport mapping only — no business logic.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "body",
+              "version_header",
+              "contract_version",
+              "endpoint_env",
+              "token_env",
+              "toggle_env"
+            ],
+            "properties": {
+              "path": {
+                "description": "Request path appended to the capability endpoint.",
+                "type": "string",
+                "pattern": "^/[^{]*$"
+              },
+              "body": {
+                "description": "\"arguments\" = the tool arguments POSTed as-is; \"envelope\" = {contractVersion, arguments, authContext} (the default door).",
+                "type": "string",
+                "enum": [
+                  "arguments",
+                  "envelope"
+                ]
+              },
+              "version_header": {
+                "description": "Response header carrying the handler's own contract version.",
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              },
+              "contract_version": {
+                "description": "The handler's contract version this capability is pinned to; any other value is an explicit version_mismatch.",
+                "type": "string",
+                "minLength": 1
+              },
+              "endpoint_env": {
+                "description": "Environment variable supplying the endpoint base URL.",
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$"
+              },
+              "token_env": {
+                "description": "Environment variable supplying the caller credential for that endpoint.",
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$"
+              },
+              "toggle_env": {
+                "description": "Feature toggle (default-off). Truthy = this capability may appear in tools/list.",
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
