@@ -107,6 +107,8 @@ const {
 const {
   parseWait, isActiveWait, startWait, decidePoll, nextDueAt, escalateTimeout, summarizeResults, resumeNote,
 } = require('./durable-wait');
+const { isMaterialValidator } = require('./playbook-material');
+const { declaredValidations } = require('./durable-task-plan');
 
 // ── Разумные дефолты (небольшие, но осмысленные) ────────────────────────────
 const DEFAULT_ETA_MIN = 60;   // через сколько минут после завершения проверить
@@ -340,6 +342,36 @@ function isBlockingCheck(key) {
   return Object.hasOwn(getDefaultRegistry(), key);
 }
 
+// R2 (#106, owner: «мягкое по формату, твёрдо по результату»): a MATERIAL result key
+// blocks too. The registry decides what can be CHECKED; this decides what counts as
+// DELIVERED. `pr_opened`/`ci_green`/`merged` passing never proves the change is live,
+// the docs landed or the scenario works — those keys do. Everything else stays advisory,
+// and every explicit closure path (judge verdict, task_item_exception with a reason,
+// strict mode) keeps working: no new demand is placed on any individual step.
+function isBlockingFinalizationCheck(key) {
+  return isBlockingCheck(key) || isMaterialValidator(key);
+}
+
+// Material criteria of a plan that no step has passed yet — the same list the gate
+// uses. Shown to the step so the acceptance step can still catch what an earlier
+// submit did not provide (and so every step knows what "done" ultimately means).
+function outstandingMaterial(store, task) {
+  let declared;
+  let rows;
+  try {
+    declared = declaredValidations(task);
+    rows = store.listValidations(task.id, task.profile_id);
+  } catch { return []; }
+  const got = new Map();
+  for (const r of rows || []) got.set(`${r.criterion_id}|${r.validator}`, r.status);
+  const out = new Set();
+  for (const d of declared || []) {
+    if (!isMaterialValidator(d.validator)) continue;
+    if (got.get(`${d.criterion_id}|${d.validator}`) !== 'pass') out.add(d.validator);
+  }
+  return [...out];
+}
+
 function settleTaskCompletion(store, task) {
   const progress = store.progressSummary(task.id, task.profile_id);
   if (!(progress.total > 0 && progress.finished >= progress.total)) return null;
@@ -349,7 +381,7 @@ function settleTaskCompletion(store, task) {
     return 'done';
   }
   const strict = (parsePolicy(task) || {}).finalization === 'strict';
-  const res = store.finalizePlan(task.id, task.profile_id, { blocking: strict ? null : isBlockingCheck });
+  const res = store.finalizePlan(task.id, task.profile_id, { blocking: strict ? null : isBlockingFinalizationCheck });
   const fmt = list => (list || []).map(m => `${m.validator}=${m.got == null ? 'missing' : m.got}`).join(', ');
   const base = { profile_id: task.profile_id, task_id: task.id, playbook: task.playbook_id || null };
   if (res.finalized) {
@@ -358,11 +390,19 @@ function settleTaskCompletion(store, task) {
     return 'done';
   }
   // Never a silent stall: all steps finished but a red check is unmet → blocked, logged.
-  const reason = `finalization blocked — unmet checks: ${fmt(res.missing)}`;
+  // An unmet MATERIAL criterion says so in its own words: the work is not delivered, as
+  // opposed to «a check did not pass».
+  const materialMissing = (res.missing || []).filter(m => isMaterialValidator(m.validator));
+  const otherMissing = (res.missing || []).filter(m => !isMaterialValidator(m.validator));
+  const reason = materialMissing.length
+    ? `finalization blocked — материальный результат не подтверждён: ${fmt(materialMissing)}`
+    + (otherMissing.length ? `; прочие проверки: ${fmt(otherMissing)}` : '')
+    : `finalization blocked — unmet checks: ${fmt(res.missing)}`;
   if (task.status !== 'blocked') {
     try { store.updateTask(task.id, task.profile_id, { status: 'blocked' }); } catch { /* status enum */ }
     try { store.db.prepare('UPDATE durable_tasks SET blocker_reason = ? WHERE id = ?').run(reason.slice(0, 1000), task.id); } catch { /* column */ }
-    for (const m of res.missing || []) logDefect({ ...base, kind: 'blocked', validator: m.validator, criterion_id: m.criterion_id, got: m.got });
+    for (const m of materialMissing || []) logDefect({ ...base, kind: 'material_unmet', validator: m.validator, criterion_id: m.criterion_id, got: m.got });
+    for (const m of otherMissing || []) logDefect({ ...base, kind: 'blocked', validator: m.validator, criterion_id: m.criterion_id, got: m.got });
   }
   console.warn(`[gtd-durable] ${task.id.slice(0, 8)} ${reason}`);
   return 'blocked';
@@ -1138,6 +1178,9 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
     const resumed = resumeNote(parseWait(freshForPrompt), now);
     const digest = task.acceptance_criteria_json ? priorStepsDigest(store, task, item) : '';
     const future = futureStepsOutline(store, task, item);
+    // R2: what the plan still needs as a DELIVERED result. The acceptance step reads
+    // this and can still catch what an earlier submit did not provide.
+    const material = task.acceptance_criteria_json ? outstandingMaterial(store, task) : [];
     const prompt = [
       '[DURABLE TASK — auto-execution]',
       resumed,
@@ -1158,6 +1201,8 @@ async function runDueDurable({ secrets, runTask, isTaskRunning, now = Date.now()
       item.instructions ? `\nInstructions: ${item.instructions}` : '',
       item.validation_json
         ? `\nValidation (must pass before completion): ${item.validation_json}` : '',
+      material.length
+        ? `\nМатериальные критерии плана, ещё НЕ подтверждённые (план не станет done, пока они не пройдут): ${material.join(', ')}. Если твой шаг закрывает какой-то из них — закрой и назови это в ИТОГЕ ШАГА. Не закрывай «по виду»: проверка должна быть настоящей, иначе приёмка плана скажет об этом честно.` : '',
       '\nПроверка шага (validation_mode). Текущий режим шага: ' + validationMode + '.',
       'Ты можешь выбрать режим для этого шага через task_item_update(item_id: "<Step id>", validation_mode: "...").',
       'Режимы: "programmatic" — только детерминированные проверки; "programmatic+llm" — детерминированные + дешёвый LLM-судья; "programmatic+llm-fastpass" — самый мягкий.',
@@ -2669,6 +2714,8 @@ module.exports = {
   _ghToken, _ghFetch,
   durableStore, runDueDurable, reconcileOrphanedRunning, claimNextDurableItem, retryFailedItem,
   resumeDurableReply, resumeDurableCrash, planWorkspaceLabel, kickDurable, durableBudget, _setKickDeps,
+  // R2: material result criteria (playbook-material.js) — exported for the gate test.
+  settleTaskCompletion, outstandingMaterial, isBlockingFinalizationCheck, isMaterialValidator,
   _operatorTarget: operatorTarget,
   runWaitTick,
   tickHeartbeat, countOpenLegacy, durableItemCounts, firstFailureNotice, planLabel, bgStepText,
