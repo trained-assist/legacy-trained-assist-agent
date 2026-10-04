@@ -10,7 +10,7 @@
 //   • ci_green sees green CI through Actions runs when check-runs is closed (fine-grained PAT)
 //   • a step can park on task_item_wait and is re-run when the condition holds
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { tmpdir } from 'os';
 import { createRequire } from 'module';
@@ -479,7 +479,19 @@ suite('playbooks offline e2e (real executor, scripted engines)', () => {
     });
     store.updateTask(task.id, PROFILE, { status: 'active' });
     const calls = [];
-    const t = await drive(G, task.id, { runTask: scriptedEngine({ calls }), registry: fakeGitHub() });
+    // The spec-check step carries a DETERMINISTIC anchor (`file_exists
+    // spec-check/coverage.md`), so a real run must leave that table — the scripted
+    // engine writes it exactly as the step's instructions demand. This is what makes
+    // the anchor real instead of another semantic key.
+    const onStep = async ({ title, prompt }) => {
+      if (title !== 'Сверка одобренной спецификации') return;
+      const line = String(prompt).split('\n').find(l => l.startsWith('Папка артефактов плана'));
+      const dir = line ? line.slice(line.indexOf('):') + 2).split('. ')[0].trim() : null;
+      expect(dir, 'the prompt names the plan artifact root').toBeTruthy();
+      mkdirSync(join(dir, 'spec-check'), { recursive: true });
+      writeFileSync(join(dir, 'spec-check', 'coverage.md'), '| пункт | где закрыт |\n|---|---|\n');
+    };
+    const t = await drive(G, task.id, { runTask: scriptedEngine({ calls, onStep }), registry: fakeGitHub() });
 
     const ran = re => calls.some(x => re.test(x.title));
     // The acceptance of #120: ≤1 framing step before apply, artefacts reference the spec

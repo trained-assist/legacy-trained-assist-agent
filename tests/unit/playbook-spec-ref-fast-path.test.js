@@ -59,6 +59,39 @@ describe('#120 fast path: approved spec replaces the framing stages', () => {
       expect(text.toLowerCase()).toContain(item);
     }
     expect(text).toContain('task_item_add'); // gaps are opened, not re-derived
+    expect(text).toContain('spec-check/coverage.md'); // the machine-checkable anchor
+  });
+
+  it('the check step carries a DETERMINISTIC anchor, not only a semantic key', () => {
+    const env = freshEnv();
+    const fast = env.compilePlaybook(get(env, 'feature'), { goal: 'g', vars: { repo: 'acme/x' }, spec_ref: 'acme/spec.md' });
+    const v = fast.items[0].validation;
+    // file_exists is a registry validator: the step cannot be marked done without the
+    // coverage table, so it is not another entry in the 86%-unreachable class.
+    expect(v.file_exists).toBe('spec-check/coverage.md');
+  });
+
+  it('compile reports the fast-path metric (collapsed stages/steps)', () => {
+    const env = freshEnv();
+    const fast = env.compilePlaybook(get(env, 'feature'), { goal: 'g', vars: { repo: 'acme/x' }, spec_ref: 'acme/spec.md' });
+    expect(fast.fast_path).toMatchObject({
+      spec_ref: 'acme/spec.md',
+      collapsed_stages: ['frame', 'propose'],
+      collapsed_steps: 5,
+      check_artifact: 'spec-check/coverage.md',
+      check_timeout_seconds: 300,
+    });
+    const plain = env.compilePlaybook(get(env, 'feature'), { goal: 'g', vars: { repo: 'acme/x' } });
+    expect(plain.fast_path).toBeNull();
+  });
+
+  it('specRefHint suggests only on an approved-spec reference; never guesses', () => {
+    const { specRefHint } = require('../../src/playbook-compiler.js');
+    expect(specRefHint('Реализовать issue #2061 (одобренная владельцем архитектура)')).toBe('issue #2061');
+    expect(specRefHint('acme/x#12 — approved spec')).toBe('acme/x#12');
+    expect(specRefHint('https://github.com/acme/x/issues/5 — утверждено')).toContain('/issues/5');
+    expect(specRefHint('Добавить экспорт CSV')).toBeNull();       // no reference
+    expect(specRefHint('issue #5: починить баг')).toBeNull();      // reference, not approved
   });
 
   it('a raw goal compiles exactly as before — no regression', () => {

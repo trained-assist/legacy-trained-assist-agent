@@ -78,12 +78,29 @@ describe('#120 fast path through playbook_run', () => {
     for (const gate of DELIVERY_GATES) {
       expect(titles.some(t => t.includes(gate)), `delivery gate kept: ${gate}`).toBe(true);
     }
-    // The check step carries the spec and the budget that keeps it cheap.
+    // The check step carries the spec, the budget that keeps it cheap, and a real anchor.
     const check = items[0];
     expect(check.execution_timeout_seconds).toBeLessThanOrEqual(300);
     expect(check.minimum_model_level).toBe('bachelor');
     expect(check.instructions).toContain('trained-assist/agent#2061');
-    expect(check.validation_json ? Object.keys(JSON.parse(check.validation_json)).length : 0).toBeGreaterThan(0);
+    const validation = check.validation_json ? JSON.parse(check.validation_json) : {};
+    expect(validation.file_exists).toBe('spec-check/coverage.md');
+    // The response carries the measurement, so a run's effect is visible not asserted.
+    expect(res.spec_ref_fast_path).toMatchObject({ collapsed_steps: 5, check_artifact: 'spec-check/coverage.md' });
+    expect(res.spec_ref_hint).toBeUndefined();
+  });
+
+  it('suggests spec_ref when the goal names an approved spec but the run omitted it', async () => {
+    const tools = loadTools();
+    const res = await tools.playbook_run.handler({
+      playbook_id: 'feature', mode: 'background',
+      goal: 'Реализовать issue #2061 (одобренная владельцем архитектура)',
+      vars: { repo: 'acme/todo-cli' },
+    }, CTX);
+    expect(res.spec_ref_hint).toBe('issue #2061');
+    expect(res.spec_ref_fast_path).toBeNull(); // a hint never auto-applies
+    const titles = itemsOf(res.task.id).map(i => i.title);
+    expect(titles).toContain('Сценарий пользователя: ценность и шаги'); // full frame still ran
   });
 
   it('a raw goal keeps the full framing — no regression on the normal path', async () => {
