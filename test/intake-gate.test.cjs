@@ -37,10 +37,15 @@ test('holds when text or key is missing', async () => {
 
 test('propagates ladder errors to the fail-closed HTTP boundary', async () => {
   const real = serviceLlm.serviceChat;
+  const realAvailable = serviceLlm.available;
+  serviceLlm.available = () => true;
   serviceLlm.serviceChat = async () => { throw new Error('boom'); };
   try {
     await assert.rejects(() => checkCompleteness('do the thing'));
-  } finally { serviceLlm.serviceChat = real; }
+  } finally {
+    serviceLlm.serviceChat = real;
+    serviceLlm.available = realAvailable;
+  }
 });
 
 test('maps clear to an understandable request with the standard delay + announcement', async () => {
