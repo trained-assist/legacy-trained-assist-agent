@@ -155,10 +155,16 @@ test('parses the label when the model adds stray text', async () => {
 test('gate request is a small, non-reasoning completion with a sane token budget', async () => {
   let args;
   const real = serviceLlm.serviceChat;
+  const realAvailable = serviceLlm.available;
+  // В CI нет файла токена — без этого сработает fail-closed и судья не позовётся.
+  serviceLlm.available = () => true;
   serviceLlm.serviceChat = async (a) => { args = a; return { content: 'clear' }; };
   try {
     await checkCompleteness('сделай отчёт');
-  } finally { serviceLlm.serviceChat = real; }
+  } finally {
+    serviceLlm.serviceChat = real;
+    serviceLlm.available = realAvailable;
+  }
   assert.ok(args.maxTokens >= 8, 'maxTokens must allow a label to be emitted');
   assert.equal(args.source, 'intake-gate');
 });
