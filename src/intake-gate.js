@@ -12,7 +12,9 @@ const { sessionsDirPath } = require('./data-paths');
 const { classifyClosure } = require('./closure-intent');
 const serviceLlm = require('./service-llm');
 
-const GATE_MODEL = process.env.INTAKE_GATE_MODEL || 'service';
+// Gateway waits 40s: 32s across all rungs + serviceChat's 3s read headroom,
+// leaving 5s for HTTP/processing. Per-rung timeout alone is not a total budget.
+const GATE_TOTAL_TIMEOUT_MS = 32_000;
 
 // The verdict now carries the delay and the line the gateway announces, so the
 // owner's continuation logic (29.09) lives in ONE place instead of being split
@@ -34,6 +36,7 @@ const stopVerdict = () => ({ level: 'stop', closure: 'stop', complete: true, del
 const wrapUpVerdict = () => ({ level: 'wrap_up', closure: 'wrap_up', mode: 'wrap_up', complete: true, delayMs: DELAY_CONTINUE_MS, announce: ANNOUNCE_WRAP_UP });
 
 const hold = () => ({ level: 'insufficient', complete: false, delayMs: null, announce: null });
+const unavailable = () => ({ level: 'error', complete: false, delayMs: null, announce: null });
 const standard = () => ({ level: 'clear', complete: true, delayMs: DELAY_STANDARD_MS, announce: ANNOUNCE_STANDARD });
 
 // The last thing the assistant said in this Telegram chat — the context needed to
@@ -54,7 +57,7 @@ function loadLastAssistant({ username, chatId, threadId, sessionsDir } = {}) {
   return null;
 }
 
-async function checkCompleteness(text, _openrouterKey, { lastAssistant = null } = {}) {
+async function checkCompleteness(text, { lastAssistant = null } = {}) {
   const trimmed = (text || '').trim();
   // Explicit waiting must dominate shortcuts and model optimism.
   if (/(?:подожди|погоди|не запускай|не начинай|ещ[её] (?:допишу|пришлю|добавлю)|сейчас (?:пришлю|допишу)|я ещ[её] (?:пишу|не закончил)|wait|hold on|don['’]t start)/i.test(trimmed)) return hold();
@@ -73,9 +76,9 @@ async function checkCompleteness(text, _openrouterKey, { lastAssistant = null } 
     return standard();
   }
 
-  // Без токена лестницы судья не зовётся — держим ввод (тот же fail-closed,
-  // что раньше давал отсутствующий ключ). После regex-сокращений: они не зовут модель.
-  if (!serviceLlm.available()) return hold();
+  // Missing credentials are service unavailability, not incomplete user input.
+  // Shortcuts above stay local; other requests retain the gateway retry path.
+  if (!serviceLlm.available()) return unavailable();
 
   const contextBlock = lastAssistant
     ? lastAssistant.length <= 2000 ? lastAssistant : lastAssistant.slice(0, 2000)
@@ -102,11 +105,15 @@ ${trimmed.length <= 6000 ? trimmed : trimmed.slice(0, 3000) + '\n[середин
     messages: [{ role: 'user', content: prompt }],
     maxTokens: 16,
     timeoutMs: 8000,
+    totalTimeoutMs: GATE_TOTAL_TIMEOUT_MS,
     source: 'intake-gate',
   });
   const answer = (ladderAnswer?.content || '').toLowerCase();
   const match = answer.match(/\b(clear|likely|insufficient|continue|wrap_up|stop)\b/);
-  const level = match ? match[1] : 'insufficient';
+  // Provider failures/empty or invalid answers are not a verdict on user input.
+  // The gateway keeps the batch and retries `error`; `insufficient` parks it.
+  if (!match) return unavailable();
+  const level = match[1];
   if (level === 'wrap_up') return wrapUpVerdict();
   // Судья-«стоп» без явной фразы — не гасим ничего и не запускаем: держим ввод
   // (как insufficient), ручной запуск остаётся. Ошибка судьи сюда не попадает.
