@@ -179,8 +179,25 @@ function resolve(catalog, profileSkills, readiness, opts = {}) {
   // Prompt domains: mirror src/prompt-domains selectDomains() exactly, restricted to
   // domains owned by enabled sections whose server is attached for this run.
   const attached = new Set([LOCAL, ...siblings, ...relays]);
+  // A domain NO section declares is intentionally always-on (#143's coding baseline):
+  // hidden.domains is computed from section declarations only, so it can never be
+  // hidden — but it must still be REPORTED here, otherwise the shadow comparison and
+  // every consumer of resolve().promptDomains would see a permanent phantom difference.
+  const ownedElsewhere = name => {
+    for (const sec of Object.values(sections)) {
+      if ((sec.promptDomains || []).includes(name)) return true;
+    }
+    return false;
+  };
   for (const name of Object.keys(domains).sort()) {
-    if (!domainNames.has(name)) continue;
+    if (!domainNames.has(name) && !ownedElsewhere(name)) {
+      // Always-on: only its SERVER has to be attached. Module presence is the runtime
+      // probe's call (selectDomains drops it when the module truly does not ship), and
+      // resolve() has no per-module readiness for an undeclared domain anyway.
+      const d = domains[name];
+      if (d && attached.has(d.server)) out.promptDomains.push(name);
+      continue;
+    }
     const d = domains[name];
     if (!attached.has(d.server)) continue;
     const ready = moduleReady(d.server, d.module, readiness);

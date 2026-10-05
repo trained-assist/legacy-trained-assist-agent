@@ -13,7 +13,6 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const { buildDomainBlock, loadDomains, parseDomainFile } = require('../../src/prompt-domains/index.js');
-const { compare, sectionScopedDomains } = require('../../src/skills/shadow.js');
 const catalog = require('../../config/skill-catalog.json');
 
 const DOMAIN_FILE = join(__dirname, '..', '..', 'src', 'prompt-domains', 'engineering-baseline.md');
@@ -64,6 +63,16 @@ describe('engineering-baseline core domain', () => {
     expect(declared.has('engineering-baseline')).toBe(false);
   });
 
+  it('resolve() REPORTS it as always-on, so nothing sees a phantom difference', () => {
+    const { resolve } = require('../../src/skills/resolve.js');
+    const cat = { ...catalog, domains: { 'engineering-baseline': { server: 'trained-skills', module: '00-meta.js', when: 'present' }, engineering: { server: 'engineering-skills', module: '20-workspace.js', when: 'present' } } };
+    const r = resolve(cat, null, { 'trained-skills': true, 'engineering-skills': true });
+    expect(r.promptDomains).toContain('engineering-baseline');
+    // …and a narrowed mount that turns the engineering section off keeps it
+    const narrowed = resolve(cat, null, { 'trained-skills': true, 'engineering-skills': true }, { intent: { id: 'documents', sections: ['documents'] } });
+    expect(narrowed.promptDomains).toContain('engineering-baseline');
+  });
+
   it('loads as a domain', () => {
     const names = loadDomains().map(d => d.name);
     expect(names).toContain('engineering-baseline');
@@ -86,29 +95,5 @@ describe('buildDomainBlock keeps the baseline when the engineering domain is hid
   it('a legacy run with no skills plan keeps it too', () => {
     const block = buildDomainBlock(mcpConfig(), { probe: PROBE });
     expect(block).toContain('Coding discipline');
-  });
-});
-
-describe('skills shadow knows the baseline is intentionally always-on', () => {
-  // An always-on domain is never in resolve().promptDomains (hidden.domains is computed
-  // from section declarations only), so a raw comparison reports a permanent
-  // `-dom:engineering-baseline` and the legacy diff=0 guarantee breaks.
-  const cat = { sections: { core: { promptDomains: ['cron', 'engineering'] } } };
-
-  it('excludes domains no section declares', () => {
-    expect(sectionScopedDomains(cat, ['cron', 'engineering-baseline'])).toEqual(['cron']);
-    expect(sectionScopedDomains(cat, ['engineering-baseline'])).toEqual([]);
-  });
-
-  it('reports no diff when only the always-on baseline is extra', () => {
-    const resolved = { siblings: [], relays: [], promptDomains: ['cron'] };
-    const actual = { siblings: [], relays: [], promptDomains: ['cron', 'engineering-baseline'] };
-    expect(compare(resolved, actual, cat)).toEqual([]);
-  });
-
-  it('still reports a real section-scoped difference', () => {
-    const resolved = { siblings: [], relays: [], promptDomains: ['cron'] };
-    const actual = { siblings: [], relays: [], promptDomains: ['cron', 'engineering', 'engineering-baseline'] };
-    expect(compare(resolved, actual, cat)).toEqual(['-dom:engineering']);
   });
 });

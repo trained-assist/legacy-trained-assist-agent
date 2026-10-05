@@ -36,25 +36,14 @@ function fmtDiff(label, d) {
   return [...d.add.map(x => `+${label}:${x}`), ...d.drop.map(x => `-${label}:${x}`)];
 }
 
-// A domain that NO section declares is intentionally always-on (`hidden.domains` is
-// computed from section declarations only) — e.g. the coding baseline #143. It is never
-// in `resolved.promptDomains`, so comparing it raw would report a permanent
-// `-dom:<name>` on every run. Such domains are excluded from the diff.
-function sectionScopedDomains(catalog, names) {
-  const declared = new Set(Object.values((catalog && catalog.sections) || {}).flatMap(s => s.promptDomains || []));
-  return names.filter(n => declared.has(n));
-}
-
 // actual: {siblings: [id], relays: [id], promptDomains: [name] | null}
-function compare(resolved, actual, catalog) {
+function compare(resolved, actual) {
   const out = [...fmtDiff('sib', setDiff(resolved.siblings, actual.siblings || []))];
   // Relay servers are compared in their own channel (#2034): the catalog resolves them
   // out of `relays`, so folding them into the sibling diff would report a permanent
   // false +/- pair on every run that mounts one.
   out.push(...fmtDiff('rel', setDiff(resolved.relays || [], actual.relays || [])));
-  if (Array.isArray(actual.promptDomains)) {
-    out.push(...fmtDiff('dom', setDiff(resolved.promptDomains, sectionScopedDomains(catalog, actual.promptDomains))));
-  }
+  if (Array.isArray(actual.promptDomains)) out.push(...fmtDiff('dom', setDiff(resolved.promptDomains, actual.promptDomains)));
   return out;
 }
 
@@ -74,7 +63,7 @@ function runShadow({ workDir, username, audience, mcpConfigPath, domainReport, c
       relays: Object.keys(mcpServers).filter(id => catalog.servers?.[id]?.kind === 'relay').sort(),
       promptDomains: Array.isArray(report.picked) ? [...report.picked].sort() : null,
     };
-    const diff = compare(resolved, actual, catalog);
+    const diff = compare(resolved, actual);
 
     // Preview: what the audience default (PR-E migration) would hide, legacy profiles only.
     // Skipped while a turn intent is actually narrowing the mount — then `resolved` is
@@ -102,4 +91,4 @@ function runShadow({ workDir, username, audience, mcpConfigPath, domainReport, c
   }
 }
 
-module.exports = { compare, sectionScopedDomains, runShadow, buildReadiness, setDiff };
+module.exports = { compare, runShadow, buildReadiness, setDiff };
