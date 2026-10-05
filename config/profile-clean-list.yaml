@@ -457,6 +457,28 @@ rules:
     action: EXCLUDE
     reason: "[M6] pointer files rewritten by slot-owned writers — regenerate from the blob store"
 
+  # Private keys. Not matched by any KEEP pattern today (no .pem / id_* in the
+  # whitelist), so these cannot reach the image as it stands — but that is an
+  # accident of the whitelist, not a decision. Observed on a real profile:
+  # .agent-home/.ssh/vm_access, an OpenSSH private key owned by root inside a
+  # profile of someone else. Named here so widening the whitelist cannot silently
+  # start shipping credentials.
+  - pattern: "*.pem"
+    action: EXCLUDE
+    reason: "[M6] private keys — never part of the profile image regardless of the KEEP whitelist"
+
+  - pattern: id_rsa
+    action: EXCLUDE
+    reason: "[M6] SSH private key — never part of the profile image"
+
+  - pattern: id_ed25519
+    action: EXCLUDE
+    reason: "[M6] SSH private key — never part of the profile image"
+
+  - pattern: vm_access
+    action: EXCLUDE
+    reason: "[M6] engine SSH key, found owned by root inside a profile — credential, not profile content"
+
   # ── KEEP: the profile's text image ──────────────────────────────────────
   - pattern: "*.md"
     action: KEEP

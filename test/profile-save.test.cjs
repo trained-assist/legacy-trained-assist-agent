@@ -202,6 +202,26 @@ test('SEVERAL unreadable files do not make the profile unsavable', { skip: !HAS_
   assert.ok(files.includes('notes.md'), `notes.md must be saved, got:\n${files}`);
 });
 
+test('a nested repo without a commit does not make the profile unsavable', { skip: !HAS_GIT }, () => {
+  // The common case on a real profile (dozens of them): an embedded repo is staged
+  // as a gitlink, which needs a commit to point at. A clone that was never committed
+  // has no HEAD and `git add -A` fails with "does not have a commit checked out" —
+  // taking the whole profile down with it.
+  const { dir, remote } = fixture();
+  fs.writeFileSync(path.join(dir, 'notes.md'), 'mine\n');
+
+  const nested = path.join(dir, 'vendor', 'lib');
+  fs.mkdirSync(nested, { recursive: true });
+  sh(`git init -q ${nested}`);                      // initialised, never committed
+  fs.writeFileSync(path.join(nested, 'lib.js'), 'module.exports=1;\n');
+
+  const res = saveProfileState(dir, { profileId: 'alice', token: 'x', remoteUrl: remote });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.pushed, true);
+  const files = sh(`git -C ${remote} ls-tree -r --name-only HEAD`).out;
+  assert.ok(files.includes('notes.md'), `notes.md must be saved, got:\n${files}`);
+});
+
 test('a push failure is reported as an error, never as success', { skip: !HAS_GIT }, () => {
   const { dir } = fixture();
   fs.writeFileSync(path.join(dir, 'notes.md'), 'hello\n');
