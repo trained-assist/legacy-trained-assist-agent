@@ -408,12 +408,21 @@ function claimLiveChatId(workDir, id, chatId, threadId) {
  * Returns the id to use, or null.
  */
 function resolveChatSession(workDir, sessionId, chatId, audience, threadId = null) {
-  if (sessionId && getSession(workDir, sessionId)) return sessionId;
+  // A session may only be CONTINUED by the audience that owns it. Reusing across
+  // audiences is the cross-bot leak: two bots serving the same human would read
+  // and append to one session, and the later bot would answer with the earlier
+  // bot's context. Records written before the audience field existed count as
+  // 'default' (same rule as everywhere else in this file).
+  const owns = (s) => (s?.audience || 'default') === (audience || 'default');
+  if (sessionId) {
+    const explicit = getSession(workDir, sessionId);
+    if (explicit && owns(explicit)) return sessionId;
+  }
   if (chatId) {
     const pointerId = getCurrentSessionId(workDir, chatId, audience, threadId);
     const pointed = pointerId && getSession(workDir, pointerId);
     // A topic pointer that leads into another topic's session (the pre-#1409 bleed) is not ours.
-    if (pointed && belongsToConversation(pointed, chatId, threadId)) return pointerId;
+    if (pointed && belongsToConversation(pointed, chatId, threadId) && owns(pointed)) return pointerId;
   }
   return null;
 }
