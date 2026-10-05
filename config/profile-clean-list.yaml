@@ -291,6 +291,30 @@ rules:
     when: git-repo
     reason: "[M1] git working copy / clone — M3: clean → DELETE, dirty → archive bundle"
 
+  # ── M6: the top-level entry points of those working copies ────────────────
+  # A `when: git-repo` rule has no static .gitignore form (see gitignore.cjs), so
+  # the `**` rule above never reaches the generated image and `git add -A` sweeps in
+  # every nested clone. Observed on the live push: trained-assist-product-owner has 28
+  # of them under engineering-mirrors/ and engineering-workspaces/, and `git add` emits
+  # "adding embedded git repository" — the outer commit then aborts, so the biggest
+  # profile could not be saved at all.
+  #
+  # These four roots are the only places a profile keeps clones (the dirs the
+  # engineering skills materialise into). Naming them here is redundant with the
+  # `when: git-repo` rule above by design: that rule stays the M0/M3 classifier's
+  # statement of intent, and these give the M6 image the same boundary statically.
+  - pattern: engineering-workspaces
+    action: ARCHIVE
+    reason: "[M6] working copies — nested .git cannot be a member of the profile image; mirrors the `when: git-repo` ** rule above in static form"
+
+  - pattern: engineering-mirrors
+    action: ARCHIVE
+    reason: "[M6] upstream mirrors — nested .git cannot be a member of the profile image; mirrors the `when: git-repo` ** rule above in static form"
+
+  - pattern: .agent-home/tmp-*
+    action: DELETE
+    reason: "[M6] scratch clones from arch-review / task work — regenerable, and each carries its own .git"
+
   # ── MOVE: media originals → blob store (M4), *.ref.json stays ───────────
   - pattern: "**/media/intake-store"
     action: MOVE
