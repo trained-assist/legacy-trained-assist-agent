@@ -6,11 +6,9 @@ on:
       target:
         description: 'Deploy target'
         required: true
-        default: 'both'
+        default: 'ru'
         type: choice
         options:
-          - both
-          - gcp
           - ru
       reason:
         description: 'Why are you deploying manually? (for the audit log)'
@@ -52,7 +50,8 @@ jobs:
 
   deploy-gcp:
     needs: staging-gate
-    if: inputs.target == 'gcp' || inputs.target == 'both'
+    # Historical job for migration reference only. Never connect to the old VM.
+    if: false
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to GCP VM
