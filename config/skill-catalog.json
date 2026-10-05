@@ -1,6 +1,8 @@
 {
   "version": 1,
   "_doc": "Skill sections × attributes (issue #1537). Single catalog: section tree → local MCP modules (src/mcp-skills/tools), sibling MCP servers, prompt-domain files (src/prompt-domains/<name>.md). Section ids are paths: 'recruiting/hh' is a child of 'recruiting'. An enabled parent enables its children unless a child is listed in skills.json 'disabled'; a disabled parent disables its whole subtree. A module may be listed in several sections — it is exposed when ANY of them is enabled. Resolver: src/skills/resolve.js. PR-A is shadow-only: nothing reads this to decide exposure yet.",
+  "_alwaysOnDomainsDoc": "Prompt domains that apply to EVERY run, whatever the sections and the turn intent mount. hidden.domains is computed from section declarations only, so a domain named here can never be switched off — naming it makes that intent explicit instead of inferred (#143 coding baseline).",
+  "alwaysOnDomains": ["engineering-baseline"],
   "servers": {
     "trained-skills": { "kind": "local" },
     "hh-skills": { "kind": "sibling", "repo": "trained-assist-hh-skill" },

@@ -125,7 +125,7 @@ node .core/scripts/check-playbook-reachability.mjs --repo . --all --strict
 `<core>/../<repo>` sibling lookup misses that layout). `--strict` accepts only a direct A1
 pointer, so deleting the pointer turns the repo's CI red.
 
-### `requires` and `playbook_health`
+### `requires` and `playbook_check_reachability`
 
 A playbook may declare what it needs from a profile (optional, additive):
 
@@ -141,7 +141,7 @@ the A1 pointer. **Order matters:** the schema has `additionalProperties: false`,
 playbook may use `requires` only after the core that accepts it is deployed. Otherwise the
 live agent refuses the file.
 
-`playbook_health(id?, audience?)` (MCP, `102-playbooks.js`) runs the same check for the calling
+`playbook_check_reachability(id?, audience?)` (MCP, `102-playbooks.js`) runs the same check for the calling
 profile inside the agent. Exposure comes from the run record `.skills-resolved.json` (real probed
 readiness) when present. Omit `id` to check every visible playbook.
 

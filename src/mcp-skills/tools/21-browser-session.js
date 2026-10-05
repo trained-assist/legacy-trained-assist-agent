@@ -109,10 +109,11 @@ const tools = [
   },
 
   {
-    name: 'browser_session_url',
+    name: 'browser_session_remote_url',
     description: 'Generate a noVNC browser URL for sites that REQUIRE IP-bound sessions or hardware tokens (e.g. Tilda.cc). ' +
       'DO NOT use for regular sites with email+password login — use credentials_form_create instead, it is safer and simpler. ' +
-      'noVNC requires the user to manually type credentials in a remote browser window.',
+      'noVNC requires the user to manually type credentials in a remote browser window. ' +
+      'This hands out a login LINK; to read what page is open right now, use web_current_page.',
     inputSchema: {
       type: 'object',
       properties: {

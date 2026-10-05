@@ -31,7 +31,7 @@ function batchStore() {
 }
 
 // What the last run of this profile actually resolved (src/skills/shadow.js writes it with real
-// probed readiness). Missing/unreadable → null: playbook_health then computes from skills.json.
+// probed readiness). Missing/unreadable → null: playbook_check_reachability then computes from skills.json.
 function readResolvedSkills(profileId) {
   try {
     const { userWorkDir } = require('../../data-paths');
@@ -211,13 +211,14 @@ module.exports = {
       },
     },
 
-    playbook_health: {
+    playbook_check_reachability: {
       description:
         'Check whether a playbook actually reaches THIS profile («доехал ли плейбук»): file resolves and compiles, ' +
         'the agent has a route to it from a plain request (prompt-domain playbook_run pointer / audience map / ' +
         'dev auto-offer / launcher), its declared requires {sections, tools} exist, and those sections/tools are ' +
         'enabled for the caller profile in this run. Omit id to check every visible playbook. Read-only, offline, ' +
-        'no LLM. Use it to answer "а у меня этот плейбук виден?" or before promising a playbook to the user.',
+        'no LLM. Use it to answer "а у меня этот плейбук виден?" or before promising a playbook to the user. ' +
+        'This is a reachability check for one playbook, NOT the progress of a running batch — for that use playbook_batch_status.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -576,7 +577,7 @@ module.exports = {
     },
 
     playbook_batch_status: {
-      description: 'Status of a batch started by playbook_run_batch: every element with its child plan, progress (steps done/total), current or failed step, supervisor journal. Read-only.',
+      description: 'Status of a batch started by playbook_run_batch: every element with its child plan, progress (steps done/total), current or failed step, supervisor journal. Read-only. This is progress of a started batch, NOT whether a playbook is reachable for the profile — for that use playbook_check_reachability.',
       inputSchema: { type: 'object', required: ['batch_task_id'], properties: { batch_task_id: { type: 'string' } } },
       handler: safe(async ({ batch_task_id }, ctx) => {
         const profileId = requireUser(ctx);

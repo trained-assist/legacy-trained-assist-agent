@@ -92,7 +92,11 @@ describe('startCheckpointLoop', () => {
     let n = 0;
     const stateFn = () => ({ isRepo: true, kind: 'cwd', dir: '/ws', branch: 'b', head: `h${n}`, modifiedCount: n++, ahead: 0, hasUpstream: true, unsaved: true });
     const loop = startCheckpointLoop({ profileId: 'u1', taskId: 't1', root, intervalMs: 1000, stateFn });
-    expect(readCheckpoints('u1', { root, taskId: 't1' })).toHaveLength(1); // baseline
+    // The baseline is scheduled, not awaited inline — it must not sit on the run's
+    // critical path (the engine spawn is next).
+    expect(readCheckpoints('u1', { root, taskId: 't1' })).toHaveLength(0);
+    vi.advanceTimersByTime(0);
+    expect(readCheckpoints('u1', { root, taskId: 't1' })).toHaveLength(1); // baseline landed
     vi.advanceTimersByTime(3000);
     expect(readCheckpoints('u1', { root, taskId: 't1' })).toHaveLength(4);
     loop.stop();

@@ -24,7 +24,7 @@ const { handleWeb } = require('./handlers/web');
 const { handleInternal } = require('./handlers/internal');
 const { handleMcp, handleMcpToken } = require('./handlers/mcp-http');
 const { handleApi } = require('./handlers/api');
-const { runTokenFromAuthHeader } = require('./agent-run-tokens');
+const { runTokenFromAuthHeader, mcpHostTokenFromAuthHeader } = require('./agent-run-tokens');
 const { runTask, generateConnectLink, getQuickAnswer, getPendingTasks, clearPendingTask, interruptForRestart, reconcileSoftContinuations, MAX_RESUME_ATTEMPTS } = require('./runner');
 const { runMcpTool } = require('./mcp-action');
 const { isValidProjectId } = require('./valid-project-id');
@@ -760,7 +760,13 @@ async function main() {
     // run-scoped AGENT_RUN_TOKEN (never AGENT_SECRET, agent-run-tokens.js). It is
     // accepted for THIS route only; handlers/internal.js serves it.
     const kickByRunToken = url.pathname === '/internal/durable/kick' && !!runTokenFromAuthHeader(auth);
-    if (auth !== `Bearer ${secrets.AGENT_SECRET}` && !kickByRunToken) {
+    // POST /mcp/token for a remote engine host (issue #2114 trap #9): a box that
+    // drives this MCP host from outside cannot hold AGENT_SECRET, so it presents
+    // its MCP_HOST_TOKEN instead. Accepted for THIS route only, and only to mint
+    // a run token — a run token is in process memory (trap #8), so minting here
+    // is what makes the door survive a restart of the MCP host.
+    const mintMcpTokenByHostToken = url.pathname === '/mcp/token' && mcpHostTokenFromAuthHeader(auth);
+    if (auth !== `Bearer ${secrets.AGENT_SECRET}` && !kickByRunToken && !mintMcpTokenByHostToken) {
       res.writeHead(401).end(JSON.stringify({ error: 'unauthorized' }));
       return;
     }

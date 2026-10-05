@@ -48,15 +48,15 @@ function readConfig(userId) {
 // ── Level guards ──────────────────────────────────────────────────────────
 
 function requireL1(cfg) {
-  if (!cfg.accountDomain) return { error: 'not_configured', message: 'GetCourse не подключён. Вызови gc_connect.' };
-  if (!cfg.apiKey)        return { error: 'api_key_required', message: 'Нужен API ключ. Вызови gc_connect и введи API ключ из настроек GetCourse.' };
+  if (!cfg.accountDomain) return { error: 'not_configured', message: 'GetCourse не подключён. Вызови connect(service: "getcourse").' };
+  if (!cfg.apiKey)        return { error: 'api_key_required', message: 'Нужен API ключ. Вызови connect(service: "getcourse") и введи API ключ из настроек GetCourse.' };
   return null;
 }
 
 function requireL2(cfg) {
-  if (!cfg.accountDomain) return { error: 'not_configured', message: 'GetCourse не подключён. Вызови gc_connect.' };
+  if (!cfg.accountDomain) return { error: 'not_configured', message: 'GetCourse не подключён. Вызови connect(service: "getcourse").' };
   if (!cfg.sessionCookies || !cfg.sessionCookies.length)
-    return { error: 'session_required', message: 'Для этой операции нужна авторизация через браузер. Вызови gc_connect и введи логин + пароль.' };
+    return { error: 'session_required', message: 'Для этой операции нужна авторизация через браузер. Вызови connect(service: "getcourse") и введи логин + пароль.' };
   return null;
 }
 
@@ -126,13 +126,13 @@ async function gcSessionJson(cfg, endpoint, payload) {
     signal: AbortSignal.timeout(20000),
   });
   if (res.redirected && res.url.includes('/login')) {
-    return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+    return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
   }
   const text = await res.text();
   try {
     const data = JSON.parse(text);
     if (data && (data.accountUserId === -1 || data.user_id === -1)) {
-      return { error: 'session_expired', message: 'Сессия истекла (accountUserId=-1). Вызови gc_connect чтобы войти заново.' };
+      return { error: 'session_expired', message: 'Сессия истекла (accountUserId=-1). Вызови connect(service: "getcourse") чтобы войти заново.' };
     }
     if (data && data.success === false) return { error: data.error || 'request failed', raw: data };
     return data;
@@ -159,13 +159,13 @@ async function gcSessionForm(cfg, endpoint, fields) {
     signal: AbortSignal.timeout(20000),
   });
   if (res.redirected && res.url.includes('/login')) {
-    return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+    return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
   }
   const text = await res.text();
   try {
     const data = JSON.parse(text);
     if (data && (data.accountUserId === -1 || data.user_id === -1)) {
-      return { error: 'session_expired', message: 'Сессия истекла (accountUserId=-1). Вызови gc_connect чтобы войти заново.' };
+      return { error: 'session_expired', message: 'Сессия истекла (accountUserId=-1). Вызови connect(service: "getcourse") чтобы войти заново.' };
     }
     if (data && data.success === false) return { error: data.error || 'request failed', raw: data };
     return data;
@@ -188,7 +188,7 @@ async function generateConnectLink(userId) {
 
 module.exports = {
   isReady: () => USER_ID ? fs.existsSync(configPath(USER_ID)) : false,
-  setupTools: ['gc_status', 'gc_connect'],
+  setupTools: ['gc_status'],
 
   tools: {
 
@@ -198,7 +198,7 @@ module.exports = {
       handler: async (_, ctx) => {
         const cfg = readConfig(ctx?.userId);
         if (!cfg.accountDomain) {
-          return { status: 'not_configured', message: 'GetCourse не подключён. Вызови gc_connect.' };
+          return { status: 'not_configured', message: 'GetCourse не подключён. Вызови connect(service: "getcourse").' };
         }
         const hasL1 = !!cfg.apiKey;
         const hasL2 = !!(cfg.sessionCookies && cfg.sessionCookies.length);
@@ -206,21 +206,7 @@ module.exports = {
           accountDomain: cfg.accountDomain,
           level1_api_key: hasL1 ? 'configured' : 'not configured',
           level2_session: hasL2 ? `configured (${cfg.loginSavedAt || 'date unknown'})` : 'not configured',
-          available: hasL2 ? 'L1 + L2 (full)' : hasL1 ? 'L1 only (user management)' : 'none — reconnect via gc_connect',
-        };
-      },
-    },
-
-    gc_connect: {
-      description: 'Generate a one-time connection link for the user. The form lets them enter: account domain (required), API key (→ L1 user management), login + password (→ L2 course editing via browser session). They can fill any combination.',
-      inputSchema: { type: 'object', properties: {} },
-      handler: async (_, ctx) => {
-        const userId = ctx?.userId || USER_ID;
-        if (!userId) return { error: 'No user ID in context' };
-        const url = await generateConnectLink(String(userId));
-        return {
-          url,
-          message: `Открой ссылку для подключения GetCourse:\n${url}\n\nФорма имеет 3 секции:\n• Домен аккаунта (обязательно)\n• API ключ — L1 (управление учениками)\n• Логин + Пароль — L2 (создание курсов через браузерную сессию)\n\nЛюбая комбинация полей допустима. Ссылка одноразовая, действует 30 минут.`,
+          available: hasL2 ? 'L1 + L2 (full)' : hasL1 ? 'L1 only (user management)' : 'none — reconnect via connect(service: "getcourse")',
         };
       },
     },
@@ -286,7 +272,7 @@ module.exports = {
 
           if (page.url().includes('/login')) {
             await browser.close();
-            return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+            return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
           }
 
           // Extract user rows — links like /user/control/user/update/id/{id}
@@ -351,7 +337,7 @@ module.exports = {
             await p2.goto(`https://${cfg.accountDomain}/pl/user/group/index`, { waitUntil: 'networkidle', timeout: 30000 });
             if (p2.url().includes('/login')) {
               await browser2.close();
-              return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+              return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
             }
             await p2.waitForTimeout(4000);
             const found = await p2.evaluate((q) => {
@@ -381,7 +367,7 @@ module.exports = {
           await page.goto(`https://${cfg.accountDomain}/pl/user/group/update?id=${gid}`, { waitUntil: 'networkidle', timeout: 30000 });
           if (page.url().includes('/login')) {
             await browser.close();
-            return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+            return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
           }
           await page.waitForTimeout(3000);
 
@@ -453,7 +439,7 @@ module.exports = {
           // Detect session expiry: GetCourse silently redirects to /login/
           if (page.url().includes('/login')) {
             await browser.close();
-            return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+            return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
           }
 
           // GetCourse renders via Vue — wait for content to appear
@@ -528,7 +514,7 @@ module.exports = {
             await p2.goto(`https://${cfg.accountDomain}/pl/user/user/index?search[email]=${encodeURIComponent(email)}`, { waitUntil: 'networkidle', timeout: 30000 });
             if (p2.url().includes('/login')) {
               await browser2.close();
-              return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+              return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
             }
             uid = await p2.evaluate(() => {
               const a = document.querySelector('a[href*="/user/control/user/update/id/"]');
@@ -553,7 +539,7 @@ module.exports = {
 
           if (page.url().includes('/login')) {
             await browser.close();
-            return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+            return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
           }
 
           await page.waitForTimeout(3000);
@@ -625,7 +611,7 @@ module.exports = {
             await p2.goto(`https://${cfg.accountDomain}/pl/user/user/index?search[email]=${encodeURIComponent(email)}`, { waitUntil: 'networkidle', timeout: 30000 });
             if (p2.url().includes('/login')) {
               await browser2.close();
-              return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+              return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
             }
             uid = await p2.evaluate(() => {
               const a = document.querySelector('a[href*="/user/control/user/update/id/"]');
@@ -650,7 +636,7 @@ module.exports = {
 
           if (page.url().includes('/login')) {
             await browser.close();
-            return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+            return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
           }
 
           await page.waitForTimeout(4000);
@@ -727,7 +713,7 @@ module.exports = {
             await p2.goto(`https://${cfg.accountDomain}/pl/user/user/index?search[email]=${encodeURIComponent(email)}`, { waitUntil: 'networkidle', timeout: 30000 });
             if (p2.url().includes('/login')) {
               await browser2.close();
-              return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+              return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
             }
             uid = await p2.evaluate(() => {
               const a = document.querySelector('a[href*="/user/control/user/update/id/"]');
@@ -752,7 +738,7 @@ module.exports = {
 
           if (page.url().includes('/login')) {
             await browser.close();
-            return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+            return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
           }
 
           await page.waitForTimeout(4000);
@@ -815,7 +801,7 @@ module.exports = {
           // Detect session expiry: GetCourse silently redirects to /login/
           if (page.url().includes('/login')) {
             await browser.close();
-            return { error: 'session_expired', message: 'Сессия истекла. Вызови gc_connect чтобы войти заново.' };
+            return { error: 'session_expired', message: 'Сессия истекла. Вызови connect(service: "getcourse") чтобы войти заново.' };
           }
 
           await page.waitForTimeout(2000);

@@ -15,10 +15,10 @@ const allDefs = [];
 // Unset/unreadable → null → legacy (every module, gated only by isReady()).
 const skillsHidden = require('../skills/enforce').readHidden(process.env.SKILLS_RESOLVED, { warn: console.error });
 
-// Anti-recursion floor, module level (triage 2026-09-28, issue #1792). hermes_research spawns
+// Anti-recursion floor, module level (triage 2026-09-28, issue #1792). hermes_web_research spawns
 // a headless engine and stamps HERMES_DEPTH into that run's MCP env (hermes-tools-run.js →
 // browser.js extraEnv). Hiding the whole module beats refusing per call: a nested engine never
-// sees `hermes_research` in its tool list at all, so there is nothing to recurse into. Read at
+// sees `hermes_web_research` in its tool list at all, so there is nothing to recurse into. Read at
 // load time — the MCP server process is started per run, so it always inherits the current flag.
 // The per-call refusal in 100-hermes.js stays as the second line of defence (a stale config).
 const HERMES_MODULE = '100-hermes.js';

@@ -160,7 +160,7 @@ test('readCredentials: читает обе формы файла, наружу �
 test('инструменты web_* зарегистрированы и описаны (контракт tools/24-web-ops.js)', () => {
   const mod = require('../src/mcp-skills/tools/24-web-ops');
   const names = Object.keys(mod.tools).sort();
-  assert.deepEqual(names, ['web_ask', 'web_click', 'web_fill', 'web_find', 'web_login', 'web_open', 'web_screenshot', 'web_state', 'web_text']);
+  assert.deepEqual(names, ['web_ask', 'web_click', 'web_current_page', 'web_fill', 'web_find', 'web_login', 'web_open', 'web_screenshot', 'web_text']);
   for (const [name, tool] of Object.entries(mod.tools)) {
     assert.ok(tool.description && tool.description.length > 40, `${name}: описание должно объяснять, когда применять`);
     assert.equal(typeof tool.handler, 'function', name);
@@ -254,7 +254,7 @@ test('fillFields: press и submit — разные действия, ключ п
 
 test('контракт модуля: web_text есть, слой экспортирует окно и список клавиш', () => {
   const tools = require('../src/mcp-skills/tools/24-web-ops').tools;
-  for (const name of ['web_open', 'web_text', 'web_ask', 'web_find', 'web_click', 'web_fill', 'web_login', 'web_state', 'web_screenshot']) {
+  for (const name of ['web_open', 'web_text', 'web_ask', 'web_find', 'web_click', 'web_fill', 'web_login', 'web_current_page', 'web_screenshot']) {
     assert.ok(tools[name], `метод ${name} должен существовать`);
   }
   assert.ok(tools.web_text.inputSchema.properties.offset, 'у web_text есть смещение');
