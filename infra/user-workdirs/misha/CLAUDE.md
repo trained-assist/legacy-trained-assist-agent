@@ -17,7 +17,7 @@ contexts/
       deals/
         {companyId}.json ← локальный кэш сделки (INN или стенд)
   flexi/                ← Flexi Consulting настройки
-    active_exhibition.json  ← активная выставка (пишет flexi_set_exhibition)
+    active_exhibition.json  ← активная выставка (пишет flexi_set_active_exhibition)
   weeek/                ← WEEEK CRM настройки
 skills/
   profile-layout.md     ← авто-генерируется при каждом старте сессии
@@ -30,7 +30,7 @@ skills/
 | Обновлённые критерии целевых | `contexts/prompts/target_company_prompt.txt` |
 | Обновлённый стандарт карточки | `contexts/prompts/company_showcase_spec.txt` |
 | Данные сделки с выставки | `contexts/exhibitions/{eventKey}/deals/{companyId}.json` |
-| Активная выставка | `contexts/flexi/active_exhibition.json` (через flexi_set_exhibition) |
+| Активная выставка | `contexts/flexi/active_exhibition.json` (через flexi_set_active_exhibition) |
 
 **НИКОГДА** не сохранять в `/home/vova/users/flexi-consult/` — это общие файлы, не твои.
 
