@@ -26,7 +26,7 @@ function fakeFetch(content) {
   });
 }
 
-test('holds when text or key is missing', async () => {
+test('empty text holds, missing service token is retryable', async () => {
   assert.deepEqual(await checkCompleteness(''), { level: 'insufficient', complete: false, delayMs: null, announce: null });
   // Короткий ввод без токена лестницы: судья не зовётся, буфер держится.
   const realChat = serviceLlm.serviceChat;
@@ -34,7 +34,7 @@ test('holds when text or key is missing', async () => {
   serviceLlm.available = () => false;
   serviceLlm.serviceChat = async () => { throw new Error('must not call'); };
   try {
-    assert.deepEqual(await checkCompleteness('hi'), { level: 'insufficient', complete: false, delayMs: null, announce: null });
+    assert.deepEqual(await checkCompleteness('hi'), { level: 'error', complete: false, delayMs: null, announce: null });
   } finally {
     serviceLlm.serviceChat = realChat;
     serviceLlm.available = realAvailable;
@@ -77,9 +77,9 @@ test('maps model answer "insufficient" to a hold with the "недосказан�
   assert.match(result.announce, /недосказана/);
 });
 
-test('an unrecognised answer holds the buffer', async () => {
+test('an unrecognised answer keeps the buffer retryable', async () => {
   const result = await withLadder('maybe???', () => checkCompleteness('что-то'));
-  assert.equal(result.level, 'insufficient');
+  assert.equal(result.level, 'error');
   assert.equal(result.complete, false);
   assert.equal(result.delayMs, null);
 });
@@ -87,7 +87,7 @@ test('an unrecognised answer holds the buffer', async () => {
 // Owner 2026-09-29: a short «продолжай» may only auto-launch when the previous
 // assistant answer makes the continuation obvious — otherwise it is underspecified.
 test('a short continuation fast-path needs the previous assistant message', async () => {
-  const withContext = await withLadder('continue', () => checkCompleteness('давай дальше', null, {
+  const withContext = await withLadder('continue', () => checkCompleteness('давай дальше', {
     lastAssistant: 'План: 1) собрать данные 2) построить отчёт. Продолжить?',
   }));
   assert.equal(withContext.level, 'continue');
@@ -109,7 +109,7 @@ test('the assistant context reaches the classifier prompt', async () => {
     return { content: 'continue' };
   };
   try {
-    await checkCompleteness('продолжай', null, { lastAssistant: 'ASSISTANT-SAID-THIS' });
+    await checkCompleteness('продолжай', { lastAssistant: 'ASSISTANT-SAID-THIS' });
   } finally {
     serviceLlm.serviceChat = real;
     serviceLlm.available = realAvailable;
@@ -193,4 +193,67 @@ test('gate request is a small, non-reasoning completion with a sane token budget
 test('loadLastAssistant reads the newest assistant line and tolerates missing input', () => {
   assert.equal(loadLastAssistant({}), null);
   assert.equal(loadLastAssistant({ username: 'u' }), null);
+});
+
+// Exercise the actual service client too: failures must not become a judgement
+// that a perfectly complete request is incomplete.
+test('provider failure, empty output and recovery keep the retry contract', async () => {
+  const realAvailable = serviceLlm.available;
+  const realFetch = global.fetch;
+  const token = process.env.LLM_LADDER_TOKEN;
+  serviceLlm.available = () => true;
+  process.env.LLM_LADDER_TOKEN = 'test-only-token';
+  let request;
+  let response = { ok: false, status: 502, json: async () => ({ error: { message: 'fixture outage' } }) };
+  global.fetch = async (_url, init) => { request = JSON.parse(init.body); return response; };
+  try {
+    const failed = await checkCompleteness('сделай отчёт');
+    assert.equal(failed.level, 'error');
+    assert.equal(failed.complete, false);
+    assert.equal(failed.announce, null);
+    assert.equal(request.ladder_total_timeout_ms, 32000);
+    assert.ok(request.ladder_total_timeout_ms + 3000 < 40000, 'core must finish before gateway deadline');
+    response = { ok: true, json: async () => ({ choices: [{ message: { content: '' } }] }) };
+    assert.equal((await checkCompleteness('сделай отчёт')).level, 'error');
+    response = { ok: true, json: async () => ({ choices: [{ message: { content: 'clear' } }] }) };
+    assert.equal((await checkCompleteness('сделай отчёт')).level, 'clear');
+  } finally {
+    global.fetch = realFetch;
+    serviceLlm.available = realAvailable;
+    if (token === undefined) delete process.env.LLM_LADDER_TOKEN;
+    else process.env.LLM_LADDER_TOKEN = token;
+  }
+});
+
+test('HTTP boundary preserves context and retryable errors without starting server', async () => {
+  const fs = require('node:fs');
+  const vm = require('node:vm');
+  const source = fs.readFileSync(require.resolve('../src/server'), 'utf8');
+  const start = source.indexOf('    // POST /intake-gate');
+  const end = source.indexOf('    // POST /webhooks/weeek-session', start);
+  assert.ok(start > 0 && end > start);
+  const route = source.slice(start, end);
+  let shouldThrow = false;
+  const context = {
+    req: { method: 'POST' }, url: { pathname: '/intake-gate' }, res: {},
+    readBody: async () => JSON.stringify({ text: 'продолжай', username: 'fixture', chatId: 42 }),
+    json: (_res, status, body) => ({ status, body }), secrets: {},
+    startInputRouterShadow: () => ({ record() {} }),
+    loadLastAssistant: () => 'CONTEXT-FROM-THIS-CHAT',
+    checkCompleteness: async (text, options) => {
+      assert.equal(options.lastAssistant, 'CONTEXT-FROM-THIS-CHAT');
+      if (shouldThrow) throw new Error('fixture timeout');
+      return checkCompleteness(text, options);
+    },
+    console: { error() {} },
+  };
+  const run = () => vm.runInNewContext('(async () => {' + route + '})()', context);
+  const answer = await withLadder('continue', run);
+  assert.equal(answer.body.level, 'continue');
+  assert.equal(answer.body.delayMs, DELAY_CONTINUE_MS);
+  shouldThrow = true;
+  const failed = await run();
+  assert.equal(failed.status, 200);
+  assert.equal(failed.body.level, 'error');
+  assert.equal(failed.body.complete, false);
 });

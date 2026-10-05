@@ -1625,7 +1625,7 @@ async function main() {
       } catch (e) {
         console.error('[intake-gate] error:', e.message);
         routerShadow.record({ completeness: 'error', complete: false });
-        return json(res, 200, { level: 'insufficient', complete: false, delayMs: null, announce: null }); // preserve intake; manual launch remains available
+        return json(res, 200, { level: 'error', complete: false, delayMs: null, announce: null }); // preserve intake and allow the gateway's bounded retry
       }
     }
 
