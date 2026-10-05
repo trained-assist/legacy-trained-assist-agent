@@ -38,12 +38,12 @@ const SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } } };
     );
     ok(!!err && /Вложенный Гермес/.test(err.message), 'refusal message reaches the caller');
 
-    // Only the spawn-capable tool is floored; hermes_run_task/hermes_candidate_report are a
+    // Only the spawn-capable tool is floored; hermes_run_task/candidate_report_json are a
     // single raw LLM call and cannot start a chain.
     ok(!/nestedRefusal/.test(hermes.tools.hermes_run_task.handler.toString()),
       'hermes_run_task is not floored (it spawns no engine)');
-    ok(!/nestedRefusal/.test(hermes.tools.hermes_candidate_report.handler.toString()),
-      'hermes_candidate_report is not floored (it spawns no engine)');
+    ok(!/nestedRefusal/.test(hermes.tools.candidate_report_json.handler.toString()),
+      'candidate_report_json is not floored (it spawns no engine)');
 
     // Wiring contract: the run config that the nested engine reads must carry the depth.
     // The real spawn path is not exercised in CI (same policy as hermes-tools-run.test.cjs).
