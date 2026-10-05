@@ -129,19 +129,25 @@ function unreadableFrom(stderr) {
   return [...out];
 }
 
+// A profile can hold SEVERAL slot-owned files (9 on trained-assist-product-owner),
+// and git reports them one per run — so a single retry only ever clears the first
+// and the second run fails the same way. Loop until `add` either succeeds or stops
+// producing new unreadable paths; the guard bounds a pathological tree.
 function commit(dir, message) {
-  const add = (excl) => spawnSync(
-    'git',
-    ['-C', dir, 'add', '-A', '--', '.', ...excl.map(p => `:(exclude)${p}`)],
-    { encoding: 'utf8', timeout: GIT_TIMEOUT_MS },
-  );
-  let r = add([]);
-  if (r && r.status !== 0) {
-    const denied = unreadableFrom(r.stderr);
-    if (!denied.length) return false;
-    r = add(denied);
-    if (!r || r.status !== 0) return false;
+  const excluded = [];
+  let r = null;
+  for (let round = 0; round < 20; round++) {
+    r = spawnSync(
+      'git',
+      ['-C', dir, 'add', '-A', '--', '.', ...excluded.map(p => `:(exclude)${p}`)],
+      { encoding: 'utf8', timeout: GIT_TIMEOUT_MS },
+    );
+    if (r && r.status === 0) break;
+    const denied = (r ? unreadableFrom(r.stderr) : []).filter(p => !excluded.includes(p));
+    if (!denied.length) return false; // a real add failure, not a permissions one
+    excluded.push(...denied);
   }
+  if (!r || r.status !== 0) return false;
   if (!hasChanges(dir)) return false;
   return git(dir, ['commit', '-m', message]) !== null;
 }
