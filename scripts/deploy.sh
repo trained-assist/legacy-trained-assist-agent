@@ -14,11 +14,17 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=release-lib.sh
 source "$SCRIPT_DIR/release-lib.sh"
+source "$SCRIPT_DIR/hh-pinned-deploy.sh"
 
 case "${DEPLOY_ENV:-}" in
   gcp) UNIT_VARIANT="" ;;
   ru) UNIT_VARIANT="-ru" ;;
-  *) echo "DEPLOY_ENV must be gcp or ru" >&2; exit 1 ;;
+  # Second agent host, France (issue #2114). Same unit as gcp — the per-host part
+  # (identity, public origins, cron role, capacity) is the drop-in
+  # infra/systemd/host/contabo-vm2.conf, installed once by
+  # scripts/ops/install-host-config.sh contabo-vm2.
+  vm2) UNIT_VARIANT="" ;;
+  *) echo "DEPLOY_ENV must be gcp, ru or vm2" >&2; exit 1 ;;
 esac
 
 SERVICE="assist-agent"
@@ -63,7 +69,8 @@ export PREV_RELEASE
 # 10 merges → 20 hard restarts; group chats died mid-answer twice per merge). FORCE_DEPLOY=1 opts out.
 if [ "${FORCE_DEPLOY:-}" != 1 ] && [ -n "$PREV_RELEASE" ] \
    && [ "$(basename "$PREV_RELEASE")" = "$TARGET" ] \
-   && $SUDO systemctl is-active --quiet "$SERVICE"; then
+   && $SUDO systemctl is-active --quiet "$SERVICE" \
+   && hh_pin_matches_current; then
   echo "==> $TARGET is already live and $SERVICE is active — skipping restart (FORCE_DEPLOY=1 to override)"
   exit 0
 fi
@@ -158,7 +165,7 @@ ensure_sibling() {
   $SUDO mkdir -p "$RELEASES_DIR"
   $SUDO ln -sfn "$dir" "$RELEASES_DIR/$repo"
 }
-ensure_sibling trained-assist-hh-skill "$HH_SKILL_DIR"
+ensure_hh_sibling || { echo "Pinned HH gate failed; previous agent remains live" >&2; exit 1; }
 ensure_sibling trained-assist-engineering "$ENGINEERING_DIR"
 ensure_sibling trained-assist-freelance-skill "$FREELANCE_SKILL_DIR"
 ensure_sibling trained-assist-sales-skill "$SALES_SKILL_DIR"
@@ -301,6 +308,17 @@ USERS_DIR="${USERS_DIR:-$HOME/users}" AGENT_DATA_DIR="${AGENT_DATA_DIR:-$HOME/ag
   || echo "  ⚠️  workspace migration reported issues — re-run scripts/migrate-workspaces.mjs (see ledger)"
 
 echo "==> Activating release (atomic symlink swap)..."
+# The invariant, enforced at the last possible moment: a pointer may only ever be
+# flipped at a release that STILL verifies. Everything above (npm ci, Playwright,
+# sibling sync, nginx, unit files) takes minutes — the snapshot has to be whole
+# here, not only when it was built. A verification failure here aborts before the
+# swap, so the previous release keeps serving (prod incident 2026-10-04: the
+# pointer was repointed at a snapshot that had already lost its files, and the
+# service restarted onto it).
+if ! release_verify_release "$RELEASE_DIR" "$TARGET" || ! release_verify "$RELEASE_DIR" "$TARGET"; then
+  echo "❌ $RELEASE_DIR no longer verifies — NOT activating. Previous release keeps serving." >&2
+  exit 1
+fi
 release_set_link "$CURRENT_LINK" "$RELEASE_DIR"
 
 echo "==> Starting service..."
@@ -339,7 +357,13 @@ echo "==> HH skill extraction parity smoke test (informational, does not block d
 node "$RELEASE_DIR/scripts/hh-extraction-parity-smoke.js" || echo "  ⚠️  parity smoke test failed — see output above; HH skill fallback may be degraded"
 
 echo "==> Installing disk-hygiene crons..."
-if [ -x "$RELEASE_DIR/ops/cron/install.sh" ]; then
+if [ "$DEPLOY_ENV" != "gcp" ]; then
+  # Disk-guard etc. are per-host jobs owned by the box that runs engines; on RU
+  # there is no runner at all and on VM2 there is none yet (issue #2114 P0.5 —
+  # VM2 is the MCP host first, engine provisioning is P2). Deploying them here
+  # would add crons that inspect a fleet nothing runs on.
+  echo "  skipped (not the engine host: DEPLOY_ENV=$DEPLOY_ENV)"
+elif [ -x "$RELEASE_DIR/ops/cron/install.sh" ]; then
   if sh "$RELEASE_DIR/ops/cron/install.sh"; then
     echo "  disk-hygiene crons installed"
   else
@@ -352,8 +376,12 @@ fi
 # from (2026-09-28: a checkout run left both entries on ~/trained-assist-agent,
 # and that checkout sat on a stale feature branch — the cron then ran code that
 # was never deployed).
-echo "==> Installing claude-oauth-refresh cron..."
-if sh "$RELEASE_DIR/scripts/install-claude-token-refresh.sh"; then
+# gcp only: the cron maintains the service user's Claude Code OAuth credentials,
+# which exist only where engines are provisioned. On VM2 that has not happened
+# yet (issue #2114 P2), so a refresh cron there would fail every 30 min forever.
+if [ "$DEPLOY_ENV" != "gcp" ]; then
+  echo "==> Skipping claude-oauth-refresh cron (no engine credentials on this host)"
+elif sh "$RELEASE_DIR/scripts/install-claude-token-refresh.sh"; then
   echo "  claude-oauth-refresh cron installed"
 else
   echo "  ⚠️  claude-oauth-refresh cron install failed"
@@ -373,6 +401,8 @@ else
 fi
 
 echo "==> Garbage-collecting old releases..."
-release_gc "$RELEASES_DIR" 3
+# The live release is protected explicitly: after a rollback it is OLDER than the
+# three newest, and "newest N" alone would delete the release prod is running.
+release_gc "$RELEASES_DIR" 3 "$RELEASE_DIR"
 
 echo "==> Deploy complete ✅"

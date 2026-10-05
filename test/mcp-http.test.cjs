@@ -10,8 +10,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { Readable } = require('stream');
+const fs = require('node:fs');
+const path = require('node:path');
 const { handleRpc, handleMcp, handleMcpToken, PROTOCOL_VERSION, SERVER_INFO } = require('../src/handlers/mcp-http');
-const { issueRunToken } = require('../src/agent-run-tokens');
+const { issueRunToken, runTokenFromAuthHeader, mcpHostTokenFromAuthHeader } = require('../src/agent-run-tokens');
 
 const listTools = () => [{ name: 'ping', description: 'p', inputSchema: { type: 'object', properties: {} } }];
 const runTool = async () => 'pong';
@@ -226,4 +228,53 @@ test('POST /mcp/token rejects a bad username', async () => {
 test('POST /mcp/token on another path falls through', async () => {
   const { req, res } = mockReqRes({ path: '/nope' });
   assert.equal(await handleMcpToken(req, { pathname: '/nope' }, res, ctx), false);
+});
+
+// ── host tokens: the right to MINT from a remote engine host (#2114 trap #9) ────
+
+const HOST_TOKEN = 'mcp_' + 'a'.repeat(48);
+
+test('a configured host token is accepted', () => {
+  const env = { MCP_HOST_TOKEN: HOST_TOKEN };
+  assert.equal(mcpHostTokenFromAuthHeader(`Bearer ${HOST_TOKEN}`, env), true);
+});
+
+test('a host token list accepts every member and rejects the rest', () => {
+  const other = 'mcp_' + 'b'.repeat(48);
+  const env = { MCP_HOST_TOKEN: `${HOST_TOKEN}, ${other}` };
+  assert.equal(mcpHostTokenFromAuthHeader(`Bearer ${other}`, env), true, 'comma-separated list — a second host is added, not rotated');
+  assert.equal(mcpHostTokenFromAuthHeader(`Bearer mcp_${'c'.repeat(48)}`, env), false);
+});
+
+test('a host token of the wrong shape is refused, not trimmed into shape', () => {
+  const env = { MCP_HOST_TOKEN: HOST_TOKEN };
+  assert.equal(mcpHostTokenFromAuthHeader('Bearer not-a-host-token', env), false);
+  assert.equal(mcpHostTokenFromAuthHeader(`Bearer ${HOST_TOKEN}x`, env), false, 'prefix must not make a near-miss valid');
+  assert.equal(mcpHostTokenFromAuthHeader(`Bearer ${HOST_TOKEN.slice(0, 20)}`, env), false, 'too short to be a credential');
+  assert.equal(mcpHostTokenFromAuthHeader('', env), false);
+  assert.equal(mcpHostTokenFromAuthHeader(`Bearer ${HOST_TOKEN}`, {}), false, 'unset = nobody may mint');
+  assert.equal(mcpHostTokenFromAuthHeader(`Bearer ${HOST_TOKEN}`, { MCP_HOST_TOKEN: '  ,  ' }), false, 'a blank list is not a wildcard');
+  assert.equal(mcpHostTokenFromAuthHeader(`Bearer ${HOST_TOKEN}`, { MCP_HOST_TOKEN: 'sk-the-agent-secret' }), false, 'AGENT_SECRET in this var must not work');
+});
+
+test('the two token kinds cannot be swapped', () => {
+  const env = { MCP_HOST_TOKEN: HOST_TOKEN };
+  // A host token must not pass as a run token: the run-token regex only matches
+  // `rt_<64 hex>`, so /mcp can never be opened by a host credential.
+  assert.equal(runTokenFromAuthHeader(`Bearer ${HOST_TOKEN}`), null);
+  const runToken = issueRunToken({ taskId: 'mcp:alice', username: 'alice' });
+  assert.equal(mcpHostTokenFromAuthHeader(`Bearer ${runToken}`, env), false, 'a run token must not be usable to mint');
+});
+
+test('the host-token exception in the gate covers /mcp/token and nothing else', () => {
+  // The gate lives in server.js (not extractable), so this pins its shape: a host
+  // token is a minting credential. Widening the path it unlocks would hand a
+  // remote engine host a server route.
+  const src = fs.readFileSync(path.resolve(__dirname, '../src/server.js'), 'utf8');
+  const line = src.split('\n').find(l => l.includes('mintMcpTokenByHostToken ='));
+  assert.ok(line, 'the gate exception must exist and be a named condition');
+  assert.match(line, /url\.pathname === '\/mcp\/token'/, 'only the minting route may be opened by a host token');
+  assert.match(line, /mcpHostTokenFromAuthHeader\(auth\)/, 'it must verify the host token, not accept the header shape');
+  const uses = src.split('\n').filter(l => l.includes('mintMcpTokenByHostToken') && l.includes('if ('));
+  assert.equal(uses.length, 1, 'the exception must be referenced by exactly one condition');
 });
