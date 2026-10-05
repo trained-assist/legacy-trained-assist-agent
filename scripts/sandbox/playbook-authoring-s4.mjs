@@ -302,9 +302,9 @@ check('C11', 'runner кладёт блок меню в системный про
   return { ok: true };
 });
 
-// ── C12/C13: playbook_health маршрут P (шаг 10) ──────────────────────────────
+// ── C12/C13: playbook_check_reachability маршрут P (шаг 10) ──────────────────────────────
 async function healthDispatch(user, id, extra = {}) {
-  const out = await callTool('playbook_health', { id, ...extra }, { userId: user });
+  const out = await callTool('playbook_check_reachability', { id, ...extra }, { userId: user });
   const rep = out?.reports?.find(r => r.id === id);
   const dispatch = rep?.rows?.find(r => r.gate === 'dispatch');
   return { out, rep, dispatch };

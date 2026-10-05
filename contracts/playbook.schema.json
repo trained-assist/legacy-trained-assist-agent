@@ -12,7 +12,7 @@
     "scope": { "enum": ["system", "profile"] },
     "title": { "type": "string", "minLength": 1 },
     "when_to_use": {
-      "description": "One-to-two sentences «когда предлагать этот плейбук», in the user's language. Optional in the schema so already-saved playbooks stay valid; required for a profile-scope save (issue #1851). The runner injects it into the profile's system prompt so the playbook is reachable from a plain request without the id; playbook_health treats a non-empty value as route P.",
+      "description": "One-to-two sentences «когда предлагать этот плейбук», in the user's language. Optional in the schema so already-saved playbooks stay valid; required for a profile-scope save (issue #1851). The runner injects it into the profile's system prompt so the playbook is reachable from a plain request without the id; playbook_check_reachability treats a non-empty value as route P.",
       "type": "string",
       "minLength": 1
     },
@@ -20,7 +20,7 @@
     "user_value_template": { "type": "string" },
     "defaults": { "$ref": "#/$defs/defaults" },
     "requires": {
-      "description": "What the playbook needs from a profile: skill-catalog sections that must be enabled and MCP tools it calls. Checked by scripts/check-playbook-reachability.mjs and the playbook_health tool (issue #1756).",
+      "description": "What the playbook needs from a profile: skill-catalog sections that must be enabled and MCP tools it calls. Checked by scripts/check-playbook-reachability.mjs and the playbook_check_reachability tool (issue #1756).",
       "type": "object",
       "additionalProperties": false,
       "properties": {
