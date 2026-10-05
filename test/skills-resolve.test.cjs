@@ -95,9 +95,20 @@ test('catalog is well-formed: parents exist, siblings declared, every prompt dom
       owners[d] = id;
     }
   }
-  const orphan = Object.keys(catalog.domains).filter(d => !owners[d]);
-  assert.deepStrictEqual(orphan, [], `prompt domains in no section: ${orphan.join(', ')}`);
+  // A domain NO section declares and that the catalog names in `alwaysOnDomains` is
+  // intentionally on for EVERY run (#143's coding baseline): `hidden.domains` is
+  // computed from section declarations only, so it can never be switched off. Everything
+  // else must have exactly one owning section.
+  const ALWAYS_ON = new Set(catalog.alwaysOnDomains || []);
+  assert.ok(ALWAYS_ON.size > 0, 'the catalog must name its always-on domains explicitly');
+  for (const d of ALWAYS_ON) {
+    assert.ok(catalog.domains[d], `${d}: declared always-on but ships no prompt domain`);
+    assert.ok(!owners[d], `${d}: declared always-on — it must not also be section-scoped`);
+  }
+  const orphan = Object.keys(catalog.domains).filter(d => !owners[d] && !ALWAYS_ON.has(d));
+  assert.deepStrictEqual(orphan, [], `prompt domains in no section and not declared always-on: ${orphan.join(', ')}`);
   for (const [d, meta] of Object.entries(catalog.domains)) {
+    if (ALWAYS_ON.has(d)) continue; // no owning section, by construction
     const sec = catalog.sections[owners[d]];
     // A domain gated by a relay server is owned through the `relays` channel (#2034):
     // the relay's tool module is not a sibling module and never appears in `modules`.
