@@ -134,7 +134,7 @@ async function sendFile(filePath, caption, asPhoto) {
 }
 
 // Plain-text / document reply to the run's chat, in its forum topic when there is one
-// (AGENT_THREAD_ID). Used by hermes_research delivery — kept here, in the one legacy
+// (AGENT_THREAD_ID). Used by hermes_web_research delivery — kept here, in the one legacy
 // sender, so it migrates with tg_send_file to the channel adapter (epic #1365 PR5)
 // instead of adding a new direct-Telegram site. `target`/`fetchImpl` are test seams.
 function chatTarget() {

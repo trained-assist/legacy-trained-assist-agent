@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const { resolveHermesProfile } = require('../src/hermes-tools-run');
 const ocLadder = require('../src/opencode-ladder-provider');
 
-test('no profile + opencode → the research default (hermes_research keeps its Go-first ladder)', () => {
+test('no profile + opencode → the research default (hermes_web_research keeps its Go-first ladder)', () => {
   assert.equal(resolveHermesProfile(null, 'opencode'), 'research');
   assert.equal(resolveHermesProfile(undefined, 'opencode'), 'research');
 });

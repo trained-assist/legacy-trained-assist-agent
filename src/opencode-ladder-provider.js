@@ -43,7 +43,7 @@ const PROFILE_ROLE_LADDER = Object.freeze({
   // Single-ladder profiles: every role rides the same ladder (the service/research/doctor cases).
   service: ALL_ROLES('service'), // the standard ladder; /oc_service, /oc_go, /oc_ds
   doctor: ALL_ROLES('doctor'),   // playbook doctor fallback after claude → codex
-  research: Object.freeze({ build: 'research', plan: 'research:plan', explore: 'research:explore', general: 'research:general', review: 'research:review' }), // hermes_research — worker ladder, Go-first (llm-ladder #28)
+  research: Object.freeze({ build: 'research', plan: 'research:plan', explore: 'research:explore', general: 'research:general', review: 'research:review' }), // hermes_web_research — worker ladder, Go-first (llm-ladder #28)
   russian: ALL_ROLES('service'), // service ladder + the strict Russian reviewer prompt below
 });
 

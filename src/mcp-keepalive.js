@@ -3,7 +3,7 @@
 // Long MCP tool calls vs. the runner's 5-min inactivity kill.
 // While a tool call is pending the engine prints nothing (claude/codex/opencode
 // all go silent until the result comes back), so a legitimately slow tool —
-// hermes_research runs a whole CLI session, 1–10 min — got the PARENT session
+// hermes_web_research runs a whole CLI session, 1–10 min — got the PARENT session
 // SIGTERMed as "hung". The runner hands every engine (and so its MCP servers,
 // which inherit the env) a per-run AGENT_KEEPALIVE_FILE; a slow tool touches it
 // while it works, and the inactivity check counts a fresh mtime as activity.

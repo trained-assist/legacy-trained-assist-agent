@@ -108,7 +108,7 @@ const baseOpts = {
   assert.equal(args[args.length - 1], 'P');
 
   // (5) codex/opencode MCP wiring — regression for the gap where codex/opencode had no
-  // MCP tools at all (agent_store_artifact, hermes_run, etc. were invisible to them).
+  // MCP tools at all (agent_store_artifact, hermes_run_task, etc. were invisible to them).
   const mcpFixture = path.join(tmp2, '.mcp.json');
   fs.writeFileSync(mcpFixture, JSON.stringify({
     mcpServers: {
