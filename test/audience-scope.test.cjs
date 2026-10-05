@@ -57,6 +57,15 @@ function tmpDir() {
   // resolveChatSession's pointer-fallback branch must also stay audience-scoped.
   ok(sessions.resolveChatSession(wd, 's-unknown', CHAT, 'default') === generalId, 'resolveChatSession falls back to the default-audience pointer');
   ok(sessions.resolveChatSession(wd, 's-unknown', CHAT, 'recruiter') === recruiterId, 'resolveChatSession falls back to the recruiter-audience pointer');
+
+  // An EXPLICIT sessionId from another audience must not be continued either.
+  // This is the cross-bot leak: the bot hands back the session it last saw, and
+  // without this check a recruiter run would resume (and answer from) the
+  // general bot's conversation.
+  ok(sessions.resolveChatSession(wd, generalId, CHAT, 'recruiter') === recruiterId,
+    'resolveChatSession refuses an explicit sessionId owned by another audience');
+  ok(sessions.resolveChatSession(wd, generalId, CHAT, 'default') === generalId,
+    'resolveChatSession still continues its own sessionId');
 }
 
 // ── session-store: legacy records (no audience field) resolve as 'default' ─────
