@@ -69,7 +69,8 @@ test('the vm2 door answers /mcp and /agent/ with the long-tool timeout',()=>{
     assert.match(body,/proxy_buffering\s+off/,loc);
   }
   assert.match(config,/location = \/mcp\/token/,'the minting route needs its own block');
-  assert.doesNotMatch(config,/agent\.trainedassist\.store/,'the branded hostname stays on GCP until the P2 cutover');
+  const served=[...new Set([...config.matchAll(/^\s*server_name\s+([^;]+);/gm)].flatMap(m=>m[1].split(/\s+/)))];
+  assert.deepEqual(served,['169-58-15-230.sslip.io'],'this site serves only this box\'s own origin — installing the branded hostname here IS the P2 cutover');
 });
 
 function apex(f) {
