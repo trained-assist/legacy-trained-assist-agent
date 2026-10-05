@@ -98,6 +98,20 @@ test('each host drop-in declares its own VM_NAME and nothing else claims it', ()
   }
 });
 
+test('VM2 uses the service-readable WIF external-account config for GCS, without a key-file credential', () => {
+  const vm2 = effectiveUnit('contabo-vm2');
+  assert.equal(vm2.GOOGLE_APPLICATION_CREDENTIALS, '/opt/wif/credentials.json');
+  assert.equal(effectiveUnit('gcp-main').GOOGLE_APPLICATION_CREDENTIALS, undefined,
+    'VM2 WIF config must not leak into the shared unit or GCP host');
+  const provision = fs.readFileSync(path.join(ROOT, 'scripts/ops/configure-vm2-wif-archive.sh'), 'utf8');
+  assert.match(provision, /"type": "json"/);
+  assert.match(provision, /"subject_token_field_name": "access_token"/);
+  assert.match(provision, /service_account_impersonation_url/);
+  assert.match(provision, /chmod 0640/);
+  assert.doesNotMatch(provision, /private\.pem/,
+    'the generated ADC config must not include or copy the issuer private key');
+});
+
 // The defect that made every per-host value a no-op while this file's other
 // assertions stayed green: `envOf` greps Environment= lines without caring about
 // sections, so a drop-in missing its [Service] header parses perfectly here — while
