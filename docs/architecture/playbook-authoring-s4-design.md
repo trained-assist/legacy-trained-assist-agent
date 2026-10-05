@@ -14,7 +14,7 @@
   (`shell_command_success`, `http_ok_contains_sha`) и `{scenario}` в `goal_template` без
   `inputs[]`. Такой плейбук сохраняется и молча не проходит (в режиме `programmatic` шаг с
   неизвестным ключом никогда не завершится; `{scenario}` остаётся литералом в плане).
-- **D2.** Личный плейбук достижим только если юзер помнит id: `playbook_health` для
+- **D2.** Личный плейбук достижим только если юзер помнит id: `playbook_check_reachability` для
   `scope:profile` всегда `dispatch: fail` (у профиля нет prompt-domain A1 и нет launcher F).
   Сейчас обход — маршрут, вручную вписанный в правила проекта PO.
 
@@ -105,7 +105,7 @@
 - `pb.source === 'profile'` и непустой `pb.when_to_use` → `dispatch: pass`
   (`P профильный блок промпта: when_to_use «…»`);
 - профильный без `when_to_use` → `dispatch: fail` с подсказкой «заполни when_to_use».
-Проверка `playbook_health` (тул) код не меняет — читает тот же `checkPlaybookReachability`.
+Проверка `playbook_check_reachability` (тул) код не меняет — читает тот же `checkPlaybookReachability`.
 
 **Почему не проще.** (а) «Только запретить в промпте, без проверки» — именно так
 `shell_command_success` просочился в сохранённый черновик (D1). (б) Положить проверки в
@@ -188,7 +188,7 @@
 | 10 (health: with when_to_use → dispatch pass) | Slice 5 + `playbook-health-tool.test.js` | **S2/S3** |
 
 Приёмка (ручная, S4, на staging): `playbook_draft` по «проверить фичу на проде» → в черновике
-все programmatic-ключи из реестра, `when_to_use` заполнен; `playbook_health prod-feature-check`
+все programmatic-ключи из реестра, `when_to_use` заполнен; `playbook_check_reachability prod-feature-check`
 после заполнения `when_to_use` → `dispatch: pass`.
 
 ## 6. Риски и откат

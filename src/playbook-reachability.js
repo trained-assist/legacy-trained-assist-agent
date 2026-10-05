@@ -305,7 +305,7 @@ function checkPlaybookReachability(id, opts = {}) {
       return r;
     })();
     // opts.resolved: what the live run actually resolved (workDir/.skills-resolved.json, real
-    // probed readiness) — the in-agent playbook_health passes it; offline callers compute it.
+    // probed readiness) — the in-agent playbook_check_reachability passes it; offline callers compute it.
     const r = opts.resolved || resolveSkills(catalog, profileSkills, readiness);
 
     const mounted = owningServer === LOCAL_SERVER || r.siblings.includes(owningServer);

@@ -3,7 +3,7 @@
 **Домен:** конструктор кастомных плейбуков (эпик #1851, срезы S4a + S4b; база — #1372 P1)
 **Профиль:** любой профиль, который собирает личные плейбуки (`~/users/<p>/playbooks/*.json`)
 **Тулы:** `playbook_draft` / `playbook_edit` / `playbook_save` (`src/playbook-authoring.js`),
-`playbook_health` (`src/playbook-reachability.js`), реестр проверок `src/playbook-validators.js`,
+`playbook_check_reachability` (`src/playbook-reachability.js`), реестр проверок `src/playbook-validators.js`,
 системный промпт профиля (runner)
 
 ## Ценность
@@ -18,7 +18,7 @@
 **Доказанность: V3.** Источник — владелец продукта на живом примере 2026-09-29 (комментарий
 #1851#issuecomment-5883779762): `playbook_draft` выдал 13 шагов с `shell_command_success` /
 `http_ok_contains_sha` (нет в реестре), programmatic-шаги с «выполните curl…», `{scenario}` без
-`inputs[]`; `playbook_health` для `prod-feature-check` и `logs-investigate` — `dispatch: fail`.
+`inputs[]`; `playbook_check_reachability` для `prod-feature-check` и `logs-investigate` — `dispatch: fail`.
 Обходной путь уже используется (V5-признак): маршрут вписан руками в правила проекта PO.
 
 ## Шаги (S4a — сборка плейбука)
@@ -39,7 +39,7 @@
 |---|---|---|
 | 8 | Любая новая сессия профиля → runner собирает системный промпт | КОГДА у профиля есть `playbooks/*.json` с `when_to_use` ТОГДА в промпт добавлен блок «Твои плейбуки: `<id>` — <when_to_use> → `playbook_run(playbook_id: "<id>")`» (коротко, с лимитом на кол-во/длину) |
 | 9 | Юзер: «проверь, доехала ли фича X и работает ли» | КОГДА просьба совпадает по смыслу с `when_to_use` ТОГДА агент вызывает/предлагает `playbook_run("prod-feature-check")` без упоминания id юзером |
-| 10 | Владелец/CI → `playbook_health(id)` | КОГДА профильный плейбук имеет непустой `when_to_use` ТОГДА `dispatch: pass` (новый маршрут «P профильный блок промпта»); без `when_to_use` — `dispatch: fail` с подсказкой «заполни when_to_use» |
+| 10 | Владелец/CI → `playbook_check_reachability(id)` | КОГДА профильный плейбук имеет непустой `when_to_use` ТОГДА `dispatch: pass` (новый маршрут «P профильный блок промпта»); без `when_to_use` — `dispatch: fail` с подсказкой «заполни when_to_use» |
 
 ## Не-цели
 - Runtime-разворачивание `{use: "<step-type>"}` в профильном плейбуке (это S4, отдельный срез); здесь каталог step-types только **показывается** Hermes как словарь.
@@ -58,5 +58,5 @@
 ## Как проверяем (приёмка)
 - Юнит: validatePlaybook/draft-валидация отклоняет unknown programmatic key и `{var}` без `inputs[]`; принимает реестровые ключи и `{input}`.
 - Юнит: runner-блок промпта содержит `id — when_to_use` для профиля с плейбуком; пуст без плейбуков.
-- Юнит: `playbook_health` профильного плейбука с `when_to_use` → dispatch pass; без → fail.
-- Прод: `playbook_draft` «проверить фичу на проде» — все programmatic-ключи из реестра; `playbook_health prod-feature-check` (после заполнения `when_to_use`) → dispatch pass.
+- Юнит: `playbook_check_reachability` профильного плейбука с `when_to_use` → dispatch pass; без → fail.
+- Прод: `playbook_draft` «проверить фичу на проде» — все programmatic-ключи из реестра; `playbook_check_reachability prod-feature-check` (после заполнения `when_to_use`) → dispatch pass.

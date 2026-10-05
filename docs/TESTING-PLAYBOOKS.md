@@ -69,7 +69,7 @@ In a **domain repo's** CI (core checked out inside it as `.core`, which the sibl
 node .core/scripts/check-playbook-reachability.mjs --repo . --all --strict
 ```
 
-The same logic is available as the `playbook_health(id?, audience?)` MCP tool inside a
+The same logic is available as the `playbook_check_reachability(id?, audience?)` MCP tool inside a
 running agent.
 
 ### Layer 3 — production-readiness simulation
