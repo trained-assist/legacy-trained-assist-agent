@@ -5,6 +5,10 @@ set -e
 REPO_URL="https://github.com/trained-assist/trained-assist-agent.git"
 REPO_DIR="/home/vova/trained-assist-agent"
 SERVICE="assist-agent"
+# Which host this box is. Sets /health's vm name, the public origins and the cron
+# role through infra/systemd/host/<name>.conf — the repo is the single source of
+# a host's identity, so a fresh /etc never disagrees with the code (issue #2114 P0.2).
+HOST_NAME="${1:-gcp-main}"
 
 echo "==> Cloning repo..."
 git clone "$REPO_URL" "$REPO_DIR" || (cd "$REPO_DIR" && git pull)
@@ -34,6 +38,11 @@ if [ -d "$DROPIN_SRC" ]; then
     sudo cp "$f" "$DROPIN_DST/$(basename "$f")"
   done
 fi
+# Per-host identity/origins/cron-role. Kept out of the shared unit on purpose:
+# every drop-in in the directory above would otherwise land on every box, which is
+# how VM2 briefly ran as gcp-main with GCP's public URLs.
+echo "==> Installing host identity for '$HOST_NAME'..."
+bash "$REPO_DIR/scripts/ops/install-host-config.sh" "$HOST_NAME"
 # The service runs from the release symlink; point it at the repo until the
 # first release deploy repoints it (scripts/deploy.sh does this on the VM too).
 sudo ln -sfn "$REPO_DIR" /home/vova/agent-master

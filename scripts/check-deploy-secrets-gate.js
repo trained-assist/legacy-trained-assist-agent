@@ -7,13 +7,14 @@
  * went live and then the pipeline turned red". That was the defect: check-bot-secrets.js sat
  * AFTER deploy.sh in ci.yml, so a383f63 was live while the job was already failing.
  *
- *   node scripts/check-deploy-secrets-gate.js [--release <dir>] [--env gcp|ru]
+ *   node scripts/check-deploy-secrets-gate.js [--release <dir>] [--env gcp|ru|vm2]
  *
  *   1. check-credential-reachability.js — static contract, no values, runs everywhere:
  *      declared ⊆ provided AND host-enabled consumers declared (bots.registry).
  *   2. check-bot-secrets.js — the value half: does every enabled bot really resolve its
- *      token (Secret Manager first, host env fallback). GCP only: ru-edge has no runner and
- *      legitimately holds no bot tokens (same reasoning as secrets.js auditBots:false).
+ *      token (Secret Manager first, host env fallback). gcp only: ru-edge has no runner and
+ *      vm2 has no bot delivery yet (issue #2114 — bot identities move there in P2/P3), so
+ *      both legitimately hold no bot tokens (same reasoning as secrets.js auditBots:false).
  *
  * This script writes nothing, restarts nothing and never moves ~/agent-master — deploy.sh
  * calls it before the release is activated. Exit 0 gate open · 1 gate closed.

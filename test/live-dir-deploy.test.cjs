@@ -100,8 +100,16 @@ test('release_build is idempotent (reuses a completed release)', (t) => {
 
 test('release_set_link repoints the symlink atomically', (t) => {
   const f = fixture(t);
-  fs.mkdirSync(path.join(f.releases, f.c1), { recursive: true });
-  fs.mkdirSync(path.join(f.releases, f.c2), { recursive: true });
+  // A pointer may only be aimed at something that can serve: entrypoint + deps
+  // (release_verify). Empty directories used to be accepted, which is how a
+  // deleted snapshot could be activated — prod incident 2026-10-04.
+  const servable = (d) => {
+    fs.mkdirSync(path.join(d, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'src', 'server.js'), '');
+    fs.mkdirSync(path.join(d, 'node_modules'));
+  };
+  servable(path.join(f.releases, f.c1));
+  servable(path.join(f.releases, f.c2));
   assert.equal(f.setLink(path.join(f.releases, f.c1)).status, 0);
   assert.equal(fs.realpathSync(f.link), fs.realpathSync(path.join(f.releases, f.c1)));
   assert.equal(f.setLink(path.join(f.releases, f.c2)).status, 0);
@@ -143,6 +151,13 @@ test('deploy.sh provisions every sibling in SKILL_SIBLINGS (checkout + releases 
   assert.match(body, /ln -sfn "\$dir" "\$RELEASES_DIR\/\$repo"/);
   const { SKILL_SIBLINGS } = require('../src/skill-siblings');
   for (const { repo } of SKILL_SIBLINGS) {
+    if (repo === 'trained-assist-hh-skill') {
+      assert.match(body, /source "\$SCRIPT_DIR\/hh-pinned-deploy\.sh"/);
+      assert.match(body, /ensure_hh_sibling/);
+      const helper = fs.readFileSync(path.resolve(__dirname, '../scripts/hh-pinned-deploy.sh'), 'utf8');
+      assert.match(helper, /ensure_sibling trained-assist-hh-skill "\$HH_SKILL_DIR"/);
+      continue;
+    }
     assert.match(body, new RegExp(`ensure_sibling ${repo} "\\$[A-Z_]+_DIR"`), `deploy.sh must ensure ${repo}`);
   }
 });

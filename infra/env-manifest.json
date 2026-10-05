@@ -21,6 +21,24 @@
       "data_dir": "n/a — ru-edge has no agent-data (no Claude sessions); only USERS_DIR (vacancy drafts) and AGENT_TOKENS_DIR (.chatid files for notifications)",
       "service": "ru-edge",
       "_note": "Thin RU-IP edge (src/ru-edge.js, issue #1288) — no Claude Code, no runner, no MCP. Runs nalog.ru/ESIA login, /playwright-fetch, and vacancy pages. Formerly a full assist-agent instance (systemd/assist-agent-ru.service, retired)."
+    },
+    "contabo-vm2": {
+      "vm_name": "contabo-vm2",
+      "ip": "169.58.15.230",
+      "sslip": "169-58-15-230.sslip.io",
+      "domain": null,
+      "geo": "France (Lauterbourg, Grand Est) — EU",
+      "secrets_source": "secrets.env (SECRETS_SOURCE=env); Telegram bot identities stay off this host until routing moves (P2/P3)",
+      "ssh_user": "vova (root also holds the key; deploys run as vova so releases stay vova-owned)",
+      "data_dir": "/home/vova/agent-data",
+      "service": "assist-agent",
+      "cron_scheduler_role": "off",
+      "unit_dropin": "infra/systemd/host/contabo-vm2.conf → /etc/systemd/system/assist-agent.service.d/20-host-identity.conf",
+      "nginx_site": "infra/nginx/agent-vm2.conf — nginx + certbot TLS; /agent/ and /mcp on 169-58-15-230.sslip.io",
+      "_note": "Second agent host (issue #2114): becomes the single MCP host, then prod consumers move to it one by one (P2), then GCP is shut down (P4). NOT wired into CI deploy yet — that needs VM2_HOST/VM2_SSH_KEY in GitHub Actions secrets; until then deploy by running scripts/deploy.sh on the host.",
+    "open_owner_actions": [
+      "GCS session archive: the bucket trained-assist-workspaces is unreachable from Contabo (no ADC; the project grants this host no bucket credential). Until a key exists, archiving stays local-only and GCP-era archives are unreadable from VM2. Fix: create a bucket-scoped service account, put its key at /home/vova/.config/gcp/session-archive.json (0600) and add GOOGLE_APPLICATION_CREDENTIALS to infra/systemd/host/contabo-vm2.conf. Needs an owner/admin credential — the agent hosts' service accounts can read Secret Manager only."
+    ]
     }
   },
   "bots": {
@@ -60,11 +78,10 @@
         "audience": "sales",
         "token_secret_name": "SALES_BOT_TOKEN",
         "enabled": true,
-        "commands_profile": "classic",
+        "commands_profile": "sales",
         "media_profile": "full",
-        "gateway_env": null,
-        "gateway_url": null,
-        "gateway_absence_reason": "Внешний сейлс-бот @cmr_management_bot = Cloudflare Worker flexi-telegram-deal-bot (репо kobzevvv/flexi-exhibition-deal-bot), НЕ экземпляр trained-assist-tg-bot. Он зовёт агента POST /run и ждёт ответа в своём чате: держать busy-холд и слушать /internal/run-finished ему нечем, поэтому агент шлёт финальный текст напрямую через sendMessage токеном SALES_BOT_TOKEN. Регистрация обязательна: без своей аудитории агент отвечал токеном классического бота, которого в группах нет (выгнут из -1004485888030) → sendMessage 403 ПОСЛЕ 202, и оператор видел только «⏳ Передаю ассистенту…» навсегда. Воркер обязан передавать audience: sales."
+        "gateway_env": "trained-assist-tg-bot-sales",
+        "gateway_url": "https://trained-assist-tg-bot-sales.skillset-apply.workers.dev"
       }
     ]
   },
@@ -338,7 +355,7 @@
     ]
   },
   "systemd_env_vars": {
-    "_doc": "Static env vars baked into systemd unit files (not secrets). Update systemd/*.service files directly.",
+    "_doc": "Static env vars baked into systemd unit files (not secrets). Fleet-wide values live in systemd/*.service; the per-host ones (VM_NAME, AGENT_PUBLIC_URL, HH_PLATFORM_URL, CRON_SCHEDULER_ROLE, MAX_CONCURRENT_TASKS) live in infra/systemd/host/<vm-name>.conf and are listed per host below (issue #2114 P0.2/P0.3).",
     "gcp": [
       {
         "name": "MEDIA_GATEWAY_URL",
@@ -437,6 +454,33 @@
       {
         "name": "VM_NAME",
         "value": "ru-vm"
+      }
+    ],
+    "contabo-vm2": [
+      {
+        "name": "VM_NAME",
+        "value": "contabo-vm2",
+        "description": "Identity in /health and in execution-owner/health records. One host, one name — the base unit used to hardcode gcp-main, which every box without a drop-in inherited."
+      },
+      {
+        "name": "AGENT_PUBLIC_URL",
+        "value": "https://169-58-15-230.sslip.io/agent",
+        "description": "Machine origin for links generated ON this host (connect-links, instant-publish, HH pages). Was 136-65-7-197.sslip.io — a link minted here led to the machine being shut down (#2114 trap 1)."
+      },
+      {
+        "name": "HH_PLATFORM_URL",
+        "value": "https://169-58-15-230.sslip.io/agent",
+        "description": "HH page + ATS-editor base; same machine origin as AGENT_PUBLIC_URL by design."
+      },
+      {
+        "name": "CRON_SCHEDULER_ROLE",
+        "value": "off",
+        "description": "Exactly one host ticks crons. GCP stays primary until P2 moves profiles; VM2 stays off so no job runs twice (#2114 trap 6)."
+      },
+      {
+        "name": "MAX_CONCURRENT_TASKS",
+        "value": "4",
+        "description": "Engine concurrency cap for 4 vCPU / 7 GB RAM (gcp-main has 16 GB and runs 12). Engines are ~0.6 GB each, so the fleet-wide 12 would OOM this box."
       }
     ]
   },

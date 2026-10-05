@@ -168,9 +168,15 @@ async function handleMcp(req, url, res, ctx) {
   return json(res, 200, reply), true;
 }
 
-// POST /mcp/token — mounted AFTER the AGENT_SECRET gate. Hands an engine host a
+// POST /mcp/token — mounted AFTER the auth gate. Hands an engine host a
 // short-lived run token scoped to one profile, so it can reach POST /mcp without
 // ever seeing AGENT_SECRET.
+//
+// Two callers are accepted by the gate in server.js:
+//   - AGENT_SECRET — the operator of this host (a human or an in-cluster service);
+//   - MCP_HOST_TOKEN — a remote engine host (issue #2114 trap #9), which must
+//     never hold AGENT_SECRET and would otherwise have no way in. Since a run
+//     token dies with this process (trap #8), the host mints per run, here.
 //
 // Deliberately not a general token factory: the scope carries no taskId, and the
 // token dies with this process. If a remote engine needs a longer life, the run
