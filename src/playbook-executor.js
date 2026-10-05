@@ -58,7 +58,7 @@ const ROLE_TO_OC = Object.freeze({
 // opencode then retries the 429 silently (no stdout) until the 5-min inactivity watchdog
 // kills it — every research step of every plan "timed out" and burned its attempts. A
 // flat-cap subscription is not a durable-step route: playbook researchers now go through
-// the llm-ladder like every other level (the worker owns provider failover). hermes_research
+// the llm-ladder like every other level (the worker owns provider failover). hermes_web_research
 // keeps its own Go pin (opencode-ladder-provider DIRECT_MODEL). Env PLAYBOOK_ROLE_MAP can
 // re-pin it.
 const DEFAULT_ROLE_MAP = Object.freeze({});

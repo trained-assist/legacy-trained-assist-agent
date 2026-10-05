@@ -1,7 +1,7 @@
-// Anti-recursion contract for hermes_research (triage 2026-09-28).
+// Anti-recursion contract for hermes_web_research (triage 2026-09-28).
 //
-// hermes_research spawns a headless engine that receives THIS SAME MCP toolset, so
-// without a floor the chain reproduces itself: engine -> hermes_research -> engine -> ...
+// hermes_web_research spawns a headless engine that receives THIS SAME MCP toolset, so
+// without a floor the chain reproduces itself: engine -> hermes_web_research -> engine -> ...
 // The floor is HERMES_DEPTH stamped into the nested run's MCP config (browser.js extraEnv),
 // and the tool refuses to recurse when it sees depth >= 1. No engine is spawned here.
 let pass = 0, fail = 0;
@@ -33,15 +33,15 @@ const SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } } };
       'depth=1 -> clear refusal message');
 
     const err = await rejects(
-      () => hermes.tools.hermes_research.handler({ task: 'x', output_schema: SCHEMA }),
-      'nested hermes_research is rejected before any engine is spawned'
+      () => hermes.tools.hermes_web_research.handler({ task: 'x', output_schema: SCHEMA }),
+      'nested hermes_web_research is rejected before any engine is spawned'
     );
     ok(!!err && /Вложенный Гермес/.test(err.message), 'refusal message reaches the caller');
 
-    // Only the spawn-capable tool is floored; hermes_run/hermes_candidate_report are a
+    // Only the spawn-capable tool is floored; hermes_run_task/hermes_candidate_report are a
     // single raw LLM call and cannot start a chain.
-    ok(!/nestedRefusal/.test(hermes.tools.hermes_run.handler.toString()),
-      'hermes_run is not floored (it spawns no engine)');
+    ok(!/nestedRefusal/.test(hermes.tools.hermes_run_task.handler.toString()),
+      'hermes_run_task is not floored (it spawns no engine)');
     ok(!/nestedRefusal/.test(hermes.tools.hermes_candidate_report.handler.toString()),
       'hermes_candidate_report is not floored (it spawns no engine)');
 
@@ -58,7 +58,7 @@ const SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } } };
       : JSON.parse(fs.readFileSync(mcpConfig, 'utf8')).mcpServers['trained-skills'].env;
     ok(!!env && env.HERMES_DEPTH === '1', 'buildMcpConfig merges extraEnv into the trained-skills server env');
 
-    // ── Module-level floor: a nested run never even SEES hermes_research ────────
+    // ── Module-level floor: a nested run never even SEES hermes_web_research ────────
     // Refusing per call still leaves the tool in the model's tool list, where it will be
     // tried (and retried). Hiding the module removes the temptation entirely.
     // The registry is loaded through the TOOLS_DIR seam with a two-file fixture: the real
@@ -66,8 +66,8 @@ const SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } } };
     const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-tools-'));
     fs.writeFileSync(path.join(fixtureDir, '100-hermes.js'),
       'module.exports = { isReady: () => true, tools: { ' +
-      'hermes_research: { description: "d", inputSchema: { type: "object" } }, ' +
-      'hermes_run: { description: "d", inputSchema: { type: "object" } } } };');
+      'hermes_web_research: { description: "d", inputSchema: { type: "object" } }, ' +
+      'hermes_run_task: { description: "d", inputSchema: { type: "object" } } } };');
     fs.writeFileSync(path.join(fixtureDir, '97-publish.js'),
       'module.exports = { isReady: () => true, tools: { ' +
       'publish_page: { description: "d", inputSchema: { type: "object" } } } };');
@@ -104,12 +104,12 @@ const SCHEMA = { type: 'object', properties: { ok: { type: 'boolean' } } };
         'a nested run sees no hermes_* tool at all');
       ok(nestedNames.includes('publish_page'),
         'other tools still mount for a nested run (only the hermes module is dropped)');
-      ok(nestedReg.listAllTools().some(t => t.name === 'hermes_research'),
+      ok(nestedReg.listAllTools().some(t => t.name === 'hermes_web_research'),
         'the static catalog still knows the tool (mcp-action name gating keeps working)');
 
       const topLevelReg = loadRegistry(undefined);
-      ok(topLevelReg.listTools().some(t => t.name === 'hermes_research'),
-        'a top-level run still gets hermes_research');
+      ok(topLevelReg.listTools().some(t => t.name === 'hermes_web_research'),
+        'a top-level run still gets hermes_web_research');
     } finally {
       delete require.cache[regPath];
       if (prevDepth === undefined) delete process.env.HERMES_DEPTH;

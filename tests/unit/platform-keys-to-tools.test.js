@@ -3,7 +3,7 @@
 // (a) hh_sync_messages (trained-assist-hh-skill 91c-hh-sync.js) берёт
 //     process.env.HH_CLIENT_ID/HH_CLIENT_SECRET, чтобы обновить просроченный
 //     OAuth-токен HH. Без них в env MCP-сервера sync молча умирает.
-// (b) hermes_run передавал runEngineProcess `secrets: {}` → у его MCP-серверов
+// (b) hermes_run_task передавал runEngineProcess `secrets: {}` → у его MCP-серверов
 //     не было AGENT_BOT_TOKEN / DEEPGRAM_API_KEY / CLOUDFLARE_API_TOKEN.
 //
 // На проде эти ключи НЕ лежат в process.env сервера: они грузятся из GCP Secret
@@ -104,7 +104,7 @@ describe('platform keys reach the MCP env (issue #1885 / #1892)', () => {
   });
 });
 
-describe('hermes_run passes the loaded secrets to its engine run (#1892 п.4)', () => {
+describe('hermes_run_task passes the loaded secrets to its engine run (#1892 п.4)', () => {
   afterEach(() => secrets.setLoadedSecrets(null));
   it('hermesEngineSecrets() is the loaded secrets object, not {}', () => {
     const { hermesEngineSecrets } = require('../../src/hermes-tools-run.js');

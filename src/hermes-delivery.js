@@ -1,6 +1,6 @@
 'use strict';
 
-// hermes_research result delivery (hotfix, 2026-09-27).
+// hermes_web_research result delivery (hotfix, 2026-09-27).
 // A research run takes minutes; if the calling session dies or forgets to relay
 // the answer, the result used to be lost. Now every successful run is
 // (1) written to disk — <session cwd>/research/hermes-<ts>-<slug>.md — before
