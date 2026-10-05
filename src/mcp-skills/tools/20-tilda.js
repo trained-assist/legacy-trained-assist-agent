@@ -285,7 +285,7 @@ module.exports = {
     },
 
     tilda_list_pages: {
-      description: 'List all pages in the configured Tilda project.',
+      description: 'List all pages in the configured TILDA project (id, title, alias, published state). For pages the agent published itself via publish_page, use list_published_pages.',
       inputSchema: { type: 'object', properties: {} },
       handler: async () => withAuth(USER_ID, async (config, cookieHeader) => {
         const project = await getProjectData(config.project_id, cookieHeader);

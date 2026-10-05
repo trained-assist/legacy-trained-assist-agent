@@ -11,7 +11,7 @@
 //   2. ba_write_spec — ONLY for feature-tier work: write a durable EARS-style spec.md
 //      into the target workspace (requirements + acceptance criteria + tasks), so intent
 //      survives the chat and drift is checkable against something concrete
-//   3. hand off to the relevant execution skill (dev_workspace_setup for coding, etc.)
+//   3. hand off to the relevant execution skill (engineering_spawn_workspace for coding, etc.)
 //      which implements against the spec and checks tasks off as it goes
 
 const fs            = require('fs');
@@ -94,7 +94,7 @@ module.exports = {
         type: 'object',
         required: ['workspace', 'feature', 'requirements', 'acceptance_criteria'],
         properties: {
-          workspace: { type: 'string', description: 'Path to the target workspace (e.g. returned by dev_workspace_setup / dev_new_repo)' },
+          workspace: { type: 'string', description: 'Path to the target workspace (e.g. returned by engineering_spawn_workspace / dev_new_repo)' },
           feature: { type: 'string', description: 'Short feature name, e.g. "CSV export for reports"' },
           requirements: { type: 'string', description: 'What/why in a few sentences — the user story and its motivation' },
           acceptance_criteria: {
@@ -106,7 +106,7 @@ module.exports = {
         },
       },
       handler: async ({ workspace, feature, requirements, acceptance_criteria, out_of_scope, tasks }) => {
-        if (!fs.existsSync(workspace)) throw new Error(`Workspace not found: ${workspace}. Set it up first (e.g. dev_workspace_setup).`);
+        if (!fs.existsSync(workspace)) throw new Error(`Workspace not found: ${workspace}. Set it up first (e.g. engineering_spawn_workspace).`);
 
         const slug = feature.toLowerCase().trim()
           .replace(/[^a-z0-9а-яё\s-]/gi, '')

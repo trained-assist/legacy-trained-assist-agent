@@ -83,7 +83,7 @@ const SKILLS = [
     id: 'dev',
     name: 'Developer — разработка ПО',
     description: 'Исполнение (не постановка задачи — см. business-analyst; не CI/CD-трекинг — см. ci-cd): клонирует репозиторий на VM, редактирует файлы, запускает тесты, коммитит, пушит, создаёт PR. ' +
-      'Workflow: ba_clarify_requirements/ba_write_spec (постановка) → dev_workspace_setup (clone + npm install) → ' +
+      'Workflow: ba_clarify_requirements/ba_write_spec (постановка) → engineering_spawn_workspace (clone + npm install) → ' +
       'редактирование через Read/Edit/Write → тесты через bash → git commit/push (включая specs/) → github_create_pr → cicd_track_pr. ' +
       'Если нет аккаунта GitHub — рекомендуй создать на github.com (бесплатно). ' +
       'Если нет репозитория — предложи dev_new_repo.',
