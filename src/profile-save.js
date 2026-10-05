@@ -19,7 +19,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const GIT_TIMEOUT_MS = 15000;
+// Per-call budgets, because the operations are wildly different in cost. 15 s suits
+// status/rev-parse on any profile; `git add -A` walks the whole tree and on the 26 GB
+// trained-assist-product-owner it takes MINUTES — measured against the 15 s ceiling it
+// was killed mid-run, which surfaced as `commit failed` with an empty index and no
+// error at all (spawnSync returns status:null on timeout).
+const GIT_TIMEOUT_MS = 15_000;
+const ADD_TIMEOUT_MS = 30 * 60_000;
+const PUSH_TIMEOUT_MS = 30 * 60_000;
 const ORG = 'profiles-artifacts';
 
 function git(dir, args, { token = null, timeout = GIT_TIMEOUT_MS } = {}) {
@@ -120,34 +127,89 @@ function unpushedCount(dir) {
 // (`!**/*.json`), and a .gitignore entry OUTRANKS .git/info/exclude, so recording the
 // path there was silently ineffective — the file stayed in the add and the commit
 // kept failing.
-function unreadableFrom(stderr) {
-  const out = new Set();
-  for (const line of String(stderr || '').split('\n')) {
-    const m = /^error: open\("(.+?)"\): Permission denied$/.exec(line.trim());
-    if (m) out.add(m[1]);
-  }
-  return [...out];
+// A profile can hold SEVERAL slot-owned files (9 on trained-assist-product-owner),
+// and git reports them one per run — so a single retry only ever clears the first
+// and the second run fails the same way. Loop until `add` either succeeds or stops
+// producing new unreadable paths; the guard bounds a pathological tree.
+// Two classes of entry make `git add -A` abort on a profile directory, and a real
+// profile hit both:
+//
+//   1. slot-owned files — T0 isolation (#1649) runs engines as unprivileged slots
+//      (ta-agent-*), so the profile's user gets EACCES and git stops at the first;
+//   2. nested repositories — an embedded repo is added as a gitlink, which requires
+//      a commit to point at. A clone that was never committed (or was interrupted)
+//      has no HEAD, and git fails with "does not have a commit checked out". There
+//      are dozens in one profile (engineering-mirrors, .agent-home/work-arch,
+//      projects/**/.work/…), so this is the common case, not the exotic one.
+//
+// Either way the WHOLE profile becomes unsavable, which is the outcome this module
+// exists to prevent. Both are excluded by appending to the generated .gitignore.
+// Measured on a real profile, the alternatives do not work:
+//   · `:(exclude)path` pathspec — does NOT stop git opening the file; it just moves
+//     the EACCES to the next unreadable path;
+//   · core.excludesFile / .git/info/exclude — both LOSE to the generated .gitignore,
+//     which is a KEEP whitelist (`!**/*.json`).
+// Only a later line in .gitignore wins, so that is where they go.
+//
+// The block is regenerated from the clean-list on every save, so entries never
+// accumulate and never outlive the tree that caused them.
+function scanBlockers(dir, { fsImpl = fs } = {}) {
+  const unreadable = [];
+  const nestedRepos = [];
+  const walk = (rel) => {
+    let entries;
+    try {
+      entries = fsImpl.readdirSync(rel ? path.join(dir, rel) : dir, { withFileTypes: true });
+    } catch {
+      return; // unreadable directory — nothing below it can be read either
+    }
+    for (const e of entries) {
+      const child = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) {
+        // An embedded repo is recorded at its own root; descending would only find
+        // its contents, which are already excluded by excluding the directory.
+        if (e.name === '.git') { nestedRepos.push(rel); continue; }
+        walk(child);
+      } else if (e.isFile()) {
+        try {
+          fsImpl.accessSync(path.join(dir, child), fsImpl.constants.R_OK);
+        } catch {
+          unreadable.push(child);
+        }
+      }
+    }
+  };
+  walk('');
+  return { unreadable, nestedRepos: nestedRepos.filter(Boolean) };
 }
 
 function commit(dir, message) {
-  const add = (excl) => spawnSync(
-    'git',
-    ['-C', dir, 'add', '-A', '--', '.', ...excl.map(p => `:(exclude)${p}`)],
-    { encoding: 'utf8', timeout: GIT_TIMEOUT_MS },
-  );
-  let r = add([]);
-  if (r && r.status !== 0) {
-    const denied = unreadableFrom(r.stderr);
-    if (!denied.length) return false;
-    r = add(denied);
-    if (!r || r.status !== 0) return false;
+  // Regenerate first (the clean-list may have changed), then append this run's
+  // blockers, then stage.
+  writeGitignore(dir);
+  const { unreadable, nestedRepos } = scanBlockers(dir);
+  const lines = [];
+  if (nestedRepos.length) {
+    lines.push('# nested git repositories — a gitlink needs a commit to point at, and');
+    lines.push('# an uncommitted clone fails the whole add');
+    lines.push(...nestedRepos.map(p => `/${p}/`));
   }
+  if (unreadable.length) {
+    lines.push('# unreadable for this user (run-as slot state, #1649)');
+    lines.push(...unreadable.map(p => `/${p}`));
+  }
+  if (lines.length) {
+    fs.appendFileSync(path.join(dir, '.gitignore'), `\n# profile-save: excluded at save time\n${lines.join('\n')}\n`);
+  }
+  const r = spawnSync('git', ['-C', dir, 'add', '-A'], { encoding: 'utf8', timeout: ADD_TIMEOUT_MS });
+  if (!r || r.status !== 0) return false;
   if (!hasChanges(dir)) return false;
   return git(dir, ['commit', '-m', message]) !== null;
 }
 
 function push(dir, { token }) {
-  return git(dir, ['push', 'origin', 'HEAD', '--set-upstream'], { token }) !== null;
+  const r = git(dir, ['push', 'origin', 'HEAD', '--set-upstream'], { token, timeout: PUSH_TIMEOUT_MS });
+  return r !== null;
 }
 
 // Main entry. Returns { ok, committed, pushed, error? }.
