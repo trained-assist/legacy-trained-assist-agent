@@ -8,7 +8,14 @@ const read = f => fs.readFileSync(path.join(root, f), 'utf8');
 
 describe('cron tick deployment', () => {
   it('prod unit is the scheduler primary', () => {
-    expect(read('systemd/assist-agent.service')).toMatch(/^Environment=CRON_SCHEDULER_ROLE=primary$/m);
+    // The role is a per-host value (issue #2114): the shared unit carries fleet
+    // config only, so "prod ticks crons" is the base unit plus gcp-main's
+    // drop-in. Reading only systemd/assist-agent.service would pass while VM2
+    // inherited `primary` too — every job, twice.
+    const base = read('systemd/assist-agent.service');
+    const gcpHost = read('infra/systemd/host/gcp-main.conf');
+    expect(base).not.toMatch(/^Environment=CRON_SCHEDULER_ROLE=/m);
+    expect(gcpHost).toMatch(/^Environment=CRON_SCHEDULER_ROLE=primary$/m);
   });
   it('timer fires every minute and posts to the internal tick with the agent secret, loopback only', () => {
     expect(read('systemd/assist-cron-tick.timer')).toMatch(/^OnUnitActiveSec=1min$/m);
