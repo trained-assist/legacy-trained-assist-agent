@@ -220,7 +220,7 @@ module.exports = {
       },
       handler: async ({ query, call_l1, call_l2 }) => {
         const cfg = readConfig(USER_ID);
-        if (!cfg.accountDomain) return { error: 'GetCourse не подключён. Вызови gc_connect.' };
+        if (!cfg.accountDomain) return { error: 'GetCourse не подключён. Вызови connect(service: "getcourse").' };
 
         const capabilities = matchCapabilities(query);
 
@@ -232,7 +232,7 @@ module.exports = {
         let live_l1 = null;
         if (call_l1) {
           if (!cfg.apiKey) {
-            live_l1 = { error: 'L1 API ключ не задан — вызови gc_connect и введи API ключ.' };
+            live_l1 = { error: 'L1 API ключ не задан — вызови connect(service: "getcourse") и введи API ключ.' };
           } else {
             try { live_l1 = await gcL1Call(cfg, call_l1.endpoint, call_l1.action, call_l1.params); }
             catch (e) { live_l1 = { error: e.message }; }
@@ -242,7 +242,7 @@ module.exports = {
         let live_l2 = null;
         if (call_l2) {
           if (!cfg.sessionCookies?.length) {
-            live_l2 = { error: 'L2 сессия не задана — вызови gc_connect и введи логин+пароль.' };
+            live_l2 = { error: 'L2 сессия не задана — вызови connect(service: "getcourse") и введи логин+пароль.' };
           } else {
             try { live_l2 = await gcL2Call(cfg, call_l2.endpoint, call_l2); }
             catch (e) { live_l2 = { error: e.message }; }
@@ -262,7 +262,7 @@ module.exports = {
     },
 
     gc_api_call: {
-      description: 'Make an arbitrary GetCourse API call. Use after gc_discover. L1 needs API key, L2 needs session cookies (both set via gc_connect).',
+      description: 'Make an arbitrary GetCourse API call. Use after gc_discover. L1 needs API key, L2 needs session cookies (both set via connect(service: "getcourse")).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -297,14 +297,14 @@ module.exports = {
       },
       handler: async ({ level, endpoint, action, params, method, query }) => {
         const cfg = readConfig(USER_ID);
-        if (!cfg.accountDomain) return { error: 'GetCourse не подключён. Вызови gc_connect.' };
+        if (!cfg.accountDomain) return { error: 'GetCourse не подключён. Вызови connect(service: "getcourse").' };
 
         if (level === 'L1') {
-          if (!cfg.apiKey) return { error: 'L1 API ключ не задан. Вызови gc_connect.' };
+          if (!cfg.apiKey) return { error: 'L1 API ключ не задан. Вызови connect(service: "getcourse").' };
           if (!action) return { error: 'Для L1 нужен параметр action (export|add|edit|delete).' };
           return await gcL1Call(cfg, endpoint, action, params);
         } else {
-          if (!cfg.sessionCookies?.length) return { error: 'L2 сессия не задана. Вызови gc_connect и введи логин+пароль.' };
+          if (!cfg.sessionCookies?.length) return { error: 'L2 сессия не задана. Вызови connect(service: "getcourse") и введи логин+пароль.' };
           return await gcL2Call(cfg, endpoint, { method, body: params, query });
         }
       },

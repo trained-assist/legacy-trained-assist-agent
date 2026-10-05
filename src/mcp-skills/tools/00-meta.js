@@ -36,7 +36,7 @@ const SKILLS = [
     id: 'tilda-site-ops',
     name: 'Tilda Site Ops',
     description: 'Работа с Tilda: страницы, блоки, публикация. Test-first: сначала тест, потом прод.',
-    requires: 'browser_session_url → пользователь логинится в удалённый браузер → browser_session_capture_cookies("tilda.ru", "tilda-session")',
+    requires: 'browser_session_remote_url → пользователь логинится в удалённый браузер → browser_session_capture_cookies("tilda.ru", "tilda-session")',
   },
   {
     id: 'browser-session',
@@ -47,7 +47,7 @@ const SKILLS = [
   {
     id: 'web-ops',
     name: 'Веб-операции (web_*)',
-    description: 'Обычная работа со страницей без возни со снимками: web_ask (спросить страницу — ответ + дословная цитата, при несовпадении цитаты отдаётся сырой текст), web_open (открыть + прочитать + понять, нужен ли вход), web_text (продолжить чтение длинной страницы по смещению), web_find (найти элемент), web_click, web_fill (форма; отправка — только с confirm_submit), web_login (вход по сохранённым ключам, пароль не попадает в переписку), web_state, web_screenshot. Сессия браузера общая с Playwright MCP.',
+    description: 'Обычная работа со страницей без возни со снимками: web_ask (спросить страницу — ответ + дословная цитата, при несовпадении цитаты отдаётся сырой текст), web_open (открыть + прочитать + понять, нужен ли вход), web_text (продолжить чтение длинной страницы по смещению), web_find (найти элемент), web_click, web_fill (форма; отправка — только с confirm_submit), web_login (вход по сохранённым ключам, пароль не попадает в переписку), web_current_page, web_screenshot. Сессия браузера общая с Playwright MCP.',
     requires: 'Ничего. Если нужен IP виртуалки или капча — browser_session_* (удалённый Chrome).',
   },
   {
@@ -128,13 +128,13 @@ const SKILLS = [
     id: 'getcourse',
     name: 'GetCourse',
     description: 'Двухуровневая интеграция с GetCourse. L1 (API key): управление учениками, группами, заказами. L2 (сессия браузера): создание курсов, разделов, уроков, видео- и текстовых блоков.',
-    requires: 'Вызови gc_connect — получишь ссылку. Введи домен + API ключ (L1) и/или логин+пароль (L2).',
+    requires: 'Вызови connect(service: "getcourse") — получишь ссылку. Введи домен + API ключ (L1) и/или логин+пароль (L2).',
   },
   {
     id: 'getcourse-discovery',
     name: 'GetCourse — Discovery (расширенный доступ к API)',
     description: 'Fallback для GC операций не покрытых gc_* скилами: вебинары, воронки/CRM-сделки, платежи, офферы, уведомления, любые L1/L2 запросы. gc_discover показывает доступные endpoints; gc_api_call выполняет любой.',
-    requires: 'GetCourse подключён через gc_connect (L1: API ключ; L2: логин+пароль для сессии).',
+    requires: 'GetCourse подключён через connect(service: "getcourse") (L1: API ключ; L2: логин+пароль для сессии).',
   },
   {
     id: 'api-from-website',

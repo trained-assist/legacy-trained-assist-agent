@@ -213,7 +213,7 @@ describe.skipIf(!IS_LINUX)('gc_group_list Playwright scraping', () => {
     const result = await gc_group_list.handler({}, ctx);
 
     expect(result.error).toBe('session_expired');
-    expect(result.message).toMatch(/gc_connect/);
+    expect(result.message).toMatch(/connect\(service: "getcourse"\)/);
     // Must NOT return an empty groups array — that was the silent-failure bug
     expect(result.groups).toBeUndefined();
   }, 30000);
