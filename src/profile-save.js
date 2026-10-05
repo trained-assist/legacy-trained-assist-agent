@@ -85,6 +85,27 @@ function hasChanges(dir) {
   return status !== null && status !== '';
 }
 
+// Commits on HEAD that origin does not have — 0 when there is no upstream yet, which
+// is the state right after the first commit (nothing to compare against) or after a
+// failed push.
+//
+// This is the half of "unsaved" that a working-tree probe cannot see, and getting it
+// wrong is silent: the first push of a fresh profile failed (no repo yet), leaving a
+// real commit behind; the next run found a clean tree, concluded "nothing to do",
+// and returned ok — reporting success over work that never reached GitHub.
+function unpushedCount(dir) {
+  if (!git(dir, ['rev-parse', 'HEAD'])) return 0; // no commits at all
+  if (!git(dir, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])) {
+    // No upstream: either the first push or a push that failed before it could set
+    // one. Commits exist that the remote may not have, so this counts as unpushed —
+    // returning 0 here is what let a real commit sit locally while the run reported
+    // success.
+    return 1;
+  }
+  const counts = git(dir, ['rev-list', '--left-right', '--count', '@{u}...HEAD']);
+  return counts ? Number(counts.split(/\s+/)[1]) || 0 : 0;
+}
+
 function commit(dir, message) {
   git(dir, ['add', '-A']);
   if (!hasChanges(dir)) return false;
@@ -92,7 +113,7 @@ function commit(dir, message) {
 }
 
 function push(dir, { token }) {
-  return git(dir, ['push', 'origin', 'HEAD'], { token }) !== null;
+  return git(dir, ['push', 'origin', 'HEAD', '--set-upstream'], { token }) !== null;
 }
 
 // Main entry. Returns { ok, committed, pushed, error? }.
@@ -118,13 +139,24 @@ function saveProfileState(dir, { profileId, token, commitMessage = null, remoteU
     return { ok: false, error: 'failed to set remote' };
   }
 
-  if (!hasChanges(dir)) return { ok: true, committed: false, pushed: false };
+  // "Unclean" is a dirty tree OR commits origin does not have. The first push of a
+  // fresh profile failed (the org repo was not provisioned yet), which left a real
+  // commit behind with a clean tree — probing only the tree then reported success
+  // over work that never reached GitHub. Both halves have to be checked.
+  const dirty = hasChanges(dir);
+  const unpushed = unpushedCount(dir);
+  if (!dirty && unpushed === 0) return { ok: true, committed: false, pushed: false };
 
-  const msg = commitMessage || `profile sync: ${new Date().toISOString()}`;
-  if (!commit(dir, msg)) return { ok: false, error: 'commit failed' };
-  if (!push(dir, { token })) return { ok: false, error: 'push failed', committed: true };
+  // Commit only what is new; a clean tree with unpushed commits must still be pushed.
+  let committed = false;
+  if (dirty) {
+    const msg = commitMessage || `profile sync: ${new Date().toISOString()}`;
+    if (!commit(dir, msg)) return { ok: false, error: 'commit failed' };
+    committed = true;
+  }
+  if (!push(dir, { token })) return { ok: false, error: 'push failed', committed };
 
-  return { ok: true, committed: true, pushed: true };
+  return { ok: true, committed, pushed: true };
 }
 
 // Explicit notice for the user when the save did not complete. Recovery refs

@@ -113,6 +113,48 @@ test('secrets are excluded from the image by the clean-list gitignore', { skip: 
   }
 });
 
+test('an unpushed commit from an earlier run is retried, not reported as done', { skip: !HAS_GIT }, () => {
+  // The regression that shipped in #2136: the first push failed (org repo not
+  // provisioned), leaving a real commit with a CLEAN tree. A tree-only probe then
+  // concluded "nothing to save" and returned ok — reporting success over work that
+  // had never reached GitHub. The next run must push that commit.
+  const { dir, remote } = fixture();
+  fs.writeFileSync(path.join(dir, 'notes.md'), 'hello\n');
+  const first = saveProfileState(dir, { profileId: 'alice', token: 'x', remoteUrl: remote });
+  assert.equal(first.pushed, true);
+
+  // Simulate: commit made locally, remote unreachable at push time.
+  sh(`git -C ${remote} update-ref -d refs/heads/master`); // remote loses the branch
+  fs.writeFileSync(path.join(dir, 'notes.md'), 'second\n');
+  const second = saveProfileState(dir, { profileId: 'alice', token: 'x', remoteUrl: remote });
+  assert.equal(second.pushed, true, 'the commit must reach the remote');
+
+  // Now the inverse: a commit that is already on the remote and a clean tree.
+  const idle = saveProfileState(dir, { profileId: 'alice', token: 'x', remoteUrl: remote });
+  assert.equal(idle.ok, true);
+  assert.equal(idle.committed, false);
+  assert.equal(idle.pushed, false);
+});
+
+test('a commit with no upstream is pushed — the failed-first-push case', { skip: !HAS_GIT }, () => {
+  // The exact live regression: the first push failed because the org repo was not
+  // provisioned, so there was a real commit, a CLEAN tree and NO upstream. A tree-only
+  // probe (and an ahead-probe that reads 0 without an upstream) both conclude "nothing
+  // to do" and return ok — success reported over work that never left the machine.
+  const { dir, remote } = fixture();
+  fs.writeFileSync(path.join(dir, 'notes.md'), 'hello\n');
+  const failed = saveProfileState(dir, {
+    profileId: 'alice', token: 'x', remoteUrl: '/nonexistent/repo.git',
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(failed.committed, true, 'the commit exists locally despite the failed push');
+
+  // No upstream, clean tree — but the work is NOT on the remote yet.
+  const retried = saveProfileState(dir, { profileId: 'alice', token: 'x', remoteUrl: remote });
+  assert.equal(retried.pushed, true, 'a commit with no upstream must be pushed, not skipped');
+  assert.match(sh(`git -C ${remote} log --oneline`).out, /profile sync/);
+});
+
 test('a push failure is reported as an error, never as success', { skip: !HAS_GIT }, () => {
   const { dir } = fixture();
   fs.writeFileSync(path.join(dir, 'notes.md'), 'hello\n');
