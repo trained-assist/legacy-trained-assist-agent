@@ -1207,6 +1207,15 @@ async function main() {
       try { payload = JSON.parse(body); } catch { return json(res, 400, { error: 'invalid json' }); }
 
       const { username, task, context, sessionId, contextFromSession, forceClaude, forceNew, telegramUserId, initialMsgId, pinnedMsgId, projectId, projectPicked, newProjectName, fileBase64, fileName, fileMimeType, fileRefs, requestId, mode, threadId, initiatedAt, audience, parallel } = payload;
+
+      // Diagnostic only — no behaviour change. When a run lands in the wrong
+      // audience the sessions mix silently, and nothing else in the log says why.
+      // One line per run: what the bot put on the wire, and whether the session
+      // we are about to reuse already belongs to that audience.
+      {
+        const probe = sessionId ? require('./session-store').getSession(workDir, sessionId) : null;
+        console.log(`[/run] audience=${audience || '(none)'} chat=${chatId} user=${username} session=${sessionId || '-'} sessionAudience=${probe ? (probe.audience || 'default') : '-'} :: ${String(task || '').slice(0, 60)}`);
+      }
       // `chatId` is the canonical field for the Telegram chat to stream into (plan
       // generic-naming-conventions-refactoring, P1-C). `userId` is now a legacy wire
       // alias, normalized once right here — PR-D drops tg-bot's `userId` send, PR-E
