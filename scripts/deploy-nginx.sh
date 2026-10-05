@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Explicit environment; validate the complete shared nginx configuration every time.
 set -Eeuo pipefail
-case "${DEPLOY_ENV:-}" in gcp|ru) ;; *) echo 'DEPLOY_ENV must be gcp or ru' >&2; exit 1;; esac
+case "${DEPLOY_ENV:-}" in gcp|ru|vm2) ;; *) echo 'DEPLOY_ENV must be gcp, ru or vm2' >&2; exit 1;; esac
 REPO_DIR=${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}
 NGINX_ROOT=${NGINX_ROOT:-/etc/nginx}
 backup=''
@@ -23,6 +23,12 @@ sudo nginx -t
 sites=()
 if [[ "$DEPLOY_ENV" == gcp ]]; then
   sites=(relay agent-trainedassist-store)
+elif [[ "$DEPLOY_ENV" == vm2 ]]; then
+  # The second agent host (issue #2114). One site, on this box's own origin:
+  # it serves /agent/, /mcp, /tokens, /connect/*, /hh*. The stable branded
+  # hostname stays on GCP until P2 moves consumers — installing it here would
+  # be the cutover, and that is the owner's call, not a deploy's.
+  sites=(agent-vm2)
 elif [[ "${DEPLOY_RECRUITER_APEX:-}" == 1 || -e "$NGINX_ROOT/sites-enabled/recruiter-assistant" ]]; then
   sites=(recruiter-assistant)
   # Exhibition catalogs on <event_key>.sales-manager-assistant.ru. Separate
@@ -48,7 +54,7 @@ if (( ${#sites[@]} )); then
   done
   sudo nginx -t
 fi
-# RU never installs relay. A broken pre-existing config fails loudly.
+# RU and VM2 never install relay. A broken pre-existing config fails loudly.
 if sudo systemctl is-active --quiet nginx; then
   sudo systemctl reload nginx
 else

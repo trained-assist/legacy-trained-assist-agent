@@ -35,12 +35,41 @@ test('RU does not install stable GCP hostname',t=>{const f=fixture(t);assert.equ
 test('reload failure restores both hostname configurations',t=>{const f=fixture(t);assert.equal(f.run({FAIL_RELOAD:'1'}).status,1);assert.equal(fs.readFileSync(f.dst,'utf8'),'GOOD old');assert.equal(fs.readFileSync(path.join(f.dir,'nginx/sites-enabled/agent-trainedassist-store'),'utf8'),'GOOD stable old');});
 
 test('both public agent routes retain the 20 MiB upload limit',()=>{
- for(const name of ['relay','agent-trainedassist-store']) {
-  const config=fs.readFileSync(path.resolve(__dirname,`../infra/nginx/${name}.conf`),'utf8');
-  const agentLocation=config.match(/location \/agent\/\s*\{([^}]+)\}/);
-  assert.ok(agentLocation, name);
-  assert.match(agentLocation[1],/client_max_body_size\s+20m\s*;/,name);
- }
+  for(const name of ['relay','agent-trainedassist-store']) {
+   const config=fs.readFileSync(path.resolve(__dirname,`../infra/nginx/${name}.conf`),'utf8');
+   const agentLocation=config.match(/location \/agent\/\s*\{([^}]+)\}/);
+   assert.ok(agentLocation, name);
+   assert.match(agentLocation[1],/client_max_body_size\s+20m\s*;/,name);
+  }
+});
+
+// ── vm2: the second agent host (issue #2114 P0.1) ─────────────────────────────
+function vm2Fixture(t){
+  const f=fixture(t);
+  fs.writeFileSync(path.join(f.dir,'repo/infra/nginx/agent-vm2.conf'),'GOOD vm2');
+  return f;
+}
+test('vm2 installs its own door site and nothing from GCP',t=>{
+  const f=vm2Fixture(t);
+  assert.equal(f.run({DEPLOY_ENV:'vm2'}).status,0);
+  assert.equal(fs.readFileSync(path.join(f.dir,'nginx/sites-enabled/agent-vm2'),'utf8'),'GOOD vm2');
+  assert.equal(fs.readFileSync(f.dst,'utf8'),'GOOD old','vm2 must not install GCP relay');
+  assert.equal(fs.readFileSync(path.join(f.dir,'nginx/sites-enabled/agent-trainedassist-store'),'utf8'),'GOOD stable old','vm2 must not install the branded hostname — moving it is the P2 cutover');
+});
+test('an invalid vm2 site is rolled back and the service keeps its old door',t=>{
+  const f=vm2Fixture(t);fs.writeFileSync(path.join(f.dir,'repo/infra/nginx/agent-vm2.conf'),'BAD');
+  assert.equal(f.run({DEPLOY_ENV:'vm2'}).status,1);
+  assert.equal(fs.existsSync(path.join(f.dir,'nginx/sites-enabled/agent-vm2')),false);
+});
+test('the vm2 door answers /mcp and /agent/ with the long-tool timeout',()=>{
+  const config=fs.readFileSync(path.resolve(__dirname,'../infra/nginx/agent-vm2.conf'),'utf8');
+  for(const loc of ['/agent/','= /mcp']) {
+    const body=config.match(new RegExp(`location ${loc.replace(/[/=]/g,m=>'\\'+m)}\\s*\\{([^}]+)\\}`))[1];
+    assert.match(body,/proxy_read_timeout\s+300s/,`${loc} must outlast a slow tools/call — nginx's 60 s default is how a remote engine gets an empty 504`);
+    assert.match(body,/proxy_buffering\s+off/,loc);
+  }
+  assert.match(config,/location = \/mcp\/token/,'the minting route needs its own block');
+  assert.doesNotMatch(config,/agent\.trainedassist\.store/,'the branded hostname stays on GCP until the P2 cutover');
 });
 
 function apex(f) {

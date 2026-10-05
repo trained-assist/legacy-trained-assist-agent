@@ -39,42 +39,36 @@ Environment=AGENT_DATA_DIR=/home/vova/agent-data
 # silently relocate them (identity ≠ location). See src/data-paths.js.
 Environment=USERS_DIR=/home/vova/users
 Environment=AGENT_TOKENS_DIR=/home/vova/agent-tokens
-# Machine origin — the agent box itself. OAuth /connect/* callbacks, /tokens,
-# /api/* and /tg-proxy are answered only here, so this must NOT become the
-# branded domain: recruiter-assistant.ru falls through to the RU edge, which
-# 401s /connect/gdrive/callback and would break Google OAuth.
-Environment=AGENT_PUBLIC_URL=https://136-65-7-197.sslip.io/agent
+# ── Per-host identity: NOT here ──────────────────────────────────────────────
+# VM_NAME, AGENT_PUBLIC_URL, HH_PLATFORM_URL, CRON_SCHEDULER_ROLE and
+# MAX_CONCURRENT_TASKS describe ONE machine, not the fleet, so they live in
+# /etc/systemd/system/assist-agent.service.d/20-host-identity.conf — one file
+# per host under infra/systemd/host/, installed by
+# scripts/ops/install-host-config.sh <vm-name> (issue #2114 P0.2/P0.3).
+#
+# Why they left the shared unit: with them here, a second box inherited gcp-main
+# as its identity and GCP's public URLs, so links generated on VM2 led to the
+# GCP host being shut down, and CRON_SCHEDULER_ROLE=primary was true of every
+# box that had no drop-in yet — two cron primaries run every job twice. A unit
+# that only holds fleet-wide values cannot answer that twice.
+#
+# Fleet-wide values that stay (same on every host): AGENT_PAGES_URL, the RU-edge
+# URLs, GCP_PROJECT, ANTHROPIC_MODEL, GCS_BUCKET, PORT, NODE_ENV, PATH.
 # Pages origin — the branded domain of the area, for links a human opens
 # (instant-publish /p/*, every HH page). Page links naming a legacy origin are
 # repointed here on the way out (src/public-links.js); /health reports which
 # origin is in effect and whether this var was ignored.
 Environment=AGENT_PAGES_URL=https://recruiter-assistant.ru
-# HH page + ATS-editor base, same machine origin as AGENT_PUBLIC_URL. Stays here
-# on purpose: /hh/* links are repointed to AGENT_PAGES_URL as they are emitted,
-# and platform.recruiter-assistant.ru must not be used — it is the vacancy
-# vhost and answers /hh/* with 401.
-Environment=HH_PLATFORM_URL=https://136-65-7-197.sslip.io/agent
 Environment=VACANCY_REMOTE_STORE_URL=https://platform.recruiter-assistant.ru
 # RU-IP edge service (src/ru-edge.js, issue #1288) — nalog.ru login delegation
 # and the lknpd.nalog.ru API relay both go here; same host as
 # VACANCY_REMOTE_STORE_URL above (one RU box, several purposes).
 Environment=RU_EDGE_URL=https://platform.recruiter-assistant.ru
-Environment=VM_NAME=gcp-main
-# Generic cron engine (#1489): this host owns the canonical cron SQLite and ticks it.
-# Staging never ticks (STAGING_ROOT), whatever this says.
-Environment=CRON_SCHEDULER_ROLE=primary
 Environment=GCP_PROJECT=alesa-personal-assistent
 Environment=ANTHROPIC_MODEL=claude-opus-5-5
 # Session archive bucket (src/session-blob-store.js, epic #1784 M2 / issue #1916).
 # Matches the module's own default, so this line documents rather than configures.
 Environment=GCS_BUCKET=trained-assist-workspaces
-# Global concurrency cap on live engine processes (src/runner/task-queue.js).
-# Default is 6 — measured 2026-09-28: engines are network-bound (~0.1 core and
-# ~0.6 GB RAM each), so 6 left half the box idle while interactive tasks queued
-# behind e2e runs (global_slot_wait up to 4 min). 12 fits 4 vCPU / 16 GB; the
-# run-as slot pool is 14 (scripts/ops/agent-isolation-setup.sh --slots 14),
-# which must stay >= this value + nested runs.
-Environment=MAX_CONCURRENT_TASKS=12
 
 [Install]
 WantedBy=multi-user.target
