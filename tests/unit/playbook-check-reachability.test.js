@@ -1,4 +1,4 @@
-// playbook_health MCP tool (issue #1756, layer 2): the reachability check for the CALLER
+// playbook_check_reachability MCP tool (issue #1756, layer 2): the reachability check for the CALLER
 // profile, inside the agent. Uses the live run record (.skills-resolved.json) when present.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -16,7 +16,7 @@ let prevUsers;
 
 function loadTool() {
   for (const m of RELOAD) delete require.cache[require.resolve(m)];
-  return require(TOOL).tools.playbook_health;
+  return require(TOOL).tools.playbook_check_reachability;
 }
 
 function profilePlaybook(profile, id, extra = {}) {
@@ -40,7 +40,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe('playbook_health', () => {
+describe('playbook_check_reachability', () => {
   it('requires a caller profile', async () => {
     const res = await loadTool().handler({ id: 'x' }, {});
     expect(res.code).toBe('USER_REQUIRED');

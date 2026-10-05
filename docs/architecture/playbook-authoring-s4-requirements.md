@@ -20,7 +20,7 @@
 | R7 | `edit` — тот же промпт и проверки; `when_to_use` сохраняется/обновляется | 🟢 | Локально. Источник: задача D1 |
 | R8 | Runner кладёт в системный промпт блок «Твои плейбуки: `<id>` — <when_to_use> → `playbook_run(playbook_id)`»; только `scope:profile`, не internalGtd; лимит ≈10 шт. × ~160 симв. + «ещё N, см. playbook_list» | 🟡 | Сквозная интеграция на каждую сессию профиля, влияние на размер контекста; opt-in-safe. Источник: задача D2; прецедент `buildDevPlaybookSuggestion` |
 | R9 | Обычная просьба, совпавшая по смыслу с `when_to_use`, → агент предлагает/запускает плейбук без id от юзера | 🟢 | Поведение следует из блока промпта, нового контракта нет. Источник: задача D2 |
-| R10 | `playbook_health`: профильный плейбук с непустым `when_to_use` → `dispatch: pass` (новый маршрут P); без — `fail` + подсказка «заполни when_to_use» | 🟢 | Локально в reachability. Источник: задача D2 + `checkPlaybookReachability` знает `pb.source==='profile'` |
+| R10 | `playbook_check_reachability`: профильный плейбук с непустым `when_to_use` → `dispatch: pass` (новый маршрут P); без — `fail` + подсказка «заполни when_to_use» | 🟢 | Локально в reachability. Источник: задача D2 + `checkPlaybookReachability` знает `pb.source==='profile'` |
 
 ## Неявные требования / ограничения (источник — другая часть системы)
 
