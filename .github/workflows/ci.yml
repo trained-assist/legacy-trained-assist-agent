@@ -90,6 +90,8 @@ jobs:
           AGENT_ISOLATION_E2E=1 node --test test/agent-isolation-e2e.test.cjs
       - name: Env-sync check
         run: node scripts/check-env-sync.js
+      - name: Reject old GCP VM deployment targets
+        run: node scripts/check-gcp-vm-exit.cjs
       - name: Credential contract (declared ⊆ provided, no os.homedir() token paths)
         run: node scripts/check-credential-reachability.js
       - name: No direct connect-pending outside user-tokens.js
@@ -259,12 +261,9 @@ jobs:
   # always() lets the job run even when `merge` was skipped (merge only runs on PRs).
   deploy-gcp:
     needs: [ci, staging-gate, merge]
-    if: |
-      always() &&
-      needs.ci.result == 'success' &&
-      needs.staging-gate.result == 'success' &&
-      !contains(github.event.pull_request.title || github.event.head_commit.message, '[nginx-only]') &&
-      (needs.merge.outputs.sha != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    # Exit policy: this job is retained temporarily for migration history and
+    # secret-manifest checks, but it must never connect to the old GCP VM.
+    if: false
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-gcp
@@ -327,6 +326,7 @@ jobs:
       always() &&
       needs.ci.result == 'success' &&
       needs.staging-gate.result == 'success' &&
+      !contains(github.event.pull_request.title || github.event.head_commit.message, '[no-deploy]') &&
       !contains(github.event.pull_request.title || github.event.head_commit.message, '[nginx-only]') &&
       (needs.merge.outputs.sha != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
@@ -370,7 +370,7 @@ jobs:
       always() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      needs.deploy-gcp.result == 'success' &&
+      needs.deploy-gcp.result == 'skipped' &&
       needs.deploy-ru.result == 'success'
     runs-on: ubuntu-latest
     steps:

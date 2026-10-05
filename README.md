@@ -1,5 +1,7 @@
 # trained-assist-agent
 
+> **GCP VM exit (05.10.2026):** `alesa-personal-assistent/us-central1-a/alesa-vm` is being retired. New processes, cron, agent runs, sandbox and dependencies there are prohibited. Access is for inventory, export, reconciliation and shutdown only. Use serverless and the own Agent Run API by default; use the existing French VM only where a persistent process or local resource is required. Other Google services remain permitted. The architecture issue [#145](https://github.com/trained-assist/trained-agent-architecture/issues/145) owns status and exceptions. The GCP deployment descriptions below are historical and are not current instructions.
+
 HTTP API server running on GCP VM — receives tasks from the Telegram bot and runs Claude Code.
 
 ## Architecture
