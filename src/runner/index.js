@@ -3794,6 +3794,28 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       }
     } catch (e) { console.warn('[runner] save check:', e.message); }
   }
+  // M6 (#1921): commit the profile's text image and push it to its private repo, so
+  // "after every run it is saved" stops being a manual step. The .gitignore is generated
+  // from the clean-list, so credentials never enter the image; a failed push is reported
+  // with recovery refs instead of being swallowed — the data is still on disk.
+  if (!internalGtd && !incomplete) {
+    try {
+      const { saveProfileState, formatSaveError } = require('../profile-save');
+      // profile-repo.mjs is ESM and cannot be require()d from this CommonJS runner —
+      // dynamic import is the only bridge, and it must be awaited: fire-and-forget
+      // would race the reply and could drop the notice entirely.
+      const { resolveToken } = await import('../../scripts/profile-repo.mjs');
+      const { token } = resolveToken();
+      const res = saveProfileState(user.workDir, { profileId: user.username, token });
+      if (!res.ok) {
+        const notice = formatSaveError(res, { dir: user.workDir });
+        if (notice) result += `\n\n${notice}`;
+        console.warn('[runner] profile save:', res.error);
+      } else if (res.pushed) {
+        console.log(`[runner] profile saved: ${user.username} → profile repo`);
+      }
+    } catch (e) { console.warn('[runner] profile save:', e.message); }
+  }
   const final = (result + costFooter).slice(-MAX_MSG_LEN) + gtdFooter;
 
   // Terminal record for every chain that reaches here without an earlier branch already
