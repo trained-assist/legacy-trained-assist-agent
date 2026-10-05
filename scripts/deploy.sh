@@ -19,7 +19,12 @@ source "$SCRIPT_DIR/hh-pinned-deploy.sh"
 case "${DEPLOY_ENV:-}" in
   gcp) UNIT_VARIANT="" ;;
   ru) UNIT_VARIANT="-ru" ;;
-  *) echo "DEPLOY_ENV must be gcp or ru" >&2; exit 1 ;;
+  # Second agent host, France (issue #2114). Same unit as gcp — the per-host part
+  # (identity, public origins, cron role, capacity) is the drop-in
+  # infra/systemd/host/contabo-vm2.conf, installed once by
+  # scripts/ops/install-host-config.sh contabo-vm2.
+  vm2) UNIT_VARIANT="" ;;
+  *) echo "DEPLOY_ENV must be gcp, ru or vm2" >&2; exit 1 ;;
 esac
 
 SERVICE="assist-agent"
@@ -352,7 +357,13 @@ echo "==> HH skill extraction parity smoke test (informational, does not block d
 node "$RELEASE_DIR/scripts/hh-extraction-parity-smoke.js" || echo "  ⚠️  parity smoke test failed — see output above; HH skill fallback may be degraded"
 
 echo "==> Installing disk-hygiene crons..."
-if [ -x "$RELEASE_DIR/ops/cron/install.sh" ]; then
+if [ "$DEPLOY_ENV" != "gcp" ]; then
+  # Disk-guard etc. are per-host jobs owned by the box that runs engines; on RU
+  # there is no runner at all and on VM2 there is none yet (issue #2114 P0.5 —
+  # VM2 is the MCP host first, engine provisioning is P2). Deploying them here
+  # would add crons that inspect a fleet nothing runs on.
+  echo "  skipped (not the engine host: DEPLOY_ENV=$DEPLOY_ENV)"
+elif [ -x "$RELEASE_DIR/ops/cron/install.sh" ]; then
   if sh "$RELEASE_DIR/ops/cron/install.sh"; then
     echo "  disk-hygiene crons installed"
   else
@@ -365,8 +376,12 @@ fi
 # from (2026-09-28: a checkout run left both entries on ~/trained-assist-agent,
 # and that checkout sat on a stale feature branch — the cron then ran code that
 # was never deployed).
-echo "==> Installing claude-oauth-refresh cron..."
-if sh "$RELEASE_DIR/scripts/install-claude-token-refresh.sh"; then
+# gcp only: the cron maintains the service user's Claude Code OAuth credentials,
+# which exist only where engines are provisioned. On VM2 that has not happened
+# yet (issue #2114 P2), so a refresh cron there would fail every 30 min forever.
+if [ "$DEPLOY_ENV" != "gcp" ]; then
+  echo "==> Skipping claude-oauth-refresh cron (no engine credentials on this host)"
+elif sh "$RELEASE_DIR/scripts/install-claude-token-refresh.sh"; then
   echo "  claude-oauth-refresh cron installed"
 else
   echo "  ⚠️  claude-oauth-refresh cron install failed"
