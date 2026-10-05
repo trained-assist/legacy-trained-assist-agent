@@ -23,7 +23,7 @@ applies to every clone without per-machine setup):
   `MERGED` or (already-pushed-once) `OPEN` state on GitHub, forcing a fresh
   branch instead of amending a submitted PR.
 
-`dev_workspace_setup` (`trained-assist/software-engineering-playbooks` `src/mcp-skills/tools/61-dev.js`, served by the `engineering-skills` sibling since #1631) already installs
+`engineering_spawn_workspace` (`trained-assist/software-engineering-playbooks` `src/mcp-skills/tools/61-dev.js`, served by the `engineering-skills` sibling since #1631) already installs
 these hooks into **any** repo it clones or updates via `installGitHooks()` —
 this is not limited to repos created through `dev_new_repo`. Practical
 implication: the fix for an existing, already-cloned dev workspace lands the
@@ -63,7 +63,7 @@ pass over `agent-data/dev/*` rather than assuming "already covered".
 
 ## Rolling this out to a new/existing repo
 
-There is no separate "hygiene setup" tool yet — `dev_workspace_setup(repo)`
+There is no separate "hygiene setup" tool yet — `engineering_spawn_workspace(repo)`
 already does it as a side effect of cloning/updating. Tracking issue #628
 proposes a dedicated `dev_repo_hygiene_setup(repo)` entry point (hooks-only,
 no dependency install) for repos a user wants hardened without a full dev
