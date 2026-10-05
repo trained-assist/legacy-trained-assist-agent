@@ -63,9 +63,13 @@ describe('engineering-baseline core domain', () => {
     expect(declared.has('engineering-baseline')).toBe(false);
   });
 
+  it('the catalog names it in alwaysOnDomains (explicit, not inferred)', () => {
+    expect((catalog.alwaysOnDomains || [])).toContain('engineering-baseline');
+  });
+
   it('resolve() REPORTS it as always-on, so nothing sees a phantom difference', () => {
     const { resolve } = require('../../src/skills/resolve.js');
-    const cat = { ...catalog, domains: { 'engineering-baseline': { server: 'trained-skills', module: '00-meta.js', when: 'present' }, engineering: { server: 'engineering-skills', module: '20-workspace.js', when: 'present' } } };
+    const cat = { ...catalog, alwaysOnDomains: ['engineering-baseline'], domains: { 'engineering-baseline': { server: 'trained-skills', module: '00-meta.js', when: 'present' }, engineering: { server: 'engineering-skills', module: '20-workspace.js', when: 'present' } } };
     const r = resolve(cat, null, { 'trained-skills': true, 'engineering-skills': true });
     expect(r.promptDomains).toContain('engineering-baseline');
     // …and a narrowed mount that turns the engineering section off keeps it
