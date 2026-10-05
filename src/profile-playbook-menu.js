@@ -1,7 +1,7 @@
 'use strict';
 
 // S4b (issue #1851, D2): make a profile's PERSONAL playbooks reachable from a
-// plain request. Before this, playbook_health for scope:profile always failed
+// plain request. Before this, playbook_check_reachability for scope:profile always failed
 // the dispatch gate (a profile has no prompt-domain A1 and no launcher F), so
 // the only route was the agent remembering the id.
 //

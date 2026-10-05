@@ -233,8 +233,9 @@ module.exports = {
       },
     },
 
-    list_pages: {
-      description: 'List all pages published by this user profile. Shows slug, title, URL, protection status.',
+    list_published_pages: {
+      description: 'List all pages THIS AGENT published via publish_page — shows slug, title, URL, protection status. ' +
+        'This is the agent\'s own site, not the Tilda project; for pages inside the configured Tilda project use tilda_list_pages.',
       inputSchema: { type: 'object', properties: {} },
       handler: async () => {
         if (!USER_ID) return { error: 'USER_ID not set' };
