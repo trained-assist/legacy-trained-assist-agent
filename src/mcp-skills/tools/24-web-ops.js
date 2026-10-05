@@ -203,13 +203,14 @@ const tools = {
     },
   },
 
-  web_state: {
+  web_current_page: {
     description:
-      'Что сейчас открыто в браузере: адрес, заголовок, нужен ли вход, короткий текст. ' +
-      'Используй, чтобы ответить «ты уже вошёл?» или «какая страница открыта» без нового обхода сайта.',
+      'Что СЕЙЧАС открыто в браузере: адрес, заголовок, нужен ли вход, короткий текст. ' +
+      'Используй, чтобы ответить «ты уже вошёл?» или «какая страница открыта» без нового обхода сайта. ' +
+      'Это чтение текущего состояния, а НЕ выдача ссылки на вход — для ссылки на удалённый логин используй browser_session_remote_url.',
     inputSchema: { type: 'object', properties: {} },
     handler: async () => {
-      try { return await ops.pageState(); } catch (e) { return fail('web_state', e); }
+      try { return await ops.pageState(); } catch (e) { return fail('web_current_page', e); }
     },
   },
 

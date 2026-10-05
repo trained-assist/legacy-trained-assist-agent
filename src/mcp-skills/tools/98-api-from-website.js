@@ -203,7 +203,7 @@ module.exports = {
           site: { slug: site.slug, url: site.url },
           probed_paths: probes,
           found: results,
-          phase2_todo: 'Full Playwright-based discovery: log in via browser, capture XHR/fetch, build endpoint catalog. Use browser_session_url + browser_session_capture_cookies if needed.',
+          phase2_todo: 'Full Playwright-based discovery: log in via browser, capture XHR/fetch, build endpoint catalog. Use browser_session_remote_url + browser_session_capture_cookies if needed.',
           next_steps: results.length > 0
             ? `Try website_request with slug="${slug}" and the paths found above`
             : `No standard API paths found. Try website_request manually with known paths, or use browser_session to log in and capture real API calls.`,
