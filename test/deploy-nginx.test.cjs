@@ -42,6 +42,13 @@ test('both public agent routes retain the 20 MiB upload limit',()=>{
   assert.match(agentLocation[1],/client_max_body_size\s+20m\s*;/,name);
  }
 });
+test('GCP relay keeps long-running agent requests alive through the review progress window',()=>{
+ const config=fs.readFileSync(path.resolve(__dirname,'../infra/nginx/relay.conf'),'utf8');
+ const agentLocation=config.match(/location \/agent\/\s*\{([^}]+)\}/);
+ assert.ok(agentLocation, 'relay /agent/ location');
+ assert.match(agentLocation[1],/proxy_read_timeout\s+240s\s*;/);
+ assert.match(agentLocation[1],/proxy_send_timeout\s+240s\s*;/);
+});
 
 function apex(f) {
  const src=path.join(f.dir,'repo/infra/nginx/recruiter-assistant.conf');
