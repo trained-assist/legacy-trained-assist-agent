@@ -453,13 +453,39 @@ curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/connect/nalog" \
 
 All changes go through PRs — no direct pushes to `main`.
 
+### Правило №0: сначала ветка, потом код
+
+**Никогда не пишем код без своей ветки. Это харам.**
+
+Ветка создаётся **до** первой правки, а не после неё. Никаких правок в рабочем дереве «вне ветки» — даже одной строки, даже на минуту, даже «просто глянуть».
+
 ```bash
-git checkout -b fix/description   # or feat/description
-# make changes
-git add . && git commit -m "fix: description"
-git push origin fix/description
-gh pr create --fill                # opens PR; CI runs; auto-merges on green
+git fetch origin
+git checkout -b feat/description    # ← ПЕРВОЕ, до любых правок
+# ... только теперь пишем код ...
+git add <свои файлы> && git commit -m "feat: description"
+git push -u origin feat/description
+gh pr create --fill                 # CI → auto-merge на зелёном
 ```
+
+Почему это правило, а не пожелание:
+
+- **Рабочее дерево общее.** Параллельная сессия может быть в нём посреди твоей работы. Код, написанный вне ветки, не принадлежит ни одному PR — он всплывает в чужой ветке случайно, и через `git add -A` уезжает в чужое изменение.
+- **PR — одноразовая попытка.** Без ветки нельзя ни открыть PR, ни перенести работу в отдельную сессию: всё это ломается о чужую ветку.
+- **Нашлась же**: правка без ветки закончилась тем, что коммит собрался в чужую ветку `diag/run-audience-log`, а её коммиты уже были в `main` через другой PR. Восстановление заняло отдельный час (stash → ветка от `origin/main` → переприменение), и всё это можно было предотвратить одной командой в начале.
+
+Проверка перед любой правкой:
+
+```bash
+git branch --show-current     # не пусто и не main/master
+git log --oneline origin/main..HEAD   # пусто — ты не тащишь чужие коммиты
+```
+
+Если вторая строка непустая — ты не на своей ветке от `origin/main`. Ответвляйся от `origin/main`, а не от того, на чём стоишь: локальная ветка часто содержит уже смерженные через PR коммиты, и PR от неё предложит переделать чужую работу.
+
+**Чужую ветку не трогаем.** Нашёл чужую ветку/незакоммиченные файлы — не коммитим их (`git add` поимённо, никогда `-A`), не удаляем, восстанавливаем побайтово и оставляем.
+
+Ветку создаёшь в той же сессии, в которой пишешь код. Найденная чужая ветка — повод остановиться, а не повод писать в неё.
 
 Branch protection requires the `ci` job to pass. PRs auto-merge (squash) when CI is green — no manual approval needed.
 
@@ -580,15 +606,52 @@ Enforced in CI (`ci.yml` → "Recruiter/HH tools must call OpenRouter, not spawn
 | `src/service-llm.js` | Small "service" LLM calls (answer buttons, paragraph formatting, classifiers, summaries, routing, intake gate, tg-format fixer, playbook validator, issue gate, bug reports) — `serviceChat`/`serviceJson`/`serviceText`. Thin client of the **trained-assist-llm-ladder** Cloudflare Worker (`https://llm-ladder.trainedassist.store`, repo `trained-assist/trained-assist-llm-ladder`; token `$AGENT_TOKENS_DIR/llm-ladder/token`, GCP SM `LLM_LADDER_TOKEN` — **где его взять: [docs/llm-ladder-token.md](docs/llm-ladder-token.md)**), which owns the ladder, model health and Go key rotation. No in-process copy. Research / presentation / vision calls (site-connector, calltips, media-vision, HH/MCP domain tools, Hermes) intentionally stay on their own Gemini path. The free-ladder gateway (`llm-gateway.js`, `infra/llm-edge`) also moved into that worker (`model: free-ladder`). |
 | `src/agent-isolation.js` | T0 agent process hardening (issue #1649, [docs/agent-process-isolation.md](docs/agent-process-isolation.md)): env allowlist, run-as slot leases, per-run profile gate ACLs, per-profile engine home. Glue: `src/runner/engine-isolation.js`; MCP bridge `src/agent-mcp-bridge.js` (+ `-client.js`); run tokens `src/agent-run-tokens.js`. Off by default. |
 
-### Hermes research
+### Web research — `web_research` (no nested engine)
 
-`hermes_research` runs through OpenCode with the `research` profile, which routes to the worker's **`research` ladder** (build→`ladder/research`, other roles→`ladder/research:<role>`; Go-first with a paid tail — trained-assist-llm-ladder #28), with MCP/browser/repository tools available. Profile resolution (`resolveHermesProfile` in `src/hermes-tools-run.js`) understands every provider profile — master/phd/free included (#2065) — and falls back to `research` when the name is unknown or none is given. Hermes is read-only and returns a sourced report (`file:line` or URL); it must not commit, open PRs, or check off tasks. Set `HERMES_RESEARCH_ENGINE=claude` for the temporary rollback path. Durable playbook steps with `executor_role: researcher` use the ordinary level map (the `master` profile since #2065); `PLAYBOOK_ROLE_MAP` can override the mapping, while an escalated model level uses the ordinary level map.
+Research from the internet is an ordinary tool call: `web_research` in
+`src/mcp-skills/tools/99d-web-research.js`. It runs `search_serp_free` (our keyless
+DuckDuckGo → SearXNG → Brave chain) with a `search_exa` fallback, fetches the top-N
+pages as markdown via `fetch_exa`, and returns the material. **It spawns nothing** —
+the calling engine does the synthesis and cites the sources itself. The bundle is saved
+to `research/` and pushed to the chat separately (`src/hermes-delivery.js`), so a session
+that dies mid-research still leaves the artifact and the user still gets it.
 
-**Why the ladder, not a pin.** Research used to be a flat pin on `opencode-go/mimo-v2.6-flash` (a $10/mo subscription with a per-model monthly allowance, so no marginal per-call cost). Incident 2026-10-01: the weekly Go allowance cap turned every research run into `429 Go usage limit exceeded`, opencode retried the SAME key silently, the 5-min inactivity watchdog killed the run, and the step reported «не уложился в бюджет 2400с» — with no rung to fall to, because a pin never failovers. Routing through the llm-ladder keeps the same Go-first economics (Go mimo → Go deepseek-v4.1 are subscription-tier; `ladder-log` still classifies `ladder/*` as its own tier) while the llm-ladder owns what the pin could not: per-key rotation in its own Go pool, health skips, and paid OpenRouter tails when Go is spent. The agent holds **no** provider keys — no `OPENCODE_GO_API_KEY(S)`, no OpenCode Go/Zen credential — every OpenCode profile is an llm-ladder ladder (`src/opencode-ladder-provider.js`) and the pools live in the llm-ladder.
+**Why the nested engine is gone (2026-10-05).** `hermes_web_research` spawned a second
+opencode/claude to do the browsing. Measured over the session traces: **5 of 10 calls
+failed, and every failure was the same signature — `state:"error"`, `output:""`**, i.e. a
+truncated MCP call whose cause the bridge swallowed (`agent-mcp-bridge.js:98` kills the
+child on socket close, so the client synthesises an empty error). Nothing was wrong with
+the research itself: the cheap `hermes_run_task` (a single LLM call, no spawn) failed
+**0 of 4**. The second process bought a separate context and a separate delivery — and
+the delivery was not even independent, because it ran *after* the research inside the
+same MCP server process (`100-hermes.js`), so a parent SIGTERM destroyed the finished
+result anyway. With no engine spawned there is no second MCP bridge, no keepalive race
+against the 5-min inactivity watchdog, and nothing to reproduce recursively — so the
+whole anti-recursion floor (`HERMES_DEPTH`, `nestedRefusal`, hiding `100-hermes.js` in
+`registry.js`, `buildMcpConfig({siblings:false, extraEnv})`) went with it. The tool now
+finishes in seconds, so the parent's watchdog is never near its limit.
 
-**Web search (#1792).** OpenCode registers its built-in `websearch` tool only for the `opencode`/`opencode-go` providers *or* when `OPENCODE_ENABLE_EXA`/`OPENCODE_ENABLE_PARALLEL` is set — so with a `ladder` model a run had **no search at all**, and research came back with invented sources instead of links. `runEngineProcess` now sets `OPENCODE_ENABLE_EXA=1` for every opencode run (free, no API key, public Exa endpoint; the parallel provider stays off — we hold no key). The same honesty applies at the tool level: `hermes_research` injects a `sources` array (`title`/`url`/`quote`) into the caller's schema, returns `grounded: true|false`, and the prompt tells the worker to probe the search first and never invent a URL.
+`grounded: true` means the bundle carries at least one real `http(s)` link — a prose
+"source" without an address does not count, which is what used to let invented citations
+through (#1792). `fetch_exa` cannot open RU-geo-blocked sites (hh.ru, nalog.ru, etm.ru);
+`ru_browser_fetch` is the tool for those.
 
-**Read-only is enforced, not promised.** A nested run (`HERMES_DEPTH ≥ 1`) mounts only `playwright` + `trained-skills` (`buildMcpConfig({siblings:false})`), `registry.js` hides the whole `100-hermes.js` module so it cannot even see `hermes_research`, and the per-call refusal stays as a second line of defence. Before that, a nested Hermes had the full agent toolset and did open 2 PRs (measured 2026-09-28).
+Durable playbook steps with `executor_role: researcher` use the ordinary level map (the
+`master` profile since #2065); `PLAYBOOK_ROLE_MAP` can override the mapping, while an
+escalated model level uses the ordinary level map.
+
+**Web search (#1792).** OpenCode registers its built-in `websearch` tool only for the
+`opencode`/`opencode-go` providers *or* when `OPENCODE_ENABLE_EXA`/`OPENCODE_ENABLE_PARALLEL`
+is set — so with a `ladder` model a run had **no search at all**, and research came back
+with invented sources instead of links. `runEngineProcess` now sets `OPENCODE_ENABLE_EXA=1`
+for every opencode run (free, no API key, public Exa endpoint; the parallel provider stays
+off — we hold no key). Russian queries are answered by the SearXNG instance
+`search.lumy.live` (Yandex-backed, the only one in the pool that answers them).
+
+**Read-only is now structural.** There is no researcher engine, so there is nothing that
+could commit, open a PR, or check off a task: the researcher IS the calling session. Before
+that, a nested Hermes had the full agent toolset and did open 2 PRs (measured 2026-09-28).
+
 | `src/skills/turn-intent.js` | Turn-intent → skill sections (architecture issue #76 L1): the deterministic «интент → секции» map (`TURN_INTENTS`), `estimateTurnIntent(task)` (no model — null = full mount), `buildMountNote()` (the prompt block with the `TOOL_ESCALATION` net) and `detectEscalation()` (marker anywhere / soft phrase only in the final message). The runner estimates the intent per turn, resolves `profile ∩ intent` via `planFor({intent})` (resolve.js fails open when the intent is disjoint — `intent.applied=false`), narrows `.mcp.json`/`SKILLS_RESOLVED`/prompt-domains to it, and a narrowed run writes `<workDir>/.mcp-runs/<taskId>.*` (browser.js) so parallel runs of one profile can't clobber each other. Gates in `test/turn-intent.test.cjs`: every catalog section except `core` must be named by ≥1 intent, every intent section must exist, every sample must match its regex. Companion: `src/mcp-tool-tokens.js` (tools half of `prompt_prefix_tokens`). |
 | `src/engine-health.js` | Per-engine operational health (`healthy`/`degraded`/`unavailable`) in SQLite, separate from credentials (`auth-flag.js`) and failure history (`execution-history.js`). `markEngineSuccess` self-heals on success; `markEngineFailure` escalates at `ENGINE_UNAVAILABLE_AFTER_FAILURES`. Only class `AUTH` is credential-invalid. |
 | `src/durable-wait.js` | Durable wait for plan steps: a programmatic step with `wait` polls its own validation; an agent step parks itself via MCP `task_item_wait` + `DURABLE: waiting` until a validator passes / the user answers (`task_item_wake`) / a timer fires, then the same step re-runs with a resume note. Polls are deterministic, spend no attempts, survive restarts. `buildAwaitingUserNotice` tells chat runs which steps await the user. |

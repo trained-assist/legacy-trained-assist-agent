@@ -33,7 +33,7 @@ test('parseLlmJson strips code fences and rejects empty', () => {
 });
 
 test('hermes platform workers do not import HH domain modules', () => {
-  for (const f of ['src/hermes-run.js', 'src/hermes-tools-run.js']) {
+  for (const f of ['src/hermes-run.js', 'src/mcp-skills/tools/99d-web-research.js']) {
     const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
     assert.doesNotMatch(src, /require\(['"][^'"]*hh-[^'"]*['"]\)/, `${f} imports hh-*`);
   }

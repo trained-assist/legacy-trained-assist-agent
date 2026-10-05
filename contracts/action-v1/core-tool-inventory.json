@@ -18,7 +18,8 @@
     "24-web-ops.js",
     "84-artifacts.js",
     "99b-search-exa.js",
-    "99c-search-searxng.js"
+    "99c-search-searxng.js",
+    "99d-web-research.js"
   ],
   "mixed": [
     "04-cron.js",

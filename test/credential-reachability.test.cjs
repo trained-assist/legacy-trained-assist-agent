@@ -18,11 +18,11 @@ test('buildMcpToolEnv is exported and is exactly the env buildMcpConfig hands to
   const browser = require('../src/browser.js');
   assert.equal(typeof browser.buildMcpToolEnv, 'function');
   const workDir = fs.mkdtempSync(path.join(TMP, 'wd-'));
-  const opts = { userName: 'N', userHandle: 'h', extraEnv: { HERMES_DEPTH: '1' }, siblings: false };
+  const opts = { userName: 'N', userHandle: 'h' };
   const config = browser.buildMcpConfig(workDir, 'u1', opts);
   const direct = browser.buildMcpToolEnv({ userId: 'u1', workDir, ...opts });
   assert.deepEqual(config.mcpServers['trained-skills'].env, direct);
-  for (const k of ['USER_ID', 'WORK_DIR', 'HOME', 'PATH', 'AGENT_USER_NAME', 'AGENT_USER_HANDLE', 'HERMES_DEPTH']) {
+  for (const k of ['USER_ID', 'WORK_DIR', 'HOME', 'PATH', 'AGENT_USER_NAME', 'AGENT_USER_HANDLE', 'AGENT_TOKENS_DIR']) {
     assert.ok(k in direct, `missing ${k}`);
   }
 });

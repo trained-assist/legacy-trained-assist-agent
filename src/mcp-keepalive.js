@@ -2,12 +2,16 @@
 
 // Long MCP tool calls vs. the runner's 5-min inactivity kill.
 // While a tool call is pending the engine prints nothing (claude/codex/opencode
-// all go silent until the result comes back), so a legitimately slow tool —
-// hermes_web_research runs a whole CLI session, 1–10 min — got the PARENT session
-// SIGTERMed as "hung". The runner hands every engine (and so its MCP servers,
-// which inherit the env) a per-run AGENT_KEEPALIVE_FILE; a slow tool touches it
-// while it works, and the inactivity check counts a fresh mtime as activity.
+// all go silent until the result comes back), so a legitimately slow tool got the
+// PARENT session SIGTERMed as "hung". The runner hands every engine (and so its MCP
+// servers, which inherit the env) a per-run AGENT_KEEPALIVE_FILE; a slow tool touches
+// it while it works, and the inactivity check counts a fresh mtime as activity.
 // A really hung engine never touches it, so the watchdog still fires for those.
+// First needed by hermes_web_research (a whole nested CLI session, 1–10 min, removed
+// 2026-10-05); still load-bearing for any slow tool — a deep web_research, a Playwright
+// fetch, a batched company/INN lookup. The touch interval is 30s against a 5-min
+// watchdog, so the margin is 8x — test/slow-tool-longrun.test.cjs pins the wiring, and
+// test/web-research.test.cjs pins that the handler actually wraps its work in it.
 //
 // Where the file lives (issue #1791): writer (the MCP server) and reader (the
 // runner) are both the service user — MCP servers run service-side through the

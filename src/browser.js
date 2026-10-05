@@ -118,16 +118,19 @@ function gcRunConfigFiles(dir, keepId) {
  * `siblingPaths` (optional, test seam): overrides for the sibling checkout entrypoints
  * below; production always uses the computed repo-relative paths.
  *
- * `siblings: false` mounts only `playwright` + `trained-skills`. Used by the headless
- * research run (hermes-tools-run.js): a researcher must not see the domain servers that
- * carry mutating tools — engineering's `github_create_pr`/`spawn_workspace`, the hh
- * posting tools and so on (measured 2026-09-28: a nested Hermes did create 2 PRs).
+ * The former `siblings: false` / `extraEnv` switches are GONE with the nested research
+ * run (2026-10-05): they existed only so a spawned researcher engine would not see the
+ * domain servers carrying mutating tools (engineering's `github_create_pr`,
+ * `spawn_workspace`, the hh posting tools — measured 2026-09-28: a nested Hermes did
+ * create 2 PRs). No engine is spawned for research any more (see
+ * src/mcp-skills/tools/99d-web-research.js), so there is nothing left to narrow: the
+ * calling engine's own mount is the researcher's mount.
  */
 // The env every MCP server process gets (trained-skills and each domain sibling).
 // A pure function of its inputs + process.env, so the credential contract
 // (scripts/check-credential-reachability.js, #1891) can check the REAL object that
 // reaches a skill instead of grepping this file.
-function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, toolSecrets, extraEnv } = {}) {
+function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, toolSecrets } = {}) {
   return {
     USER_ID: String(userId || ''),
     WORK_DIR: workDir,
@@ -169,14 +172,10 @@ function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, to
     } : {}),
     // Registry (src/mcp-skills/registry.js) skips the catalog modules hidden by this file.
     ...(skillsFile ? { SKILLS_RESOLVED: skillsFile } : {}),
-    // Per-run flags for the MCP server processes themselves (HERMES_DEPTH). This env
-    // wins over the engine's env — see the note below — so it is the one place a run
-    // can stamp a fact the server must see.
     // Platform keys from the loaded secrets (#1892: HH OAuth client for token refresh,
     // bot/Deepgram/Cloudflare tokens). Only writeRunMcpConfig(bridged) passes them — the
     // specs stay in memory there; writeMcpConfig writes .mcp.json, which the engine reads.
     ...(toolSecrets || {}),
-    ...(extraEnv || {}),
     // NO AGENT_SESSION_FILE here: .mcp.json is ONE file per profile, rewritten by every run,
     // and config env overrides the engine's env — parallel sessions of a profile (different
     // chats) would read each other's session file and get_chat_history would answer for the
@@ -185,7 +184,7 @@ function buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, to
   };
 }
 
-function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, extraEnv, toolSecrets, siblings = true, skillsPlan: planOverride, runId } = {}) {
+function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, toolSecrets, skillsPlan: planOverride, runId } = {}) {
   // Note: --user-data-dir creates a persistent context, which is incompatible
   // with --storage-state (Playwright limitation). We rely on --storage-state
   // for both cookie injection and session persistence. Per-user isolation is
@@ -249,7 +248,7 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
   // file is inert (no env points at it) but misleading — drop it either way.
   if (!skillsPlan || run.effective) { try { fs.rmSync(path.join(workDir, skillsEnforce.EFFECTIVE_FILE), { force: true }); } catch { /* stale file is inert: no env points at it */ } }
 
-  const mcpToolEnv = buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, toolSecrets, extraEnv });
+  const mcpToolEnv = buildMcpToolEnv({ userId, workDir, userName, userHandle, skillsFile, toolSecrets });
 
   const config = {
     mcpServers: {
@@ -274,7 +273,6 @@ function buildMcpConfig(workDir, userId, { userName, userHandle, siblingPaths, e
   // or any error → plan null → legacy, nothing hidden.
   const hiddenSiblings = new Set(skillsPlan ? skillsPlan.hidden.siblings : []);
   for (const [serverId, indexPath] of Object.entries(siblingIndexes)) {
-    if (!siblings) continue;
     if (hiddenSiblings.has(serverId)) continue;
     if (fs.existsSync(indexPath)) {
       config.mcpServers[serverId] = { command: 'node', args: [indexPath], env: mcpToolEnv };

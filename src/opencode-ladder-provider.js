@@ -43,7 +43,7 @@ const PROFILE_ROLE_LADDER = Object.freeze({
   // Single-ladder profiles: every role rides the same ladder (the service/research/doctor cases).
   service: ALL_ROLES('service'), // the standard ladder; /oc_service, /oc_go, /oc_ds
   doctor: ALL_ROLES('doctor'),   // playbook doctor fallback after claude → codex
-  research: Object.freeze({ build: 'research', plan: 'research:plan', explore: 'research:explore', general: 'research:general', review: 'research:review' }), // hermes_web_research — worker ladder, Go-first (llm-ladder #28)
+  research: Object.freeze({ build: 'research', plan: 'research:plan', explore: 'research:explore', general: 'research:general', review: 'research:review' }), // research worker ladder, Go-first (llm-ladder #28). Originated for the nested hermes researcher (removed 2026-10-05); kept as a selectable profile — the rungs live in the worker, not here.
   russian: ALL_ROLES('service'), // service ladder + the strict Russian reviewer prompt below
 });
 
@@ -104,7 +104,8 @@ const TRACE_HEADERS = Object.freeze({
   'x-ladder-chat': '{env:AGENT_TRACE_CHAT}',
   // "Application" slice in the OpenRouter console (worker: llm-ladder#33 — the slug goes
   // out as HTTP-Referer/X-OpenRouter-Title). AGENT_LADDER_APP is the run type, set in
-  // runEngineProcess: background-playbooks | hermes-research | opencode-chat (#1917).
+  // runEngineProcess: background-playbooks | opencode-chat (#1917; the hermes-research
+  // slice went away with the nested research engine, 2026-10-05).
   'x-ladder-app': '{env:AGENT_LADDER_APP}',
 });
 

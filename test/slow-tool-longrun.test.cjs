@@ -1,10 +1,12 @@
 'use strict';
-// hermes_web_research hotfix (2026-09-27): research runs take 1–10 min, and died on
-// engine limits — opencode's 60s MCP tool timeout (11/11 failures), and the
-// runner's 5-min inactivity kill while a tool call is pending. Plus the result
-// was lost if the calling session died. These tests pin the three fixes:
+// Slow-tool infrastructure (started as the hermes_web_research hotfix, 2026-09-27):
+// a long MCP tool call dies on engine limits — opencode's 60s MCP tool timeout
+// (11/11 research failures) and the runner's 5-min inactivity kill while the call is
+// pending — and its result is lost if the calling session dies. These tests pin:
 // (1) engines get a long MCP tool timeout, (2) a per-run keepalive file lets a
-// slow tool prove liveness, (3) the result is saved to disk + sent to Telegram.
+// slow tool prove liveness, (3) a result is saved to disk + sent to Telegram.
+// Since 2026-10-05 research no longer spawns an engine, so nothing here is hermes-
+// specific: the same guards cover any long tool (playwright fetch, deep search).
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -33,7 +35,7 @@ test('opencode config: MCP tool calls get the long timeout, profile experimental
   assert.equal(cfg.experimental.mcp_timeout, _const.MCP_TOOL_TIMEOUT_MS);
   assert.equal(cfg.experimental.foo, 1);
   assert.equal(cfg.mcp['trained-skills'].timeout, _const.MCP_TOOL_TIMEOUT_MS);
-  assert.ok(_const.MCP_TOOL_TIMEOUT_MS >= 10 * 60 * 1000, 'ceiling covers a 10-min research run');
+  assert.ok(_const.MCP_TOOL_TIMEOUT_MS >= 10 * 60 * 1000, 'ceiling covers a 10-min tool call');
 });
 
 test('codex args: per-server tool_timeout_sec is set', () => {
