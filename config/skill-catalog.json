@@ -26,7 +26,7 @@
         "00-meta.js", "01-session-history.js", "02-chat-history.js", "03-context-store.js",
         "04-cron.js", "05-session.js", "06-reproject.js", "21-browser-session.js",
         "22-connect.js", "22-ru-browser.js", "23-credentials-form.js", "24-web-ops.js", "84-artifacts.js",
-        "94-tg-send.js", "97-publish.js", "97b-site-deploy.js", "99b-search-exa.js", "99c-search-searxng.js", "100-hermes.js", "101-durable-tasks.js", "102-playbooks.js",
+        "94-tg-send.js", "97-publish.js", "97b-site-deploy.js", "99b-search-exa.js", "99c-search-searxng.js", "99d-web-research.js", "100-hermes.js", "101-durable-tasks.js", "102-playbooks.js",
         "103-content-rewrite.js",
         "search-skills/99-search-serper.js", "search-skills/99c-search-searxng.js"
       ],

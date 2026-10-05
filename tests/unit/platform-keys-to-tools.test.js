@@ -104,14 +104,17 @@ describe('platform keys reach the MCP env (issue #1885 / #1892)', () => {
   });
 });
 
-describe('hermes_run_task passes the loaded secrets to its engine run (#1892 п.4)', () => {
-  afterEach(() => secrets.setLoadedSecrets(null));
-  it('hermesEngineSecrets() is the loaded secrets object, not {}', () => {
-    const { hermesEngineSecrets } = require('../../src/hermes-tools-run.js');
-    const loaded = { BOT_TOKEN: 'b', CF_API_TOKEN: 'c', DEEPGRAM_API_KEY: 'd' };
-    secrets.setLoadedSecrets(loaded);
-    expect(hermesEngineSecrets()).toBe(loaded);
-    secrets.setLoadedSecrets(null);
-    expect(hermesEngineSecrets()).toEqual({});
+// #1892 п.4 gave the hermes worker the SAME loaded secrets as a normal run. That worker
+// was the nested research engine, deleted 2026-10-05 with hermes_web_research — nothing
+// spawns an engine for research any more, so there is no per-run secret hand-off left to
+// pin. The secrets themselves still reach every MCP tool through browser.js
+// buildMcpToolEnv (covered by tests/unit/credential-contract.test.js).
+describe('no nested hermes engine remains to receive per-run secrets', () => {
+  it('hermes-tools-run.js is gone and nothing spawns an engine for research', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    expect(fs.existsSync(path.join(__dirname, '..', '..', 'src', 'hermes-tools-run.js'))).toBe(false);
+    const tool = fs.readFileSync(require.resolve('../../src/mcp-skills/tools/99d-web-research.js'), 'utf8');
+    expect(tool).not.toMatch(/runEngineProcess|buildEngineCommand|hermesEngineSecrets/);
   });
 });

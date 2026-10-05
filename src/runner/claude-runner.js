@@ -428,9 +428,11 @@ function persistOpencodePart(workDir, engineSessionId, event, taskId) {
 // `…/app/<slug>` breakdown. Precedence: an explicit `ladderApp` (hermes names itself) →
 // the run's own shape — a durable plan step / an internal GTD turn is background work,
 // everything else is an ordinary chat run.
+// Per-run "Application" slice (#1917). The `hermes-research` slug is gone with the
+// nested research engine (2026-10-05): research is now an ordinary tool call inside
+// the caller's own run, so it carries that run's slug and needs no slice of its own.
 const LADDER_APP = Object.freeze({
   durable: 'background-playbooks',
-  hermes: 'hermes-research',
   chat: 'opencode-chat',
 });
 

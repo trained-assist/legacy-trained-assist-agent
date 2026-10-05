@@ -5,8 +5,10 @@
 // HTTP-Referer/X-OpenRouter-Title (llm-ladder#33).
 //
 //   background-playbooks — a durable plan step / an internal GTD turn (the main consumer)
-//   hermes-research      — a hermes run (src/hermes-tools-run.js names itself)
 //   opencode-chat        — everything else (an ordinary chat run)
+//
+// The hermes-research slice is gone with the nested research engine (2026-10-05):
+// research no longer runs as its own engine, so it carries the caller run's slug.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -21,8 +23,8 @@ test('run type → slug (resolveLadderApp)', () => {
   assert.equal(resolveLadderApp({ resumeSink: { kind: 'durable', taskId: 'plan-1' } }), LADDER_APP.durable, 'a durable step');
   assert.equal(resolveLadderApp({ internalGtd: true, resumeSink: { kind: 'durable' } }), LADDER_APP.durable);
   assert.equal(resolveLadderApp({ resumeSink: { kind: 'web' } }), LADDER_APP.chat, 'only kind === durable counts');
-  assert.equal(resolveLadderApp({ ladderApp: LADDER_APP.hermes }), LADDER_APP.hermes, 'an explicit ladderApp wins (hermes)');
-  assert.equal(LADDER_APP.hermes, 'hermes-research', 'hermes names the slug itself (src/hermes-tools-run.js)');
+  assert.equal(resolveLadderApp({ ladderApp: 'some-explicit-slug' }), 'some-explicit-slug', 'an explicit ladderApp wins');
+  assert.deepEqual(Object.keys(LADDER_APP).sort(), ['chat', 'durable'], 'no slice is left without a producer');
   assert.equal(LADDER_APP.durable, 'background-playbooks');
   assert.equal(LADDER_APP.chat, 'opencode-chat');
 });
@@ -52,7 +54,7 @@ echo '{"type":"result","result":"ok","usage":{"input_tokens":1,"output_tokens":1
     { label: 'internal GTD turn', opts: { internalGtd: true }, want: 'background-playbooks' },
     { label: 'durable plan step', opts: { resumeSink: { kind: 'durable', taskId: 'plan-abc', itemId: 'i-1', executionId: 'exec-1' } }, want: 'background-playbooks' },
     { label: 'non-durable resume sink', opts: { resumeSink: { kind: 'web' } }, want: 'opencode-chat' },
-    { label: 'hermes run', opts: { ladderApp: LADDER_APP.hermes }, want: 'hermes-research' },
+    { label: 'an explicit slice', opts: { ladderApp: 'some-explicit-slug' }, want: 'some-explicit-slug' },
   ];
 
   for (const [i, c] of cases.entries()) {
