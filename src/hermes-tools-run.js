@@ -159,10 +159,10 @@ async function hermesRunWithTools({ username, task, context = '', outputSchema, 
 
   // Stamp the nested run's depth into the MCP servers' env (browser.js extraEnv). The
   // server side (100-hermes.js) refuses to launch a Hermes from inside a Hermes, which
-  // gives the self-reproducing chain (hermes_research → engine → hermes_research → …)
-  // a hard floor. Without it a nested engine sees hermes_research again and re-spawns.
+  // gives the self-reproducing chain (hermes_web_research → engine → hermes_web_research → …)
+  // a hard floor. Without it a nested engine sees hermes_web_research again and re-spawns.
   // The same stamp makes registry.js drop the whole hermes tool module, so a nested run
-  // cannot even SEE hermes_research — the refusal is only the second line of defence.
+  // cannot even SEE hermes_web_research — the refusal is only the second line of defence.
   const hermesDepth = (Number.parseInt(process.env.HERMES_DEPTH || '0', 10) || 0) + 1;
   const { mcpConfig, servers: bridgedServers } = writeRunMcpConfig(
     workDir, username,

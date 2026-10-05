@@ -5,7 +5,7 @@
 // Используется разными доменами (презентация, сайт/лендинг, отчёт, описания
 // на выставочном сайте) — поэтому лежит в core, а не в documents-skill.
 // Логика — в src/content-rewrite.js (офлайн-тестируемая, минует GigaChat-
-// ветку hermes_run и вызывает OpenRouter напрямую с выбранной моделью).
+// ветку hermes_run_task и вызывает OpenRouter напрямую с выбранной моделью).
 
 const { contentRewrite } = require('../../content-rewrite');
 

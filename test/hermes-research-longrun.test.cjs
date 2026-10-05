@@ -1,5 +1,5 @@
 'use strict';
-// hermes_research hotfix (2026-09-27): research runs take 1–10 min, and died on
+// hermes_web_research hotfix (2026-09-27): research runs take 1–10 min, and died on
 // engine limits — opencode's 60s MCP tool timeout (11/11 failures), and the
 // runner's 5-min inactivity kill while a tool call is pending. Plus the result
 // was lost if the calling session died. These tests pin the three fixes:

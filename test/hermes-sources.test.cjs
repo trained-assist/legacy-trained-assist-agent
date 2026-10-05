@@ -71,7 +71,7 @@ const { withSources, isGrounded } = hermes;
     'the duplicated «инструментам (…)» phrase from the pre-fix prompt is gone');
   ok(p.includes('task') && p.includes('Схема ответа'), 'prompt still carries task + schema');
 
-  const desc = hermes.tools.hermes_research.description;
+  const desc = hermes.tools.hermes_web_research.description;
   ok(!/встроенный веб-поиск/.test(desc),
     'the tool description no longer advertises a built-in web search as a given');
   ok(/grounded/.test(desc), 'the tool description tells the caller to check `grounded`');

@@ -1,6 +1,6 @@
 'use strict';
 
-// hermes_research search ladder (#1792): level 1 must be OUR keyless `search_serp_free`,
+// hermes_web_research search ladder (#1792): level 1 must be OUR keyless `search_serp_free`,
 // prefetched in the server process and handed to the model in the prompt — so a research
 // run starts from a real SERP even when the engine's built-in search is missing/blocked.
 // No network here: the tool is driven through the injected fetchImpl.
