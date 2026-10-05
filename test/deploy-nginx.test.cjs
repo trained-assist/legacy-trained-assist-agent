@@ -72,6 +72,13 @@ test('the vm2 door answers /mcp and /agent/ with the long-tool timeout',()=>{
   const served=[...new Set([...config.matchAll(/^\s*server_name\s+([^;]+);/gm)].flatMap(m=>m[1].split(/\s+/)))];
   assert.deepEqual(served,['169-58-15-230.sslip.io'],'this site serves only this box\'s own origin — installing the branded hostname here IS the P2 cutover');
 });
+test('GCP relay keeps long-running agent requests alive through the review progress window',()=>{
+ const config=fs.readFileSync(path.resolve(__dirname,'../infra/nginx/relay.conf'),'utf8');
+ const agentLocation=config.match(/location \/agent\/\s*\{([^}]+)\}/);
+ assert.ok(agentLocation, 'relay /agent/ location');
+ assert.match(agentLocation[1],/proxy_read_timeout\s+240s\s*;/);
+ assert.match(agentLocation[1],/proxy_send_timeout\s+240s\s*;/);
+});
 
 function apex(f) {
  const src=path.join(f.dir,'repo/infra/nginx/recruiter-assistant.conf');
