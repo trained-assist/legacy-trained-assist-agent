@@ -151,7 +151,7 @@ function codexMcpArgs(mcpConfig) {
     args.push('-c', `mcp_servers.${name}.command=${JSON.stringify(srv.command)}`);
     if (srv.args) args.push('-c', `mcp_servers.${name}.args=${JSON.stringify(srv.args)}`);
     if (srv.env) args.push('-c', `mcp_servers.${name}.env=${tomlInlineTable(srv.env)}`);
-    // Long tools (hermes_research: a whole CLI session) must not hit codex's per-tool cap.
+    // Long tools (hermes_web_research: a whole CLI session) must not hit codex's per-tool cap.
     args.push('-c', `mcp_servers.${name}.tool_timeout_sec=${MCP_TOOL_TIMEOUT_MS / 1000}`);
   }
   return args;
@@ -230,7 +230,7 @@ function writeOpencodeMcpConfig(configDir, mcpConfig, ocProfileOverrides) {
   fs.mkdirSync(configDir, { recursive: true });
   const configPath = path.join(configDir, '.opencode-mcp.json');
   // opencode aborts every MCP tool call at 60s by default (MCP SDK request timeout) —
-  // hermes_research died there 11/11 times (2026-09-27). experimental.mcp_timeout is the
+  // hermes_web_research died there 11/11 times (2026-09-27). experimental.mcp_timeout is the
   // tool-call timeout; per-server `timeout` covers the other MCP requests.
   const experimental = { ...(ocProfileOverrides?.experimental || {}), mcp_timeout: MCP_TOOL_TIMEOUT_MS };
   // Omit the key entirely when there is no plugin (partial deploy) — `plugin: null` is not
@@ -513,7 +513,7 @@ async function runEngineProcess(opts) {
       // `openrouter`/`ladder` providers (verified in opencode 1.18.31: the registry gate is
       // `provider===opencode || provider===opencode-go || enableExa || enableParallel`).
       // Without this flag an opencode run has NO search at all: only `webfetch` (a URL it
-      // already knows). That is why `hermes_research` produced reports with zero URLs —
+      // already knows). That is why `hermes_web_research` produced reports with zero URLs —
       // its prompt promised «встроенный веб-поиск» that was never there (triage 2026-09-28).
       // Exa's endpoint needs no API key; `OPENCODE_ENABLE_PARALLEL` stays off — the parallel
       // provider is picked first when both are set and we have no key for it.

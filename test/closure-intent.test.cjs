@@ -140,7 +140,7 @@ test('answer-router: wrap_up — известный режим, блок зап�
   assert.ok(answerRouter.WRAP_UP_TIMEOUT_MS <= 3 * 60_000, 'жёсткий потолок ≤ 3 мин');
   assert.ok(answerRouter.WRAP_UP_WARN_MS < answerRouter.WRAP_UP_TIMEOUT_MS);
   assert.ok(answerRouter.WRAP_UP_MAX_TOOL_CALLS <= 3);
-  for (const t of ['WebSearch', 'WebFetch', 'mcp__search-skills', 'mcp__trained-skills__hermes_research']) {
+  for (const t of ['WebSearch', 'WebFetch', 'mcp__search-skills', 'mcp__trained-skills__hermes_web_research']) {
     assert.ok(answerRouter.WRAP_UP_DENY_CLAUDE.includes(t), t);
   }
   assert.equal(answerRouter.WRAP_UP_DENY_OPENCODE.websearch, false);

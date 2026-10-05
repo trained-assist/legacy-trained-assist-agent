@@ -1,7 +1,7 @@
 'use strict';
 
 // Hermes Phase 1 MCP tools.
-// hermes_run — общий stateless-примитив: task + context + output_schema → JSON.
+// hermes_run_task — общий stateless-примитив: task + context + output_schema → JSON.
 // hermes_candidate_report — пилот №3 (самый показательный): сводит
 // резюме + вакансию + (опц.) разбор интервью в один CandidateReport JSON,
 // который дальше можно скормить существующему HTML-генератору отчётов.
@@ -14,21 +14,21 @@ const { withKeepalive } = require('../../mcp-keepalive');
 
 const USER_ID = process.env.USER_ID || '';
 
-// Anti-recursion floor for hermes_research (triage 2026-09-28).
-// hermes_research spawns a headless engine that gets THIS SAME MCP toolset, so without a
-// floor the chain reproduces itself: engine → hermes_research → engine → hermes_research
+// Anti-recursion floor for hermes_web_research (triage 2026-09-28).
+// hermes_web_research spawns a headless engine that gets THIS SAME MCP toolset, so without a
+// floor the chain reproduces itself: engine → hermes_web_research → engine → hermes_web_research
 // → … (measured: a new engine every ~15–20 s until the service was restarted). The depth
 // travels in the MCP server env of the nested run (hermes-tools-run.js → browser.js
 // extraEnv), because config env wins over the engine's env. Read at call time, not load
 // time, so a server that inherits the flag rejects without a restart.
-// Only hermes_research is floored: hermes_run/hermes_candidate_report are a single raw
+// Only hermes_web_research is floored: hermes_run_task/hermes_candidate_report are a single raw
 // LLM call that cannot spawn anything.
 function nestedRefusal() {
   const depth = Number.parseInt(process.env.HERMES_DEPTH || '0', 10) || 0;
   if (depth < 1) return null;
   return (
     `Вложенный Гермес (depth=${depth}) не запускается: этот движок уже работает внутри ` +
-    'hermes_research, и повторный запуск плодит бесконечную цепочку движков. ' +
+    'hermes_web_research, и повторный запуск плодит бесконечную цепочку движков. ' +
     'Выполни задачу сам этим же запуском: сходи в сеть через доступные инструменты ' +
     'и собери результат, а наружу отдай JSON по схеме.'
   );
@@ -97,10 +97,12 @@ module.exports = {
   isGrounded,
 
   tools: {
-    hermes_run: {
+    hermes_run_task: {
       description:
         'Hermes (Phase 1) — общий stateless-воркер для сложной исследовательской подзадачи. ' +
         'Дай ограниченную задачу + контекст + JSON Schema желаемого ответа — вернётся структурный JSON. ' +
+        'Работает ТОЛЬКО с текстом, который уже дан в context — в интернет не ходит; если задаче нужно ' +
+        'самой сходить в сеть, это hermes_web_research. ' +
         'НЕ для «пообщайся с пользователем и сам реши, чем заниматься» — только для одной конкретной ' +
         'задачи с известным форматом ответа. Для типовых задач (оценка кандидата, отчёт по кандидату) ' +
         'используй специализированные тулы, например hermes_candidate_report.',
@@ -156,12 +158,12 @@ module.exports = {
       },
     },
 
-    hermes_research: {
+    hermes_web_research: {
       description:
         'Hermes (Phase 1.5) — исследование в интернете: отдельная headless-сессия с веб-поиском, ' +
         'загрузкой страниц, Playwright-браузером и внутренними MCP-скилами. Используй, когда задаче ' +
         'нужно САМОЙ сходить в сеть (найти, открыть, свести несколько источников) — не просто обработать ' +
-        'текст, который уже дан в context. Медленнее и дороже hermes_run (реальная CLI-сессия, не один ' +
+        'текст, который уже дан в context (для этого hermes_run_task). Медленнее и дороже hermes_run_task (реальная CLI-сессия, не один ' +
         'LLM-вызов) — не гоняй на задачах без реальной потребности в интернете. ДОЛГИЙ: обычно 1–10 минут, ' +
         'просто дождись ответа, не перезапускай и не дублируй вызов. Результат сохраняется в research/ ' +
         '(поле saved_to) и отдельным сообщением уходит юзеру в Telegram (delivered) — не пересылай его ' +
@@ -189,7 +191,7 @@ module.exports = {
         // Never fail a run that did produce something — a non-grounded answer is still
         // worth reading, it just must not be mistaken for a verified one.
         const grounded = isGrounded(result);
-        if (!grounded) console.warn(`[hermes_research] not grounded: ${String(task).slice(0, 100)}`);
+        if (!grounded) console.warn(`[hermes_web_research] not grounded: ${String(task).slice(0, 100)}`);
         const delivery = await persistAndDeliver({ task, result });
         return { result, grounded, ...delivery };
       },
