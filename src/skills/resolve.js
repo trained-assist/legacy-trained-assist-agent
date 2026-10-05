@@ -179,7 +179,21 @@ function resolve(catalog, profileSkills, readiness, opts = {}) {
   // Prompt domains: mirror src/prompt-domains selectDomains() exactly, restricted to
   // domains owned by enabled sections whose server is attached for this run.
   const attached = new Set([LOCAL, ...siblings, ...relays]);
+  // `catalog.alwaysOnDomains` applies to EVERY run regardless of sections or a narrowed
+  // mount (#143's coding baseline): `hidden.domains` is computed from section
+  // declarations only, so such a domain can never be switched off — and it must be
+  // REPORTED here, or the shadow comparison and every consumer of
+  // resolve().promptDomains would see a permanent phantom difference. Named explicitly
+  // in the catalog: inferring "undeclared ⇒ always-on" would silently change every
+  // synthetic catalog that declares domains out of band.
+  const alwaysOn = new Set(catalog.alwaysOnDomains || []);
   for (const name of Object.keys(domains).sort()) {
+    if (alwaysOn.has(name) && !domainNames.has(name)) {
+      // Only its SERVER has to be attached; module presence is the runtime probe's call.
+      const d = domains[name];
+      if (d && attached.has(d.server)) out.promptDomains.push(name);
+      continue;
+    }
     if (!domainNames.has(name)) continue;
     const d = domains[name];
     if (!attached.has(d.server)) continue;

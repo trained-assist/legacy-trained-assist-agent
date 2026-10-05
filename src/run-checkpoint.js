@@ -108,10 +108,16 @@ function startCheckpointLoop({
       return recordCheckpoint({ profileId, taskId, sessionId, state, at: now(), root });
     } catch (e) { console.warn('[run-checkpoint] take failed:', e.message); return null; }
   };
-  take();
+  // The baseline is scheduled, NOT awaited inline: it must not sit on the run's critical
+  // path (the engine spawn is next), while still landing before any real work happens.
+  const baseline = setTimeout(take, 0);
+  if (baseline.unref) baseline.unref();
   const timer = setInterval(take, intervalMs);
   if (timer.unref) timer.unref();
-  return { stop() { clearInterval(timer); }, take };
+  return {
+    stop() { clearTimeout(baseline); clearInterval(timer); },
+    take,
+  };
 }
 
 module.exports = {

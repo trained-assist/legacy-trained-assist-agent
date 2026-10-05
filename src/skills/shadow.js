@@ -91,4 +91,4 @@ function runShadow({ workDir, username, audience, mcpConfigPath, domainReport, c
   }
 }
 
-module.exports = { runShadow, buildReadiness, compare, setDiff };
+module.exports = { compare, runShadow, buildReadiness, setDiff };

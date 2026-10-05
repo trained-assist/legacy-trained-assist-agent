@@ -49,7 +49,9 @@ function gitSaveState(dir, { run = null } = {}) {
   }
   const branch = git(dir, ['branch', '--show-current'], run) || '(detached)';
   const head = git(dir, ['rev-parse', 'HEAD'], run);
-  const porcelain = gitRaw(dir, ['status', '--porcelain'], run) || '';
+  // -uno: untracked files are excluded from the verdict anyway, and scanning them is the
+  // expensive part of `git status` on a large tree. Keeps this check off the run's hot path.
+  const porcelain = gitRaw(dir, ['status', '--porcelain', '-uno'], run) || '';
   // Modified TRACKED files only — `??` (untracked) is deliberately excluded.
   const modified = porcelain.split('\n')
     .filter(l => l && !l.startsWith('??'))
