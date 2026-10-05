@@ -155,6 +155,30 @@ test('a commit with no upstream is pushed — the failed-first-push case', { ski
   assert.match(sh(`git -C ${remote} log --oneline`).out, /profile sync/);
 });
 
+test('an unreadable file does not make the whole profile unsavable', { skip: !HAS_GIT }, () => {
+  // T0 isolation (#1649) runs engines as unprivileged slots (ta-agent-*). Files they
+  // own are unreadable for the profile's user, and `git add -A` aborts on the FIRST
+  // such file — so a single slot-written scratch file makes the entire profile
+  // unsavable. Observed twice on trained-assist-product-owner.
+  const { dir, remote } = fixture();
+  fs.writeFileSync(path.join(dir, 'notes.md'), 'mine\n');
+
+  // A file the current user cannot read, as if owned by another UID.
+  const locked = path.join(dir, 'slot-scratch.json');
+  fs.writeFileSync(locked, '{"slot":true}\n');
+  sh(`chmod 000 ${locked}`);
+
+  const res = saveProfileState(dir, { profileId: 'alice', token: 'x', remoteUrl: remote });
+  sh(`chmod 644 ${locked}`);
+
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.pushed, true);
+  // The readable content still made it — losing one file must not lose the profile.
+  assert.match(sh(`git -C ${remote} log --oneline`).out, /profile sync/);
+  const files = sh(`git -C ${remote} ls-tree -r --name-only HEAD`).out;
+  assert.ok(files.includes('notes.md'), `notes.md must be saved, got:\n${files}`);
+});
+
 test('a push failure is reported as an error, never as success', { skip: !HAS_GIT }, () => {
   const { dir } = fixture();
   fs.writeFileSync(path.join(dir, 'notes.md'), 'hello\n');

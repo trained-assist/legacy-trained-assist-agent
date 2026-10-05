@@ -106,8 +106,42 @@ function unpushedCount(dir) {
   return counts ? Number(counts.split(/\s+/)[1]) || 0 : 0;
 }
 
+// `git add -A` aborts entirely on a single unreadable file. Files written by a
+// run-as slot (T0 isolation, #1649 — ta-agent-* / ta-agents) are owned by that UID,
+// so the profile's owner gets EACCES and the WHOLE profile becomes unsavable.
+// Observed twice on trained-assist-product-owner: checklist.md and
+// projects/recruiting/artifacts/…/live-verification.json.
+//
+// The clean-list can name files it knows about, but these are per-run scratch with
+// arbitrary names — so the exclusion is derived from git's own complaint, at run
+// time, and passed as a pathspec exclusion rather than written anywhere.
+//
+// A pathspec (not .git/info/exclude): the generated .gitignore is a KEEP whitelist
+// (`!**/*.json`), and a .gitignore entry OUTRANKS .git/info/exclude, so recording the
+// path there was silently ineffective — the file stayed in the add and the commit
+// kept failing.
+function unreadableFrom(stderr) {
+  const out = new Set();
+  for (const line of String(stderr || '').split('\n')) {
+    const m = /^error: open\("(.+?)"\): Permission denied$/.exec(line.trim());
+    if (m) out.add(m[1]);
+  }
+  return [...out];
+}
+
 function commit(dir, message) {
-  git(dir, ['add', '-A']);
+  const add = (excl) => spawnSync(
+    'git',
+    ['-C', dir, 'add', '-A', '--', '.', ...excl.map(p => `:(exclude)${p}`)],
+    { encoding: 'utf8', timeout: GIT_TIMEOUT_MS },
+  );
+  let r = add([]);
+  if (r && r.status !== 0) {
+    const denied = unreadableFrom(r.stderr);
+    if (!denied.length) return false;
+    r = add(denied);
+    if (!r || r.status !== 0) return false;
+  }
   if (!hasChanges(dir)) return false;
   return git(dir, ['commit', '-m', message]) !== null;
 }

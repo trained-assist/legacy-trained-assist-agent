@@ -442,6 +442,21 @@ rules:
   #     action: DEDUP
   #     reason: "blob-store copy is canonical; local copies become *.ref.json"
 
+  # ── Slot-owned state (T0 isolation, #1649) ───────────────────────────────
+  # Files written by an unprivileged run-as slot (ta-agent-* / ta-agents) are owned
+  # by that UID, not the profile. Two reasons they must not enter the image:
+  #   · `git add` runs as vova and gets EACCES on them — the profile then fails to
+  #     commit at all (observed: trained-assist-product-owner, checklist.md);
+  #   · they are per-slot scratch, not the profile's text image.
+  # Placed above KEEP so `*.md` below cannot re-include them (last match wins).
+  - pattern: checklist.md
+    action: EXCLUDE
+    reason: "[M6] written by the GTD controller under a run-as slot (T0 #1649) — slot-owned, not profile text; EACCES for git add as vova"
+
+  - pattern: "*.ref.json"
+    action: EXCLUDE
+    reason: "[M6] pointer files rewritten by slot-owned writers — regenerate from the blob store"
+
   # ── KEEP: the profile's text image ──────────────────────────────────────
   - pattern: "*.md"
     action: KEEP
