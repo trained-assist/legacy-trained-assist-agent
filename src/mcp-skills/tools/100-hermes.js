@@ -2,7 +2,7 @@
 
 // Hermes Phase 1 MCP tools.
 // hermes_run_task — общий stateless-примитив: task + context + output_schema → JSON.
-// hermes_candidate_report — пилот №3 (самый показательный): сводит
+// candidate_report_json — пилот №3 (самый показательный): сводит
 // резюме + вакансию + (опц.) разбор интервью в один CandidateReport JSON,
 // который дальше можно скормить существующему HTML-генератору отчётов.
 // Никакой памяти/инструментов/cron на этом этапе (Phase 1).
@@ -21,7 +21,7 @@ const USER_ID = process.env.USER_ID || '';
 // travels in the MCP server env of the nested run (hermes-tools-run.js → browser.js
 // extraEnv), because config env wins over the engine's env. Read at call time, not load
 // time, so a server that inherits the flag rejects without a restart.
-// Only hermes_web_research is floored: hermes_run_task/hermes_candidate_report are a single raw
+// Only hermes_web_research is floored: hermes_run_task/candidate_report_json are a single raw
 // LLM call that cannot spawn anything.
 function nestedRefusal() {
   const depth = Number.parseInt(process.env.HERMES_DEPTH || '0', 10) || 0;
@@ -105,7 +105,7 @@ module.exports = {
         'самой сходить в сеть, это hermes_web_research. ' +
         'НЕ для «пообщайся с пользователем и сам реши, чем заниматься» — только для одной конкретной ' +
         'задачи с известным форматом ответа. Для типовых задач (оценка кандидата, отчёт по кандидату) ' +
-        'используй специализированные тулы, например hermes_candidate_report.',
+        'используй специализированные тулы, например candidate_report_json.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -122,11 +122,11 @@ module.exports = {
       },
     },
 
-    hermes_candidate_report: {
+    candidate_report_json: {
       description:
         'Hermes (Phase 1), пилот: собрать единый CandidateReport из резюме кандидата, текста вакансии и ' +
         '(опционально) разбора интервью. Возвращает структурный JSON (summary/strengths/concerns/fit_score/' +
-        'verdict) — не верстает HTML, только содержание.',
+        'verdict) — не верстает HTML, только содержание. Это JSON-версия; для HTML-отчёта клиенту используй candidate_report_html, для markdown — candidate_report_markdown.',
       inputSchema: {
         type: 'object',
         properties: {
