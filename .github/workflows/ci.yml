@@ -326,6 +326,7 @@ jobs:
       always() &&
       needs.ci.result == 'success' &&
       needs.staging-gate.result == 'success' &&
+      !contains(github.event.pull_request.title || github.event.head_commit.message, '[no-deploy]') &&
       !contains(github.event.pull_request.title || github.event.head_commit.message, '[nginx-only]') &&
       (needs.merge.outputs.sha != '' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
