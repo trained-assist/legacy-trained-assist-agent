@@ -13,6 +13,7 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const { buildDomainBlock, loadDomains, parseDomainFile } = require('../../src/prompt-domains/index.js');
+const { compare, sectionScopedDomains } = require('../../src/skills/shadow.js');
 const catalog = require('../../config/skill-catalog.json');
 
 const DOMAIN_FILE = join(__dirname, '..', '..', 'src', 'prompt-domains', 'engineering-baseline.md');
@@ -85,5 +86,29 @@ describe('buildDomainBlock keeps the baseline when the engineering domain is hid
   it('a legacy run with no skills plan keeps it too', () => {
     const block = buildDomainBlock(mcpConfig(), { probe: PROBE });
     expect(block).toContain('Coding discipline');
+  });
+});
+
+describe('skills shadow knows the baseline is intentionally always-on', () => {
+  // An always-on domain is never in resolve().promptDomains (hidden.domains is computed
+  // from section declarations only), so a raw comparison reports a permanent
+  // `-dom:engineering-baseline` and the legacy diff=0 guarantee breaks.
+  const cat = { sections: { core: { promptDomains: ['cron', 'engineering'] } } };
+
+  it('excludes domains no section declares', () => {
+    expect(sectionScopedDomains(cat, ['cron', 'engineering-baseline'])).toEqual(['cron']);
+    expect(sectionScopedDomains(cat, ['engineering-baseline'])).toEqual([]);
+  });
+
+  it('reports no diff when only the always-on baseline is extra', () => {
+    const resolved = { siblings: [], relays: [], promptDomains: ['cron'] };
+    const actual = { siblings: [], relays: [], promptDomains: ['cron', 'engineering-baseline'] };
+    expect(compare(resolved, actual, cat)).toEqual([]);
+  });
+
+  it('still reports a real section-scoped difference', () => {
+    const resolved = { siblings: [], relays: [], promptDomains: ['cron'] };
+    const actual = { siblings: [], relays: [], promptDomains: ['cron', 'engineering', 'engineering-baseline'] };
+    expect(compare(resolved, actual, cat)).toEqual(['-dom:engineering']);
   });
 });
