@@ -60,11 +60,10 @@
         "audience": "sales",
         "token_secret_name": "SALES_BOT_TOKEN",
         "enabled": true,
-        "commands_profile": "classic",
+        "commands_profile": "sales",
         "media_profile": "full",
-        "gateway_env": null,
-        "gateway_url": null,
-        "gateway_absence_reason": "Внешний сейлс-бот @cmr_management_bot = Cloudflare Worker flexi-telegram-deal-bot (репо kobzevvv/flexi-exhibition-deal-bot), НЕ экземпляр trained-assist-tg-bot. Он зовёт агента POST /run и ждёт ответа в своём чате: держать busy-холд и слушать /internal/run-finished ему нечем, поэтому агент шлёт финальный текст напрямую через sendMessage токеном SALES_BOT_TOKEN. Регистрация обязательна: без своей аудитории агент отвечал токеном классического бота, которого в группах нет (выгнут из -1004485888030) → sendMessage 403 ПОСЛЕ 202, и оператор видел только «⏳ Передаю ассистенту…» навсегда. Воркер обязан передавать audience: sales."
+        "gateway_env": "trained-assist-tg-bot-sales",
+        "gateway_url": "https://trained-assist-tg-bot-sales.skillset-apply.workers.dev"
       }
     ]
   },

@@ -204,18 +204,22 @@ test('every non-default registry bot has its own https gateway_url OR declares w
   assert.deepEqual(botsMissingGatewayDeclaration([{ ...bad[0], gateway_absence_reason: 'внешний воркер, шлюза нет' }]), []);
 });
 
-test('the sales bot (@cmr_management_bot) answers as itself and declares it has no gateway', () => {
+test('the sales bot (@cmr_management_bot) has its own gateway on the tg-bot contour', () => {
   const { BOTS, hasOwnGateway, gatewayUrl } = require('../src/bot-registry');
   const sales = BOTS.find(b => b.audience === 'sales');
   assert.ok(sales, 'sales audience must be registered');
   assert.equal(sales.token_secret_name, 'SALES_BOT_TOKEN');
-  assert.ok(String(sales.gateway_absence_reason || '').trim(), 'no-gateway must be a stated reason');
-  // No gateway of our tg-bot family → callbacks are skipped, which callers already
-  // treat as a clean no-op (gateway-callback returns false, live-inbox explains).
-  assert.equal(hasOwnGateway(sales), false);
-  assert.equal(gatewayUrl('sales'), null);
+  // Its own set of commands, not the classic menu (sales-skill#19 DoD E).
+  assert.equal(sales.commands_profile, 'sales');
+  assert.equal(sales.gateway_env, 'trained-assist-tg-bot-sales');
+  assert.equal(sales.gateway_url, 'https://trained-assist-tg-bot-sales.skillset-apply.workers.dev');
+  // No absence reason: the reason WAS the incident — "агент шлёт финальный текст сам
+  // через SALES_BOT_TOKEN" is what produced sendMessage 403 ПОСЛЕ 202.
+  assert.equal(String(sales.gateway_absence_reason || '').trim(), '');
+  assert.equal(hasOwnGateway(sales), true);
+  assert.equal(gatewayUrl('sales'), sales.gateway_url);
   // And it must never inherit another bot's gateway (the 45-min «busy» bug).
   const env = { MEDIA_GATEWAY_URL: 'https://classic-gw.example' };
-  assert.equal(gatewayUrl('sales', { env }), null);
+  assert.equal(gatewayUrl('sales', { env }), sales.gateway_url);
   assert.equal(gatewayUrl('default', { env }), 'https://classic-gw.example');
 });

@@ -14,6 +14,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=release-lib.sh
 source "$SCRIPT_DIR/release-lib.sh"
+source "$SCRIPT_DIR/hh-pinned-deploy.sh"
 
 case "${DEPLOY_ENV:-}" in
   gcp) UNIT_VARIANT="" ;;
@@ -63,7 +64,8 @@ export PREV_RELEASE
 # 10 merges → 20 hard restarts; group chats died mid-answer twice per merge). FORCE_DEPLOY=1 opts out.
 if [ "${FORCE_DEPLOY:-}" != 1 ] && [ -n "$PREV_RELEASE" ] \
    && [ "$(basename "$PREV_RELEASE")" = "$TARGET" ] \
-   && $SUDO systemctl is-active --quiet "$SERVICE"; then
+   && $SUDO systemctl is-active --quiet "$SERVICE" \
+   && hh_pin_matches_current; then
   echo "==> $TARGET is already live and $SERVICE is active — skipping restart (FORCE_DEPLOY=1 to override)"
   exit 0
 fi
@@ -158,7 +160,7 @@ ensure_sibling() {
   $SUDO mkdir -p "$RELEASES_DIR"
   $SUDO ln -sfn "$dir" "$RELEASES_DIR/$repo"
 }
-ensure_sibling trained-assist-hh-skill "$HH_SKILL_DIR"
+ensure_hh_sibling || { echo "Pinned HH gate failed; previous agent remains live" >&2; exit 1; }
 ensure_sibling trained-assist-engineering "$ENGINEERING_DIR"
 ensure_sibling trained-assist-freelance-skill "$FREELANCE_SKILL_DIR"
 ensure_sibling trained-assist-sales-skill "$SALES_SKILL_DIR"
@@ -301,6 +303,17 @@ USERS_DIR="${USERS_DIR:-$HOME/users}" AGENT_DATA_DIR="${AGENT_DATA_DIR:-$HOME/ag
   || echo "  ⚠️  workspace migration reported issues — re-run scripts/migrate-workspaces.mjs (see ledger)"
 
 echo "==> Activating release (atomic symlink swap)..."
+# The invariant, enforced at the last possible moment: a pointer may only ever be
+# flipped at a release that STILL verifies. Everything above (npm ci, Playwright,
+# sibling sync, nginx, unit files) takes minutes — the snapshot has to be whole
+# here, not only when it was built. A verification failure here aborts before the
+# swap, so the previous release keeps serving (prod incident 2026-10-04: the
+# pointer was repointed at a snapshot that had already lost its files, and the
+# service restarted onto it).
+if ! release_verify_release "$RELEASE_DIR" "$TARGET" || ! release_verify "$RELEASE_DIR" "$TARGET"; then
+  echo "❌ $RELEASE_DIR no longer verifies — NOT activating. Previous release keeps serving." >&2
+  exit 1
+fi
 release_set_link "$CURRENT_LINK" "$RELEASE_DIR"
 
 echo "==> Starting service..."
@@ -373,6 +386,8 @@ else
 fi
 
 echo "==> Garbage-collecting old releases..."
-release_gc "$RELEASES_DIR" 3
+# The live release is protected explicitly: after a rollback it is OLDER than the
+# three newest, and "newest N" alone would delete the release prod is running.
+release_gc "$RELEASES_DIR" 3 "$RELEASE_DIR"
 
 echo "==> Deploy complete ✅"
