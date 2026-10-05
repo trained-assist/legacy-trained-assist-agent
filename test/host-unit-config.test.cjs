@@ -98,6 +98,31 @@ test('each host drop-in declares its own VM_NAME and nothing else claims it', ()
   }
 });
 
+// The defect that made every per-host value a no-op while this file's other
+// assertions stayed green: `envOf` greps Environment= lines without caring about
+// sections, so a drop-in missing its [Service] header parses perfectly here — while
+// systemd applies it OUTSIDE any section and logs "Assignment outside of section.
+// Ignoring." for every line. Both files in this directory shipped that way, so
+// installing the fix on VM2 changed nothing and the box kept VM_NAME=gcp-main with
+// GCP's public origins. A drop-in is only a drop-in if it has a section.
+test('every host drop-in has a [Service] header, so systemd applies it at all', () => {
+  for (const f of fs.readdirSync(hostDir).filter(f => f.endsWith('.conf'))) {
+    const body = fs.readFileSync(path.join(hostDir, f), 'utf8');
+    assert.match(
+      body,
+      /^\s*\[Service\]\s*$/m,
+      `infra/systemd/host/${f} has no [Service] header — systemd ignores an unsectioned drop-in entirely, so the file would install and do nothing`,
+    );
+    // Order matters: the header must precede the first Environment= line.
+    const header = body.search(/^\s*\[Service\]\s*$/m);
+    const firstEnv = body.search(/^\s*Environment=/m);
+    assert.ok(
+      firstEnv === -1 || header < firstEnv,
+      `infra/systemd/host/${f}: Environment= appears before [Service] — those lines are outside any section`,
+    );
+  }
+});
+
 test('effective config per host: identity, origins, cron role', () => {
   for (const [key, v] of Object.entries(manifest.vms)) {
     if (v.service !== 'assist-agent') continue;
