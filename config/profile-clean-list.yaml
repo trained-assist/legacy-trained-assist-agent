@@ -27,11 +27,10 @@
 #   * when: git-repo → the rule only applies while inside a working copy
 #     (a directory, at any depth, that contains .git — file or dir).
 #   * FIRST matching rule in file order wins; no match → UNKNOWN.
-#     Put specific rules above general ones. The EXCLUDE (secrets) block is
-#     therefore placed ABOVE every action that takes a file somewhere
-#     (SYSTEM/ARCHIVE/MOVE/KEEP and the `when: git-repo` worktree rule) and
-#     BELOW the DELETE block, so a regenerable subtree (node_modules, caches)
-#     keeps its DELETE semantics for everything inside it.
+#     Put specific rules above general ones. Durable `.agent-home` session and
+#     system-store exceptions precede the private-data EXCLUDE block. EXCLUDE
+#     then precedes generic KEEP and `when: git-repo` rules, and follows DELETE,
+#     so regenerable subtrees retain their DELETE semantics.
 #
 # Actions follow the M1 table of epic #1784:
 #   DELETE  regenerable (caches, node_modules, logs, html scrape caches)
@@ -41,7 +40,7 @@
 #           no path rule uses it yet; duplicates are detected by hashing (M5)
 #   SYSTEM  telemetry / durable engine state → system store, not the profile
 #   KEEP    the profile's text image (md/txt/csv/json, persona, contexts, playbooks)
-#   EXCLUDE secrets (#1923, blocker B1 of #1808): the file stays on disk — is
+#   EXCLUDE private data (#1923, #163): the file stays on disk — is
 #           never deleted, archived or moved — but never enters the git image.
 #           Not a phase: no phase declares it, so the runner plans nothing for
 #           it; it is reported as its own class, and M6's .gitignore generator
@@ -198,14 +197,39 @@ rules:
     action: DELETE
     reason: "[observed] Claude-in-Chrome extension assets — re-downloaded by the extension"
 
-  # ── EXCLUDE: secrets — local only, never in the git image (#1923, B1/#1808) ──
+  # ── Durable runtime state that must not fall through to HOME exclusion ──
+  - pattern: .agent-home/.claude/projects
+    action: ARCHIVE
+    reason: "[M2] Claude session transcripts → GCS archive; never part of the profile Git image"
+
+  - pattern: .agent-home/.local/share/opencode/opencode.db*
+    action: SYSTEM
+    reason: "[observed] durable OpenCode database state — system store, not profile Git"
+
+  - pattern: .agent-home/.local/share/opencode/tool-output
+    action: SYSTEM
+    reason: "[observed] OpenCode tool-output state — system store, not profile Git"
+
+  # ── EXCLUDE: private runtime state — local only, never in the git image ──
   # Blocker B1: these files are REWRITTEN inside the profile on every run, and
   # `*.json → KEEP` below used to put the very first git-push of a profile in
   # the remote. Here, above SYSTEM/ARCHIVE/MOVE/KEEP and above the
   # `when: git-repo` worktree rule, so a secret always wins — even the copy
   # sitting inside a git working copy. Below DELETE on purpose: regenerable
   # subtrees (node_modules, caches) keep their DELETE semantics.
-  # Concrete paths first, then the generic names (first-match-wins).
+  # Runtime traces and the agent's private HOME are excluded as whole subtrees.
+  # They contain execution data/configuration, not reusable profile documents.
+  # Do this above generic KEEP rules and worktree archiving.
+
+  - pattern: .session-traces
+    action: EXCLUDE
+    reason: "[#163] per-run prompts/traces — private runtime data, never part of the Git workspace"
+
+  - pattern: .agent-home
+    action: EXCLUDE
+    reason: "[#163] agent runtime HOME/config/state — private runtime data, never part of the Git workspace"
+
+  # Concrete credential paths next, then the generic names (first-match-wins).
   # Kept on disk: never deleted, never archived, never moved — only absent from
   # the git image (M6 generator: scripts/profile-migrate/gitignore.cjs).
 
@@ -266,22 +290,10 @@ rules:
     action: SYSTEM
     reason: "[M1] prompt audit trail — belongs to the system store, not the profile"
 
-  - pattern: .agent-home/.local/share/opencode/opencode.db*
-    action: SYSTEM
-    reason: "[observed] durable engine state (OpenCode SQLite db + wal/shm) — SYSTEM row: durable-состояние, не профиль"
-
-  - pattern: .agent-home/.local/share/opencode/tool-output
-    action: SYSTEM
-    reason: "[observed] engine-side tool-output store — engine state, not profile text"
-
   # ── ARCHIVE: sessions (M2) ──────────────────────────────────────────────
   - pattern: sessions
     action: ARCHIVE
     reason: "[M1] session files (sessions/, .agent-home/.claude/sessions) → M2"
-
-  - pattern: .agent-home/.claude/projects
-    action: ARCHIVE
-    reason: "[observed] Claude Code session transcripts — the sessions/ class, → M2"
 
   # ── ARCHIVE: working copies (M3 decides clean → DELETE / dirty → ARCHIVE)
   # Applies inside any git working copy (dir containing .git at any depth):

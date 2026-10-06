@@ -14,10 +14,10 @@
 //                 image either, so they are written as ignores (this is what
 //                 stops `!**/*.md` from picking a README.md out of
 //                 node_modules);
-//   6. EXCLUDE    secrets (blocker B1 of #1808) — written LAST, so no whitelist
-//                 entry (`!**/*.json`) can ever re-include auth.json, .mcp.json
-//                 or a storage-state. They are ignored *and* reported as their
-//                 own class; they stay on disk untouched.
+//   6. EXCLUDE    private data — written LAST, so no whitelist entry can
+//                 re-include secrets, session traces, or agent runtime state.
+//                 They are ignored *and* reported as their own class; they stay
+//                 on disk untouched.
 //
 // Last matching rule wins in gitignore semantics — hence the fixed order above.
 // Rules carrying a `when:` precondition are omitted: a conditional rule has no
@@ -67,7 +67,7 @@ function buildGitIgnore(rules, opts = {}) {
 
   const out = [];
   out.push(`# .gitignore — GENERATED from ${source} — do not edit by hand.`);
-  out.push('# KEEP is a whitelist; EXCLUDE is a hard ignore written last, so a secret');
+  out.push('# KEEP is a whitelist; EXCLUDE is a hard ignore written last, so private data');
   out.push('# can never be re-included by a whitelist entry (#1923, blocker B1).');
   out.push('# Regenerate instead of editing:');
   out.push(`#   node -e "const c=require('./scripts/profile-migrate/classifier.cjs'),g=require('./scripts/profile-migrate/gitignore.cjs');process.stdout.write(g.buildGitIgnore(c.loadRules('${source}').rules))"`);
@@ -84,7 +84,7 @@ function buildGitIgnore(rules, opts = {}) {
   }
   if (excluded.length) {
     out.push('');
-    out.push(`# EXCLUDE — secrets, local only, never pushed (#1923) (${excluded.length} rule(s))`);
+    out.push(`# EXCLUDE — private data, local only, never pushed (#1923, #163) (${excluded.length} rule(s))`);
     out.push(...excluded);
   }
   if (conditional.length) {

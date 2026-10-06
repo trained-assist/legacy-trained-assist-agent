@@ -113,6 +113,25 @@ test('secrets are excluded from the image by the clean-list gitignore', { skip: 
   }
 });
 
+test('session traces and agent runtime home never enter the profile Git image', { skip: !HAS_GIT }, () => {
+  const { dir, remote } = fixture();
+  fs.writeFileSync(path.join(dir, 'notes.md'), 'hello\n');
+  fs.mkdirSync(path.join(dir, '.session-traces'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.session-traces', 'run.jsonl'), '{"prompt":"private"}\n');
+  fs.mkdirSync(path.join(dir, '.agent-home', 'config'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.agent-home', 'config', 'settings.json'), '{"runtime":true}\n');
+
+  const res = saveProfileState(dir, { profileId: 'alice', token: 'x', remoteUrl: remote });
+  assert.equal(res.ok, true, JSON.stringify(res));
+
+  const localTracked = sh(`git -C ${dir} ls-files`).out;
+  const remoteTree = sh(`git -C ${remote} ls-tree -r --name-only HEAD`).out;
+  for (const [where, tracked] of [['local', localTracked], ['remote', remoteTree]]) {
+    assert.ok(!tracked.includes('.session-traces/'), `trace entered ${where} Git image: ${tracked}`);
+    assert.ok(!tracked.includes('.agent-home/'), `agent HOME entered ${where} Git image: ${tracked}`);
+  }
+});
+
 test('an unpushed commit from an earlier run is retried, not reported as done', { skip: !HAS_GIT }, () => {
   // The regression that shipped in #2136: the first push failed (org repo not
   // provisioned), leaving a real commit with a CLEAN tree. A tree-only probe then

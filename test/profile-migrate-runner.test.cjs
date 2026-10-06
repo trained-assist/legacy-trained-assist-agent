@@ -355,7 +355,7 @@ test('EXCLUDE: dry-run reports the class in classSummary and hands it to no phas
 
   const t = await runCli(['delete', '--profile', 'dana']);
   assert.equal(t.status, 0, t.stderr);
-  assert.match(t.stdout, /EXCLUDE\s+5 secret file\(s\)/, `text report names the class:\n${t.stdout}`);
+  assert.match(t.stdout, /EXCLUDE\s+5 private file\(s\)/, `text report names the class:\n${t.stdout}`);
   assert.match(t.stdout, /planned 1 file/, 'the report is still readable as a plan');
 });
 
