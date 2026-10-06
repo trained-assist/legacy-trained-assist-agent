@@ -1,0 +1,45 @@
+{
+  "urn": "urn:trained-assist:agent-profile-context:v1",
+  "version": 1,
+  "owner": "trained-assist-agent",
+  "status": "contract_only",
+  "authority": {
+    "principal": "authenticated_agent_user",
+    "membership": "agent_owned_server_side",
+    "selection": "agent_owned_server_side",
+    "profileInputFromBrowserAllowed": false,
+    "agentRunTokenAllowed": false,
+    "legacyPerProfileJwtAllowed": false,
+    "browserReadableSelectionCookieAllowed": false
+  },
+  "contextSchema": "contracts/agent-profile-context-v1/profile-context.schema.json",
+  "operations": {
+    "resolveBrowserSession": {
+      "input": "trusted_server_request",
+      "result": "profile_context_or_null",
+      "usesBrowserSuppliedProfileId": false
+    },
+    "resolveCurrentSession": {
+      "input": "agent_session_id",
+      "result": "current_profile_context_or_null",
+      "revalidatesMembershipAndSelection": true
+    }
+  },
+  "invalidation": [
+    "logout",
+    "session_revoked",
+    "profile_membership_removed",
+    "principal_disabled",
+    "profile_selection_changed"
+  ],
+  "generation": {
+    "field": "profileGeneration",
+    "monotonicPerAgentSession": true,
+    "changesWhen": ["profile_selection_changed", "session_revoked"]
+  },
+  "failureSemantics": {
+    "unauthenticatedOrStale": "null",
+    "authorityUnavailable": "typed_unavailable_error",
+    "unavailableAllowsProtectedAction": false
+  }
+}

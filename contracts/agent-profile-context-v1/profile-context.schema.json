@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:trained-assist:agent-profile-context:v1:profile-context",
+  "title": "Agent-owned current profile context v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["principalId", "profileId", "sessionId", "profileGeneration"],
+  "properties": {
+    "principalId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Stable identifier of an authenticated Agent user; never a browser form value."
+    },
+    "profileId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Agent-owned profile currently selected by this user and session."
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Opaque server-side Agent session identifier."
+    },
+    "profileGeneration": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonic session generation advanced when the selected profile changes or the session is revoked."
+    }
+  }
+}
