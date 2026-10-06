@@ -80,21 +80,20 @@ test('GCP relay keeps long-running agent requests alive through the review progr
  assert.match(agentLocation[1],/proxy_send_timeout\s+240s\s*;/);
 });
 
-// The GCS archive credential is federated, not keyed (#2114 P0.6): the project's
-// org policy forbids SA keys, so Google STS verifies a locally-signed subject
-// token against a JWKS it fetches FROM THIS ORIGIN. Two ways that silently breaks,
-// both observed live:
-//   - the /.well-known routes absent  → STS: "Error connecting to the credential's issuer";
-//   - the routes in a SECOND server block with the same server_name → nginx keeps only
-//     the first block and /.well-known 404s, which is the same STS error one layer down.
-test('the federated-archive issuer is served from this origin, in THIS server block',()=>{
+// The GCS archive credential is federated, not keyed (#2114 P0.6): Google STS
+// fetches public issuer metadata/JWKS, but the endpoint that mints signed subject
+// tokens must remain loopback-only. Exposing /token lets any internet client mint
+// a credential for the VM's GCS principal.
+test('the federated issuer publishes only metadata and JWKS; subject-token minting stays private',()=>{
   const config=fs.readFileSync(path.resolve(__dirname,'../infra/nginx/agent-vm2.conf'),'utf8');
-  for(const p of ['/.well-known/openid-configuration','/.well-known/jwks.json','/token']) {
+  for(const p of ['/.well-known/openid-configuration','/.well-known/jwks.json']) {
     assert.match(config,new RegExp(`location = ${p.replace(/[/.]/g,m=>'\\'+m)}\\s*\\{[^}]*proxy_pass http://127\\.0\\.0\\.1:18080;`),
       `${p} must be served publicly — STS fetches the issuer metadata from the internet`);
   }
+  assert.match(config,/location = \/token\s*\{\s*return 404;\s*\}/,
+    'the signed subject-token endpoint must not be reachable through the public origin');
   // One TLS block for this origin. A second `listen 443` block with the same
-  // server_name is silently dropped by nginx — the /token route in it would 404.
+  // server_name is silently dropped by nginx — issuer metadata would 404.
   // (The port-80 redirect block legitimately repeats the server_name.)
   const tlsBlocks=[...config.matchAll(/server\s*\{([\s\S]*?)\n\}/g)].filter(b=>/listen\s+443\s+ssl/.test(b[1]));
   assert.equal(tlsBlocks.length,1,`expected exactly one TLS server block, found ${tlsBlocks.length} — duplicates are ignored by nginx`);
@@ -104,8 +103,6 @@ test('the federated-archive issuer is served from this origin, in THIS server bl
   const issuerAt=config.indexOf('/.well-known/openid-configuration');
   assert.ok(tlsStart<issuerAt&&issuerAt<nextBlock,
     'the issuer routes must live in the TLS block; in the port-80 block they would redirect and STS would never get the JWKS');
-  // The issuer is a public key set; nothing secret may live next to it.
-  assert.ok(!/\/token[^}]*proxy_pass[^}]*AGENT_SECRET/.test(config));
 });
 
 function apex(f) {
