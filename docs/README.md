@@ -5,7 +5,7 @@ Durable reference only. Plans, checklists, audits and reviews live in GitHub iss
 
 | File | Description |
 |------|-------------|
-| [credential-store-migration.md](credential-store-migration.md) | Credential store encryption design (AES-256-GCM envelope) + the completed migration record |
+| [credential-store-migration.md](credential-store-migration.md) | Compatibility credential envelope and reader/writer contract; rollout status belongs to issue #1789 |
 | [llm-ladder-token.md](llm-ladder-token.md) | Где взять `LLM_LADDER_TOKEN`: три источника в порядке приоритета, выдача локально, проверка, отличие от `OPENCODE_LADDER_TOKEN` |
 | [domain-skill-repo-test-rules.md](domain-skill-repo-test-rules.md) | Binding test & CI rules for domain skill repos (mcp-skill-testkit, 3 CI layers, replay gate) |
 | [how-to-add-skill.md](how-to-add-skill.md) | Step-by-step guide: create a new MCP skill `.js` file in `src/mcp-skills/tools/` |
