@@ -306,6 +306,17 @@ function clearPendingTask(taskId) {
   try { fs.unlinkSync(path.join(PENDING_DIR, `${taskId}.json`)); } catch (e) { console.warn('[runner] clearPendingTask:', e.message); }
 }
 
+// The run id is generated once when work is accepted and stored in the same durable
+// journal as its session/project identity. A process restart reuses this id and its
+// already-pushed run branch; a new accepted task receives a new UUID.
+function pendingRunId(taskId) {
+  if (!taskId) return null;
+  try {
+    const record = JSON.parse(fs.readFileSync(path.join(PENDING_DIR, `${taskId}.json`), 'utf8'));
+    return typeof record.runId === 'string' && record.runId ? record.runId : null;
+  } catch { return null; }
+}
+
 function getPendingTasks() {
   if (!fs.existsSync(PENDING_DIR)) return [];
   // One malformed journal entry must not abort resume for every OTHER task —
@@ -973,6 +984,7 @@ async function supplementTask({
 // IntakeBuffer `busy` for exactly this window.
 function runTask(opts) {
   const delivery = taskDelivery(opts);
+  delivery.runId = delivery.runId || pendingRunId(delivery.taskId) || randomUUID();
   // Telegram group/supergroup ids are NEGATIVE — only 0 is the internal/web
   // sentinel (no real chat). Restricting this to >0 silently dropped every
   // group run from the counter and the run-finished push, so a group chat's
@@ -1495,6 +1507,7 @@ async function _runTaskInner(opts) {
   try {
     savePendingTask(opts.taskId, {
       phase: 'queued', activitySessionId: opts.activitySessionId, taskId: opts.taskId, rootTaskId: opts.rootTaskId, requestId: opts.requestId, userId: opts.user.id, username: opts.user.username, threadId: opts.threadId,
+      runId: opts.runId,
       task: opts.task, context: opts.context,
       sessionId: opts.sessionId, contextFromSession: opts.contextFromSession,
       forceClaude: opts.forceClaude, forceNew: opts.forceNew, webExactSession: opts.webExactSession, mode: opts.mode, userMessageRecorded: opts.userMessageRecorded,
@@ -2263,7 +2276,7 @@ function scheduleGtdAfterRun({ internalGtd, activeSessionId, explicitMode, task,
     .catch(e => { console.warn('[gtd] schedule:', e.message); return null; });
 }
 
-async function _runTask({ taskId, user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets, delivery = null,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, ladderFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null, toolEscalationDone = false }) {
+async function _runTask({ taskId, runId = randomUUID(), user, task: rawTask, context, engine: acceptedEngine = null, userMessageRecorded = false, initiatedAt = null, threadId = null, sessionId, contextFromSession, forceClaude, forceNew = false, webExactSession = false, initialMsgId, pinnedMsgId, secrets, delivery = null,     continuationCount = 0, retryCount = 0, outputCallback = null, onProgress = null, internalGtd = false, mode = null, projectId = null, projectPicked = false, newProjectName = null, engineFallbackDone = false, ladderFallbackDone = false, resumedAfterRestart = false, resumeAttempts = 0, incompleteRetryAttempts = 0, executionId = randomUUID(), lastAttemptError = null, resumeSessionId = null, resumeFallbackDone = false, stepTimeoutMs = null, ocProfile: forcedOcProfile = null, ocRole: forcedOcRole = null, resumeSink = null, toolEscalationDone = false }) {
   // Strip @botname suffix from slash commands once at intake so all INTENT regexes match cleanly.
   let task = rawTask ? rawTask.replace(/^(\/\S+?)@\S+/, '$1') : rawTask;
   // Старт рана для claimFreshChecklist (BV-08): initiatedAt — момент запроса у шлюза
@@ -2290,6 +2303,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
 
   savePendingTask(taskId, {
     phase: 'running', taskId, userId: user.id, username: user.username, audience,
+    runId,
     profileId: user.profileId, telegramUserId: user.telegramUserId, continuationCount, retryCount, internalGtd,
     task, context, sessionId, contextFromSession, forceClaude, forceNew, webExactSession, mode, projectId, projectPicked, newProjectName,
     initialMsgId, pinnedMsgId, initiatedAt, threadId, resumedAfterRestart, resumeAttempts,
@@ -2922,6 +2936,63 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
   // resolveEngineCwd. This is what keeps `-C` and the actual process cwd from
   // silently diverging once a distinct per-run code cwd (workspace/A2) exists.
   const codeCwd = resolveEngineCwd(user);
+  // Run-scoped profile branches are enabled in the deployed service and can be
+  // explicitly enabled by the persistence integration harness. Checkpoints use a
+  // private git index and never checkout another run's branch in this shared tree.
+  const profileRunSyncEnabled = process.env.PROFILE_RUN_SYNC !== '0'
+    && (process.env.NODE_ENV === 'production' || process.env.PROFILE_RUN_SYNC === '1');
+  let profileRunState = null;
+  let profileRunToken = null;
+  let profileCheckpointTimer = null;
+  let profileCheckpointInFlight = null;
+  let profileCheckpointLast = null;
+  const profileCheckpointNow = () => {
+    if (!profileRunState) return Promise.resolve(null);
+    if (profileCheckpointInFlight) return profileCheckpointInFlight;
+    const { checkpointProfileRun } = require('../profile-run-sync');
+    profileCheckpointInFlight = checkpointProfileRun(user.workDir, {
+      profileId: user.username, runId, token: profileRunToken, state: profileRunState,
+      root: process.env.AGENT_DATA_DIR ? path.join(process.env.AGENT_DATA_DIR, 'profile-run-state') : undefined,
+    }).then((out) => {
+      profileCheckpointLast = out;
+      if (!out?.ok) console.error('[profile-run] checkpoint failed run=%s branch=%s step=%s', runId, profileRunState.branch, out?.step || 'unknown');
+      else profileRunState = out;
+      return out;
+    }).finally(() => { profileCheckpointInFlight = null; });
+    return profileCheckpointInFlight;
+  };
+  if (profileRunSyncEnabled) {
+    try {
+      const { token } = (await import('../../scripts/profile-repo.mjs')).resolveToken();
+      profileRunToken = token;
+      const { beginProfileRun } = require('../profile-run-sync');
+      const started = await beginProfileRun(user.workDir, {
+        profileId: user.username, runId, token,
+        remoteUrl: process.env.PROFILE_RUN_SYNC === '1' ? process.env.PROFILE_RUN_SYNC_REMOTE_URL || null : null,
+        root: process.env.AGENT_DATA_DIR ? path.join(process.env.AGENT_DATA_DIR, 'profile-run-state') : undefined,
+      });
+      if (!started.ok) {
+        const err = new Error(`Не удалось создать и отправить ветку запуска (${started.step || 'unknown'}). Запуск остановлен, локальные данные сохранены.`);
+        err.code = 'PROFILE_RUN_BRANCH_FAILED';
+        err.persistence = started;
+        throw err;
+      }
+      profileRunState = started;
+      savePendingTask(taskId, { runId, runBranch: started.branch, runBranchStartedAt: Date.now() });
+      const initial = await profileCheckpointNow();
+      if (!initial?.ok) {
+        const err = new Error(`Не удалось отправить начальный checkpoint ветки ${started.branch}. Запуск остановлен; повтор использует ту же ветку.`);
+        err.code = 'PROFILE_RUN_CHECKPOINT_FAILED';
+        err.persistence = initial;
+        throw err;
+      }
+    } catch (e) {
+      if (e.code === 'PROFILE_RUN_BRANCH_FAILED' || e.code === 'PROFILE_RUN_CHECKPOINT_FAILED') throw e;
+      const err = new Error(`Не удалось подготовить Git-сохранение запуска: ${e.message}`);
+      err.code = 'PROFILE_RUN_BRANCH_FAILED';
+      throw err;
+    }
+  }
   // #143 rule 6: remember the pre-run save state of the code cwd so the end-of-run
   // check reports only work THIS run left unpushed — never pre-existing local commits.
   const saveCheckBefore = (() => {
@@ -3020,6 +3091,13 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     codeCwd,
     intervalMs: Number(process.env.RUN_CHECKPOINT_INTERVAL_MS) || undefined,
   });
+  if (profileRunState) {
+    const intervalMs = Math.max(15_000, Number(process.env.PROFILE_RUN_SYNC_INTERVAL_MS) || 60_000);
+    profileCheckpointTimer = setInterval(() => {
+      profileCheckpointNow().catch((e) => console.error('[profile-run] checkpoint error run=%s: %s', runId, e.message));
+    }, intervalMs);
+    if (profileCheckpointTimer.unref) profileCheckpointTimer.unref();
+  }
   let engineResult;
   try {
     engineResult = await runEngineProcess({
@@ -3054,6 +3132,8 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     ...(wrapUp ? { warnTimeoutMs: answerRouter.WRAP_UP_WARN_MS, maxToolCalls: answerRouter.WRAP_UP_MAX_TOOL_CALLS } : {}),
     });
   } finally {
+    if (profileCheckpointTimer) clearInterval(profileCheckpointTimer);
+    if (profileCheckpointInFlight) await profileCheckpointInFlight;
     checkpointLoop.stop();
   }
   const {
@@ -3794,11 +3874,35 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
       }
     } catch (e) { console.warn('[runner] save check:', e.message); }
   }
-  // M6 (#1921): commit the profile's text image and push it to its private repo, so
-  // "after every run it is saved" stops being a manual step. The .gitignore is generated
-  // from the clean-list, so credentials never enter the image; a failed push is reported
-  // with recovery refs instead of being swallowed — the data is still on disk.
-  if (!internalGtd && !incomplete) {
+  let profilePersistenceTerminalStatus = null;
+  if (profileRunState) {
+    // Always push a last checkpoint, including on an incomplete engine run. Only a
+    // complete execution may merge its branch into main; failures remain retryable
+    // in the local run journal and on the remote branch.
+    const finalCheckpoint = await profileCheckpointNow();
+    if (!finalCheckpoint?.ok) {
+      profilePersistenceTerminalStatus = 'INTERRUPTED';
+      console.error('[profile-run] final checkpoint failed run=%s branch=%s step=%s', runId, profileRunState.branch, finalCheckpoint?.step || 'unknown');
+      if (!internalGtd) result += `\n\n⚠️ Работа не сохранена полностью: checkpoint ветки ${profileRunState.branch} не отправлен. Данные и состояние повтора сохранены локально.`;
+    } else if (!incomplete) {
+      const { mergeCompletedProfileRun } = require('../profile-run-sync');
+      const merged = await mergeCompletedProfileRun(user.workDir, {
+        profileId: user.username, runId, token: profileRunToken,
+        root: process.env.AGENT_DATA_DIR ? path.join(process.env.AGENT_DATA_DIR, 'profile-run-state') : undefined,
+      });
+      if (!merged.ok) {
+        profilePersistenceTerminalStatus = merged.conflict ? 'BLOCKED' : 'INTERRUPTED';
+        console.error('[profile-run] merge failed run=%s branch=%s step=%s conflict=%s', runId, merged.branch, merged.step, !!merged.conflict);
+        if (!internalGtd) {
+          result += merged.conflict
+            ? `\n\n⚠️ Результат сохранён в ветке ${merged.branch}, но слияние с main остановлено из-за конфликта. Оба результата сохранены; требуется явное разрешение конфликта.`
+            : `\n\n⚠️ Результат сохранён в ветке ${merged.branch}, но не интегрирован в main (${merged.step || 'ошибка Git'}). Повторите сохранение; ветка и состояние шага сохранены.`;
+        }
+      }
+    }
+  } else if (!internalGtd && !incomplete) {
+    // Test and local development runs retain the existing save path unless the
+    // run-branch integration is explicitly enabled.
     try {
       const { saveProfileState, formatSaveError } = require('../profile-save');
       // profile-repo.mjs is ESM and cannot be require()d from this CommonJS runner —
@@ -3829,7 +3933,7 @@ async function _runTask({ taskId, user, task: rawTask, context, engine: accepted
     });
     executionHistory.finalizeExecution(executionId, 'INTERRUPTED');
   } else {
-    executionHistory.finalizeExecution(executionId, 'COMPLETED');
+    executionHistory.finalizeExecution(executionId, profilePersistenceTerminalStatus || 'COMPLETED');
     // Self-heal (spec §9): a successful authenticated engine call resets engine health to
     // healthy and clears the current auth failure. Failure history is untouched — it lives in
     // execution-history.js and last_failure_* on the health row. Never let a health-store error
