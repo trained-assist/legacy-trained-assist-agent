@@ -1,7 +1,7 @@
 'use strict';
 // .gitignore generator from the clean list (#1923, M6 preparation):
 //   · KEEP is the whitelist — those paths may enter the profile's git image;
-//   · EXCLUDE (secrets) is a hard ignore written LAST, so no whitelist entry
+//   · EXCLUDE (private data) is a hard ignore written LAST, so no whitelist entry
 //     (`!**/*.json`) can re-include auth.json / .mcp.json / a storage-state;
 //   · the rest (DELETE / SYSTEM / ARCHIVE / MOVE) stays out too — that is what
 //     keeps a README.md inside node_modules out of the image;
@@ -83,7 +83,7 @@ test('buildGitIgnore: KEEP whitelist, then everything else, EXCLUDE last', () =>
   for (const rule of EXCLUDE_RULES) {
     assert.ok(!lines.includes(`!${gitignore.gitPattern(rule)}`), `EXCLUDE ${rule.pattern} is never whitelisted`);
   }
-  assert.ok(lines.some((l) => l.startsWith('# EXCLUDE')), 'the secrets block is labelled');
+  assert.ok(lines.some((l) => l.startsWith('# EXCLUDE')), 'the private-data block is labelled');
 });
 
 test('buildGitIgnore: fail-loud on a malformed rules argument', () => {

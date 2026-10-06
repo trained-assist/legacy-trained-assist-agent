@@ -35,16 +35,17 @@ function buildFixture(root) {
   write(path.join(p, 'repo/.git/HEAD'), 'HEAD');                           // ARCHIVE (git-repo) (4)
   write(path.join(p, 'repo/src/app.py'), 'print(1)');                      // ARCHIVE (git-repo) (8)
   write(path.join(p, 'repo/package.json'), '{}');                          // ARCHIVE — worktree unit, not KEEP (2)
-  write(path.join(p, '.agent-home/.claude/projects/s1/sess.jsonl'), '{"t"}'); // ARCHIVE (5)
+  write(path.join(p, '.agent-home/.claude/projects/s1/sess.jsonl'), '{"t"}'); // EXCLUDE (5)
+  write(path.join(p, '.session-traces/run.jsonl'), '{"t"}');               // EXCLUDE (5)
   write(path.join(p, 'usage.json'), 'uuuuuuuu');                           // SYSTEM (8)
   write(path.join(p, 'prompt-audit.jsonl'), 'pppppppppp');                 // SYSTEM (10)
-  write(path.join(p, '.agent-home/.local/share/opencode/opencode.db'), 'db'); // SYSTEM (2)
+  write(path.join(p, '.agent-home/.local/share/opencode/opencode.db'), 'db'); // EXCLUDE (2)
   write(path.join(p, 'photo.jpg'), '0123456789');                          // MOVE (10)
   write(path.join(p, 'expo-pipeline/c.html'), '<html>');                   // DELETE html cache (7)
   write(path.join(p, 'projects/p2/expo-pipeline/p.html'), '<html>');       // DELETE nested html cache (7)
   write(path.join(p, 'persona.md'), '# persona');                          // KEEP (9)
   write(path.join(p, 'contexts/hh/key.json'), '{"k":1}');                  // KEEP (7)
-  write(path.join(p, '.agent-home/.claude/settings.json'), '{}');          // KEEP (2)
+  write(path.join(p, '.agent-home/.claude/settings.json'), '{}');          // EXCLUDE (2)
   write(path.join(p, 'weird.bin'), 'zzzz');                                // UNKNOWN (4)
   write(path.join(p, 'readme'), 'noreadme');                               // UNKNOWN (8)
   write(path.join(root, 'bob', 'notes.txt'), 'bob-keep');                  // KEEP (8)
@@ -205,6 +206,18 @@ test('EXCLUDE beats every rule that takes a file somewhere — including a git w
   // …and above the KEEP catch-alls it used to fall through to.
   assert.strictEqual(action('sessions/playwright-storage-state.json'), 'EXCLUDE');
   assert.strictEqual(action('contexts/hh/.mcp.json'), 'EXCLUDE');
+  const tracesDir = classifier.classifyIndex('.session-traces', Infinity, false, RULES.rules);
+  assert.strictEqual(RULES.rules[tracesDir].action, 'EXCLUDE');
+  assert.strictEqual(action('.session-traces/run.jsonl'), 'KEEP',
+    'the directory action must be inherited by the walk; the file name alone matches the generic KEEP rule');
+  assert.strictEqual(RULES.rules[classifier.classifyIndex('.session-traces/run.jsonl', tracesDir, false, RULES.rules)].action, 'EXCLUDE');
+  const homeDir = classifier.classifyIndex('projects/site/.agent-home', Infinity, true, RULES.rules);
+  assert.strictEqual(RULES.rules[homeDir].action, 'EXCLUDE');
+  assert.strictEqual(RULES.rules[classifier.classifyIndex('projects/site/.agent-home/config.json', homeDir, true, RULES.rules)].action, 'EXCLUDE');
+  const transcriptDir = classifier.classifyIndex('.agent-home/.claude/projects', Infinity, false, RULES.rules);
+  assert.strictEqual(RULES.rules[transcriptDir].action, 'ARCHIVE', 'durable transcripts still use the archive phase');
+  const dbDir = classifier.classifyIndex('.agent-home/.local/share/opencode/opencode.db', Infinity, false, RULES.rules);
+  assert.strictEqual(RULES.rules[dbDir].action, 'SYSTEM', 'durable engine state keeps its system classification');
 
   const firstExclude = RULES.rules.findIndex((r) => r.action === 'EXCLUDE');
   assert.ok(firstExclude >= 0, 'the clean list has an EXCLUDE block');
@@ -256,20 +269,23 @@ test('classifyProfile: every file lands in the right class, subtree inheritance 
     const r = classifier.classifyProfile(path.join(root, 'alice'), { rules: RULES.rules, profileName: 'alice' });
     const by = Object.fromEntries(r.classes.map((c) => [c.action, c]));
 
-    assert.strictEqual(r.totals.files, 22, 'all fixture files counted');
+    assert.strictEqual(r.totals.files, 23, 'all fixture files counted');
     // DELETE: node_modules(2) + .mcp-runs + logs + hermes-tmp + 2 html caches
     assert.strictEqual(by.DELETE.files, 7, 'DELETE files');
     assert.strictEqual(by.DELETE.bytes, 12 + 12 + 4 + 7 + 3 + 6 + 6, 'DELETE bytes');
-    // ARCHIVE: sessions(2) + repo/.git/HEAD + repo/src/app.py + repo/package.json + claude transcripts
+    // ARCHIVE: sessions(2) + repo/.git/HEAD + repo/src/app.py + repo/package.json + Claude transcripts
     assert.strictEqual(by.ARCHIVE.files, 6, 'ARCHIVE files');
-    // SYSTEM: usage.json + prompt-audit.jsonl + opencode.db
+    // SYSTEM: usage.json + prompt-audit.jsonl + OpenCode database
     assert.strictEqual(by.SYSTEM.files, 3, 'SYSTEM files');
     assert.strictEqual(by.SYSTEM.bytes, 8 + 10 + 2, 'SYSTEM bytes');
     // MOVE: only media outside sessions/repo
     assert.strictEqual(by.MOVE.files, 1, 'MOVE files');
     assert.strictEqual(by.MOVE.bytes, 10, 'MOVE bytes');
-    // KEEP: persona.md + contexts + settings.json
-    assert.strictEqual(by.KEEP.files, 3, 'KEEP files');
+    // KEEP: persona.md + contexts
+    assert.strictEqual(by.KEEP.files, 2, 'KEEP files');
+    // EXCLUDE: private HOME settings + session traces (transcripts/db keep their durable paths)
+    assert.strictEqual(by.EXCLUDE.files, 2, 'EXCLUDE runtime/private files');
+    assert.strictEqual(by.EXCLUDE.bytes, 2 + 5, 'EXCLUDE bytes');
     // UNKNOWN: weird.bin + readme
     assert.strictEqual(by.UNKNOWN.files, 2, 'UNKNOWN files');
     assert.strictEqual(by.UNKNOWN.bytes, 12, 'UNKNOWN bytes');
