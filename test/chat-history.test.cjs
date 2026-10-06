@@ -118,6 +118,57 @@ test('MCP get_chat_history handler: registered, recency order, since_hours', asy
   }
 });
 
+test('a new session can retrieve a prior persisted exchange through the MCP handler', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-history-e2e-'));
+  const workDir = path.join(root, 'u1');
+  const dir = path.join(workDir, 'sessions');
+  const store = require('../src/session-store.js');
+  const dataPaths = require('../src/data-paths.js');
+  const originalSessionsDirPath = dataPaths.sessionsDirPath;
+  const originalUserId = process.env.AGENT_USER_ID;
+  const originalSessionFile = process.env.AGENT_SESSION_FILE;
+  const previousSessionId = `s-${CHAT}-history-e2e-previous`;
+  const currentSessionId = `s-${CHAT}-history-e2e-current`;
+  const fact = `remember-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  fs.mkdirSync(dir, { recursive: true });
+  dataPaths.sessionsDirPath = () => dir;
+  process.env.AGENT_USER_ID = 'u1';
+  try {
+    store.createSession(workDir, {
+      id: previousSessionId,
+      task: `For this test, the code phrase is ${fact}`,
+      chatId: CHAT,
+    });
+    store.appendReply(workDir, previousSessionId, `I will remember ${fact}.`);
+    store.createSession(workDir, {
+      id: currentSessionId,
+      task: 'What code phrase did I mention earlier?',
+      chatId: CHAT,
+    });
+
+    process.env.AGENT_SESSION_FILE = path.join(dir, `${currentSessionId}.json`);
+    delete require.cache[require.resolve('../src/mcp-skills/tools/02-chat-history.js')];
+    const tool = require('../src/mcp-skills/tools/02-chat-history.js').tools.get_chat_history;
+    const result = await tool.handler({});
+
+    assert.deepStrictEqual(result.sessions.map(session => session.session_id), [previousSessionId]);
+    assert.deepStrictEqual(result.sessions[0].messages.map(message => message.text), [
+      `For this test, the code phrase is ${fact}`,
+      `I will remember ${fact}.`,
+    ]);
+    assert.ok(result.sessions[0].messages.every(message => message.at), 'messages include timestamps');
+  } finally {
+    dataPaths.sessionsDirPath = originalSessionsDirPath;
+    if (originalUserId === undefined) delete process.env.AGENT_USER_ID;
+    else process.env.AGENT_USER_ID = originalUserId;
+    if (originalSessionFile === undefined) delete process.env.AGENT_SESSION_FILE;
+    else process.env.AGENT_SESSION_FILE = originalSessionFile;
+    delete require.cache[require.resolve('../src/mcp-skills/tools/02-chat-history.js')];
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('history tools are exposed by the MCP tool loader', () => {
   const names = new Set();
   const dir = path.join(__dirname, '..', 'src', 'mcp-skills', 'tools');
