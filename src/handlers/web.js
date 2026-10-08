@@ -12,11 +12,31 @@
 const path = require('path');
 const fs = require('fs');
 
-const { signJwt, setTokenCookie, clearTokenCookie, checkPassword } = require('../web-auth');
+const { signJwt, setTokenCookie, clearTokenCookie, checkPassword,
+  webAuth, listAuthedProfiles, switchProfileCookie } = require('../web-auth');
 
-function json(res, status, data) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+function json(res, status, data, headers = {}) {
+  res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
   res.end(JSON.stringify(data));
+}
+
+function sameOriginBrowserPost(req) {
+  const host = req.headers.host;
+  const origin = req.headers.origin;
+  if (typeof host !== 'string' || typeof origin !== 'string') return false;
+  try {
+    const parsed = new URL(origin);
+    const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname.toLowerCase());
+    const expectedProtocol = forwardedProto
+      ? `${forwardedProto}:`
+      : loopback ? 'http:' : 'https:';
+    return parsed.host.toLowerCase() === host.toLowerCase()
+      && parsed.protocol === expectedProtocol
+      && ['http:', 'https:'].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
 }
 
 function readBody(req, maxBytes = 1_048_576) {
@@ -40,6 +60,40 @@ function readBodyBuffer(req, maxBytes = 1_048_576) {
 
 async function handleWeb(req, url, res, ctx) {
   const { secrets } = ctx;
+
+  // ── Legacy Agent UI profile selector ────────────────────────────────────
+  // This only switches among profiles for which this browser already holds a
+  // valid Agent-signed profile cookie. It is not the AgentProfileAuthority
+  // contract used by Connected Apps; those callers must use the server-side
+  // principal/session authority and must not trust web_current.
+  if (req.method === 'GET' && url.pathname === '/web/profiles') {
+    const privateHeaders = { 'Cache-Control': 'no-store' };
+    if (!secrets.WEB_JWT_SECRET) return json(res, 503, { error: 'web auth not configured' }, privateHeaders);
+    const current = webAuth(req, secrets.WEB_JWT_SECRET);
+    if (!current) return json(res, 401, { error: 'unauthorized' }, privateHeaders);
+    const profiles = listAuthedProfiles(req, secrets.WEB_JWT_SECRET);
+    if (!profiles.includes(current)) profiles.push(current); // legacy web_token cookie
+    profiles.sort();
+    return json(res, 200, { profiles, current }, privateHeaders);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/web/switch-profile') {
+    const privateHeaders = { 'Cache-Control': 'no-store' };
+    if (!secrets.WEB_JWT_SECRET) return json(res, 503, { error: 'web auth not configured' }, privateHeaders);
+    if (!webAuth(req, secrets.WEB_JWT_SECRET)) return json(res, 401, { error: 'unauthorized' }, privateHeaders);
+    if (!sameOriginBrowserPost(req)) return json(res, 403, { error: 'same-origin request required' }, privateHeaders);
+    if (String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase() !== 'application/json')
+      return json(res, 415, { error: 'application/json required' }, privateHeaders);
+    let body;
+    try { body = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: 'bad json' }, privateHeaders); }
+    const { username } = body || {};
+    if (!username || !/^[a-zA-Z0-9_-]{1,64}$/.test(username))
+      return json(res, 400, { error: 'invalid username' }, privateHeaders);
+    if (!listAuthedProfiles(req, secrets.WEB_JWT_SECRET).includes(username))
+      return json(res, 403, { error: 'profile not authenticated' }, privateHeaders);
+    switchProfileCookie(res, username);
+    return json(res, 200, { ok: true, username }, privateHeaders);
+  }
 
   // ── POST /web/verify — stateless password check for external frontends ────
   // An external web front-end (e.g. the Cloudflare session-manager worker at
